@@ -475,6 +475,60 @@ func TestOpenSelectionUsesNamedSecretsProfileStoreWithoutBackendOverride(t *test
 	}
 }
 
+func TestOpenSelectionClosesCredentialStoresWhenProviderCreationFails(t *testing.T) {
+	cfg := testConfig()
+	providerErr := errors.New("provider creation failed")
+	var stores []*credstore.Store
+
+	_, err := OpenSelection(context.Background(), SelectionOpenRequest{
+		Config:  cfg,
+		Profile: cfg.Profiles["home"],
+		Dependencies: Dependencies{
+			NewGitProvider: func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				if store, ok := tokenStore.(*credstore.Store); ok {
+					stores = append(stores, store)
+				}
+				return nil, gitprovider.Credential{}, providerErr
+			},
+		},
+	})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("OpenSelection error = %v, want provider failure", err)
+	}
+	assertCredentialStoresClosed(t, stores)
+}
+
+func TestOpenSelectionClosesCredentialStoresWhenAdapterCreationFails(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.LLM.Auth = config.LLMAuthAPIKey
+	profile.LLM.Credential = config.CredentialLocation{Store: "test-memory", Name: "codereview/llm"}
+	cfg.Profiles["home"] = profile
+	adapterErr := errors.New("adapter creation failed")
+	var stores []*credstore.Store
+
+	_, err := OpenSelection(context.Background(), SelectionOpenRequest{
+		Config:  cfg,
+		Profile: profile,
+		Dependencies: Dependencies{
+			NewGitProvider: func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				if store, ok := tokenStore.(*credstore.Store); ok {
+					stores = append(stores, store)
+				}
+				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+			},
+			NewAdapter: func(_ config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {
+				stores = append(stores, store)
+				return nil, adapterErr
+			},
+		},
+	})
+	if !errors.Is(err, adapterErr) {
+		t.Fatalf("OpenSelection error = %v, want adapter failure", err)
+	}
+	assertCredentialStoresClosed(t, stores)
+}
+
 func TestOpenLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 	cfg := testConfig()
 	profile := cfg.Profiles["home"]

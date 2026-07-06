@@ -83,6 +83,9 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	if gotRuntime.MaxAgents != 3 || gotRuntime.MaxConcurrency != 2 {
 		t.Fatalf("runtime opts = %#v, want max agents/concurrency", gotRuntime)
 	}
+	if gotRuntime.Command != "review" || gotRuntime.Progress == nil || gotRuntime.Warnings != out {
+		t.Fatalf("runtime command/progress/warnings = %#v/%#v/%#v, want review/progress/stdout-stderr", gotRuntime.Command, gotRuntime.Progress, gotRuntime.Warnings)
+	}
 	if !cleanupCalled {
 		t.Fatal("runtime cleanup was not called")
 	}
@@ -144,6 +147,9 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	}
 	if gotRuntime.PRRef.Number != 29 || gotRuntime.PRRef.Owner != "open-cli-collective" || gotRuntime.PRRef.Repo != "codereview-cli" {
 		t.Fatalf("runtime PR ref = %#v, want parsed issue fixture PR", gotRuntime.PRRef)
+	}
+	if gotRuntime.Command != "review" || gotRuntime.Progress == nil || gotRuntime.Warnings != errOut {
+		t.Fatalf("runtime command/progress/warnings = %#v/%#v/%#v, want review/progress/stderr", gotRuntime.Command, gotRuntime.Progress, gotRuntime.Warnings)
 	}
 	if gotRuntime.RequireOpinionatedReviewAuthority {
 		t.Fatal("dry-run runtime should not require opinionated review authority")

@@ -26,7 +26,9 @@ import (
 func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	responder := &fakeResponder{result: testThreadRespondResult(ledger.OutcomeDryRun)}
 	var cleanupCalled bool
-	cmd, out := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	var gotRuntime reviewruntime.OpenRequest
+	cmd, out := newTestCommand(t, testConfig(), func(_ context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+		gotRuntime = req
 		return reviewruntime.Runtime{
 			Responder:       responder,
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
@@ -54,6 +56,9 @@ func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	}
 	if !cleanupCalled {
 		t.Fatal("runtime cleanup was not called")
+	}
+	if gotRuntime.Command != "respond" || gotRuntime.Progress == nil || gotRuntime.Warnings != out {
+		t.Fatalf("runtime command/progress/warnings = %#v/%#v/%#v, want respond/progress/stdout-stderr", gotRuntime.Command, gotRuntime.Progress, gotRuntime.Warnings)
 	}
 	text := out.String()
 	if !strings.Contains(text, "Threads: considered 1, responded 1, provider resolved 0 (resolve planned 1, failed 0)") || !strings.Contains(text, "Planned actions: 2") {
