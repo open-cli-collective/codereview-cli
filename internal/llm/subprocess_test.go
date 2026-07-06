@@ -692,6 +692,9 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if _, err := stream.Wait(context.Background()); err != nil {
 			t.Fatalf("Wait: %v", err)
 		}
+		if stream.SessionID() != "session-1" {
+			t.Fatalf("SessionID = %q, want session-1", stream.SessionID())
+		}
 		record := readHelperRecord(t, recordPath)
 		if len(record.AdapterArgs) < 2 || record.AdapterArgs[0] != "exec" || record.AdapterArgs[1] != "resume" {
 			t.Fatalf("args = %#v, want codex exec resume", record.AdapterArgs)
@@ -701,7 +704,65 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 				t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 			}
 		}
-		assertFlagValue(t, record.AdapterArgs, "--sandbox", "read-only")
+		for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
+			if containsFlag(record.AdapterArgs, flag) {
+				t.Fatalf("args = %#v, do not want unsupported resume flag %s", record.AdapterArgs, flag)
+			}
+		}
+		assertFlagValue(t, record.AdapterArgs, "--model", "gpt-5.5")
+		assertFlagValue(t, record.AdapterArgs, "-c", "model_reasoning_effort=high")
+		promptIndex := len(argsBeforePrompt(record.AdapterArgs))
+		if promptIndex+2 != len(record.AdapterArgs) || record.AdapterArgs[promptIndex] != "--" || record.AdapterArgs[promptIndex+1] != "resume prompt" {
+			t.Fatalf("args = %#v, want -- separated resumed prompt", record.AdapterArgs)
+		}
+		if got := record.AdapterArgs[promptIndex-1]; got != "prior-session" {
+			t.Fatalf("resume session arg = %q in %#v, want prior-session immediately before prompt separator", got, record.AdapterArgs)
+		}
+	})
+
+	t.Run("resume reviewer workspace avoids unsupported argv flags", func(t *testing.T) {
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
+		if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(scratchRoot): %v", err)
+		}
+		repoRoot := filepath.Join(tempDir, "workbench-repo")
+		if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(repoRoot): %v", err)
+		}
+		tempRoot := filepath.Join(scratchRoot, "tmp")
+		cacheRoot := filepath.Join(scratchRoot, "cache")
+		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+		stream, err := adapter.Resume(context.Background(), "prior-session", Request{
+			Model:  "gpt-5.5",
+			Effort: "high",
+			Prompt: "resume prompt",
+			ReviewerWorkspace: &ReviewerWorkspaceRequest{
+				RepoDir:    repoRoot,
+				ScratchDir: scratchRoot,
+				TempDir:    tempRoot,
+				CacheDir:   cacheRoot,
+			},
+		})
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		if stream.SessionID() != "session-1" {
+			t.Fatalf("SessionID = %q, want session-1", stream.SessionID())
+		}
+		record := readHelperRecord(t, recordPath)
+		if len(record.AdapterArgs) < 2 || record.AdapterArgs[0] != "exec" || record.AdapterArgs[1] != "resume" {
+			t.Fatalf("args = %#v, want codex exec resume", record.AdapterArgs)
+		}
+		for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
+			if containsFlag(record.AdapterArgs, flag) {
+				t.Fatalf("args = %#v, do not want unsupported resume flag %s", record.AdapterArgs, flag)
+			}
+		}
 		assertFlagValue(t, record.AdapterArgs, "--model", "gpt-5.5")
 		assertFlagValue(t, record.AdapterArgs, "-c", "model_reasoning_effort=high")
 		promptIndex := len(argsBeforePrompt(record.AdapterArgs))

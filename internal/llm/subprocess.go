@@ -432,10 +432,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			args = append(args, "-c", "model_reasoning_effort="+req.Effort)
 		}
 		if resumeSessionID != "" {
-			args = subprocessCodexBaseArgs([]string{"exec", "resume"}, flagValue(args, "--sandbox"), flagValue(args, "--cd"))
-			if workspace != nil {
-				args = append(args, "--add-dir", scratch)
-			}
+			args = subprocessCodexResumeArgs()
 			if req.Model != "" {
 				args = append(args, "--model", req.Model)
 			}
@@ -462,6 +459,17 @@ func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string) []string {
 		"--cd", cwd,
 	)
 	return args
+}
+
+func subprocessCodexResumeArgs() []string {
+	return []string{
+		"exec", "resume",
+		"--json",
+		"--ephemeral",
+		"--skip-git-repo-check",
+		"--ignore-user-config",
+		"--ignore-rules",
+	}
 }
 
 func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Request) error {
@@ -516,22 +524,30 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		if len(checkedArgs) == 0 || checkedArgs[0] != "exec" {
 			return fmt.Errorf("%w: codex_cli must use exec", ErrUnsafeSubprocessConfig)
 		}
-		wantSandbox := "read-only"
-		wantCWD := scratch
-		if workspace != nil {
-			wantSandbox = "workspace-write"
-			wantCWD = workspace.RepoDir
-		}
-		if flagValue(checkedArgs, "--sandbox") != wantSandbox {
-			return fmt.Errorf("%w: codex_cli must use %s sandbox", ErrUnsafeSubprocessConfig, wantSandbox)
-		}
-		if flagValue(checkedArgs, "--cd") != wantCWD {
-			return fmt.Errorf("%w: codex_cli must use configured cwd", ErrUnsafeSubprocessConfig)
-		}
-		if workspace != nil {
-			addDir, ok := flagValueOK(checkedArgs, "--add-dir")
-			if !ok || !sameCleanPath(addDir, scratch) {
-				return fmt.Errorf("%w: codex_cli must add only the invocation scratch dir", ErrUnsafeSubprocessConfig)
+		if len(checkedArgs) > 1 && checkedArgs[1] == "resume" {
+			for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
+				if containsFlag(checkedArgs, flag) {
+					return fmt.Errorf("%w: codex_cli resume must not pass %s", ErrUnsafeSubprocessConfig, flag)
+				}
+			}
+		} else {
+			wantSandbox := "read-only"
+			wantCWD := scratch
+			if workspace != nil {
+				wantSandbox = "workspace-write"
+				wantCWD = workspace.RepoDir
+			}
+			if flagValue(checkedArgs, "--sandbox") != wantSandbox {
+				return fmt.Errorf("%w: codex_cli must use %s sandbox", ErrUnsafeSubprocessConfig, wantSandbox)
+			}
+			if flagValue(checkedArgs, "--cd") != wantCWD {
+				return fmt.Errorf("%w: codex_cli must use configured cwd", ErrUnsafeSubprocessConfig)
+			}
+			if workspace != nil {
+				addDir, ok := flagValueOK(checkedArgs, "--add-dir")
+				if !ok || !sameCleanPath(addDir, scratch) {
+					return fmt.Errorf("%w: codex_cli must add only the invocation scratch dir", ErrUnsafeSubprocessConfig)
+				}
 			}
 		}
 		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
