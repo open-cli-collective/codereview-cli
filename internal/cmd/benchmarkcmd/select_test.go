@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -226,6 +227,39 @@ func TestSelectRecordsRuntimeFailuresWithoutInvokingSelection(t *testing.T) {
 	if got.Runs[0].Artifacts.ReviewJSON != "" {
 		t.Fatalf("review json path = %q, want none for selector runtime failure", got.Runs[0].Artifacts.ReviewJSON)
 	}
+}
+
+func TestSelectMapsRuntimeOpenErrorsAtCommandBoundary(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile) (reviewruntime.SelectionRuntime, error) {
+			return reviewruntime.SelectionRuntime{}, fmt.Errorf("runtime open failed: %w", config.ErrInvalid)
+		},
+		func(context.Context, pipeline.Options, pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			t.Fatal("selection should not run after runtime open failure")
+			return pipeline.SelectionResult{}, nil
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", filepath.Join(t.TempDir(), "results"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Runs[0].ExitCode != exitcode.UsageError || got.Runs[0].FailureClassification != failureUsageError {
+		t.Fatalf("run exit/class = %d/%s, want usage/%s", got.Runs[0].ExitCode, got.Runs[0].FailureClassification, failureUsageError)
+	}
+	assertFileContains(t, got.Runs[0].Artifacts.Stderr, "runtime open failed")
 }
 
 func TestSelectSupportsCandidateWithoutReviewerStage(t *testing.T) {

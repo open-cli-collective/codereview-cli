@@ -14,6 +14,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -127,12 +128,14 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 		state := selectionRuntimeState{
 			profileName: resolvedName,
 			profile:     profile,
-			err:         resolveErr,
+		}
+		if resolveErr != nil {
+			state.err = cmdruntime.MapRunError(resolveErr)
 		}
 		if resolveErr == nil {
 			runtime, runtimeErr := openSelectionRuntime(ctx, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, profile)
 			state.runtime = runtime
-			state.err = runtimeErr
+			state.err = cmdruntime.MapRunError(runtimeErr)
 			if runtimeErr == nil && runtime.Cleanup != nil {
 				cleanups = append(cleanups, runtime.Cleanup)
 			}
@@ -364,7 +367,7 @@ func benchmarkSelectionPostingIdentity(profile config.Profile) (gitprovider.Iden
 }
 
 func recordSelectionRunFailure(runSummary *benchmarkRun, stderrBody *[]byte, err error) {
-	runSummary.ExitCode = exitcode.Failure
+	runSummary.ExitCode = exitcode.FromError(err)
 	runSummary.FailureClassification = classifySelectionFailure(err)
 	runSummary.Warnings = append(runSummary.Warnings, err.Error())
 	*stderrBody = append(*stderrBody, []byte(err.Error()+"\n")...)
@@ -427,6 +430,14 @@ func classifySelectionFailure(err error) string {
 	}
 	if errors.Is(err, pipeline.ErrStructuredOutputInvalidAfterRetry) {
 		return failureInvalidSelectionJSON
+	}
+	switch exitcode.FromError(err) {
+	case exitcode.UsageError:
+		return failureUsageError
+	case exitcode.AuthConfigError:
+		return failureAuthConfigError
+	case exitcode.UpstreamError:
+		return failureUpstreamError
 	}
 	return failureSelectionError
 }

@@ -76,12 +76,7 @@ type commandFlags struct {
 
 // Register attaches the review command to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
-	RegisterWithFactory(rootCmd, opts, newRuntime)
-}
-
-// NewRuntime builds the concrete runtime used by review lifecycle commands.
-func NewRuntime(ctx context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
-	return newRuntime(ctx, req)
+	RegisterWithFactory(rootCmd, opts, reviewruntime.Open)
 }
 
 // RegisterWithFactory attaches the review command with an injected runtime factory.
@@ -644,8 +639,4 @@ func viewAction(action reviewplan.Action, planned ledger.PlannedAction) (view.Re
 		out.ThreadID = action.ThreadID
 	}
 	return out, nil
-}
-
-func newRuntime(ctx context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
-	return reviewruntime.Open(ctx, req)
 }
