@@ -1617,7 +1617,11 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		state.stored = &stored
 		state.createdAt = stored.CreatedAt
 		if state.supportsResume {
-			state.currentProviderSessionID = stored.ProviderSessionID
+			if stored.DurableSession {
+				state.currentProviderSessionID = stored.ProviderSessionID
+			} else {
+				opts.emitWarning(fmt.Sprintf("session %q stored adapter session predates durable resume support; starting fresh", active.Name))
+			}
 		}
 	}
 
@@ -1659,6 +1663,7 @@ func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.T
 		Model:             s.active.Model,
 		Host:              s.active.Host,
 		ProviderSessionID: providerSessionID,
+		DurableSession:    s.supportsResume,
 		CreatedAt:         s.createdAt,
 		LastUsedAt:        lastUsedAt,
 	}

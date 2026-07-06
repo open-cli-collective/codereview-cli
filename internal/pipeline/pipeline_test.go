@@ -4327,6 +4327,15 @@ func TestLiveNamedSessionMissingRowStartsFreshAndReturnsCandidate(t *testing.T) 
 	if len(resumes) != 1 || resumes[0].SessionID != "selection-new" {
 		t.Fatalf("resumes = %#v, want rollup resume from fresh selection", resumes)
 	}
+	requests := adapter.Requests()
+	if len(requests) < 1 || !requests[0].DurableSession {
+		t.Fatalf("requests = %#v, want durable selection start on first named-session run", requests)
+	}
+	for i := 1; i < len(requests); i++ {
+		if requests[i].DurableSession {
+			t.Fatalf("requests[%d] = %#v, do not want durable non-selection requests", i, requests[i])
+		}
+	}
 	if result.NamedSessionCandidate == nil {
 		t.Fatal("NamedSessionCandidate = nil, want first-run candidate")
 	}
@@ -4514,11 +4523,65 @@ func TestLiveNamedSessionUnsupportedResumeStartsFreshAndReturnsCandidate(t *test
 	if len(adapter.Requests()) != 3 {
 		t.Fatalf("starts = %d, want selection/reviewer/rollup", len(adapter.Requests()))
 	}
+	for i, request := range adapter.Requests() {
+		if request.DurableSession {
+			t.Fatalf("requests[%d] = %#v, do not want durable sessions for unsupported adapter", i, request)
+		}
+	}
 	if result.NamedSessionCandidate == nil || result.NamedSessionCandidate.ProviderSessionID != "rollup-fresh" {
 		t.Fatalf("candidate = %#v, want rollup-fresh", result.NamedSessionCandidate)
 	}
 	if !strings.Contains(warnings.String(), "does not support resume") {
 		t.Fatalf("warnings = %q, want unsupported resume warning", warnings.String())
+	}
+}
+
+func TestLiveNamedSessionLegacyStoredRowStartsFreshAndReturnsDurableCandidate(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	run := allocateLiveRun(t, store, provider, req, "run-live-named-legacy")
+	stored := namedSessionForRequest(req, "stored-session")
+	stored.DurableSession = false
+	if err := store.UpsertNamedSession(ctx, stored); err != nil {
+		t.Fatalf("UpsertNamedSession: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-new", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	var warnings bytes.Buffer
+
+	result, err := liveForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		NamedSessions:   store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Warnings:        &warnings,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if len(adapter.Resumes()) != 1 || adapter.Resumes()[0].SessionID != "selection-new" {
+		t.Fatalf("resumes = %#v, want only rollup resume after fresh durable selection", adapter.Resumes())
+	}
+	requests := adapter.Requests()
+	if len(requests) < 1 || !requests[0].DurableSession {
+		t.Fatalf("requests = %#v, want durable fresh selection start", requests)
+	}
+	if result.NamedSessionCandidate == nil || !result.NamedSessionCandidate.DurableSession {
+		t.Fatalf("candidate = %#v, want durable named-session candidate", result.NamedSessionCandidate)
+	}
+	if !strings.Contains(warnings.String(), "predates durable resume support") {
+		t.Fatalf("warnings = %q, want legacy durability warning", warnings.String())
 	}
 }
 
@@ -6896,6 +6959,7 @@ func namedSessionForRequest(req Request, providerSessionID string) ledger.NamedS
 		Model:             "claude-sonnet-4-6",
 		Host:              req.PRRef.Host,
 		ProviderSessionID: providerSessionID,
+		DurableSession:    true,
 		CreatedAt:         fixedNow(),
 		LastUsedAt:        fixedNow(),
 	}

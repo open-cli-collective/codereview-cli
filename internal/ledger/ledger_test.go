@@ -1498,6 +1498,7 @@ func validNamedSession() NamedSession {
 		Model:             "gpt-5.5",
 		Host:              "github.com",
 		ProviderSessionID: "provider-session-1",
+		DurableSession:    true,
 		CreatedAt:         time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC),
 		LastUsedAt:        time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC),
 	}
