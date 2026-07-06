@@ -210,12 +210,10 @@ func TestOpenAbortsWhenOpinionatedReviewAuthorityProbeIsCanceled(t *testing.T) {
 func TestOpenClosesCredentialStoresWhenRuntimeLayoutFails(t *testing.T) {
 	cfg := testConfig()
 	layoutErr := errors.New("layout failed")
-	var stores []*credstore.Store
+	var readers []credentials.Reader
 	deps := testDependencies(t,
 		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-			if store := rawStoreFromReader(tokenStore); store != nil {
-				stores = append(stores, store)
-			}
+			readers = append(readers, tokenStore)
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		},
 		nil,
@@ -234,18 +232,16 @@ func TestOpenClosesCredentialStoresWhenRuntimeLayoutFails(t *testing.T) {
 	if !errors.Is(err, layoutErr) {
 		t.Fatalf("Open error = %v, want layout failure", err)
 	}
-	assertCredentialStoresClosed(t, stores)
+	assertCredentialReadersClosed(t, readers)
 }
 
 func TestOpenClosesCredentialStoresWhenLedgerOpenFails(t *testing.T) {
 	cfg := testConfig()
 	ledgerErr := errors.New("ledger open failed")
-	var stores []*credstore.Store
+	var readers []credentials.Reader
 	deps := testDependencies(t,
 		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-			if store := rawStoreFromReader(tokenStore); store != nil {
-				stores = append(stores, store)
-			}
+			readers = append(readers, tokenStore)
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		},
 		nil,
@@ -264,19 +260,17 @@ func TestOpenClosesCredentialStoresWhenLedgerOpenFails(t *testing.T) {
 	if !errors.Is(err, ledgerErr) {
 		t.Fatalf("Open error = %v, want ledger failure", err)
 	}
-	assertCredentialStoresClosed(t, stores)
+	assertCredentialReadersClosed(t, readers)
 }
 
 func TestOpenClosesCredentialStoresAndLedgerWhenLimiterCreationFails(t *testing.T) {
 	cfg := testConfig()
 	limiterErr := errors.New("limiter failed")
-	var stores []*credstore.Store
+	var readers []credentials.Reader
 	var ledgerStore *ledger.Store
 	deps := testDependencies(t,
 		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-			if store := rawStoreFromReader(tokenStore); store != nil {
-				stores = append(stores, store)
-			}
+			readers = append(readers, tokenStore)
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		},
 		nil,
@@ -303,7 +297,7 @@ func TestOpenClosesCredentialStoresAndLedgerWhenLimiterCreationFails(t *testing.
 	if !errors.Is(err, limiterErr) {
 		t.Fatalf("Open error = %v, want limiter failure", err)
 	}
-	assertCredentialStoresClosed(t, stores)
+	assertCredentialReadersClosed(t, readers)
 	assertLedgerClosed(t, ledgerStore)
 }
 
@@ -561,16 +555,14 @@ func TestOpenSelectionUsesNamedSecretsProfileStoreWithoutBackendOverride(t *test
 func TestOpenSelectionClosesCredentialStoresWhenProviderCreationFails(t *testing.T) {
 	cfg := testConfig()
 	providerErr := errors.New("provider creation failed")
-	var stores []*credstore.Store
+	var readers []credentials.Reader
 
 	_, err := OpenSelection(context.Background(), SelectionOpenRequest{
 		Config:  cfg,
 		Profile: cfg.Profiles["home"],
 		Dependencies: Dependencies{
 			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-				if store := rawStoreFromReader(tokenStore); store != nil {
-					stores = append(stores, store)
-				}
+				readers = append(readers, tokenStore)
 				return nil, gitprovider.Credential{}, providerErr
 			},
 		},
@@ -578,7 +570,7 @@ func TestOpenSelectionClosesCredentialStoresWhenProviderCreationFails(t *testing
 	if !errors.Is(err, providerErr) {
 		t.Fatalf("OpenSelection error = %v, want provider failure", err)
 	}
-	assertCredentialStoresClosed(t, stores)
+	assertCredentialReadersClosed(t, readers)
 }
 
 func TestOpenSelectionClosesCredentialStoresWhenAdapterCreationFails(t *testing.T) {
@@ -588,22 +580,18 @@ func TestOpenSelectionClosesCredentialStoresWhenAdapterCreationFails(t *testing.
 	profile.LLM.Credential = config.CredentialLocation{Store: "test-memory", Name: "codereview/llm"}
 	cfg.Profiles["home"] = profile
 	adapterErr := errors.New("adapter creation failed")
-	var stores []*credstore.Store
+	var readers []credentials.Reader
 
 	_, err := OpenSelection(context.Background(), SelectionOpenRequest{
 		Config:  cfg,
 		Profile: profile,
 		Dependencies: Dependencies{
 			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-				if store := rawStoreFromReader(tokenStore); store != nil {
-					stores = append(stores, store)
-				}
+				readers = append(readers, tokenStore)
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
 			NewAdapter: func(_ config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
-				if raw := rawStoreFromReader(store); raw != nil {
-					stores = append(stores, raw)
-				}
+				readers = append(readers, store)
 				return nil, adapterErr
 			},
 		},
@@ -611,7 +599,7 @@ func TestOpenSelectionClosesCredentialStoresWhenAdapterCreationFails(t *testing.
 	if !errors.Is(err, adapterErr) {
 		t.Fatalf("OpenSelection error = %v, want adapter failure", err)
 	}
-	assertCredentialStoresClosed(t, stores)
+	assertCredentialReadersClosed(t, readers)
 }
 
 func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
@@ -835,27 +823,19 @@ func testDependencies(t *testing.T, provider GitProviderFactory, identity Postin
 	}
 }
 
-func rawStoreFromReader(reader credentials.Reader) *credstore.Store {
-	withRawStore, ok := reader.(interface{ RawStore() *credstore.Store })
-	if !ok {
-		return nil
-	}
-	return withRawStore.RawStore()
-}
-
-func assertCredentialStoresClosed(t *testing.T, stores []*credstore.Store) {
+func assertCredentialReadersClosed(t *testing.T, readers []credentials.Reader) {
 	t.Helper()
-	if len(stores) == 0 {
-		t.Fatal("no credential stores captured")
+	if len(readers) == 0 {
+		t.Fatal("no credential readers captured")
 	}
-	seen := map[*credstore.Store]bool{}
-	for _, store := range stores {
-		if store == nil || seen[store] {
+	seen := map[credentials.Reader]bool{}
+	for _, reader := range readers {
+		if reader == nil || seen[reader] {
 			continue
 		}
-		seen[store] = true
-		if _, err := store.Get("home", credentials.GitTokenKey); !errors.Is(err, credstore.ErrStoreClosed) {
-			t.Fatalf("credential store Get after Open failure = %v, want ErrStoreClosed", err)
+		seen[reader] = true
+		if _, err := reader.Get("home", credentials.GitTokenKey); !errors.Is(err, credstore.ErrStoreClosed) {
+			t.Fatalf("credential reader Get after Open failure = %v, want ErrStoreClosed", err)
 		}
 	}
 }

@@ -65,18 +65,12 @@ type Reader interface {
 	Get(profile, key string) (string, error)
 }
 
-// RawStoreReader exposes the underlying credstore for lifecycle ownership and tests.
-type RawStoreReader interface {
-	Reader
-	RawStore() *credstore.Store
-}
-
 type storeReader struct {
 	store *credstore.Store
 }
 
 // NewStoreReader adapts a credstore-backed implementation to the read-only seam.
-func NewStoreReader(store *credstore.Store) RawStoreReader {
+func NewStoreReader(store *credstore.Store) Reader {
 	if store == nil {
 		return nil
 	}
@@ -85,10 +79,6 @@ func NewStoreReader(store *credstore.Store) RawStoreReader {
 
 func (r storeReader) Get(profile, key string) (string, error) {
 	return r.store.Get(profile, key)
-}
-
-func (r storeReader) RawStore() *credstore.Store {
-	return r.store
 }
 
 // CachedReader marks readers that scope reads through a per-store cache.
@@ -112,7 +102,6 @@ type inflightRead struct {
 type cachingReader struct {
 	storeID string
 	base    Reader
-	raw     *credstore.Store
 
 	mu       sync.Mutex
 	cached   map[readCacheKey]string
@@ -130,18 +119,11 @@ func NewCachingReader(storeID string, base Reader) CachedReader {
 		cached:   map[readCacheKey]string{},
 		inflight: map[readCacheKey]*inflightRead{},
 	}
-	if raw, ok := base.(RawStoreReader); ok {
-		reader.raw = raw.RawStore()
-	}
 	return reader
 }
 
 func (r *cachingReader) CacheStoreID() string {
 	return r.storeID
-}
-
-func (r *cachingReader) RawStore() *credstore.Store {
-	return r.raw
 }
 
 func (r *cachingReader) Get(profile, key string) (string, error) {

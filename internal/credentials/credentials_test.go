@@ -80,9 +80,6 @@ func TestStoreReaderDelegatesToCredstore(t *testing.T) {
 	if got != "token" {
 		t.Fatalf("Get = %q, want token", got)
 	}
-	if reader.RawStore() != store {
-		t.Fatal("RawStore() did not return original store")
-	}
 }
 
 func TestCachingReaderReadThroughBehavior(t *testing.T) {
