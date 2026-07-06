@@ -15,7 +15,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -23,11 +22,19 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 )
 
 var (
-	openSelectionRuntime = reviewcmd.OpenSelectionRuntime
-	runSelectionOnly     = pipeline.SelectionOnly
+	openSelectionRuntime = func(ctx context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile) (reviewruntime.SelectionRuntime, error) {
+		return reviewruntime.OpenSelection(ctx, reviewruntime.SelectionOpenRequest{
+			Config:             cfg,
+			Profile:            profile,
+			Backend:            backend,
+			BackendFlagChanged: backendFlagChanged,
+		})
+	}
+	runSelectionOnly = pipeline.SelectionOnly
 )
 
 type selectFlags struct {
@@ -40,7 +47,7 @@ type selectFlags struct {
 type selectionRuntimeState struct {
 	profileName string
 	profile     config.Profile
-	runtime     reviewcmd.SelectionRuntime
+	runtime     reviewruntime.SelectionRuntime
 	err         error
 }
 

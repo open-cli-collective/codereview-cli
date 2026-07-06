@@ -1,4 +1,4 @@
-package reviewcmd
+package reviewruntime
 
 import (
 	"path/filepath"

@@ -11,13 +11,13 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/threadanalysis"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
@@ -26,8 +26,8 @@ import (
 func TestRespondDryRunCallsResponderAndRendersText(t *testing.T) {
 	responder := &fakeResponder{result: testThreadRespondResult(ledger.OutcomeDryRun)}
 	var cleanupCalled bool
-	cmd, out := newTestCommand(t, testConfig(), func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ cmdruntime.Options) (cmdruntime.Runtime, error) {
-		return cmdruntime.Runtime{
+	cmd, out := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+		return reviewruntime.Runtime{
 			Responder:       responder,
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 			Cleanup:         func() { cleanupCalled = true },
@@ -84,9 +84,9 @@ func TestRespondRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
 			},
 		},
 	}
-	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ cmdruntime.Options) (cmdruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
 		t.Fatal("runtime factory should not be called for ambiguous repository routes")
-		return cmdruntime.Runtime{}, nil
+		return reviewruntime.Runtime{}, nil
 	})
 
 	err := root.Execute(cmd, []string{"respond", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
@@ -272,16 +272,16 @@ func (r *fakeResponder) Respond(_ context.Context, req threadrespond.Request) (t
 	return r.result, nil
 }
 
-func fakeFactory(responder *fakeResponder) cmdruntime.Factory {
-	return func(_ *cobra.Command, _ *root.Options, _ config.File, _ config.Profile, _ cmdruntime.Options) (cmdruntime.Runtime, error) {
-		return cmdruntime.Runtime{
+func fakeFactory(responder *fakeResponder) RuntimeFactory {
+	return func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+		return reviewruntime.Runtime{
 			Responder:       responder,
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 		}, nil
 	}
 }
 
-func newTestCommand(t *testing.T, cfg config.File, factory cmdruntime.Factory) (*cobra.Command, *bytes.Buffer) {
+func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cobra.Command, *bytes.Buffer) {
 	t.Helper()
 	path := t.TempDir() + "/config.yml"
 	if err := config.Save(path, cfg); err != nil {
@@ -384,4 +384,4 @@ func testThreadRespondResult(outcome ledger.Outcome) threadrespond.Result {
 	}
 }
 
-var _ cmdruntime.ResponseRunner = (*fakeResponder)(nil)
+var _ reviewruntime.ResponseRunner = (*fakeResponder)(nil)

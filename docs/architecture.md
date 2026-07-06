@@ -82,22 +82,24 @@ dependencies, call typed helpers, render through the view layer, and return
 errors. Feature command packages should not import sibling feature command
 packages; shared command infrastructure belongs in packages such as
 `internal/cmd/cmderr`, `internal/cmd/cmdruntime`, `internal/cmd/exitcode`, and
-`internal/cmd/root`.
+`internal/cmd/root`. Review lifecycle runtime assembly belongs in
+`internal/reviewruntime`; `cr review` and `cr respond` command packages should
+construct `reviewruntime.OpenRequest` values and keep CLI-only validation,
+rendering, and error mapping at the command boundary.
 
 Application packages outside `internal/cmd` and `internal/view` should not
 depend on Cobra, command packages, or view packages. Those packages should
 return typed domain data so command and view code remain replaceable shells.
 `internal/architecture/command_boundaries_test.go` enforces these dependency
-directions with explicit allowances for known pre-workstream debt.
+directions with narrow allowances for command-tree integration tests.
 
 Review behavior should be protected through named acceptance harnesses rather
-than cloned broad assertions. The command-level harness verifies
-`cr review <PR> --dry-run --json --quiet` composition from config, profile,
-flags, runtime setup, and JSON/stderr rendering. The pipeline harnesses verify
-real dry-run review composition and durable-task resume with fake provider,
-fake LLM, real ledger, temp state layout, deterministic IDs, dossier context,
-workbench preparation, planned actions, prompt inputs, and preserved task
-metadata.
+than cloned broad assertions. The command-level harness verifies `cr review`
+composition from config, profile, flags, runtime setup, and rendering. The
+pipeline harnesses verify review composition and durable-task resume with fake
+provider, fake LLM, real ledger, temp state layout, deterministic IDs, dossier
+context, workbench preparation, planned actions, prompt inputs, and preserved
+task metadata.
 
 ## Inline Thread Lifecycle
 

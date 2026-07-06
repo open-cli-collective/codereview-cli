@@ -35,8 +35,8 @@ documentation after the real code/test change has landed.
 
 ## Non-Negotiable Invariants
 
-- Every workstream PR must preserve the ability of the locally built `cr` binary
-  to review the PR under review.
+- Every workstream PR must preserve the ability of the locally built `cr`
+  binary to run the normal live review loop against the PR under review.
 - Issue-specific acceptance criteria must prove the behavior touched by that
   issue, not merely prove that `cr review` still starts.
 - Provider writes must flow through planned actions, the ledger, and outbox.
@@ -77,18 +77,28 @@ considered complete:
 - Which architectural boundary now exists?
 - What code or test guard prevents that boundary from leaking again?
 
-For every workstream PR, also build the branch's local binary and use it to
-review the PR in the normal workflow. For issues that do not primarily touch
-review behavior, this is a dogfood guardrail, not the issue's only acceptance
-criterion.
+For every workstream PR, also build the branch's local binary and use it in the
+normal live review workflow. Use a stable named session for repeated review
+passes, for example:
+
+```bash
+go build -o ./bin/cr ./cmd/cr
+CR_BIN="$PWD/bin/cr"
+CR_PR=$(gh pr view "$PR_NUMBER" --json url -q '.url')
+CR_SESSION="issue-${ISSUE_NUMBER}-pr-${PR_NUMBER}"
+"$CR_BIN" review "$CR_PR" --session "$CR_SESSION"
+```
+
+For issues that do not primarily touch review behavior, this is a dogfood
+guardrail, not the issue's only acceptance criterion.
 
 ## Harness And Guardrails
 
 The first child issue established named executable surfaces for future
 workstream changes:
 
-- `internal/cmd/reviewcmd`: command-level `cr review <PR> --dry-run --json --quiet`
-  composition from config/profile/flags through rendering.
+- `internal/cmd/reviewcmd`: command-level `cr review` composition from
+  config/profile/flags through rendering.
 - `internal/pipeline`: real dry-run review composition with fake provider,
   fake LLM, real ledger, temp state layout, deterministic IDs, dossier,
   workbench, planned actions, and durable-task resume behavior.
