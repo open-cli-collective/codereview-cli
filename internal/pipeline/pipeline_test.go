@@ -4544,11 +4544,12 @@ func TestLiveNamedSessionLegacyStoredRowStartsFreshAndReturnsDurableCandidate(t 
 	req.SessionName = "daily"
 	run := allocateLiveRun(t, store, provider, req, "run-live-named-legacy")
 	stored := namedSessionForRequest(req, "stored-session")
+	stored.Adapter = "codex_cli"
 	stored.DurableSession = false
 	if err := store.UpsertNamedSession(ctx, stored); err != nil {
 		t.Fatalf("UpsertNamedSession: %v", err)
 	}
-	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter := &llm.FakeAdapter{NameValue: "codex_cli", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("selection-new", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
@@ -4582,6 +4583,56 @@ func TestLiveNamedSessionLegacyStoredRowStartsFreshAndReturnsDurableCandidate(t 
 	}
 	if !strings.Contains(warnings.String(), "predates durable resume support") {
 		t.Fatalf("warnings = %q, want legacy durability warning", warnings.String())
+	}
+}
+
+func TestLiveNamedSessionLegacyNonCodexRowStillResumes(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	run := allocateLiveRun(t, store, provider, req, "run-live-named-legacy-claude")
+	stored := namedSessionForRequest(req, "stored-session")
+	stored.Adapter = "claude_cli"
+	stored.DurableSession = false
+	if err := store.UpsertNamedSession(ctx, stored); err != nil {
+		t.Fatalf("UpsertNamedSession: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "claude_cli", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-new", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	var warnings bytes.Buffer
+
+	result, err := liveForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		NamedSessions:   store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Warnings:        &warnings,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 2 || resumes[0].SessionID != "stored-session" || resumes[1].SessionID != "selection-new" {
+		t.Fatalf("resumes = %#v, want stored-session then selection-new", resumes)
+	}
+	if len(adapter.Requests()) != 1 || !strings.Contains(adapter.Requests()[0].Prompt, `"schema": "findings"`) {
+		t.Fatalf("fresh starts = %#v, want reviewer only", adapter.Requests())
+	}
+	if result.NamedSessionCandidate == nil || result.NamedSessionCandidate.ProviderSessionID != "rollup-new" || !result.NamedSessionCandidate.DurableSession {
+		t.Fatalf("candidate = %#v, want durable rollup-new candidate", result.NamedSessionCandidate)
+	}
+	if strings.Contains(warnings.String(), "predates durable resume support") {
+		t.Fatalf("warnings = %q, do not want legacy durability warning", warnings.String())
 	}
 }
 

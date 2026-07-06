@@ -1617,7 +1617,7 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		state.stored = &stored
 		state.createdAt = stored.CreatedAt
 		if state.supportsResume {
-			if stored.DurableSession {
+			if stored.DurableSession || !requiresDurableSessionMarker(active.Adapter) {
 				state.currentProviderSessionID = stored.ProviderSessionID
 			} else {
 				opts.emitWarning(fmt.Sprintf("session %q stored adapter session predates durable resume support; starting fresh", active.Name))
@@ -1629,6 +1629,10 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		opts.emitWarning(fmt.Sprintf("session %q adapter %q does not support resume; starting fresh", active.Name, opts.Adapter.Name()))
 	}
 	return state, nil
+}
+
+func requiresDurableSessionMarker(adapter string) bool {
+	return strings.TrimSpace(adapter) == "codex_cli"
 }
 
 func (s *namedSessionState) resumeID() string {

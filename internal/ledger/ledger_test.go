@@ -96,6 +96,41 @@ func TestOpenMigratesVersion1LedgerAndPreservesPlannedActions(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesVersion2LedgerAndPreservesLegacyNamedSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	createdAt := time.Date(2026, 5, 30, 12, 3, 0, 0, time.UTC)
+	lastUsedAt := time.Date(2026, 5, 30, 12, 4, 0, 0, time.UTC)
+	seedVersion2LedgerWithNamedSession(t, path, createdAt, lastUsedAt)
+
+	store := openStoreAt(t, path)
+	if version := queryInt(t, store.db, "SELECT schema_version FROM meta"); version != SchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", version, SchemaVersion)
+	}
+	if !columnExists(t, store.db, "named_sessions", "durable_session") {
+		t.Fatal("named_sessions.durable_session column does not exist")
+	}
+
+	got, err := store.GetNamedSession(context.Background(), "daily")
+	if err != nil {
+		t.Fatalf("GetNamedSession: %v", err)
+	}
+	want := NamedSession{
+		Name:              "daily",
+		Profile:           "home",
+		Provider:          "anthropic",
+		Adapter:           "claude_cli",
+		Model:             "claude-sonnet-4-6",
+		Host:              "github.com",
+		ProviderSessionID: "provider-session-1",
+		DurableSession:    false,
+		CreatedAt:         createdAt,
+		LastUsedAt:        lastUsedAt,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetNamedSession after migration = %#v, want %#v", got, want)
+	}
+}
+
 func TestForeignKeyCascadeDeletesRunChildren(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
@@ -1295,6 +1330,34 @@ required, attempts, attempted_at, posted_at, upstream_id, error
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"action-1", "run-1", PlannedActionRollupComment.String(), nil, nil, encodeTime(plannedAt), `{"body":"hello"}`,
 		PlannedActionPending.String(), 1, 0, nil, nil, nil, nil,
+	)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+}
+
+func seedVersion2LedgerWithNamedSession(t *testing.T, path string, createdAt, lastUsedAt time.Time) {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	for _, statement := range schemaStatements {
+		execSQL(t, db, statement)
+	}
+	execSQL(t, db, `ALTER TABLE planned_actions ADD COLUMN failure_class TEXT`)
+	execSQL(t, db, `CREATE TABLE meta (
+schema_version INTEGER NOT NULL,
+created_at     TEXT NOT NULL
+)`)
+	execSQL(t, db, "CREATE UNIQUE INDEX meta_single_row ON meta ((1))")
+	execSQL(t, db, "INSERT INTO meta (schema_version, created_at) VALUES (?, ?)", 2, encodeTime(time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)))
+	execSQL(t, db, `INSERT INTO named_sessions (
+name, profile, provider, adapter, model, host, provider_session_id, created_at, last_used_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"daily", "home", "anthropic", "claude_cli", "claude-sonnet-4-6", "github.com",
+		"provider-session-1", encodeTime(createdAt), encodeTime(lastUsedAt),
 	)
 	if err := db.Close(); err != nil {
 		t.Fatalf("close seed db: %v", err)
