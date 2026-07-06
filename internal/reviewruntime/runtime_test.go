@@ -207,6 +207,106 @@ func TestOpenAbortsWhenOpinionatedReviewAuthorityProbeIsCanceled(t *testing.T) {
 	}
 }
 
+func TestOpenClosesCredentialStoresWhenRuntimeLayoutFails(t *testing.T) {
+	cfg := testConfig()
+	layoutErr := errors.New("layout failed")
+	var stores []*credstore.Store
+	deps := testDependencies(t,
+		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			if store, ok := tokenStore.(*credstore.Store); ok {
+				stores = append(stores, store)
+			}
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		nil,
+		nil,
+	)
+	deps.RuntimeLayout = func() (statepaths.Layout, error) {
+		return statepaths.Layout{}, layoutErr
+	}
+
+	_, err := Open(context.Background(), OpenRequest{
+		Config:       cfg,
+		Profile:      cfg.Profiles["home"],
+		PRRef:        testPRRef(),
+		Dependencies: deps,
+	})
+	if !errors.Is(err, layoutErr) {
+		t.Fatalf("Open error = %v, want layout failure", err)
+	}
+	assertCredentialStoresClosed(t, stores)
+}
+
+func TestOpenClosesCredentialStoresWhenLedgerOpenFails(t *testing.T) {
+	cfg := testConfig()
+	ledgerErr := errors.New("ledger open failed")
+	var stores []*credstore.Store
+	deps := testDependencies(t,
+		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			if store, ok := tokenStore.(*credstore.Store); ok {
+				stores = append(stores, store)
+			}
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		nil,
+		nil,
+	)
+	deps.OpenLedger = func(context.Context, string) (*ledger.Store, error) {
+		return nil, ledgerErr
+	}
+
+	_, err := Open(context.Background(), OpenRequest{
+		Config:       cfg,
+		Profile:      cfg.Profiles["home"],
+		PRRef:        testPRRef(),
+		Dependencies: deps,
+	})
+	if !errors.Is(err, ledgerErr) {
+		t.Fatalf("Open error = %v, want ledger failure", err)
+	}
+	assertCredentialStoresClosed(t, stores)
+}
+
+func TestOpenClosesCredentialStoresAndLedgerWhenLimiterCreationFails(t *testing.T) {
+	cfg := testConfig()
+	limiterErr := errors.New("limiter failed")
+	var stores []*credstore.Store
+	var ledgerStore *ledger.Store
+	deps := testDependencies(t,
+		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			if store, ok := tokenStore.(*credstore.Store); ok {
+				stores = append(stores, store)
+			}
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		nil,
+		nil,
+	)
+	deps.OpenLedger = func(ctx context.Context, _ string) (*ledger.Store, error) {
+		store, err := ledger.Open(ctx, filepath.Join(t.TempDir(), "ledger.db"))
+		if err != nil {
+			return nil, err
+		}
+		ledgerStore = store
+		return store, nil
+	}
+	deps.NewLimiter = func() (outbox.Limiter, error) {
+		return nil, limiterErr
+	}
+
+	_, err := Open(context.Background(), OpenRequest{
+		Config:       cfg,
+		Profile:      cfg.Profiles["home"],
+		PRRef:        testPRRef(),
+		Dependencies: deps,
+	})
+	if !errors.Is(err, limiterErr) {
+		t.Fatalf("Open error = %v, want limiter failure", err)
+	}
+	assertCredentialStoresClosed(t, stores)
+	assertLedgerClosed(t, ledgerStore)
+}
+
 func TestOpenPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T) {
 	tests := []struct {
 		name               string
@@ -486,6 +586,33 @@ func testDependencies(t *testing.T, provider GitProviderFactory, identity Postin
 		NewLimiter: func() (outbox.Limiter, error) {
 			return noopLimiter{}, nil
 		},
+	}
+}
+
+func assertCredentialStoresClosed(t *testing.T, stores []*credstore.Store) {
+	t.Helper()
+	if len(stores) == 0 {
+		t.Fatal("no credential stores captured")
+	}
+	seen := map[*credstore.Store]bool{}
+	for _, store := range stores {
+		if store == nil || seen[store] {
+			continue
+		}
+		seen[store] = true
+		if _, err := store.Get("home", credentials.GitTokenKey); !errors.Is(err, credstore.ErrStoreClosed) {
+			t.Fatalf("credential store Get after Open failure = %v, want ErrStoreClosed", err)
+		}
+	}
+}
+
+func assertLedgerClosed(t *testing.T, store *ledger.Store) {
+	t.Helper()
+	if store == nil {
+		t.Fatal("ledger store was not opened")
+	}
+	if err := store.DeleteNamedSession(context.Background(), "daily"); !errors.Is(err, ledger.ErrClosed) {
+		t.Fatalf("ledger DeleteNamedSession after Open failure = %v, want ErrClosed", err)
 	}
 }
 
