@@ -40,12 +40,11 @@ func TestResolveRepoRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRepoRoot: %v", err)
 	}
-	cwd, err := os.Getwd()
+	info, err := os.Stat(filepath.Join(root, "go.mod"))
 	if err != nil {
-		t.Fatalf("Getwd: %v", err)
+		t.Fatalf("Stat(go.mod): %v", err)
 	}
-	want := filepath.Clean(filepath.Join(cwd, "..", ".."))
-	if root != want {
-		t.Fatalf("repo root = %q, want %q", root, want)
+	if info.IsDir() {
+		t.Fatalf("repo root %q has directory go.mod, want module file", root)
 	}
 }

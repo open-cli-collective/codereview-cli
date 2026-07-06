@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -844,17 +845,8 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 			if got.ResolveRepoRoot == nil {
 				t.Fatal("runtime ResolveRepoRoot is nil")
 			}
-			repoRoot, err := got.ResolveRepoRoot(context.Background())
-			if err != nil {
-				t.Fatalf("ResolveRepoRoot: %v", err)
-			}
-			cwd, err := os.Getwd()
-			if err != nil {
-				t.Fatalf("Getwd: %v", err)
-			}
-			wantRoot := filepath.Clean(filepath.Join(cwd, "..", "..", ".."))
-			if repoRoot != wantRoot {
-				t.Fatalf("repo root = %q, want %q", repoRoot, wantRoot)
+			if gotPtr, wantPtr := reflect.ValueOf(got.ResolveRepoRoot).Pointer(), reflect.ValueOf(appruntime.ResolveRepoRoot).Pointer(); gotPtr != wantPtr {
+				t.Fatalf("ResolveRepoRoot pointer = %x, want %x", gotPtr, wantPtr)
 			}
 		})
 	}

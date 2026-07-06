@@ -115,13 +115,24 @@ func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
 	modulePath := "github.com/open-cli-collective/codereview-cli"
 	cmdRuntimeDir := filepath.Join(repoRoot, "internal", "cmd", "cmdruntime")
-	forbiddenImports := map[string]string{
-		modulePath + "/internal/datalifecycle": "retention policy mapping belongs in internal/appruntime",
-		modulePath + "/internal/reporoot":      "repo-root resolution belongs in internal/appruntime",
+	allowedImports := map[string]bool{
+		"errors": true,
+		"fmt":    true,
+
+		"github.com/open-cli-collective/cli-common/credstore": true,
+
+		modulePath + "/internal/agents":       true,
+		modulePath + "/internal/cmd/cmderr":   true,
+		modulePath + "/internal/cmd/exitcode": true,
+		modulePath + "/internal/cmd/root":     true,
+		modulePath + "/internal/config":       true,
+		modulePath + "/internal/credentials":  true,
+		modulePath + "/internal/gitprovider":  true,
 	}
-	forbiddenFuncs := map[string]string{
-		"RetentionPolicyFromConfig": "retention policy mapping belongs in internal/appruntime",
-		"ResolveRepoRoot":           "repo-root resolution belongs in internal/appruntime",
+	allowedExports := map[string]bool{
+		"ConfigPath":            true,
+		"MapRunError":           true,
+		"MissingResponderError": true,
 	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(cmdRuntimeDir, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -140,9 +151,9 @@ func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if reason, forbidden := forbiddenImports[importPath]; forbidden {
+			if !allowedImports[importPath] {
 				pos := fset.Position(spec.Pos())
-				t.Fatalf("%s imports %s; %s", pos, importPath, reason)
+				t.Fatalf("%s imports %s; cmdruntime should stay limited to command-layer config/error helpers", pos, importPath)
 			}
 		}
 		for _, decl := range parsed.Decls {
@@ -150,9 +161,9 @@ func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
 			if !ok || fn.Name == nil {
 				continue
 			}
-			if reason, forbidden := forbiddenFuncs[fn.Name.Name]; forbidden {
+			if ast.IsExported(fn.Name.Name) && !allowedExports[fn.Name.Name] {
 				pos := fset.Position(fn.Pos())
-				t.Fatalf("%s defines %s; %s", pos, fn.Name.Name, reason)
+				t.Fatalf("%s exports %s; cmdruntime should only export command-layer config/error helpers", pos, fn.Name.Name)
 			}
 		}
 		return nil
