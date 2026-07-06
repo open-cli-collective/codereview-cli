@@ -1230,10 +1230,6 @@ type fakeRunner struct {
 	respondRequests []threadrespond.Request
 }
 
-type noopLimiter struct{}
-
-func (noopLimiter) Wait(context.Context, string) error { return nil }
-
 func (r *fakeRunner) DryRun(_ context.Context, req pipeline.Request) (pipeline.Result, error) {
 	r.requests = append(r.requests, req)
 	if r.err != nil {
