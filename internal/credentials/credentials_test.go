@@ -4,6 +4,8 @@ import (
 	"errors"
 	"reflect"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,6 +62,166 @@ func TestStoreOptionsBackendPrecedenceMetadata(t *testing.T) {
 	}
 }
 
+func TestStoreReaderDelegatesToCredstore(t *testing.T) {
+	store, err := OpenStore("memory", true, config.File{})
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+	if err := store.Set("work", GitTokenKey, "token"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	reader := NewStoreReader(store)
+	got, err := reader.Get("work", GitTokenKey)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "token" {
+		t.Fatalf("Get = %q, want token", got)
+	}
+	if reader.RawStore() != store {
+		t.Fatal("RawStore() did not return original store")
+	}
+}
+
+func TestCachingReaderReadThroughBehavior(t *testing.T) {
+	base := &fakeReader{values: map[string]map[string]string{
+		"work": {GitTokenKey: "token"},
+	}}
+	reader := NewCachingReader("store-a", base)
+
+	got, err := reader.Get("work", GitTokenKey)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if got != "token" {
+		t.Fatalf("first Get = %q, want token", got)
+	}
+	got, err = reader.Get("work", GitTokenKey)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if got != "token" {
+		t.Fatalf("second Get = %q, want token", got)
+	}
+	if base.calls["work/"+GitTokenKey] != 1 {
+		t.Fatalf("underlying calls = %d, want 1", base.calls["work/"+GitTokenKey])
+	}
+}
+
+func TestCachingReaderDistinctStoresDoNotCollide(t *testing.T) {
+	baseA := &fakeReader{values: map[string]map[string]string{
+		"shared": {GitTokenKey: "token-a"},
+	}}
+	baseB := &fakeReader{values: map[string]map[string]string{
+		"shared": {GitTokenKey: "token-b"},
+	}}
+	readerA := NewCachingReader("store-a", baseA)
+	readerB := NewCachingReader("store-b", baseB)
+
+	gotA, err := readerA.Get("shared", GitTokenKey)
+	if err != nil {
+		t.Fatalf("readerA Get: %v", err)
+	}
+	gotB, err := readerB.Get("shared", GitTokenKey)
+	if err != nil {
+		t.Fatalf("readerB Get: %v", err)
+	}
+	if gotA != "token-a" || gotB != "token-b" {
+		t.Fatalf("values = (%q,%q), want distinct store values", gotA, gotB)
+	}
+	if baseA.calls["shared/"+GitTokenKey] != 1 || baseB.calls["shared/"+GitTokenKey] != 1 {
+		t.Fatalf("underlying calls = (%d,%d), want one call per store", baseA.calls["shared/"+GitTokenKey], baseB.calls["shared/"+GitTokenKey])
+	}
+}
+
+func TestCachingReaderConcurrentReadsShareOneUnderlyingRead(t *testing.T) {
+	base := &fakeReader{
+		values: map[string]map[string]string{
+			"work": {GitTokenKey: "token"},
+		},
+		blockFirst: true,
+		release:    make(chan struct{}),
+	}
+	reader := NewCachingReader("store-a", base)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 8)
+	values := make(chan string, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			value, err := reader.Get("work", GitTokenKey)
+			if err != nil {
+				errs <- err
+				return
+			}
+			values <- value
+		}()
+	}
+	close(base.release)
+	wg.Wait()
+	close(errs)
+	close(values)
+
+	for err := range errs {
+		t.Fatalf("concurrent Get error: %v", err)
+	}
+	for value := range values {
+		if value != "token" {
+			t.Fatalf("concurrent Get = %q, want token", value)
+		}
+	}
+	if base.calls["work/"+GitTokenKey] != 1 {
+		t.Fatalf("underlying calls = %d, want 1", base.calls["work/"+GitTokenKey])
+	}
+}
+
+func TestCachingReaderDoesNotCacheErrorsOrMisses(t *testing.T) {
+	base := &fakeReader{
+		errors: map[string][]error{
+			"work/" + GitTokenKey:     {errors.New("backend locked"), nil},
+			"work/" + OpenAIAPIKeyKey: {credstore.ErrNotFound, nil},
+		},
+		values: map[string]map[string]string{
+			"work": {
+				GitTokenKey:      "token",
+				OpenAIAPIKeyKey: "openai-token",
+			},
+		},
+	}
+	reader := NewCachingReader("store-a", base)
+
+	if _, err := reader.Get("work", GitTokenKey); err == nil || !strings.Contains(err.Error(), "backend locked") {
+		t.Fatalf("first Get error = %v, want backend locked", err)
+	}
+	got, err := reader.Get("work", GitTokenKey)
+	if err != nil {
+		t.Fatalf("second Get after error: %v", err)
+	}
+	if got != "token" {
+		t.Fatalf("second Get = %q, want token", got)
+	}
+	if _, err := reader.Get("work", OpenAIAPIKeyKey); !errors.Is(err, credstore.ErrNotFound) {
+		t.Fatalf("miss error = %v, want ErrNotFound", err)
+	}
+	got, err = reader.Get("work", OpenAIAPIKeyKey)
+	if err != nil {
+		t.Fatalf("second Get after miss: %v", err)
+	}
+	if got != "openai-token" {
+		t.Fatalf("second miss recovery Get = %q, want openai-token", got)
+	}
+	if base.calls["work/"+GitTokenKey] != 2 {
+		t.Fatalf("git token calls = %d, want 2", base.calls["work/"+GitTokenKey])
+	}
+	if base.calls["work/"+OpenAIAPIKeyKey] != 2 {
+		t.Fatalf("openai token calls = %d, want 2", base.calls["work/"+OpenAIAPIKeyKey])
+	}
+}
+
 func TestStoreOptionsRejectsLegacyOnePasswordBackends(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -84,6 +246,47 @@ func TestStoreOptionsRejectsLegacyOnePasswordBackends(t *testing.T) {
 			t.Fatalf("StoreOptions env error = %v, want ErrInvalidBackendSelection", err)
 		}
 	})
+}
+
+type fakeReader struct {
+	mu         sync.Mutex
+	values     map[string]map[string]string
+	errors     map[string][]error
+	calls      map[string]int
+	blockFirst bool
+	release    chan struct{}
+}
+
+func (r *fakeReader) Get(profile, key string) (string, error) {
+	r.mu.Lock()
+	if r.calls == nil {
+		r.calls = map[string]int{}
+	}
+	fullKey := profile + "/" + key
+	r.calls[fullKey]++
+	callNumber := r.calls[fullKey]
+	release := r.release
+	blockFirst := r.blockFirst
+	if queue := r.errors[fullKey]; len(queue) > 0 {
+		err := queue[0]
+		r.errors[fullKey] = queue[1:]
+		if err != nil {
+			r.mu.Unlock()
+			if blockFirst && callNumber == 1 && release != nil {
+				<-release
+			}
+			return "", err
+		}
+	}
+	value := ""
+	if values := r.values[profile]; values != nil {
+		value = values[key]
+	}
+	r.mu.Unlock()
+	if blockFirst && callNumber == 1 && release != nil {
+		<-release
+	}
+	return value, nil
 }
 
 func TestStoreOptionsInvalidBackendFlag(t *testing.T) {

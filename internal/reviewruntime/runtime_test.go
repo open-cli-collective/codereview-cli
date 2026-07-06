@@ -37,13 +37,13 @@ func TestOpenCanInstantiateWithoutCobra(t *testing.T) {
 		Profile: cfg.Profiles["home"],
 		PRRef:   testPRRef(),
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
-			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
 				return identity, nil
 			},
-			func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 			},
 		),
@@ -81,20 +81,20 @@ func TestOpenUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 		Profile: profile,
 		PRRef:   testPRRef(),
 		Dependencies: testDependencies(t,
-			func(git config.GitConfig, _ githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(git config.GitConfig, _ credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				providerCalls = append(providerCalls, git)
 				if git.CredentialRef == "codereview/home-reviewer" {
 					return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
 				}
 				return repoProvider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
 			},
-			func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
+			func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ credentials.Reader, _ config.Profile) (gitprovider.Identity, error) {
 				if provider != reviewerProvider || credential.Token != "reviewer-token" {
 					t.Fatalf("identity resolver provider=%#v credential=%#v, want reviewer provider/token", provider, credential)
 				}
 				return identity, nil
 			},
-			func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 			},
 		),
@@ -159,13 +159,13 @@ func TestOpenWarnsAndContinuesWhenOpinionatedReviewAuthorityIsIneligible(t *test
 		RequireOpinionatedReviewAuthority: true,
 		Warnings:                          &stderr,
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
-			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
 				return identity, nil
 			},
-			func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 			},
 		),
@@ -191,13 +191,13 @@ func TestOpenAbortsWhenOpinionatedReviewAuthorityProbeIsCanceled(t *testing.T) {
 		PRRef:                             testPRRef(),
 		RequireOpinionatedReviewAuthority: true,
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
-			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
 				return gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, nil
 			},
-			func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 			},
 		),
@@ -212,8 +212,8 @@ func TestOpenClosesCredentialStoresWhenRuntimeLayoutFails(t *testing.T) {
 	layoutErr := errors.New("layout failed")
 	var stores []*credstore.Store
 	deps := testDependencies(t,
-		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-			if store, ok := tokenStore.(*credstore.Store); ok {
+		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			if store := rawStoreFromReader(tokenStore); store != nil {
 				stores = append(stores, store)
 			}
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
@@ -242,8 +242,8 @@ func TestOpenClosesCredentialStoresWhenLedgerOpenFails(t *testing.T) {
 	ledgerErr := errors.New("ledger open failed")
 	var stores []*credstore.Store
 	deps := testDependencies(t,
-		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-			if store, ok := tokenStore.(*credstore.Store); ok {
+		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			if store := rawStoreFromReader(tokenStore); store != nil {
 				stores = append(stores, store)
 			}
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
@@ -273,8 +273,8 @@ func TestOpenClosesCredentialStoresAndLedgerWhenLimiterCreationFails(t *testing.
 	var stores []*credstore.Store
 	var ledgerStore *ledger.Store
 	deps := testDependencies(t,
-		func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-			if store, ok := tokenStore.(*credstore.Store); ok {
+		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			if store := rawStoreFromReader(tokenStore); store != nil {
 				stores = append(stores, store)
 			}
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
@@ -362,15 +362,15 @@ func TestOpenPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T) {
 				Profile: cfg.Profiles["home"],
 				PRRef:   testPRRef(),
 				Dependencies: testDependencies(t,
-					func(_ config.GitConfig, _ githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+					func(_ config.GitConfig, _ credentials.Reader, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 						gotLookup = opts.InstallationLookup
 						gotInstallationID = opts.InstallationID
 						return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token"}, nil
 					},
-					func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+					func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
 						return gitprovider.Identity{Login: "cr-reviewer[bot]", ID: "12345"}, nil
 					},
-					func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+					func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 						return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 					},
 				),
@@ -448,12 +448,12 @@ func TestOpenSelectionPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T)
 				Profile: cfg.Profiles["home"],
 				PRRef:   testPRRef(),
 				Dependencies: Dependencies{
-					NewGitProvider: func(_ config.GitConfig, _ githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+					NewGitProvider: func(_ config.GitConfig, _ credentials.Reader, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 						gotLookup = opts.InstallationLookup
 						gotInstallationID = opts.InstallationID
 						return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token"}, nil
 					},
-					NewAdapter: func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+					NewAdapter: func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 						return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 					},
 				},
@@ -535,7 +535,7 @@ func TestOpenSelectionUsesNamedSecretsProfileStoreWithoutBackendOverride(t *test
 		Config:  cfg,
 		Profile: cfg.Profiles["home"],
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				token, err := tokenStore.Get("home", credentials.GitTokenKey)
 				if err != nil {
 					t.Fatalf("tokenStore.Get(home, git_token): %v", err)
@@ -545,7 +545,7 @@ func TestOpenSelectionUsesNamedSecretsProfileStoreWithoutBackendOverride(t *test
 				}
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: token}, nil
 			},
-			NewAdapter: func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			NewAdapter: func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 			},
 		},
@@ -567,8 +567,8 @@ func TestOpenSelectionClosesCredentialStoresWhenProviderCreationFails(t *testing
 		Config:  cfg,
 		Profile: cfg.Profiles["home"],
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-				if store, ok := tokenStore.(*credstore.Store); ok {
+			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				if store := rawStoreFromReader(tokenStore); store != nil {
 					stores = append(stores, store)
 				}
 				return nil, gitprovider.Credential{}, providerErr
@@ -594,14 +594,16 @@ func TestOpenSelectionClosesCredentialStoresWhenAdapterCreationFails(t *testing.
 		Config:  cfg,
 		Profile: profile,
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, tokenStore githubprovider.TokenStore, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-				if store, ok := tokenStore.(*credstore.Store); ok {
+			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				if store := rawStoreFromReader(tokenStore); store != nil {
 					stores = append(stores, store)
 				}
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
-			NewAdapter: func(_ config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {
-				stores = append(stores, store)
+			NewAdapter: func(_ config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
+				if raw := rawStoreFromReader(store); raw != nil {
+					stores = append(stores, raw)
+				}
 				return nil, adapterErr
 			},
 		},
@@ -610,6 +612,113 @@ func TestOpenSelectionClosesCredentialStoresWhenAdapterCreationFails(t *testing.
 		t.Fatalf("OpenSelection error = %v, want adapter failure", err)
 	}
 	assertCredentialStoresClosed(t, stores)
+}
+
+func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.LLM.Provider = config.LLMProviderOpenAI
+	profile.LLM.Auth = config.LLMAuthAPIKey
+	profile.LLM.Adapter = config.LLMAdapterOpenAIAPI
+	profile.LLM.Credential = config.CredentialLocation{Store: "test-memory", Name: "codereview/home"}
+	profile.LLM.CredentialRef = "codereview/home"
+	cfg.Profiles["home"] = profile
+
+	var providerReader credentials.Reader
+	var postingReader credentials.Reader
+	var adapterReader credentials.Reader
+	runtime, err := Open(context.Background(), OpenRequest{
+		Config:  cfg,
+		Profile: profile,
+		PRRef:   testPRRef(),
+		Dependencies: testDependencies(t,
+			func(git config.GitConfig, reader credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				if git.CredentialRef == "codereview/home" && providerReader == nil {
+					providerReader = reader
+				} else {
+					postingReader = reader
+				}
+				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+			},
+			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
+				return gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, nil
+			},
+			func(_ config.LLMConfig, reader credentials.Reader) (llm.Adapter, error) {
+				adapterReader = reader
+				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+			},
+		),
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer runtime.Cleanup()
+	runner, ok := runtime.Runner.(reviewRunner)
+	if !ok {
+		t.Fatalf("Runner type = %T, want reviewRunner", runtime.Runner)
+	}
+	if got := runner.pipeline.Adapter.Name(); got != "fake-llm" {
+		t.Fatalf("adapter name = %q, want fake-llm", got)
+	}
+	if _, ok := providerReader.(credentials.CachedReader); !ok {
+		t.Fatalf("provider reader type = %T, want CachedReader", providerReader)
+	}
+	postingCached, ok := postingReader.(credentials.CachedReader)
+	if !ok {
+		t.Fatalf("posting reader type = %T, want CachedReader", postingReader)
+	}
+	adapterCached, ok := adapterReader.(credentials.CachedReader)
+	if !ok {
+		t.Fatalf("adapter reader type = %T, want CachedReader", adapterReader)
+	}
+	providerCached := providerReader.(credentials.CachedReader)
+	if providerCached.CacheStoreID() != postingCached.CacheStoreID() || providerCached.CacheStoreID() != adapterCached.CacheStoreID() {
+		t.Fatalf("cache store ids differ: provider=%q posting=%q adapter=%q", providerCached.CacheStoreID(), postingCached.CacheStoreID(), adapterCached.CacheStoreID())
+	}
+}
+
+func TestOpenSelectionInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.LLM.Provider = config.LLMProviderOpenAI
+	profile.LLM.Auth = config.LLMAuthAPIKey
+	profile.LLM.Adapter = config.LLMAdapterOpenAIAPI
+	profile.LLM.Credential = config.CredentialLocation{Store: "test-memory", Name: "codereview/home"}
+	profile.LLM.CredentialRef = "codereview/home"
+	cfg.Profiles["home"] = profile
+
+	var providerReader credentials.Reader
+	var adapterReader credentials.Reader
+	runtime, err := OpenSelection(context.Background(), SelectionOpenRequest{
+		Config:  cfg,
+		Profile: profile,
+		PRRef:   testPRRef(),
+		Dependencies: Dependencies{
+			NewGitProvider: func(_ config.GitConfig, reader credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				providerReader = reader
+				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+			},
+			NewAdapter: func(_ config.LLMConfig, reader credentials.Reader) (llm.Adapter, error) {
+				adapterReader = reader
+				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenSelection: %v", err)
+	}
+	defer runtime.Cleanup()
+	if _, ok := providerReader.(credentials.CachedReader); !ok {
+		t.Fatalf("provider reader type = %T, want CachedReader", providerReader)
+	}
+	providerCached := providerReader.(credentials.CachedReader)
+	adapterCached, ok := adapterReader.(credentials.CachedReader)
+	if !ok {
+		t.Fatalf("adapter reader type = %T, want CachedReader", adapterReader)
+	}
+	if providerCached.CacheStoreID() != adapterCached.CacheStoreID() {
+		t.Fatalf("cache store ids differ: provider=%q adapter=%q", providerCached.CacheStoreID(), adapterCached.CacheStoreID())
+	}
 }
 
 func TestOpenLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
@@ -636,13 +745,13 @@ func TestOpenLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 		Profile: profile,
 		PRRef:   ref,
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
-			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
 				return identity, nil
 			},
-			func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+			func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 				adapterCalls++
 				return nil, errors.New("adapter should not initialize for approved fast path")
 			},
@@ -695,17 +804,17 @@ func TestNewAdapterCreatesSupportedCLIAdapters(t *testing.T) {
 func testDependencies(t *testing.T, provider GitProviderFactory, identity PostingIdentityResolver, adapter AdapterFactory) Dependencies {
 	t.Helper()
 	if provider == nil {
-		provider = func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		provider = func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		}
 	}
 	if identity == nil {
-		identity = func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error) {
+		identity = func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
 			return gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, nil
 		}
 	}
 	if adapter == nil {
-		adapter = func(config.LLMConfig, *credstore.Store) (llm.Adapter, error) {
+		adapter = func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 		}
 	}
@@ -724,6 +833,14 @@ func testDependencies(t *testing.T, provider GitProviderFactory, identity Postin
 			return noopLimiter{}, nil
 		},
 	}
+}
+
+func rawStoreFromReader(reader credentials.Reader) *credstore.Store {
+	withRawStore, ok := reader.(interface{ RawStore() *credstore.Store })
+	if !ok {
+		return nil
+	}
+	return withRawStore.RawStore()
 }
 
 func assertCredentialStoresClosed(t *testing.T, stores []*credstore.Store) {

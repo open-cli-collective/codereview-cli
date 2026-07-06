@@ -87,13 +87,13 @@ type SelectionOpenRequest struct {
 
 // GitProviderFactory builds a provider and the credential used to authenticate
 // it.
-type GitProviderFactory func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error)
+type GitProviderFactory func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error)
 
 // PostingIdentityResolver resolves the identity used for live review writes.
-type PostingIdentityResolver func(context.Context, gitprovider.GitProvider, gitprovider.Credential, githubprovider.TokenStore, config.Profile) (gitprovider.Identity, error)
+type PostingIdentityResolver func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error)
 
 // AdapterFactory builds an LLM adapter from normalized config and credentials.
-type AdapterFactory func(config.LLMConfig, *credstore.Store) (llm.Adapter, error)
+type AdapterFactory func(config.LLMConfig, credentials.Reader) (llm.Adapter, error)
 
 // Dependencies contains fakeable assembly seams. Nil fields use production
 // defaults.
@@ -108,7 +108,7 @@ type Dependencies struct {
 
 func (d Dependencies) withDefaults() Dependencies {
 	if d.NewGitProvider == nil {
-		d.NewGitProvider = func(git config.GitConfig, store githubprovider.TokenStore, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		d.NewGitProvider = func(git config.GitConfig, store credentials.Reader, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			return githubprovider.NewFromGitConfig(git, store, opts)
 		}
 	}
@@ -139,7 +139,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 	profile := normalizeRuntimeProfile(req.Profile)
 	stores := newRuntimeCredentialStores(req.Config, req.Backend, req.BackendFlagChanged)
 	cleanup := stores.Close
-	repoProviderStore, err := stores.Open(profile.Git.Credential)
+	_, repoProviderStore, err := stores.Open(profile.Git.Credential)
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
@@ -151,7 +151,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 	}
 	repoProvider = withProgressProvider(req.Progress, command, repoProvider)
 	postingGit := gitConfigForReviewerAuth(profile)
-	postingProviderStore, err := stores.Open(postingGit.Credential)
+	_, postingProviderStore, err := stores.Open(postingGit.Credential)
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
@@ -195,7 +195,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		adapterStore := repoProviderStore
 		if profile.LLM.Auth == config.LLMAuthAPIKey {
 			var err error
-			adapterStore, err = stores.Open(profile.LLM.Credential)
+			_, adapterStore, err = stores.Open(profile.LLM.Credential)
 			if err != nil {
 				return nil, err
 			}
@@ -280,7 +280,12 @@ type runtimeCredentialStores struct {
 	cfg                config.File
 	backend            string
 	backendFlagChanged bool
-	stores             map[string]*credstore.Store
+	stores             map[string]runtimeCredentialStore
+}
+
+type runtimeCredentialStore struct {
+	store  *credstore.Store
+	reader credentials.Reader
 }
 
 func newRuntimeCredentialStores(cfg config.File, backend string, backendFlagChanged bool) *runtimeCredentialStores {
@@ -288,29 +293,30 @@ func newRuntimeCredentialStores(cfg config.File, backend string, backendFlagChan
 		cfg:                cfg,
 		backend:            backend,
 		backendFlagChanged: backendFlagChanged,
-		stores:             map[string]*credstore.Store{},
+		stores:             map[string]runtimeCredentialStore{},
 	}
 }
 
-func (s *runtimeCredentialStores) Open(location config.CredentialLocation) (*credstore.Store, error) {
+func (s *runtimeCredentialStores) Open(location config.CredentialLocation) (*credstore.Store, credentials.Reader, error) {
 	resolved, err := credentials.ResolveCredentialStoreForLocation(s.cfg, location)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if store := s.stores[resolved.ID]; store != nil {
-		return store, nil
+	if opened, ok := s.stores[resolved.ID]; ok {
+		return opened.store, opened.reader, nil
 	}
 	store, err := credentials.OpenResolvedStore(s.backend, s.backendFlagChanged, s.cfg, resolved)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s.stores[resolved.ID] = store
-	return store, nil
+	reader := credentials.NewCachingReader(resolved.ID, credentials.NewStoreReader(store))
+	s.stores[resolved.ID] = runtimeCredentialStore{store: store, reader: reader}
+	return store, reader, nil
 }
 
 func (s *runtimeCredentialStores) Close() {
-	for id, store := range s.stores {
-		_ = store.Close()
+	for id, opened := range s.stores {
+		_ = opened.store.Close()
 		delete(s.stores, id)
 	}
 }
@@ -587,11 +593,11 @@ func (p livePlanner) Live(ctx context.Context, req pipeline.Request, run ledger.
 	return pipeline.Live(ctx, p.opts, req, run)
 }
 
-func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ githubprovider.TokenStore, _ config.Profile) (gitprovider.Identity, error) {
+func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ credentials.Reader, _ config.Profile) (gitprovider.Identity, error) {
 	return provider.WhoAmI(ctx, credential)
 }
 
-func newAdapter(llmConfig config.LLMConfig, store *credstore.Store) (llm.Adapter, error) {
+func newAdapter(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
 	switch llmConfig.Adapter {
 	case config.LLMAdapterClaudeCLI:
 		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil

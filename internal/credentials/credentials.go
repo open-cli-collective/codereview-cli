@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
@@ -58,6 +59,126 @@ var (
 	// ErrInvalidBackendSelection means a CLI/config backend selector was malformed.
 	ErrInvalidBackendSelection = errors.New("credentials: invalid backend selection")
 )
+
+// Reader is the minimal read-only credential surface used by runtime consumers.
+type Reader interface {
+	Get(profile, key string) (string, error)
+}
+
+// RawStoreReader exposes the underlying credstore for lifecycle ownership and tests.
+type RawStoreReader interface {
+	Reader
+	RawStore() *credstore.Store
+}
+
+type storeReader struct {
+	store *credstore.Store
+}
+
+// NewStoreReader adapts a credstore-backed implementation to the read-only seam.
+func NewStoreReader(store *credstore.Store) RawStoreReader {
+	if store == nil {
+		return nil
+	}
+	return storeReader{store: store}
+}
+
+func (r storeReader) Get(profile, key string) (string, error) {
+	return r.store.Get(profile, key)
+}
+
+func (r storeReader) RawStore() *credstore.Store {
+	return r.store
+}
+
+// CachedReader marks readers that scope reads through a per-store cache.
+type CachedReader interface {
+	Reader
+	CacheStoreID() string
+}
+
+type readCacheKey struct {
+	storeID string
+	profile string
+	key     string
+}
+
+type inflightRead struct {
+	ready chan struct{}
+	value string
+	err   error
+}
+
+type cachingReader struct {
+	storeID string
+	base    Reader
+	raw     *credstore.Store
+
+	mu       sync.Mutex
+	cached   map[readCacheKey]string
+	inflight map[readCacheKey]*inflightRead
+}
+
+// NewCachingReader wraps one underlying reader with a process-local read-through cache.
+func NewCachingReader(storeID string, base Reader) CachedReader {
+	if base == nil {
+		return nil
+	}
+	reader := &cachingReader{
+		storeID:  strings.TrimSpace(storeID),
+		base:     base,
+		cached:   map[readCacheKey]string{},
+		inflight: map[readCacheKey]*inflightRead{},
+	}
+	if raw, ok := base.(RawStoreReader); ok {
+		reader.raw = raw.RawStore()
+	}
+	return reader
+}
+
+func (r *cachingReader) CacheStoreID() string {
+	return r.storeID
+}
+
+func (r *cachingReader) RawStore() *credstore.Store {
+	return r.raw
+}
+
+func (r *cachingReader) Get(profile, key string) (string, error) {
+	cacheKey := readCacheKey{
+		storeID: r.storeID,
+		profile: profile,
+		key:     key,
+	}
+
+	r.mu.Lock()
+	if value, ok := r.cached[cacheKey]; ok {
+		r.mu.Unlock()
+		return value, nil
+	}
+	if read, ok := r.inflight[cacheKey]; ok {
+		r.mu.Unlock()
+		<-read.ready
+		return read.value, read.err
+	}
+	read := &inflightRead{ready: make(chan struct{})}
+	r.inflight[cacheKey] = read
+	r.mu.Unlock()
+
+	value, err := r.base.Get(profile, key)
+
+	r.mu.Lock()
+	delete(r.inflight, cacheKey)
+	if err == nil {
+		r.cached[cacheKey] = value
+	}
+	read.value = value
+	read.err = err
+	close(read.ready)
+	r.mu.Unlock()
+
+	return value, err
+}
 
 // AllowedKeys is cr's keyring write allowlist.
 func AllowedKeys() []string {

@@ -217,7 +217,7 @@ type githubResolver struct {
 	backendFlagChanged bool
 	options            githubprovider.Options
 	warnings           io.Writer
-	NewClient          func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
+	NewClient          func(config.GitConfig, credentials.Reader, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
 }
 
 // ResolveIdentity resolves one configured GitHub identity.
@@ -248,7 +248,7 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 		}
 		return gitprovider.Identity{Login: cached}, nil
 	}
-	client, credential, err := newClient(git, store, options)
+	client, credential, err := newClient(git, credentials.NewStoreReader(store), options)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}

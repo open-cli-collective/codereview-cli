@@ -280,6 +280,34 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 	}
 }
 
+func TestAPIAdapterFromConfigUsesCachingReaderAcrossRepeatedReads(t *testing.T) {
+	base := &apiTestStore{values: map[string]map[string]string{
+		"work-llm": {credentials.OpenAIAPIKeyKey: "cached-openai-key"},
+	}}
+	reader := credentials.NewCachingReader("llm-store", base)
+	cfg := config.LLMConfig{
+		Provider:      config.LLMProviderOpenAI,
+		Auth:          config.LLMAuthAPIKey,
+		Adapter:       config.LLMAdapterOpenAIAPI,
+		CredentialRef: "codereview/work-llm",
+	}
+
+	first, err := NewAPIAdapterFromConfig(cfg, reader, APIOptions{BaseURL: "https://example.invalid"})
+	if err != nil {
+		t.Fatalf("first NewAPIAdapterFromConfig: %v", err)
+	}
+	second, err := NewAPIAdapterFromConfig(cfg, reader, APIOptions{BaseURL: "https://example.invalid"})
+	if err != nil {
+		t.Fatalf("second NewAPIAdapterFromConfig: %v", err)
+	}
+	if first.apiKey != "cached-openai-key" || second.apiKey != "cached-openai-key" {
+		t.Fatalf("api keys = (%q,%q), want cached-openai-key", first.apiKey, second.apiKey)
+	}
+	if len(base.calls) != 1 || base.calls[0] != "work-llm/"+credentials.OpenAIAPIKeyKey {
+		t.Fatalf("store calls = %#v, want one cached read", base.calls)
+	}
+}
+
 func TestAPIAdapterFailures(t *testing.T) {
 	if _, err := NewAnthropicAPIAdapter(APIOptions{APIKey: "key", MaxTokens: -1}); !errors.Is(err, ErrAPIAdapterConfig) {
 		t.Fatalf("negative max tokens error = %v, want ErrAPIAdapterConfig", err)

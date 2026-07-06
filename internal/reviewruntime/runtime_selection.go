@@ -28,7 +28,7 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 	profile = normalizeRuntimeProfile(profile)
 	stores := newRuntimeCredentialStores(cfg, backend, backendFlagChanged)
 	cleanup := stores.Close
-	gitStore, err := stores.Open(profile.Git.Credential)
+	_, gitStore, err := stores.Open(profile.Git.Credential)
 	if err != nil {
 		cleanup()
 		return SelectionRuntime{}, err
@@ -42,7 +42,7 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 	}
 	adapterStore := gitStore
 	if profile.LLM.Auth == config.LLMAuthAPIKey {
-		adapterStore, err = stores.Open(profile.LLM.Credential)
+		_, adapterStore, err = stores.Open(profile.LLM.Credential)
 		if err != nil {
 			cleanup()
 			return SelectionRuntime{}, err

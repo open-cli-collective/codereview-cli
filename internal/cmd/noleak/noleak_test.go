@@ -843,7 +843,7 @@ func (h *auditHarness) openCredentialStore() (*credstore.Store, error) {
 	})
 }
 
-func (h *auditHarness) newGitHubProvider(git config.GitConfig, store githubprovider.TokenStore, lookup *githubprovider.InstallationLookup) (*githubprovider.Client, gitprovider.Credential, error) {
+func (h *auditHarness) newGitHubProvider(git config.GitConfig, store credentials.Reader, lookup *githubprovider.InstallationLookup) (*githubprovider.Client, gitprovider.Credential, error) {
 	opts := githubprovider.Options{
 		BaseURL:            h.githubURL,
 		GraphQLURL:         h.graphQLURL,
