@@ -42,6 +42,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -760,37 +761,38 @@ func (h *auditHarness) providerFactory(_ *cobra.Command, _ *root.Options, _ conf
 	return provider, func() { _ = store.Close() }, nil
 }
 
-func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Options, _ config.File, profile config.Profile, runtimeOpts reviewcmd.RuntimeOptions) (reviewcmd.Runtime, error) {
+func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	profile := runtimeOpts.Profile
 	store, err := h.openCredentialStore()
 	if err != nil {
-		return reviewcmd.Runtime{}, err
+		return reviewruntime.Runtime{}, err
 	}
 	cleanup := func() { _ = store.Close() }
 	readProvider, _, err := h.newGitHubProvider(profile.Git, store, installationLookup(runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
-		return reviewcmd.Runtime{}, err
+		return reviewruntime.Runtime{}, err
 	}
 	postingGit := gitConfigForReviewerAuth(profile)
 	postingProvider, credential, err := h.newGitHubProvider(postingGit, store, installationLookup(runtimeOpts.PRRef))
 	if err != nil {
 		cleanup()
-		return reviewcmd.Runtime{}, err
+		return reviewruntime.Runtime{}, err
 	}
-	postingIdentity, err := postingProvider.WhoAmI(cmd.Context(), credential)
+	postingIdentity, err := postingProvider.WhoAmI(ctx, credential)
 	if err != nil {
 		cleanup()
-		return reviewcmd.Runtime{}, err
+		return reviewruntime.Runtime{}, err
 	}
 	adapter, err := llm.NewAPIAdapterFromConfig(profile.LLM, store, llm.APIOptions{BaseURL: h.llmURL})
 	if err != nil {
 		cleanup()
-		return reviewcmd.Runtime{}, err
+		return reviewruntime.Runtime{}, err
 	}
-	ledgerStore, err := ledger.Open(cmd.Context(), h.layout.LedgerDB())
+	ledgerStore, err := ledger.Open(ctx, h.layout.LedgerDB())
 	if err != nil {
 		cleanup()
-		return reviewcmd.Runtime{}, err
+		return reviewruntime.Runtime{}, err
 	}
 	cleanup = func() {
 		_ = ledgerStore.Close()
@@ -802,7 +804,7 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 		Store:               ledgerStore,
 		NamedSessions:       ledgerStore,
 		Layout:              h.layout,
-		Warnings:            opts.Stderr,
+		Warnings:            runtimeOpts.Warnings,
 		Now:                 func() time.Time { return h.now },
 		Retention:           runtimeOpts.Retention,
 		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
@@ -822,12 +824,12 @@ func (h *auditHarness) reviewRuntimeFactory(cmd *cobra.Command, opts *root.Optio
 			Layout:                  h.layout,
 			Now:                     func() time.Time { return h.now },
 			StaleHeartbeatThreshold: 10 * time.Minute,
-			Warnings:                opts.Stderr,
+			Warnings:                runtimeOpts.Warnings,
 			Retention:               runtimeOpts.Retention,
 			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
 		},
 	}
-	return reviewcmd.Runtime{
+	return reviewruntime.Runtime{
 		Runner:          runner,
 		PostingIdentity: postingIdentity,
 		Cleanup:         cleanup,
@@ -1269,7 +1271,7 @@ type noLeakLimiter struct{}
 
 func (noLeakLimiter) Wait(context.Context, string) error { return nil }
 
-var _ reviewcmd.Runner = realReviewRunner{}
+var _ reviewruntime.Runner = realReviewRunner{}
 
 func saveConfigOnly(t *testing.T, h *auditHarness) {
 	t.Helper()

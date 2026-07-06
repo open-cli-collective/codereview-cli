@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 )
 
 func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
@@ -25,12 +27,14 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 
 	var (
 		runtimeCalls int
+		runtimeRefs  []gitprovider.PRRef
 		requests     []pipeline.SelectionRequest
 	)
 	withBenchmarkSelectSeams(t,
-		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
+		func(_ context.Context, _ string, _ bool, _ config.File, _ config.Profile, ref gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
 			runtimeCalls++
-			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+			runtimeRefs = append(runtimeRefs, ref)
+			return reviewruntime.SelectionRuntime{Cleanup: func() {}}, nil
 		},
 		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
 			requests = append(requests, req)
@@ -95,6 +99,9 @@ func TestSelectExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	if runtimeCalls != 1 {
 		t.Fatalf("runtime calls = %d, want one shared runtime for the selected profile", runtimeCalls)
 	}
+	if len(runtimeRefs) != 1 || runtimeRefs[0].Owner != "open-cli-collective" || runtimeRefs[0].Repo != "codereview-cli" {
+		t.Fatalf("runtime refs = %#v, want PR repository context", runtimeRefs)
+	}
 	if got.SelectedCandidates[0].Stages.Selection.Prompt == nil || got.SelectedCandidates[0].Stages.Selection.Prompt.ContentSHA256 == "" {
 		t.Fatalf("selection prompt summary = %#v, want prompt provenance hash", got.SelectedCandidates[0].Stages.Selection.Prompt)
 	}
@@ -147,8 +154,8 @@ func TestSelectProgressWritesToStderr(t *testing.T) {
 	resultsDir := filepath.Join(t.TempDir(), "results")
 
 	withBenchmarkSelectSeams(t,
-		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
-			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
+			return reviewruntime.SelectionRuntime{Cleanup: func() {}}, nil
 		},
 		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
 			artifacts := pipeline.ArtifactPathsFromDir(req.ArtifactDir)
@@ -194,8 +201,8 @@ func TestSelectRecordsRuntimeFailuresWithoutInvokingSelection(t *testing.T) {
 
 	var selectionCalls int
 	withBenchmarkSelectSeams(t,
-		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
-			return reviewcmd.SelectionRuntime{}, fmt.Errorf("runtime open failed")
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
+			return reviewruntime.SelectionRuntime{}, fmt.Errorf("runtime open failed")
 		},
 		func(context.Context, pipeline.Options, pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
 			selectionCalls++
@@ -228,6 +235,39 @@ func TestSelectRecordsRuntimeFailuresWithoutInvokingSelection(t *testing.T) {
 	}
 }
 
+func TestSelectMapsRuntimeOpenErrorsAtCommandBoundary(t *testing.T) {
+	cmd, out := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
+			return reviewruntime.SelectionRuntime{}, fmt.Errorf("runtime open failed: %w", config.ErrInvalid)
+		},
+		func(context.Context, pipeline.Options, pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			t.Fatal("selection should not run after runtime open failure")
+			return pipeline.SelectionResult{}, nil
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--candidate", "first",
+		"--case", "case_one",
+		"--results-dir", filepath.Join(t.TempDir(), "results"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var got benchmarkSuiteSummary
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if got.Runs[0].ExitCode != exitcode.UsageError || got.Runs[0].FailureClassification != failureUsageError {
+		t.Fatalf("run exit/class = %d/%s, want usage/%s", got.Runs[0].ExitCode, got.Runs[0].FailureClassification, failureUsageError)
+	}
+	assertFileContains(t, got.Runs[0].Artifacts.Stderr, "runtime open failed")
+}
+
 func TestSelectSupportsCandidateWithoutReviewerStage(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	body := `
@@ -247,8 +287,8 @@ cases:
 	suitePath := writeBenchmarkSuite(t, body)
 
 	withBenchmarkSelectSeams(t,
-		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
-			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
+			return reviewruntime.SelectionRuntime{Cleanup: func() {}}, nil
 		},
 		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
 			if len(req.AgentDirs) != 0 {
@@ -287,8 +327,8 @@ func TestSelectRecipePreservesOptionalSynthesisStage(t *testing.T) {
 	suitePath := writeBenchmarkSuite(t, withBenchmarkSynthesisStage(validBenchmarkSuite(t), synthesisPrompt))
 
 	withBenchmarkSelectSeams(t,
-		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
-			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
+			return reviewruntime.SelectionRuntime{Cleanup: func() {}}, nil
 		},
 		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
 			return pipeline.SelectionResult{
@@ -335,8 +375,8 @@ func TestSelectRecordsPerRunFailureWhenSelectorExceedsCandidateMaxAgents(t *test
 	suitePath := writeBenchmarkSuite(t, body)
 
 	withBenchmarkSelectSeams(t,
-		func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error) {
-			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
+			return reviewruntime.SelectionRuntime{Cleanup: func() {}}, nil
 		},
 		func(_ context.Context, opts pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
 			if opts.MaxAgents != 1 {
@@ -403,12 +443,12 @@ cases:
 	var selectionCalls int
 
 	withBenchmarkSelectSeams(t,
-		func(_ context.Context, _ string, _ bool, _ config.File, profile config.Profile) (reviewcmd.SelectionRuntime, error) {
+		func(_ context.Context, _ string, _ bool, _ config.File, profile config.Profile, _ gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
 			if len(profile.AgentSources) != 0 {
 				t.Fatalf("profile = %#v, expected test config profile", profile)
 			}
 			_ = os.Remove(promptPath)
-			return reviewcmd.SelectionRuntime{Cleanup: func() {}}, nil
+			return reviewruntime.SelectionRuntime{Cleanup: func() {}}, nil
 		},
 		func(context.Context, pipeline.Options, pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
 			selectionCalls++
@@ -440,7 +480,7 @@ cases:
 
 func withBenchmarkSelectSeams(
 	t *testing.T,
-	runtimeOpener func(context.Context, string, bool, config.File, config.Profile) (reviewcmd.SelectionRuntime, error),
+	runtimeOpener func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (reviewruntime.SelectionRuntime, error),
 	runner func(context.Context, pipeline.Options, pipeline.SelectionRequest) (pipeline.SelectionResult, error),
 ) {
 	t.Helper()

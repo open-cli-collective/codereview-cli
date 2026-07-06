@@ -21,17 +21,43 @@ func TestCommandPackagesDoNotAddFeatureCommandImports(t *testing.T) {
 		modulePath + "/internal/cmd/exitcode":   true,
 		modulePath + "/internal/cmd/root":       true,
 	}
-	knownDebt := map[string]string{
-		"internal/cmd/benchmarkcmd/select.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd":   "#423 moves reusable app contracts out of reviewcmd",
-		"internal/cmd/respondcmd/respondcmd.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd": "#422 extracts command-independent runtime assembly",
+
+	checkCommandFeatureImports(t, repoRoot, cmdRoot, modulePath, sharedCommandImports, false, nil)
+}
+
+func TestCommandPackageTestsKeepFeatureCommandImportsAtCommandTreeBoundaries(t *testing.T) {
+	repoRoot := repoRootFromTest(t)
+	modulePath := "github.com/open-cli-collective/codereview-cli"
+	cmdRoot := filepath.Join(repoRoot, "internal", "cmd")
+	sharedCommandImports := map[string]bool{
+		modulePath + "/internal/cmd/cmderr":     true,
+		modulePath + "/internal/cmd/cmdruntime": true,
+		modulePath + "/internal/cmd/exitcode":   true,
+		modulePath + "/internal/cmd/root":       true,
+	}
+	allowedTestImports := map[string]string{
+		"internal/cmd/mecmd/mecmd_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd":       "me command integration registers support commands",
+		"internal/cmd/mecmd/mecmd_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd":   "me command integration registers support commands",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/agentscmd":     "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd":     "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd": "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/datacmd":       "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/mecmd":         "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd":     "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/sessionscmd":   "command-surface noleak harness registers the command tree",
 	}
 
+	checkCommandFeatureImports(t, repoRoot, cmdRoot, modulePath, sharedCommandImports, true, allowedTestImports)
+}
+
+func checkCommandFeatureImports(t *testing.T, repoRoot, cmdRoot, modulePath string, sharedCommandImports map[string]bool, testFiles bool, allowedImports map[string]string) {
+	t.Helper()
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(cmdRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") != testFiles {
 			return nil
 		}
 		parsed, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
@@ -51,8 +77,8 @@ func TestCommandPackagesDoNotAddFeatureCommandImports(t *testing.T) {
 				continue
 			}
 			key := rel + " -> " + importPath
-			if reason, ok := knownDebt[key]; ok {
-				t.Logf("allowed known command coupling debt: %s (%s)", key, reason)
+			if reason, ok := allowedImports[key]; ok {
+				t.Logf("allowed command-tree integration import: %s (%s)", key, reason)
 				continue
 			}
 			pos := fset.Position(spec.Pos())

@@ -1,4 +1,4 @@
-// Package cmdruntime contains shared command runtime contracts.
+// Package cmdruntime contains shared command runtime helpers.
 package cmdruntime
 
 import (
@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
-	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
@@ -18,45 +17,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
-	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
-	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 )
-
-// Runner executes the configured review pipeline.
-type Runner interface {
-	DryRun(context.Context, pipeline.Request) (pipeline.Result, error)
-	Live(context.Context, pipeline.Request, reviewrun.Flags) (reviewrun.Result, error)
-}
-
-// ResponseRunner executes response-only thread lifecycle runs.
-type ResponseRunner interface {
-	Respond(context.Context, threadrespond.Request) (threadrespond.Result, error)
-}
-
-// Runtime contains per-command dependencies that need cleanup after a run.
-type Runtime struct {
-	Runner          Runner
-	Responder       ResponseRunner
-	PostingIdentity gitprovider.Identity
-	Cleanup         func()
-}
-
-// Options carries command flags that affect runtime construction.
-type Options struct {
-	MaxAgents                         int
-	MaxConcurrency                    int
-	PRRef                             gitprovider.PRRef
-	RequireOpinionatedReviewAuthority bool
-	Retention                         datalifecycle.RetentionPolicy
-	RetentionManualOnly               bool
-	ResolveRepoRoot                   func(context.Context) (string, error)
-	GitCommand                        func(context.Context, string, ...string) ([]byte, error)
-}
-
-// Factory builds the concrete runtime used by review lifecycle commands.
-type Factory func(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile, runtimeOpts Options) (Runtime, error)
 
 // ConfigPath resolves the active config path from root options.
 func ConfigPath(opts *root.Options) (string, error) {
