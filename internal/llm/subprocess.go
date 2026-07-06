@@ -451,7 +451,6 @@ func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string) []string {
 	args := append([]string(nil), prefix...)
 	args = append(args,
 		"--json",
-		"--ephemeral",
 		"--skip-git-repo-check",
 		"--ignore-user-config",
 		"--ignore-rules",
@@ -461,11 +460,11 @@ func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string) []string {
 	return args
 }
 
+// Codex exec resume requires a persisted rollout; ephemeral sessions cannot resume.
 func subprocessCodexResumeArgs() []string {
 	return []string{
 		"exec", "resume",
 		"--json",
-		"--ephemeral",
 		"--skip-git-repo-check",
 		"--ignore-user-config",
 		"--ignore-rules",
@@ -550,7 +549,7 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 				}
 			}
 		}
-		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
+		for _, flag := range []string{"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
 			if !containsFlag(checkedArgs, flag) {
 				return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 			}

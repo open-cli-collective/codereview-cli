@@ -662,7 +662,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if len(record.AdapterArgs) == 0 || record.AdapterArgs[0] != "exec" {
 			t.Fatalf("args = %#v, want codex exec", record.AdapterArgs)
 		}
-		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
+		for _, flag := range []string{"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
 			if !containsFlag(record.AdapterArgs, flag) {
 				t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 			}
@@ -699,7 +699,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if len(record.AdapterArgs) < 2 || record.AdapterArgs[0] != "exec" || record.AdapterArgs[1] != "resume" {
 			t.Fatalf("args = %#v, want codex exec resume", record.AdapterArgs)
 		}
-		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
+		for _, flag := range []string{"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
 			if !containsFlag(record.AdapterArgs, flag) {
 				t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 			}
