@@ -21,7 +21,7 @@ import (
 
 const (
 	// SchemaVersion is the current ledger schema version.
-	SchemaVersion = 2
+	SchemaVersion = 3
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
 	writeQueueSize     = 64
@@ -335,6 +335,7 @@ type NamedSession struct {
 	Model             string
 	Host              string
 	ProviderSessionID string
+	DurableSession    bool
 	CreatedAt         time.Time
 	LastUsedAt        time.Time
 }
@@ -463,6 +464,14 @@ func migrations() []dbmig.Migration {
 			Name:    "planned action failure class",
 			Up: func(ctx context.Context, tx *sql.Tx) error {
 				_, err := tx.ExecContext(ctx, `ALTER TABLE planned_actions ADD COLUMN failure_class TEXT`)
+				return err
+			},
+		},
+		{
+			Version: 3,
+			Name:    "named session durability marker",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				_, err := tx.ExecContext(ctx, `ALTER TABLE named_sessions ADD COLUMN durable_session INTEGER NOT NULL DEFAULT 0`)
 				return err
 			},
 		},
@@ -1103,8 +1112,8 @@ func (s *Store) UpsertNamedSession(ctx context.Context, session NamedSession) er
 	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
 		_, err := db.ExecContext(ctx, `
 INSERT INTO named_sessions (
-	name, profile, provider, adapter, model, host, provider_session_id, created_at, last_used_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	name, profile, provider, adapter, model, host, provider_session_id, durable_session, created_at, last_used_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(name) DO UPDATE SET
 	profile = excluded.profile,
 	provider = excluded.provider,
@@ -1112,9 +1121,10 @@ ON CONFLICT(name) DO UPDATE SET
 	model = excluded.model,
 	host = excluded.host,
 	provider_session_id = excluded.provider_session_id,
+	durable_session = excluded.durable_session,
 	last_used_at = excluded.last_used_at`,
 			session.Name, session.Profile, session.Provider, session.Adapter, session.Model, session.Host,
-			session.ProviderSessionID, encodeTime(session.CreatedAt), encodeTime(session.LastUsedAt),
+			session.ProviderSessionID, boolToInt(session.DurableSession), encodeTime(session.CreatedAt), encodeTime(session.LastUsedAt),
 		)
 		if err != nil {
 			return fmt.Errorf("ledger: upsert named session: %w", err)
@@ -1132,7 +1142,7 @@ func (s *Store) GetNamedSession(ctx context.Context, name string) (NamedSession,
 		return NamedSession{}, err
 	}
 	row := s.db.QueryRowContext(ctx, `
-SELECT name, profile, provider, adapter, model, host, provider_session_id, created_at, last_used_at
+SELECT name, profile, provider, adapter, model, host, provider_session_id, durable_session, created_at, last_used_at
 FROM named_sessions WHERE name = ?`, name)
 	session, err := scanNamedSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1150,7 +1160,7 @@ func (s *Store) ListNamedSessions(ctx context.Context) ([]NamedSession, error) {
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT name, profile, provider, adapter, model, host, provider_session_id, created_at, last_used_at
+SELECT name, profile, provider, adapter, model, host, provider_session_id, durable_session, created_at, last_used_at
 FROM named_sessions ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: list named sessions: %w", err)
@@ -1333,6 +1343,13 @@ func validateNamedSession(session NamedSession) error {
 		return invalidInput("last_used_at", "")
 	}
 	return nil
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
@@ -1536,9 +1553,10 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 func scanNamedSession(row interface{ Scan(...any) error }) (NamedSession, error) {
 	var session NamedSession
 	var createdAt, lastUsedAt string
+	var durableSession int
 	if err := row.Scan(
 		&session.Name, &session.Profile, &session.Provider, &session.Adapter, &session.Model, &session.Host,
-		&session.ProviderSessionID, &createdAt, &lastUsedAt,
+		&session.ProviderSessionID, &durableSession, &createdAt, &lastUsedAt,
 	); err != nil {
 		return NamedSession{}, err
 	}
@@ -1550,6 +1568,7 @@ func scanNamedSession(row interface{ Scan(...any) error }) (NamedSession, error)
 	if err != nil {
 		return NamedSession{}, err
 	}
+	session.DurableSession = durableSession != 0
 	session.CreatedAt = parsedCreated
 	session.LastUsedAt = parsedLastUsed
 	return session, nil

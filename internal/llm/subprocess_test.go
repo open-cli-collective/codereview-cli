@@ -678,6 +678,98 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		}
 	})
 
+	t.Run("durable session start omits ephemeral", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "records.jsonl")
+		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+		stream, err := adapter.Start(context.Background(), Request{
+			Model:          "gpt-5.5",
+			Effort:         "high",
+			Prompt:         "prompt",
+			DurableSession: true,
+		})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		record := readHelperRecord(t, recordPath)
+		if containsFlag(record.AdapterArgs, "--ephemeral") {
+			t.Fatalf("args = %#v, do not want --ephemeral for durable session", record.AdapterArgs)
+		}
+	})
+
+	t.Run("resume uses exec resume and keeps prompt delivery", func(t *testing.T) {
+		recordPath := filepath.Join(t.TempDir(), "records.jsonl")
+		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+		stream, err := adapter.Resume(context.Background(), "prior-session", Request{
+			Model:  "gpt-5.5",
+			Effort: "high",
+			Prompt: "resume prompt",
+		})
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		if stream.SessionID() != "session-1" {
+			t.Fatalf("SessionID = %q, want session-1", stream.SessionID())
+		}
+		record := readHelperRecord(t, recordPath)
+		if len(record.AdapterArgs) < 2 || record.AdapterArgs[0] != "exec" || record.AdapterArgs[1] != "resume" {
+			t.Fatalf("args = %#v, want codex exec resume", record.AdapterArgs)
+		}
+		for _, flag := range []string{"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
+			if !containsFlag(record.AdapterArgs, flag) {
+				t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
+			}
+		}
+		for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
+			if containsFlag(record.AdapterArgs, flag) {
+				t.Fatalf("args = %#v, do not want unsupported resume flag %s", record.AdapterArgs, flag)
+			}
+		}
+		assertFlagValue(t, record.AdapterArgs, "--model", "gpt-5.5")
+		assertFlagValue(t, record.AdapterArgs, "-c", "model_reasoning_effort=high")
+		promptIndex := len(argsBeforePrompt(record.AdapterArgs))
+		if promptIndex+2 != len(record.AdapterArgs) || record.AdapterArgs[promptIndex] != "--" || record.AdapterArgs[promptIndex+1] != "resume prompt" {
+			t.Fatalf("args = %#v, want -- separated resumed prompt", record.AdapterArgs)
+		}
+		if got := record.AdapterArgs[promptIndex-1]; got != "prior-session" {
+			t.Fatalf("resume session arg = %q in %#v, want prior-session immediately before prompt separator", got, record.AdapterArgs)
+		}
+	})
+
+	t.Run("resume reviewer workspace is rejected", func(t *testing.T) {
+		tempDir := t.TempDir()
+		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
+		if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(scratchRoot): %v", err)
+		}
+		repoRoot := filepath.Join(tempDir, "workbench-repo")
+		if err := os.MkdirAll(repoRoot, 0o700); err != nil {
+			t.Fatalf("MkdirAll(repoRoot): %v", err)
+		}
+		tempRoot := filepath.Join(scratchRoot, "tmp")
+		cacheRoot := filepath.Join(scratchRoot, "cache")
+		adapter := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
+		_, err := adapter.Resume(context.Background(), "prior-session", Request{
+			Model:  "gpt-5.5",
+			Effort: "high",
+			Prompt: "resume prompt",
+			ReviewerWorkspace: &ReviewerWorkspaceRequest{
+				RepoDir:    repoRoot,
+				ScratchDir: scratchRoot,
+				TempDir:    tempRoot,
+				CacheDir:   cacheRoot,
+			},
+		})
+		if !errors.Is(err, ErrUnsafeSubprocessConfig) {
+			t.Fatalf("Resume error = %v, want ErrUnsafeSubprocessConfig", err)
+		}
+	})
+
 	t.Run("reviewer workspace uses repo cwd and scratch add-dir", func(t *testing.T) {
 		tempDir := t.TempDir()
 		recordPath := filepath.Join(tempDir, "records.jsonl")
@@ -1016,11 +1108,15 @@ func TestSubprocessResumeSupport(t *testing.T) {
 		t.Fatal("Claude SupportsResume = false, want true")
 	}
 	codex := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
-	if codex.SupportsResume() {
-		t.Fatal("Codex SupportsResume = true, want false")
+	if !codex.SupportsResume() {
+		t.Fatal("Codex SupportsResume = false, want true")
 	}
-	if _, err := codex.Resume(context.Background(), "session", Request{}); err == nil {
-		t.Fatal("Codex Resume error = nil, want unsupported")
+}
+
+func TestSubprocessCodexResumeRetainsSafetyGuard(t *testing.T) {
+	adapter := NewCodexCLIAdapter(SubprocessOptions{})
+	if _, err := adapter.Resume(context.Background(), "prior-session", Request{Prompt: "prompt"}); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+		t.Fatalf("Resume error = %v, want ErrUnsafeSubprocessConfig", err)
 	}
 }
 

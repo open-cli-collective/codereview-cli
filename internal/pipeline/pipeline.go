@@ -370,6 +370,7 @@ type preparedSelectionContext struct {
 
 type selectionPhaseRequest struct {
 	RunID                       string
+	DurableSession              bool
 	Profile                     config.Profile
 	SelectionModelOverride      string
 	SelectionEffortOverride     string
@@ -660,6 +661,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 
 		selection, selectionSession, selectionLedgerSession, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
 			RunID:                       run.RunID,
+			DurableSession:              namedSession.enabled && namedSession.supportsResume,
 			Profile:                     req.Profile,
 			SelectionModelOverride:      req.SelectionModelOverride,
 			SelectionEffortOverride:     req.SelectionEffortOverride,
@@ -1126,6 +1128,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 			effort:            effort,
 			logPath:           selectionLog,
 			prompt:            selectionPrompt,
+			baseRequest:       llm.Request{DurableSession: req.DurableSession},
 			resumeSessionID:   req.ResumeSessionID,
 		}, decode)
 		if err != nil {
@@ -1150,6 +1153,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		effort:            effort,
 		logPath:           selectionLog,
 		prompt:            selectionPrompt,
+		baseRequest:       llm.Request{DurableSession: req.DurableSession},
 		resumeSessionID:   req.ResumeSessionID,
 	}, decode)
 	if err != nil {
@@ -1613,7 +1617,11 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		state.stored = &stored
 		state.createdAt = stored.CreatedAt
 		if state.supportsResume {
-			state.currentProviderSessionID = stored.ProviderSessionID
+			if stored.DurableSession || !requiresDurableSessionMarker(active.Adapter) {
+				state.currentProviderSessionID = stored.ProviderSessionID
+			} else {
+				opts.emitWarning(fmt.Sprintf("session %q stored adapter session predates durable resume support; starting fresh", active.Name))
+			}
 		}
 	}
 
@@ -1621,6 +1629,10 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		opts.emitWarning(fmt.Sprintf("session %q adapter %q does not support resume; starting fresh", active.Name, opts.Adapter.Name()))
 	}
 	return state, nil
+}
+
+func requiresDurableSessionMarker(adapter string) bool {
+	return strings.TrimSpace(adapter) == "codex_cli"
 }
 
 func (s *namedSessionState) resumeID() string {
@@ -1655,6 +1667,7 @@ func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.T
 		Model:             s.active.Model,
 		Host:              s.active.Host,
 		ProviderSessionID: providerSessionID,
+		DurableSession:    s.supportsResume,
 		CreatedAt:         s.createdAt,
 		LastUsedAt:        lastUsedAt,
 	}

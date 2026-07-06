@@ -116,7 +116,9 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 func (a *SubprocessAdapter) Name() string { return string(a.kind) }
 
 // SupportsResume reports whether subprocess session resume is implemented.
-func (a *SubprocessAdapter) SupportsResume() bool { return a.kind == subprocessClaude }
+func (a *SubprocessAdapter) SupportsResume() bool {
+	return a.kind == subprocessClaude || a.kind == subprocessCodex
+}
 
 // ReviewerWorkspaceMode reports the subprocess adapter's reviewer workspace mode.
 func (a *SubprocessAdapter) ReviewerWorkspaceMode() ReviewerWorkspaceMode {
@@ -149,10 +151,10 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 	if a.kind == subprocessCodex && !a.allowBestEffortNoTools {
 		return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
 	}
-	return a.startJSONLSubprocess(ctx, req)
+	return a.startJSONLSubprocess(ctx, req, "")
 }
 
-func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Request) (Stream, error) {
+func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Request, resumeSessionID string) (Stream, error) {
 	scratch, cleanup, err := a.invocationScratchDir(req)
 	if err != nil {
 		return nil, err
@@ -165,7 +167,7 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 		_ = cleanup()
 		return nil, err
 	}
-	args, err := a.buildArgs(req, scratch)
+	args, err := a.buildArgsForSession(req, scratch, resumeSessionID)
 	if err != nil {
 		_ = cleanup()
 		return nil, err
@@ -182,7 +184,11 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
 	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
 	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
-	cmd.Dir = scratch
+	launchDir := scratch
+	if a.kind == subprocessCodex && resumeSessionID != "" && req.ReviewerWorkspace != nil {
+		launchDir = req.ReviewerWorkspace.RepoDir
+	}
+	cmd.Dir = launchDir
 	cmd.Stdin = nil
 	procGroup, err := newProcessGroup(cmd)
 	if err != nil {
@@ -365,15 +371,28 @@ func (a *SubprocessAdapter) processEnv(req Request) []string {
 // adapter supports provider-side session reuse.
 func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Request) (Stream, error) {
 	sessionID = strings.TrimSpace(sessionID)
-	if a.kind != subprocessClaude {
+	switch a.kind {
+	case subprocessClaude:
+		if sessionID == "" {
+			// A blank session id is treated as a fresh start so callers can pass
+			// through optional resume state without special-casing the first run.
+			return a.Start(ctx, req)
+		}
+		return a.startClaudeBG(ctx, req, sessionID)
+	case subprocessCodex:
+		if !a.allowBestEffortNoTools {
+			return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
+		}
+		if sessionID == "" {
+			return a.Start(ctx, req)
+		}
+		if req.ReviewerWorkspace != nil {
+			return nil, fmt.Errorf("%w: codex_cli resume does not support reviewer workspace roots", ErrUnsafeSubprocessConfig)
+		}
+		return a.startJSONLSubprocess(ctx, req, sessionID)
+	default:
 		return nil, fmt.Errorf("llm subprocess: resume unsupported for %s", a.kind)
 	}
-	if sessionID == "" {
-		// A blank session id is treated as a fresh start so callers can pass
-		// through optional resume state without special-casing the first run.
-		return a.Start(ctx, req)
-	}
-	return a.startClaudeBG(ctx, req, sessionID)
 }
 
 func (a *SubprocessAdapter) buildArgs(req Request, scratch string) ([]string, error) {
@@ -408,9 +427,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
 		workspace := req.ReviewerWorkspace
-		args := subprocessCodexBaseArgs("read-only", scratch)
+		args := subprocessCodexBaseArgs([]string{"exec"}, "read-only", scratch, req.DurableSession)
 		if workspace != nil {
-			args = subprocessCodexBaseArgs("workspace-write", workspace.RepoDir)
+			args = subprocessCodexBaseArgs([]string{"exec"}, "workspace-write", workspace.RepoDir, req.DurableSession)
 			args = append(args, "--add-dir", scratch)
 		}
 		if req.Model != "" {
@@ -419,22 +438,46 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		if req.Effort != "" {
 			args = append(args, "-c", "model_reasoning_effort="+req.Effort)
 		}
+		if resumeSessionID != "" {
+			args = subprocessCodexResumeArgs()
+			if req.Model != "" {
+				args = append(args, "--model", req.Model)
+			}
+			if req.Effort != "" {
+				args = append(args, "-c", "model_reasoning_effort="+req.Effort)
+			}
+			args = append(args, resumeSessionID)
+		}
 		return append(args, "--", req.Prompt), nil
 	default:
 		return nil, fmt.Errorf("%w: unknown subprocess adapter %q", ErrUnsafeSubprocessConfig, a.kind)
 	}
 }
 
-func subprocessCodexBaseArgs(sandbox, cwd string) []string {
-	return []string{
-		"exec",
-		"--json",
-		"--ephemeral",
+func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string, durable bool) []string {
+	args := append([]string(nil), prefix...)
+	args = append(args, "--json")
+	if !durable {
+		args = append(args, "--ephemeral")
+	}
+	args = append(args,
 		"--skip-git-repo-check",
 		"--ignore-user-config",
 		"--ignore-rules",
 		"--sandbox", sandbox,
 		"--cd", cwd,
+	)
+	return args
+}
+
+// Codex exec resume requires a persisted rollout; ephemeral sessions cannot resume.
+func subprocessCodexResumeArgs() []string {
+	return []string{
+		"exec", "resume",
+		"--json",
+		"--skip-git-repo-check",
+		"--ignore-user-config",
+		"--ignore-rules",
 	}
 }
 
@@ -490,25 +533,40 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		if len(checkedArgs) == 0 || checkedArgs[0] != "exec" {
 			return fmt.Errorf("%w: codex_cli must use exec", ErrUnsafeSubprocessConfig)
 		}
-		wantSandbox := "read-only"
-		wantCWD := scratch
-		if workspace != nil {
-			wantSandbox = "workspace-write"
-			wantCWD = workspace.RepoDir
-		}
-		if flagValue(checkedArgs, "--sandbox") != wantSandbox {
-			return fmt.Errorf("%w: codex_cli must use %s sandbox", ErrUnsafeSubprocessConfig, wantSandbox)
-		}
-		if flagValue(checkedArgs, "--cd") != wantCWD {
-			return fmt.Errorf("%w: codex_cli must use configured cwd", ErrUnsafeSubprocessConfig)
-		}
-		if workspace != nil {
-			addDir, ok := flagValueOK(checkedArgs, "--add-dir")
-			if !ok || !sameCleanPath(addDir, scratch) {
-				return fmt.Errorf("%w: codex_cli must add only the invocation scratch dir", ErrUnsafeSubprocessConfig)
+		if len(checkedArgs) > 1 && checkedArgs[1] == "resume" {
+			for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
+				if containsFlag(checkedArgs, flag) {
+					return fmt.Errorf("%w: codex_cli resume must not pass %s", ErrUnsafeSubprocessConfig, flag)
+				}
+			}
+		} else {
+			wantSandbox := "read-only"
+			wantCWD := scratch
+			if workspace != nil {
+				wantSandbox = "workspace-write"
+				wantCWD = workspace.RepoDir
+			}
+			if flagValue(checkedArgs, "--sandbox") != wantSandbox {
+				return fmt.Errorf("%w: codex_cli must use %s sandbox", ErrUnsafeSubprocessConfig, wantSandbox)
+			}
+			if flagValue(checkedArgs, "--cd") != wantCWD {
+				return fmt.Errorf("%w: codex_cli must use configured cwd", ErrUnsafeSubprocessConfig)
+			}
+			if workspace != nil {
+				addDir, ok := flagValueOK(checkedArgs, "--add-dir")
+				if !ok || !sameCleanPath(addDir, scratch) {
+					return fmt.Errorf("%w: codex_cli must add only the invocation scratch dir", ErrUnsafeSubprocessConfig)
+				}
+			}
+			if req.DurableSession {
+				if containsFlag(checkedArgs, "--ephemeral") {
+					return fmt.Errorf("%w: codex_cli durable sessions must not use --ephemeral", ErrUnsafeSubprocessConfig)
+				}
+			} else if !containsFlag(checkedArgs, "--ephemeral") {
+				return fmt.Errorf("%w: codex_cli fresh sessions must use --ephemeral unless durability is requested", ErrUnsafeSubprocessConfig)
 			}
 		}
-		for _, flag := range []string{"--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
+		for _, flag := range []string{"--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"} {
 			if !containsFlag(checkedArgs, flag) {
 				return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 			}
