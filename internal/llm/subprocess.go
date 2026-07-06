@@ -116,7 +116,9 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 func (a *SubprocessAdapter) Name() string { return string(a.kind) }
 
 // SupportsResume reports whether subprocess session resume is implemented.
-func (a *SubprocessAdapter) SupportsResume() bool { return a.kind == subprocessClaude }
+func (a *SubprocessAdapter) SupportsResume() bool {
+	return a.kind == subprocessClaude || a.kind == subprocessCodex
+}
 
 // ReviewerWorkspaceMode reports the subprocess adapter's reviewer workspace mode.
 func (a *SubprocessAdapter) ReviewerWorkspaceMode() ReviewerWorkspaceMode {
@@ -149,10 +151,10 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 	if a.kind == subprocessCodex && !a.allowBestEffortNoTools {
 		return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
 	}
-	return a.startJSONLSubprocess(ctx, req)
+	return a.startJSONLSubprocess(ctx, req, "")
 }
 
-func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Request) (Stream, error) {
+func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Request, resumeSessionID string) (Stream, error) {
 	scratch, cleanup, err := a.invocationScratchDir(req)
 	if err != nil {
 		return nil, err
@@ -165,7 +167,7 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 		_ = cleanup()
 		return nil, err
 	}
-	args, err := a.buildArgs(req, scratch)
+	args, err := a.buildArgsForSession(req, scratch, resumeSessionID)
 	if err != nil {
 		_ = cleanup()
 		return nil, err
@@ -365,15 +367,25 @@ func (a *SubprocessAdapter) processEnv(req Request) []string {
 // adapter supports provider-side session reuse.
 func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Request) (Stream, error) {
 	sessionID = strings.TrimSpace(sessionID)
-	if a.kind != subprocessClaude {
+	switch a.kind {
+	case subprocessClaude:
+		if sessionID == "" {
+			// A blank session id is treated as a fresh start so callers can pass
+			// through optional resume state without special-casing the first run.
+			return a.Start(ctx, req)
+		}
+		return a.startClaudeBG(ctx, req, sessionID)
+	case subprocessCodex:
+		if !a.allowBestEffortNoTools {
+			return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
+		}
+		if sessionID == "" {
+			return a.Start(ctx, req)
+		}
+		return a.startJSONLSubprocess(ctx, req, sessionID)
+	default:
 		return nil, fmt.Errorf("llm subprocess: resume unsupported for %s", a.kind)
 	}
-	if sessionID == "" {
-		// A blank session id is treated as a fresh start so callers can pass
-		// through optional resume state without special-casing the first run.
-		return a.Start(ctx, req)
-	}
-	return a.startClaudeBG(ctx, req, sessionID)
 }
 
 func (a *SubprocessAdapter) buildArgs(req Request, scratch string) ([]string, error) {
@@ -418,6 +430,10 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		}
 		if req.Effort != "" {
 			args = append(args, "-c", "model_reasoning_effort="+req.Effort)
+		}
+		if resumeSessionID != "" {
+			args = append([]string{"exec", "resume"}, args[1:]...)
+			args = append(args, resumeSessionID)
 		}
 		return append(args, "--", req.Prompt), nil
 	default:
