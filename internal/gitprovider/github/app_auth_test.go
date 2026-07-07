@@ -99,6 +99,53 @@ func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 	}
 }
 
+func TestNewFromGitConfigGitHubAppUsesCachingReaderAcrossRepeatedReads(t *testing.T) {
+	privateKey := testPrivateKeyPEM(t)
+	base := &countingReader{values: map[string]map[string]string{
+		"app": {credentials.GitHubAppPrivateKeyKey: privateKey},
+	}}
+	reader := credentials.CachingReader("app-store", base)
+	tokenRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.EscapedPath() {
+		case "/app/installations/42":
+			assertJWTAuth(t, r, "12345")
+			writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "cr-reviewer"})
+		case "/app/installations/42/access_tokens":
+			tokenRequests++
+			assertJWTAuth(t, r, "12345")
+			writeJSON(t, w, map[string]any{
+				"token":      fmt.Sprintf("installation-token-%d", tokenRequests),
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	cfg := githubAppGitConfig("codereview/app")
+	_, _, err := NewFromGitConfig(cfg, reader, Options{
+		BaseURL:        server.URL,
+		GraphQLURL:     server.URL + "/graphql",
+		InstallationID: "42",
+	})
+	if err != nil {
+		t.Fatalf("first NewFromGitConfig: %v", err)
+	}
+	_, _, err = NewFromGitConfig(cfg, reader, Options{
+		BaseURL:        server.URL,
+		GraphQLURL:     server.URL + "/graphql",
+		InstallationID: "42",
+	})
+	if err != nil {
+		t.Fatalf("second NewFromGitConfig: %v", err)
+	}
+	if got := base.calls["app/"+credentials.GitHubAppPrivateKeyKey]; got != 1 {
+		t.Fatalf("private key reads = %d, want 1", got)
+	}
+}
+
 func TestNewFromGitConfigUsesRepositoryInstallationLookup(t *testing.T) {
 	const repoInstallationToken = "repo-installation-token" // #nosec G101 -- distinctive test canary, not a real token.
 	privateKey := testPrivateKeyPEM(t)

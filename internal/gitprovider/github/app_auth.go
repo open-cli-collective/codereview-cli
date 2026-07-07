@@ -56,7 +56,7 @@ type installationTokenResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-func newGitHubAppFromConfig(ctx context.Context, profile string, store TokenStore, opts Options) (*Client, gitprovider.Credential, error) {
+func newGitHubAppFromConfig(ctx context.Context, profile string, store credentials.Reader, opts Options) (*Client, gitprovider.Credential, error) {
 	if store == nil {
 		return nil, gitprovider.Credential{}, fmt.Errorf("%w: token store is required", gitprovider.ErrAuth)
 	}
@@ -293,7 +293,7 @@ func (a *githubAppAuth) jwt() (string, error) {
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
-func readRequiredCredential(store TokenStore, profile, key string) (string, error) {
+func readRequiredCredential(store credentials.Reader, profile, key string) (string, error) {
 	value, err := store.Get(profile, key)
 	if err != nil {
 		return "", gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("read github app credential %s/%s: %w", profile, key, err))

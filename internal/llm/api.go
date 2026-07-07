@@ -38,11 +38,6 @@ const (
 	apiOpenAI    apiKind = "openai_api"
 )
 
-// APITokenStore is the minimal credential-store dependency for API adapters.
-type APITokenStore interface {
-	Get(profile string, key string) (string, error)
-}
-
 // APIOptions configures direct HTTP LLM adapters.
 type APIOptions struct {
 	APIKey           string
@@ -73,7 +68,7 @@ func NewOpenAIAPIAdapter(opts APIOptions) (*APIAdapter, error) {
 }
 
 // NewAPIAdapterFromConfig resolves an API-key LLM adapter from profile config.
-func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store APITokenStore, opts APIOptions) (*APIAdapter, error) {
+func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store credentials.Reader, opts APIOptions) (*APIAdapter, error) {
 	kind, err := apiKindFromConfig(llmConfig)
 	if err != nil {
 		return nil, err

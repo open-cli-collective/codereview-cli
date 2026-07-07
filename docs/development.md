@@ -65,7 +65,7 @@ Non-review CLI progress now flows through one reusable component in
   `cr progress event=<start|finish|error> command="..." op="..." target="..." ...`
 
 Current command coverage is `benchmark run`, `benchmark select`,
-`benchmark compare`, `data prune`, `data purge`, `config clear`, and
+`benchmark compare`, `data prune`, `data purge`, `config clear`, `me`, and
 `sessions delete`.
 
 Command packages own the `command=` label and stderr sink. Lower-level reuse is

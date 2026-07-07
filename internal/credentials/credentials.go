@@ -8,11 +8,13 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 )
 
 const (
@@ -58,6 +60,132 @@ var (
 	// ErrInvalidBackendSelection means a CLI/config backend selector was malformed.
 	ErrInvalidBackendSelection = errors.New("credentials: invalid backend selection")
 )
+
+// Reader is the minimal read-only credential surface used by runtime consumers.
+type Reader interface {
+	Get(profile, key string) (string, error)
+}
+
+type storeReader struct {
+	store *credstore.Store
+}
+
+// NewStoreReader adapts a credstore-backed implementation to the read-only seam.
+func NewStoreReader(store *credstore.Store) Reader {
+	if store == nil {
+		return nil
+	}
+	return storeReader{store: store}
+}
+
+func (r storeReader) Get(profile, key string) (string, error) {
+	return r.store.Get(profile, key)
+}
+
+type readCacheKey struct {
+	profile string
+	key     string
+}
+
+type inflightRead struct {
+	ready chan struct{}
+	value string
+	err   error
+}
+
+type cachingReader struct {
+	storeID string
+	base    Reader
+	logger  *progress.Logger
+	command string
+	backend string
+	closed  bool
+
+	mu       sync.Mutex
+	cached   map[readCacheKey]string
+	inflight map[readCacheKey]*inflightRead
+}
+
+// CachingReader wraps one underlying reader with a process-local read-through cache.
+// Runtime assembly creates one wrapper per resolved store, so cache entries are
+// isolated by reader instance and keyed by profile/key within that instance.
+func CachingReader(storeID string, base Reader) Reader {
+	return newCachingReader(storeID, base, nil, "", "")
+}
+
+func newCachingReader(storeID string, base Reader, logger *progress.Logger, command, backend string) Reader {
+	if base == nil {
+		return nil
+	}
+	reader := &cachingReader{
+		storeID:  strings.TrimSpace(storeID),
+		base:     base,
+		logger:   logger,
+		command:  strings.TrimSpace(command),
+		backend:  strings.TrimSpace(backend),
+		cached:   map[readCacheKey]string{},
+		inflight: map[readCacheKey]*inflightRead{},
+	}
+	return reader
+}
+
+func (r *cachingReader) Get(profile, key string) (value string, err error) {
+	cacheKey := readCacheKey{
+		profile: profile,
+		key:     key,
+	}
+	target := secretTarget(r.backend, profile, key)
+	cacheHit := false
+
+	if r.logger != nil {
+		span := r.logger.Start(r.command, "read_secret_cache", target)
+		defer func() {
+			span.EndFields(err, progress.Field{Key: "cache_hit", Value: fmt.Sprintf("%t", cacheHit)})
+		}()
+	}
+
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		err = credstore.ErrStoreClosed
+		return "", err
+	}
+	if cachedValue, ok := r.cached[cacheKey]; ok {
+		r.mu.Unlock()
+		cacheHit = true
+		return cachedValue, nil
+	}
+	if read, ok := r.inflight[cacheKey]; ok {
+		r.mu.Unlock()
+		<-read.ready
+		return read.value, read.err
+	}
+	read := &inflightRead{ready: make(chan struct{})}
+	r.inflight[cacheKey] = read
+	r.mu.Unlock()
+
+	value, err = r.base.Get(profile, key)
+
+	r.mu.Lock()
+	delete(r.inflight, cacheKey)
+	if err == nil {
+		r.cached[cacheKey] = value
+	}
+	read.value = value
+	read.err = err
+	close(read.ready)
+	r.mu.Unlock()
+
+	return value, err
+}
+
+func (r *cachingReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	r.cached = map[readCacheKey]string{}
+	return nil
+}
 
 // AllowedKeys is cr's keyring write allowlist.
 func AllowedKeys() []string {

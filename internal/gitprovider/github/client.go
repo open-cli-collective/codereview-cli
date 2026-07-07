@@ -32,12 +32,6 @@ var (
 	ErrUnhandledGraphQL = errors.New("github: unhandled graphql error")
 )
 
-// TokenStore is the minimal credential-store dependency needed by the adapter factory.
-type TokenStore interface {
-	Exists(profile, key string) (bool, error)
-	Get(profile, key string) (string, error)
-}
-
 // Options configures a GitHub client.
 type Options struct {
 	Host               string
@@ -63,7 +57,7 @@ type Client struct {
 }
 
 // NewFromGitConfig builds a GitHub client and credential from config plus a token store.
-func NewFromGitConfig(git config.GitConfig, store TokenStore, opts Options) (*Client, gitprovider.Credential, error) {
+func NewFromGitConfig(git config.GitConfig, store credentials.Reader, opts Options) (*Client, gitprovider.Credential, error) {
 	host, err := normalizeHost(git.Host)
 	if err != nil {
 		return nil, gitprovider.Credential{}, err

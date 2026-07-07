@@ -20,6 +20,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -208,6 +209,7 @@ func newGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) 
 		backend:            opts.Backend,
 		backendFlagChanged: cmderr.BackendFlagChanged(cmd),
 		warnings:           opts.Stderr,
+		logger:             newProgressLogger(opts),
 	}, nil, nil
 }
 
@@ -217,7 +219,8 @@ type githubResolver struct {
 	backendFlagChanged bool
 	options            githubprovider.Options
 	warnings           io.Writer
-	NewClient          func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
+	logger             *progress.Logger
+	NewClient          func(config.GitConfig, credentials.Reader, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
 }
 
 // ResolveIdentity resolves one configured GitHub identity.
@@ -248,7 +251,8 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 		}
 		return gitprovider.Identity{Login: cached}, nil
 	}
-	client, credential, err := newClient(git, store, options)
+	reader := credentials.ProgressStoreReader("me", r.logger, resolvedSecretsProfile, store)
+	client, credential, err := newClient(git, reader, options)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}
@@ -256,3 +260,10 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 }
 
 var _ identity.Resolver = (*githubResolver)(nil)
+
+func newProgressLogger(opts *root.Options) *progress.Logger {
+	if opts == nil {
+		return progress.New(nil, true, nil)
+	}
+	return progress.New(opts.Stderr, opts.Quiet, nil)
+}

@@ -53,6 +53,33 @@ func TestNewFromGitConfigBuildsPATClientAndCredential(t *testing.T) {
 	}
 }
 
+func TestNewFromGitConfigPATUsesCachingReaderAcrossRepeatedReads(t *testing.T) {
+	base := &countingReader{values: map[string]map[string]string{
+		"work": {credentials.GitTokenKey: "token"},
+	}}
+	reader := credentials.CachingReader("git-store", base)
+	cfg := config.GitConfig{
+		Host:          "github.example.com",
+		AuthMode:      config.GitAuthModePAT,
+		CredentialRef: "codereview/work",
+	}
+
+	first, credential, err := NewFromGitConfig(cfg, reader, Options{})
+	if err != nil {
+		t.Fatalf("first NewFromGitConfig: %v", err)
+	}
+	second, _, err := NewFromGitConfig(cfg, reader, Options{})
+	if err != nil {
+		t.Fatalf("second NewFromGitConfig: %v", err)
+	}
+	if credential.Token != "token" || first.Host() != "github.example.com" || second.Host() != "github.example.com" {
+		t.Fatalf("unexpected PAT client state: credential=%#v first=%q second=%q", credential, first.Host(), second.Host())
+	}
+	if got := base.calls["work/"+credentials.GitTokenKey]; got != 1 {
+		t.Fatalf("reader calls = %d, want 1", got)
+	}
+}
+
 func TestNewRequiresExplicitHost(t *testing.T) {
 	_, err := New(Options{Token: "token"})
 	if !errors.Is(err, ErrValidation) {
@@ -321,6 +348,28 @@ func (s tokenStore) Exists(profile, key string) (bool, error) {
 
 func (s tokenStore) Get(profile, key string) (string, error) {
 	keys, ok := s[profile]
+	if !ok {
+		return "", errTokenNotFound
+	}
+	value, ok := keys[key]
+	if !ok {
+		return "", errTokenNotFound
+	}
+	return value, nil
+}
+
+type countingReader struct {
+	values map[string]map[string]string
+	calls  map[string]int
+}
+
+func (r *countingReader) Get(profile, key string) (string, error) {
+	if r.calls == nil {
+		r.calls = map[string]int{}
+	}
+	fullKey := profile + "/" + key
+	r.calls[fullKey]++
+	keys, ok := r.values[profile]
 	if !ok {
 		return "", errTokenNotFound
 	}

@@ -522,7 +522,7 @@ profiles:
 		return &githubResolver{
 			cfg:      cfg,
 			warnings: opts.Stderr,
-			NewClient: func(config.GitConfig, githubprovider.TokenStore, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error) {
+			NewClient: func(config.GitConfig, credentials.Reader, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error) {
 				t.Fatal("GitHub client should not be opened for discovery-mode app identity without PR context")
 				return nil, gitprovider.Credential{}, nil
 			},
