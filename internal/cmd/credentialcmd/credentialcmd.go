@@ -28,7 +28,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
-	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -88,7 +87,6 @@ func newSetCredentialCommand(opts *root.Options) *cobra.Command {
 
 func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentialOptions) (view.CredentialWrite, error) {
 	result := view.CredentialWrite{Store: flags.store, Name: flags.name, Key: flags.key}
-	logger := newProgressLogger(opts)
 	if flags.ref != "" {
 		return result, exitcode.Usage(fmt.Errorf("--ref has been replaced by --name"))
 	}
@@ -142,7 +140,7 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	if flags.overwrite {
 		setOpts = append(setOpts, credstore.WithOverwrite())
 	}
-	if err := credentials.SetWithProgress("set-credential", logger, store, parsed.Profile, flags.key, secret, setOpts...); err != nil {
+	if err := store.Set(parsed.Profile, flags.key, secret, setOpts...); err != nil {
 		return result, cmderr.Credential(err)
 	}
 	result.Written = true
@@ -8354,7 +8352,7 @@ func preflightNoOverwrite(store initStore, writes map[string]map[string]string, 
 			return err
 		}
 		for _, key := range sortedKeys(writes[ref]) {
-			present, err := initStoreExists("init", nil, store, parsed.Profile, key)
+			present, err := store.Exists(parsed.Profile, key)
 			if err != nil {
 				return err
 			}
@@ -8377,7 +8375,7 @@ func writeBundles(store initStore, writes map[string]map[string]string, overwrit
 		if overwriteAll || overwriteRefs[ref] {
 			setOpts = append(setOpts, credstore.WithOverwrite())
 		}
-		result, err := initStoreSetBundle("init", nil, store, parsed.Profile, writes[ref], setOpts...)
+		result, err := store.SetBundle(parsed.Profile, writes[ref], setOpts...)
 		if err != nil {
 			cleanupRefs := append([]string(nil), writtenRefs...)
 			if len(result.RollbackFailed) > 0 {
@@ -8428,7 +8426,7 @@ func deleteStaleReviewerCredentialKeys(store initStore, entries []initCredential
 	if err != nil {
 		return false, err
 	}
-	existingKeys, err := initStoreListBundle("init", nil, store, parsed.Profile)
+	existingKeys, err := store.ListBundle(parsed.Profile)
 	if err != nil {
 		return false, err
 	}
@@ -8441,7 +8439,7 @@ func deleteStaleReviewerCredentialKeys(store initStore, entries []initCredential
 		if _, ok := existing[key]; !ok {
 			continue
 		}
-		if err := initStoreDelete("init", nil, store, parsed.Profile, key); err != nil {
+		if err := store.Delete(parsed.Profile, key); err != nil {
 			return deleted, err
 		}
 		deleted = true
@@ -8469,41 +8467,6 @@ func staleReviewerCredentialKeys(entries []initCredentialPlanEntry) []string {
 		}
 	}
 	return stale
-}
-
-func newProgressLogger(opts *root.Options) *progress.Logger {
-	if opts == nil {
-		return progress.New(nil, true, nil)
-	}
-	return progress.New(opts.Stderr, opts.Quiet, nil)
-}
-
-func initStoreExists(command string, logger *progress.Logger, store initStore, profile, key string) (bool, error) {
-	if credStore, ok := store.(*credstore.Store); ok {
-		return credentials.ExistsWithProgress(command, logger, credStore, profile, key)
-	}
-	return store.Exists(profile, key)
-}
-
-func initStoreListBundle(command string, logger *progress.Logger, store initStore, profile string) ([]string, error) {
-	if credStore, ok := store.(*credstore.Store); ok {
-		return credentials.ListBundleWithProgress(command, logger, credStore, profile)
-	}
-	return store.ListBundle(profile)
-}
-
-func initStoreSetBundle(command string, logger *progress.Logger, store initStore, profile string, kv map[string]string, opts ...credstore.SetOpt) (credstore.Result, error) {
-	if credStore, ok := store.(*credstore.Store); ok {
-		return credentials.SetBundleWithProgress(command, logger, credStore, profile, kv, opts...)
-	}
-	return store.SetBundle(profile, kv, opts...)
-}
-
-func initStoreDelete(command string, logger *progress.Logger, store initStore, profile, key string) error {
-	if credStore, ok := store.(*credstore.Store); ok {
-		return credentials.DeleteWithProgress(command, logger, credStore, profile, key)
-	}
-	return store.Delete(profile, key)
 }
 
 func sortedRefs(writes map[string]map[string]string) []string {

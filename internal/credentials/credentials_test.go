@@ -1,7 +1,6 @@
 package credentials
 
 import (
-	"bytes"
 	"errors"
 	"reflect"
 	"runtime"
@@ -13,7 +12,6 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
-	"github.com/open-cli-collective/codereview-cli/internal/progress"
 )
 
 func TestParseRefEnforcesCodereviewService(t *testing.T) {
@@ -186,7 +184,7 @@ func TestCachingReaderDoesNotCacheErrorsOrMisses(t *testing.T) {
 		},
 		values: map[string]map[string]string{
 			"work": {
-				GitTokenKey:     "token",
+				GitTokenKey:      "token",
 				OpenAIAPIKeyKey: "openai-token",
 			},
 		},
@@ -218,63 +216,6 @@ func TestCachingReaderDoesNotCacheErrorsOrMisses(t *testing.T) {
 	}
 	if base.calls["work/"+OpenAIAPIKeyKey] != 2 {
 		t.Fatalf("openai token calls = %d, want 2", base.calls["work/"+OpenAIAPIKeyKey])
-	}
-}
-
-func TestProgressReaderLogsBackendRead(t *testing.T) {
-	base := &fakeReader{values: map[string]map[string]string{
-		"work": {GitTokenKey: "token"},
-	}}
-	var stderr bytes.Buffer
-	var tick int64
-	logger := progress.New(&stderr, false, func() time.Time {
-		now := time.Unix(0, tick*int64(time.Millisecond))
-		tick++
-		return now
-	})
-	reader := NewProgressReader("review", logger, ResolvedSecretsProfile{Backend: "keychain"}, base)
-
-	got, err := reader.Get("work", GitTokenKey)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got != "token" {
-		t.Fatalf("Get = %q, want token", got)
-	}
-	logged := stderr.String()
-	if !strings.Contains(logged, `op="read_secret"`) || !strings.Contains(logged, `target="keychain/codereview/work/git_token"`) {
-		t.Fatalf("progress log = %q, want read_secret target", logged)
-	}
-	if strings.Count(logged, `op="read_secret"`) != 2 {
-		t.Fatalf("progress log count = %d, want start+finish", strings.Count(logged, `op="read_secret"`))
-	}
-	if !strings.Contains(logged, `duration_ms=1`) {
-		t.Fatalf("progress log = %q, want duration", logged)
-	}
-}
-
-func TestCachingReaderLogsOnlyBackendMisses(t *testing.T) {
-	base := &fakeReader{values: map[string]map[string]string{
-		"work": {GitTokenKey: "token"},
-	}}
-	var stderr bytes.Buffer
-	var tick int64
-	logger := progress.New(&stderr, false, func() time.Time {
-		now := time.Unix(0, tick*int64(time.Millisecond))
-		tick++
-		return now
-	})
-	reader := NewCachingReader("store-a", NewProgressReader("review", logger, ResolvedSecretsProfile{Backend: "keychain"}, base))
-
-	if _, err := reader.Get("work", GitTokenKey); err != nil {
-		t.Fatalf("first Get: %v", err)
-	}
-	if _, err := reader.Get("work", GitTokenKey); err != nil {
-		t.Fatalf("second Get: %v", err)
-	}
-	logged := stderr.String()
-	if strings.Count(logged, `op="read_secret"`) != 2 {
-		t.Fatalf("progress log count = %d, want one backend read start+finish", strings.Count(logged, `op="read_secret"`))
 	}
 }
 

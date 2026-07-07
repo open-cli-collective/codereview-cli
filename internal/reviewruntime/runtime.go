@@ -137,7 +137,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 	deps := req.Dependencies.withDefaults()
 	command := commandName(req.Command)
 	profile := normalizeRuntimeProfile(req.Profile)
-	stores := newRuntimeCredentialStores(req.Config, req.Backend, req.BackendFlagChanged, command, req.Progress)
+	stores := newRuntimeCredentialStores(req.Config, req.Backend, req.BackendFlagChanged)
 	cleanup := stores.Close
 	_, repoProviderStore, err := stores.Open(profile.Git.Credential)
 	if err != nil {
@@ -280,8 +280,6 @@ type runtimeCredentialStores struct {
 	cfg                config.File
 	backend            string
 	backendFlagChanged bool
-	command            string
-	progress           *progress.Logger
 	stores             map[string]runtimeCredentialStore
 }
 
@@ -290,13 +288,11 @@ type runtimeCredentialStore struct {
 	reader credentials.Reader
 }
 
-func newRuntimeCredentialStores(cfg config.File, backend string, backendFlagChanged bool, command string, logger *progress.Logger) *runtimeCredentialStores {
+func newRuntimeCredentialStores(cfg config.File, backend string, backendFlagChanged bool) *runtimeCredentialStores {
 	return &runtimeCredentialStores{
 		cfg:                cfg,
 		backend:            backend,
 		backendFlagChanged: backendFlagChanged,
-		command:            command,
-		progress:           logger,
 		stores:             map[string]runtimeCredentialStore{},
 	}
 }
@@ -313,7 +309,7 @@ func (s *runtimeCredentialStores) Open(location config.CredentialLocation) (*cre
 	if err != nil {
 		return nil, nil, err
 	}
-	reader := credentials.NewCachingReader(resolved.ID, credentials.NewProgressReader(s.command, s.progress, resolved, credentials.NewStoreReader(store)))
+	reader := credentials.NewCachingReader(resolved.ID, credentials.NewStoreReader(store))
 	s.stores[resolved.ID] = runtimeCredentialStore{store: store, reader: reader}
 	return store, reader, nil
 }

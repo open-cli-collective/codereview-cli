@@ -498,7 +498,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			}
 			clearSpan := logger.Start("config.clear", "clear_credentials", "active-profile")
 			for _, credentialProfile := range profiles {
-				keys, err := clearCredentialBundle(logger, store, credentialProfile.Profile, clearDryRun)
+				keys, err := clearCredentialBundle(store, credentialProfile.Profile, clearDryRun)
 				if err != nil {
 					return cmderr.Credential(endProgressSpan(clearSpan, err))
 				}
@@ -1215,11 +1215,11 @@ func removeEmptyConfigDir(dir string) {
 	}
 }
 
-func clearCredentialBundle(logger *progress.Logger, store *credstore.Store, profile string, dryRun bool) ([]string, error) {
+func clearCredentialBundle(store *credstore.Store, profile string, dryRun bool) ([]string, error) {
 	if dryRun {
-		return credentials.ListBundleWithProgress("config.clear", logger, store, profile)
+		return store.ListBundle(profile)
 	}
-	return credentials.DeleteBundleWithProgress("config.clear", logger, store, profile)
+	return store.DeleteBundle(profile)
 }
 
 func resolvedSecretsProfileViewPtr(resolved credentials.ResolvedSecretsProfile) *view.ConfigSecretsProfile {
