@@ -139,35 +139,42 @@ func (r *cachingReader) CacheStoreID() string {
 	return r.storeID
 }
 
-func (r *cachingReader) Get(profile, key string) (string, error) {
+func (r *cachingReader) Get(profile, key string) (value string, err error) {
 	cacheKey := readCacheKey{
 		profile: profile,
 		key:     key,
 	}
 	target := secretTarget(r.backend, profile, key)
+	cacheHit := false
+
+	if r.logger != nil {
+		span := r.logger.Start(r.command, "read_secret_cache", target)
+		defer func() {
+			span.EndFields(err, progress.Field{Key: "cache_hit", Value: fmt.Sprintf("%t", cacheHit)})
+		}()
+	}
 
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		r.logCacheRead(target, false, credstore.ErrStoreClosed)
-		return "", credstore.ErrStoreClosed
+		err = credstore.ErrStoreClosed
+		return "", err
 	}
-	if value, ok := r.cached[cacheKey]; ok {
+	if cachedValue, ok := r.cached[cacheKey]; ok {
 		r.mu.Unlock()
-		r.logCacheRead(target, true, nil)
-		return value, nil
+		cacheHit = true
+		return cachedValue, nil
 	}
 	if read, ok := r.inflight[cacheKey]; ok {
 		r.mu.Unlock()
 		<-read.ready
-		r.logCacheRead(target, false, read.err)
 		return read.value, read.err
 	}
 	read := &inflightRead{ready: make(chan struct{})}
 	r.inflight[cacheKey] = read
 	r.mu.Unlock()
 
-	value, err := r.base.Get(profile, key)
+	value, err = r.base.Get(profile, key)
 
 	r.mu.Lock()
 	delete(r.inflight, cacheKey)
@@ -178,17 +185,8 @@ func (r *cachingReader) Get(profile, key string) (string, error) {
 	read.err = err
 	close(read.ready)
 	r.mu.Unlock()
-	r.logCacheRead(target, false, err)
 
 	return value, err
-}
-
-func (r *cachingReader) logCacheRead(target string, hit bool, err error) {
-	if r.logger == nil {
-		return
-	}
-	span := r.logger.Start(r.command, "read_secret_cache", target)
-	span.EndFields(err, progress.Field{Key: "cache_hit", Value: fmt.Sprintf("%t", hit)})
 }
 
 func (r *cachingReader) Close() error {

@@ -254,9 +254,11 @@ func TestProgressStoreReaderLogsBackendRead(t *testing.T) {
 }
 
 func TestProgressCachingReaderLogsCacheHitAndMiss(t *testing.T) {
-	base := &fakeReader{values: map[string]map[string]string{
-		"work": {GitTokenKey: "token"},
-	}}
+	store := openStoreForTest(t)
+	defer store.Close()
+	if err := store.Set("work", GitTokenKey, "token"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 	var stderr bytes.Buffer
 	var tick int64
 	logger := progress.New(&stderr, false, func() time.Time {
@@ -264,7 +266,9 @@ func TestProgressCachingReaderLogsCacheHitAndMiss(t *testing.T) {
 		tick++
 		return now
 	})
-	reader := ProgressCachingReader("review", logger, "store-a", ResolvedSecretsProfile{Backend: "keychain"}, base)
+	resolved := ResolvedSecretsProfile{Backend: "keychain"}
+	base := ProgressStoreReader("review", logger, resolved, store)
+	reader := ProgressCachingReader("review", logger, "store-a", resolved, base)
 
 	if _, err := reader.Get("work", GitTokenKey); err != nil {
 		t.Fatalf("first Get: %v", err)
@@ -278,6 +282,13 @@ func TestProgressCachingReaderLogsCacheHitAndMiss(t *testing.T) {
 	}
 	if !strings.Contains(logged, `cache_hit="false"`) || !strings.Contains(logged, `cache_hit="true"`) {
 		t.Fatalf("progress log = %q, want hit and miss fields", logged)
+	}
+	cacheStart := strings.Index(logged, `event=start command="review" op="read_secret_cache"`)
+	backendStart := strings.Index(logged, `event=start command="review" op="read_secret_backend"`)
+	backendFinish := strings.Index(logged, `event=finish command="review" op="read_secret_backend"`)
+	cacheMissFinish := strings.Index(logged, `event=finish command="review" op="read_secret_cache" target="keychain/codereview/work/git_token" cache_hit="false"`)
+	if cacheStart < 0 || backendStart <= cacheStart || backendFinish <= backendStart || cacheMissFinish <= backendFinish {
+		t.Fatalf("progress log = %q, want cache miss to wrap backend read", logged)
 	}
 }
 
