@@ -615,6 +615,7 @@ func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 	var providerReader credentials.Reader
 	var postingReader credentials.Reader
 	var adapterReader credentials.Reader
+	var identityReader credentials.Reader
 	runtime, err := Open(context.Background(), OpenRequest{
 		Config:  cfg,
 		Profile: profile,
@@ -628,7 +629,8 @@ func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 				}
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
-			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
+			func(_ context.Context, _ gitprovider.GitProvider, _ gitprovider.Credential, reader credentials.Reader, _ config.Profile) (gitprovider.Identity, error) {
+				identityReader = reader
 				return gitprovider.Identity{Login: "review-bot", ID: "bot-id"}, nil
 			},
 			func(_ config.LLMConfig, reader credentials.Reader) (llm.Adapter, error) {
@@ -651,17 +653,23 @@ func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 	if _, ok := providerReader.(credentials.CachedReader); !ok {
 		t.Fatalf("provider reader type = %T, want CachedReader", providerReader)
 	}
-	postingCached, ok := postingReader.(credentials.CachedReader)
-	if !ok {
+	if _, ok := postingReader.(credentials.CachedReader); !ok {
 		t.Fatalf("posting reader type = %T, want CachedReader", postingReader)
 	}
-	adapterCached, ok := adapterReader.(credentials.CachedReader)
-	if !ok {
+	if _, ok := identityReader.(credentials.CachedReader); !ok {
+		t.Fatalf("identity reader type = %T, want CachedReader", identityReader)
+	}
+	if _, ok := adapterReader.(credentials.CachedReader); !ok {
 		t.Fatalf("adapter reader type = %T, want CachedReader", adapterReader)
 	}
-	providerCached := providerReader.(credentials.CachedReader)
-	if providerCached.CacheStoreID() != postingCached.CacheStoreID() || providerCached.CacheStoreID() != adapterCached.CacheStoreID() {
-		t.Fatalf("cache store ids differ: provider=%q posting=%q adapter=%q", providerCached.CacheStoreID(), postingCached.CacheStoreID(), adapterCached.CacheStoreID())
+	if providerReader != postingReader {
+		t.Fatalf("provider reader = %p, posting reader = %p, want shared cached reader", providerReader, postingReader)
+	}
+	if postingReader != identityReader {
+		t.Fatalf("posting reader = %p, identity reader = %p, want shared cached reader", postingReader, identityReader)
+	}
+	if providerReader != adapterReader {
+		t.Fatalf("provider reader = %p, adapter reader = %p, want shared cached reader", providerReader, adapterReader)
 	}
 }
 
@@ -699,13 +707,11 @@ func TestOpenSelectionInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 	if _, ok := providerReader.(credentials.CachedReader); !ok {
 		t.Fatalf("provider reader type = %T, want CachedReader", providerReader)
 	}
-	providerCached := providerReader.(credentials.CachedReader)
-	adapterCached, ok := adapterReader.(credentials.CachedReader)
-	if !ok {
+	if _, ok := adapterReader.(credentials.CachedReader); !ok {
 		t.Fatalf("adapter reader type = %T, want CachedReader", adapterReader)
 	}
-	if providerCached.CacheStoreID() != adapterCached.CacheStoreID() {
-		t.Fatalf("cache store ids differ: provider=%q adapter=%q", providerCached.CacheStoreID(), adapterCached.CacheStoreID())
+	if providerReader != adapterReader {
+		t.Fatalf("provider reader = %p, adapter reader = %p, want shared cached reader", providerReader, adapterReader)
 	}
 }
 

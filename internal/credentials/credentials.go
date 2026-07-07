@@ -82,14 +82,13 @@ func (r storeReader) Get(profile, key string) (string, error) {
 	return r.store.Get(profile, key)
 }
 
-// CachedReader marks readers that scope reads through a per-store cache.
+// CachedReader marks readers that scope reads through one cache-backed store reader.
 type CachedReader interface {
 	Reader
 	CacheStoreID() string
 }
 
 type readCacheKey struct {
-	storeID string
 	profile string
 	key     string
 }
@@ -114,6 +113,8 @@ type cachingReader struct {
 }
 
 // CachingReader wraps one underlying reader with a process-local read-through cache.
+// Runtime assembly creates one wrapper per resolved store, so cache entries are
+// isolated by reader instance and keyed by profile/key within that instance.
 func CachingReader(storeID string, base Reader) CachedReader {
 	if base == nil {
 		return nil
@@ -133,7 +134,6 @@ func (r *cachingReader) CacheStoreID() string {
 
 func (r *cachingReader) Get(profile, key string) (string, error) {
 	cacheKey := readCacheKey{
-		storeID: r.storeID,
 		profile: profile,
 		key:     key,
 	}

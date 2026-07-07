@@ -109,7 +109,7 @@ func TestCachingReaderReadThroughBehavior(t *testing.T) {
 	}
 }
 
-func TestCachingReaderDistinctStoresDoNotCollide(t *testing.T) {
+func TestCachingReaderDistinctInstancesDoNotShareState(t *testing.T) {
 	baseA := &fakeReader{values: map[string]map[string]string{
 		"shared": {GitTokenKey: "token-a"},
 	}}
@@ -128,7 +128,7 @@ func TestCachingReaderDistinctStoresDoNotCollide(t *testing.T) {
 		t.Fatalf("readerB Get: %v", err)
 	}
 	if gotA != "token-a" || gotB != "token-b" {
-		t.Fatalf("values = (%q,%q), want distinct store values", gotA, gotB)
+		t.Fatalf("values = (%q,%q), want distinct reader values", gotA, gotB)
 	}
 	if baseA.calls["shared/"+GitTokenKey] != 1 || baseB.calls["shared/"+GitTokenKey] != 1 {
 		t.Fatalf("underlying calls = (%d,%d), want one call per store", baseA.calls["shared/"+GitTokenKey], baseB.calls["shared/"+GitTokenKey])
