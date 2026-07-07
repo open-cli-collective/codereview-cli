@@ -26,7 +26,7 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 	cfg := req.Config
 	profile := req.Profile
 	profile = normalizeRuntimeProfile(profile)
-	stores := newRuntimeCredentialStores(cfg, backend, backendFlagChanged)
+	stores := newRuntimeCredentialStores(cfg, backend, backendFlagChanged, "", nil)
 	cleanup := stores.Close
 	_, gitStore, err := stores.Open(profile.Git.Credential)
 	if err != nil {
