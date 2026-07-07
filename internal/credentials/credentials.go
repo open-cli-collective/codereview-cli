@@ -116,12 +116,19 @@ type cachingReader struct {
 // Runtime assembly creates one wrapper per resolved store, so cache entries are
 // isolated by reader instance and keyed by profile/key within that instance.
 func CachingReader(storeID string, base Reader) CachedReader {
+	return newCachingReader(storeID, base, nil, "", "")
+}
+
+func newCachingReader(storeID string, base Reader, logger *progress.Logger, command, backend string) CachedReader {
 	if base == nil {
 		return nil
 	}
 	reader := &cachingReader{
 		storeID:  strings.TrimSpace(storeID),
 		base:     base,
+		logger:   logger,
+		command:  strings.TrimSpace(command),
+		backend:  strings.TrimSpace(backend),
 		cached:   map[readCacheKey]string{},
 		inflight: map[readCacheKey]*inflightRead{},
 	}

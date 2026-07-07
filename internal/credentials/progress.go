@@ -40,19 +40,7 @@ func (r progressReader) Get(profile, key string) (string, error) {
 
 // ProgressCachingReader wraps a caching reader with cache hit/miss breadcrumbs.
 func ProgressCachingReader(command string, logger *progress.Logger, storeID string, resolved ResolvedSecretsProfile, base Reader) CachedReader {
-	if base == nil {
-		return nil
-	}
-	reader := &cachingReader{
-		storeID:  strings.TrimSpace(storeID),
-		base:     base,
-		logger:   logger,
-		command:  progressCommand(command),
-		backend:  strings.TrimSpace(resolved.Backend),
-		cached:   map[readCacheKey]string{},
-		inflight: map[readCacheKey]*inflightRead{},
-	}
-	return reader
+	return newCachingReader(storeID, base, logger, progressCommand(command), resolved.Backend)
 }
 
 func progressCommand(command string) string {
