@@ -650,18 +650,6 @@ func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 	if got := runner.pipeline.Adapter.Name(); got != "fake-llm" {
 		t.Fatalf("adapter name = %q, want fake-llm", got)
 	}
-	if _, ok := providerReader.(credentials.CachedReader); !ok {
-		t.Fatalf("provider reader type = %T, want CachedReader", providerReader)
-	}
-	if _, ok := postingReader.(credentials.CachedReader); !ok {
-		t.Fatalf("posting reader type = %T, want CachedReader", postingReader)
-	}
-	if _, ok := identityReader.(credentials.CachedReader); !ok {
-		t.Fatalf("identity reader type = %T, want CachedReader", identityReader)
-	}
-	if _, ok := adapterReader.(credentials.CachedReader); !ok {
-		t.Fatalf("adapter reader type = %T, want CachedReader", adapterReader)
-	}
 	if providerReader != postingReader {
 		t.Fatalf("provider reader = %p, posting reader = %p, want shared cached reader", providerReader, postingReader)
 	}
@@ -704,12 +692,6 @@ func TestOpenSelectionInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 		t.Fatalf("OpenSelection: %v", err)
 	}
 	defer runtime.Cleanup()
-	if _, ok := providerReader.(credentials.CachedReader); !ok {
-		t.Fatalf("provider reader type = %T, want CachedReader", providerReader)
-	}
-	if _, ok := adapterReader.(credentials.CachedReader); !ok {
-		t.Fatalf("adapter reader type = %T, want CachedReader", adapterReader)
-	}
 	if providerReader != adapterReader {
 		t.Fatalf("provider reader = %p, adapter reader = %p, want shared cached reader", providerReader, adapterReader)
 	}

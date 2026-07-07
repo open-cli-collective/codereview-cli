@@ -39,7 +39,7 @@ func (r progressReader) Get(profile, key string) (string, error) {
 }
 
 // ProgressCachingReader wraps a caching reader with cache hit/miss breadcrumbs.
-func ProgressCachingReader(command string, logger *progress.Logger, storeID string, resolved ResolvedSecretsProfile, base Reader) CachedReader {
+func ProgressCachingReader(command string, logger *progress.Logger, storeID string, resolved ResolvedSecretsProfile, base Reader) Reader {
 	return newCachingReader(storeID, base, logger, progressCommand(command), resolved.Backend)
 }
 

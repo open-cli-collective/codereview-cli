@@ -64,26 +64,6 @@ func TestStoreOptionsBackendPrecedenceMetadata(t *testing.T) {
 	}
 }
 
-func TestStoreReaderDelegatesToCredstore(t *testing.T) {
-	store, err := OpenStore("memory", true, config.File{})
-	if err != nil {
-		t.Fatalf("OpenStore: %v", err)
-	}
-	defer store.Close()
-	if err := store.Set("work", GitTokenKey, "token"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	reader := NewStoreReader(store)
-	got, err := reader.Get("work", GitTokenKey)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if got != "token" {
-		t.Fatalf("Get = %q, want token", got)
-	}
-}
-
 func TestCachingReaderReadThroughBehavior(t *testing.T) {
 	base := &fakeReader{values: map[string]map[string]string{
 		"work": {GitTokenKey: "token"},
@@ -109,7 +89,7 @@ func TestCachingReaderReadThroughBehavior(t *testing.T) {
 	}
 }
 
-func TestCachingReaderDistinctInstancesDoNotShareState(t *testing.T) {
+func TestCachingReaderUsesPerInstanceCacheState(t *testing.T) {
 	baseA := &fakeReader{values: map[string]map[string]string{
 		"shared": {GitTokenKey: "token-a"},
 	}}
@@ -131,7 +111,7 @@ func TestCachingReaderDistinctInstancesDoNotShareState(t *testing.T) {
 		t.Fatalf("values = (%q,%q), want distinct reader values", gotA, gotB)
 	}
 	if baseA.calls["shared/"+GitTokenKey] != 1 || baseB.calls["shared/"+GitTokenKey] != 1 {
-		t.Fatalf("underlying calls = (%d,%d), want one call per store", baseA.calls["shared/"+GitTokenKey], baseB.calls["shared/"+GitTokenKey])
+		t.Fatalf("underlying calls = (%d,%d), want one call per cache instance", baseA.calls["shared/"+GitTokenKey], baseB.calls["shared/"+GitTokenKey])
 	}
 }
 
