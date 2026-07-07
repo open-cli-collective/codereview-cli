@@ -106,14 +106,15 @@ type cachingReader struct {
 	logger  *progress.Logger
 	command string
 	backend string
+	closed  bool
 
 	mu       sync.Mutex
 	cached   map[readCacheKey]string
 	inflight map[readCacheKey]*inflightRead
 }
 
-// NewCachingReader wraps one underlying reader with a process-local read-through cache.
-func NewCachingReader(storeID string, base Reader) CachedReader {
+// CachingReader wraps one underlying reader with a process-local read-through cache.
+func CachingReader(storeID string, base Reader) CachedReader {
 	if base == nil {
 		return nil
 	}
@@ -139,6 +140,11 @@ func (r *cachingReader) Get(profile, key string) (string, error) {
 	target := secretTarget(r.backend, profile, key)
 
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		r.logCacheRead(target, false, credstore.ErrStoreClosed)
+		return "", credstore.ErrStoreClosed
+	}
 	if value, ok := r.cached[cacheKey]; ok {
 		r.mu.Unlock()
 		r.logCacheRead(target, true, nil)
@@ -176,6 +182,14 @@ func (r *cachingReader) logCacheRead(target string, hit bool, err error) {
 	}
 	span := r.logger.Start(r.command, "read_secret_cache", target)
 	span.EndFields(err, progress.Field{Key: "cache_hit", Value: fmt.Sprintf("%t", hit)})
+}
+
+func (r *cachingReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	r.cached = map[readCacheKey]string{}
+	return nil
 }
 
 // AllowedKeys is cr's keyring write allowlist.

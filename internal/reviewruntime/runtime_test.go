@@ -709,6 +709,68 @@ func TestOpenSelectionInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 	}
 }
 
+func TestOpenSelectionCachedReaderReturnsStoreClosedAfterCleanupForCachedKey(t *testing.T) {
+	statedirtest.Hermetic(t)
+	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendFile,
+	})
+	if err != nil {
+		t.Fatalf("Open file backend: %v", err)
+	}
+	defer store.Close()
+	if err := store.Set("home", credentials.GitTokenKey, "named-store-token", credstore.WithOverwrite()); err != nil {
+		t.Fatalf("Set(home, git_token): %v", err)
+	}
+
+	cfg := testConfig()
+	cfg.Secrets = config.SecretsConfig{
+		Stores: map[string]config.SecretsStore{
+			"work-file": {
+				DisplayName: "Work File Store",
+				Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")},
+			},
+		},
+	}
+	profile := cfg.Profiles["home"]
+	profile.Git.Credential.Store = "work-file"
+	cfg.Profiles["home"] = profile
+
+	var providerReader credentials.Reader
+	runtime, err := OpenSelection(context.Background(), SelectionOpenRequest{
+		Config:  cfg,
+		Profile: profile,
+		PRRef:   testPRRef(),
+		Dependencies: Dependencies{
+			NewGitProvider: func(_ config.GitConfig, reader credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				providerReader = reader
+				token, err := reader.Get("home", credentials.GitTokenKey)
+				if err != nil {
+					t.Fatalf("reader.Get(home, git_token): %v", err)
+				}
+				if token == "" {
+					t.Fatal("reader.Get(home, git_token) returned empty token")
+				}
+				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: token}, nil
+			},
+			NewAdapter: func(_ config.LLMConfig, _ credentials.Reader) (llm.Adapter, error) {
+				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenSelection: %v", err)
+	}
+	if providerReader == nil {
+		t.Fatal("provider reader was not captured")
+	}
+	runtime.Cleanup()
+	if _, err := providerReader.Get("home", credentials.GitTokenKey); !errors.Is(err, credstore.ErrStoreClosed) {
+		t.Fatalf("providerReader.Get after Cleanup = %v, want ErrStoreClosed", err)
+	}
+}
+
 func TestOpenLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 	cfg := testConfig()
 	profile := cfg.Profiles["home"]

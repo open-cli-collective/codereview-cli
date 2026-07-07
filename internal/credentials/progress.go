@@ -15,8 +15,8 @@ type progressReader struct {
 	base    Reader
 }
 
-// NewProgressStoreReader adapts a credstore-backed reader and logs backend reads.
-func NewProgressStoreReader(command string, logger *progress.Logger, resolved ResolvedSecretsProfile, store *credstore.Store) Reader {
+// ProgressStoreReader adapts a credstore-backed reader and logs backend reads.
+func ProgressStoreReader(command string, logger *progress.Logger, resolved ResolvedSecretsProfile, store *credstore.Store) Reader {
 	if store == nil {
 		return nil
 	}
@@ -38,8 +38,8 @@ func (r progressReader) Get(profile, key string) (string, error) {
 	return value, err
 }
 
-// NewProgressCachingReader wraps a caching reader with cache hit/miss breadcrumbs.
-func NewProgressCachingReader(command string, logger *progress.Logger, storeID string, resolved ResolvedSecretsProfile, base Reader) CachedReader {
+// ProgressCachingReader wraps a caching reader with cache hit/miss breadcrumbs.
+func ProgressCachingReader(command string, logger *progress.Logger, storeID string, resolved ResolvedSecretsProfile, base Reader) CachedReader {
 	if base == nil {
 		return nil
 	}

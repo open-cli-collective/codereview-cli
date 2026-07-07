@@ -88,7 +88,7 @@ func TestCachingReaderReadThroughBehavior(t *testing.T) {
 	base := &fakeReader{values: map[string]map[string]string{
 		"work": {GitTokenKey: "token"},
 	}}
-	reader := NewCachingReader("store-a", base)
+	reader := CachingReader("store-a", base)
 
 	got, err := reader.Get("work", GitTokenKey)
 	if err != nil {
@@ -116,8 +116,8 @@ func TestCachingReaderDistinctStoresDoNotCollide(t *testing.T) {
 	baseB := &fakeReader{values: map[string]map[string]string{
 		"shared": {GitTokenKey: "token-b"},
 	}}
-	readerA := NewCachingReader("store-a", baseA)
-	readerB := NewCachingReader("store-b", baseB)
+	readerA := CachingReader("store-a", baseA)
+	readerB := CachingReader("store-b", baseB)
 
 	gotA, err := readerA.Get("shared", GitTokenKey)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestCachingReaderConcurrentReadsShareOneUnderlyingRead(t *testing.T) {
 		blockFirst: true,
 		release:    make(chan struct{}),
 	}
-	reader := NewCachingReader("store-a", base)
+	reader := CachingReader("store-a", base)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
@@ -191,7 +191,7 @@ func TestCachingReaderDoesNotCacheErrorsOrMisses(t *testing.T) {
 			},
 		},
 	}
-	reader := NewCachingReader("store-a", base)
+	reader := CachingReader("store-a", base)
 
 	if _, err := reader.Get("work", GitTokenKey); err == nil || !strings.Contains(err.Error(), "backend locked") {
 		t.Fatalf("first Get error = %v, want backend locked", err)
@@ -235,7 +235,7 @@ func TestProgressStoreReaderLogsBackendRead(t *testing.T) {
 		tick++
 		return now
 	})
-	reader := NewProgressStoreReader("review", logger, ResolvedSecretsProfile{Backend: "keychain"}, store)
+	reader := ProgressStoreReader("review", logger, ResolvedSecretsProfile{Backend: "keychain"}, store)
 
 	got, err := reader.Get("work", GitTokenKey)
 	if err != nil {
@@ -264,7 +264,7 @@ func TestProgressCachingReaderLogsCacheHitAndMiss(t *testing.T) {
 		tick++
 		return now
 	})
-	reader := NewProgressCachingReader("review", logger, "store-a", ResolvedSecretsProfile{Backend: "keychain"}, base)
+	reader := ProgressCachingReader("review", logger, "store-a", ResolvedSecretsProfile{Backend: "keychain"}, base)
 
 	if _, err := reader.Get("work", GitTokenKey); err != nil {
 		t.Fatalf("first Get: %v", err)

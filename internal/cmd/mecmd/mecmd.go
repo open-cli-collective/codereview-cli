@@ -251,7 +251,7 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 		}
 		return gitprovider.Identity{Login: cached}, nil
 	}
-	reader := credentials.NewProgressStoreReader("me", r.logger, resolvedSecretsProfile, store)
+	reader := credentials.ProgressStoreReader("me", r.logger, resolvedSecretsProfile, store)
 	client, credential, err := newClient(git, reader, options)
 	if err != nil {
 		return gitprovider.Identity{}, err

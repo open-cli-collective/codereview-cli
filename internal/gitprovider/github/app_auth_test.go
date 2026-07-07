@@ -104,7 +104,7 @@ func TestNewFromGitConfigGitHubAppUsesCachingReaderAcrossRepeatedReads(t *testin
 	base := &countingReader{values: map[string]map[string]string{
 		"app": {credentials.GitHubAppPrivateKeyKey: privateKey},
 	}}
-	reader := credentials.NewCachingReader("app-store", base)
+	reader := credentials.CachingReader("app-store", base)
 	tokenRequests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.EscapedPath() {

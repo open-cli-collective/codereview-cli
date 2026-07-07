@@ -313,14 +313,17 @@ func (s *runtimeCredentialStores) Open(location config.CredentialLocation) (*cre
 	if err != nil {
 		return nil, nil, err
 	}
-	baseReader := credentials.NewProgressStoreReader(s.command, s.logger, resolved, store)
-	reader := credentials.NewProgressCachingReader(s.command, s.logger, resolved.ID, resolved, baseReader)
+	baseReader := credentials.ProgressStoreReader(s.command, s.logger, resolved, store)
+	reader := credentials.ProgressCachingReader(s.command, s.logger, resolved.ID, resolved, baseReader)
 	s.stores[resolved.ID] = runtimeCredentialStore{store: store, reader: reader}
 	return store, reader, nil
 }
 
 func (s *runtimeCredentialStores) Close() {
 	for id, opened := range s.stores {
+		if closer, ok := opened.reader.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 		_ = opened.store.Close()
 		delete(s.stores, id)
 	}

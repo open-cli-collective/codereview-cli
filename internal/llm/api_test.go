@@ -284,7 +284,7 @@ func TestAPIAdapterFromConfigUsesCachingReaderAcrossRepeatedReads(t *testing.T) 
 	base := &apiTestStore{values: map[string]map[string]string{
 		"work-llm": {credentials.OpenAIAPIKeyKey: "cached-openai-key"},
 	}}
-	reader := credentials.NewCachingReader("llm-store", base)
+	reader := credentials.CachingReader("llm-store", base)
 	cfg := config.LLMConfig{
 		Provider:      config.LLMProviderOpenAI,
 		Auth:          config.LLMAuthAPIKey,

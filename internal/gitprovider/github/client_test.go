@@ -57,7 +57,7 @@ func TestNewFromGitConfigPATUsesCachingReaderAcrossRepeatedReads(t *testing.T) {
 	base := &countingReader{values: map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "token"},
 	}}
-	reader := credentials.NewCachingReader("git-store", base)
+	reader := credentials.CachingReader("git-store", base)
 	cfg := config.GitConfig{
 		Host:          "github.example.com",
 		AuthMode:      config.GitAuthModePAT,
