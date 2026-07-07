@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 )
 
 const (
@@ -102,6 +103,9 @@ type inflightRead struct {
 type cachingReader struct {
 	storeID string
 	base    Reader
+	logger  *progress.Logger
+	command string
+	backend string
 
 	mu       sync.Mutex
 	cached   map[readCacheKey]string
@@ -132,15 +136,18 @@ func (r *cachingReader) Get(profile, key string) (string, error) {
 		profile: profile,
 		key:     key,
 	}
+	target := secretTarget(r.backend, profile, key)
 
 	r.mu.Lock()
 	if value, ok := r.cached[cacheKey]; ok {
 		r.mu.Unlock()
+		r.logCacheRead(target, true, nil)
 		return value, nil
 	}
 	if read, ok := r.inflight[cacheKey]; ok {
 		r.mu.Unlock()
 		<-read.ready
+		r.logCacheRead(target, false, read.err)
 		return read.value, read.err
 	}
 	read := &inflightRead{ready: make(chan struct{})}
@@ -158,8 +165,17 @@ func (r *cachingReader) Get(profile, key string) (string, error) {
 	read.err = err
 	close(read.ready)
 	r.mu.Unlock()
+	r.logCacheRead(target, false, err)
 
 	return value, err
+}
+
+func (r *cachingReader) logCacheRead(target string, hit bool, err error) {
+	if r.logger == nil {
+		return
+	}
+	span := r.logger.Start(r.command, "read_secret_cache", target)
+	span.EndFields(err, progress.Field{Key: "cache_hit", Value: fmt.Sprintf("%t", hit)})
 }
 
 // AllowedKeys is cr's keyring write allowlist.
