@@ -1527,29 +1527,6 @@ func llmTaskFingerprint(adapter, taskID, phase, model, effort, prompt string, de
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
-func writeLLMTaskMetadata(paths ArtifactPaths, meta llmTaskMetadata) error {
-	path, err := paths.LLMTaskMetadata(meta.TaskID)
-	if err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	return writeFileAtomic(path, append(data, '\n'))
-}
-
-func writeFileAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 func sanitizeTaskErrorForMarkdown(err error) string {
 	if err == nil {
 		return ""
@@ -1814,12 +1791,6 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		})
 	}
 	return out
-}
-
-// reviewerReadableFiles is the schema/decoder scope: reviewer workspaces expose
-// the changed-file set, while assignment scope controls expected coverage.
-func reviewerReadableFiles(changedFiles []string) []string {
-	return copySortedStrings(changedFiles)
 }
 
 // reviewerAssignmentScope is the coverage expectation: selected or allowed files

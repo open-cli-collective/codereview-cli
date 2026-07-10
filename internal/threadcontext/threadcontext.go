@@ -77,12 +77,6 @@ type ThreadSummary struct {
 	LastCommentHasThreadSummaryMarker    bool
 }
 
-// FileContext groups compact thread summaries by file path.
-type FileContext struct {
-	Path      string
-	Summaries []ThreadSummary
-}
-
 // Normalize converts provider inline threads into deterministic prompt-safe
 // domain threads.
 func Normalize(threads []gitprovider.InlineThread, opts Options) ([]Thread, error) {
@@ -132,71 +126,6 @@ func (thread Thread) EffectiveSettledSummary() (*ThreadSummary, bool) {
 		return thread.CRSettledSummary, true
 	}
 	return nil, false
-}
-
-// FileScopedResolvedSummaries returns provider-resolved thread summaries grouped
-// by file path.
-func FileScopedResolvedSummaries(threads []Thread) []FileContext {
-	byPath := map[string][]ThreadSummary{}
-	for _, thread := range threads {
-		if thread.ResolvedSummary == nil {
-			continue
-		}
-		summary := *thread.ResolvedSummary
-		path := summary.Anchor.Path
-		if strings.TrimSpace(path) == "" {
-			path = thread.Anchor.Path
-			summary.Anchor.Path = path
-		}
-		byPath[path] = append(byPath[path], summary)
-	}
-	paths := make([]string, 0, len(byPath))
-	for path := range byPath {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	out := make([]FileContext, 0, len(paths))
-	for _, path := range paths {
-		summaries := byPath[path]
-		sort.SliceStable(summaries, func(i, j int) bool {
-			return summaryLess(summaries[i], summaries[j])
-		})
-		out = append(out, FileContext{Path: path, Summaries: summaries})
-	}
-	return out
-}
-
-// FileScopedSettledSummaries returns compact provider-resolved and CR-settled
-// thread summaries grouped by file path.
-func FileScopedSettledSummaries(threads []Thread) []FileContext {
-	byPath := map[string][]ThreadSummary{}
-	for _, thread := range threads {
-		summary, ok := thread.EffectiveSettledSummary()
-		if !ok {
-			continue
-		}
-		copied := *summary
-		path := copied.Anchor.Path
-		if strings.TrimSpace(path) == "" {
-			path = thread.Anchor.Path
-			copied.Anchor.Path = path
-		}
-		byPath[path] = append(byPath[path], copied)
-	}
-	paths := make([]string, 0, len(byPath))
-	for path := range byPath {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	out := make([]FileContext, 0, len(paths))
-	for _, path := range paths {
-		summaries := byPath[path]
-		sort.SliceStable(summaries, func(i, j int) bool {
-			return summaryLess(summaries[i], summaries[j])
-		})
-		out = append(out, FileContext{Path: path, Summaries: summaries})
-	}
-	return out
 }
 
 // PendingCRAuthoredFindingThreads filters to unresolved CR-authored finding
@@ -390,13 +319,6 @@ func threadLess(left, right Thread) bool {
 		return left.Anchor.Line < right.Anchor.Line
 	}
 	return left.ID < right.ID
-}
-
-func summaryLess(left, right ThreadSummary) bool {
-	if left.Anchor.Line != right.Anchor.Line {
-		return left.Anchor.Line < right.Anchor.Line
-	}
-	return left.ThreadID < right.ThreadID
 }
 
 func effectiveTime(comment Comment) time.Time {

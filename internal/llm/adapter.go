@@ -188,27 +188,8 @@ func (e *StructuredValidationError) Is(target error) bool {
 	return target == ErrStructuredOutputInvalidAfterRetry
 }
 
-// RunStructured runs a structured-output request and retries one validation
-// failure with a deterministic correction prompt. On retry success, the
-// returned Response is the final successful attempt's response; this helper does
-// not aggregate usage or duration across attempts.
-func RunStructured[T any](ctx context.Context, adapter Adapter, req Request, decode Decoder[T]) (T, Response, error) {
-	var zero T
-	result, err := RunStructuredWithSession(ctx, adapter, req, decode)
-	if err != nil {
-		return zero, result.Response, err
-	}
-	return result.Value, result.Response, nil
-}
-
-// RunStructuredWithSession is RunStructured plus the provider session id from
-// the successful attempt. It preserves the same retry-once validation behavior.
-func RunStructuredWithSession[T any](ctx context.Context, adapter Adapter, req Request, decode Decoder[T]) (StructuredResult[T], error) {
-	return RunStructuredWithSessionResume(ctx, adapter, "", req, decode)
-}
-
-// RunStructuredWithSessionResume is RunStructuredWithSession starting from an
-// existing provider session id when provided.
+// RunStructuredWithSessionResume runs a structured request, starting from an
+// existing provider session ID when provided.
 func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter, resumeSessionID string, req Request, decode Decoder[T]) (StructuredResult[T], error) {
 	var zero T
 	sessionID, response, err := runOnceWithSession(ctx, adapter, resumeSessionID, req)

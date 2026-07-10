@@ -58,17 +58,16 @@ type Result struct {
 
 // Options are explicit call-site supplied dependencies for one analysis run.
 type Options struct {
-	Store           llmlifecycle.Store
-	RunID           string
-	Adapter         llm.Adapter
-	Model           string
-	Effort          string
-	LogPath         string
-	LifecyclePaths  llmlifecycle.Paths
-	ResumeSessionID string
-	Progress        llmlifecycle.Progress
-	Now             func() time.Time
-	NewStepID       func() string
+	Store          llmlifecycle.Store
+	RunID          string
+	Adapter        llm.Adapter
+	Model          string
+	Effort         string
+	LogPath        string
+	LifecyclePaths llmlifecycle.Paths
+	Progress       llmlifecycle.Progress
+	Now            func() time.Time
+	NewStepID      func() string
 }
 
 // AnalyzeThread analyzes one normalized inline thread through the durable LLM lifecycle.
@@ -146,7 +145,6 @@ func lifecycleRequestForThread(opts Options, threadID string, thread threadconte
 		Effort:          opts.Effort,
 		LogPath:         opts.LogPath,
 		Prompt:          prompt,
-		ResumeSessionID: opts.ResumeSessionID,
 		Progress:        opts.Progress,
 		Now:             opts.Now,
 		NewSessionRowID: opts.NewStepID,

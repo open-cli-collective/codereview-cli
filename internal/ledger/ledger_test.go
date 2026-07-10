@@ -358,23 +358,6 @@ func TestListRunsNewestFirstStable(t *testing.T) {
 	}
 }
 
-func TestUpdateHeartbeat(t *testing.T) {
-	store := openStore(t)
-	run := allocateRun(t, store, validAllocateRunParams())
-	heartbeat := time.Date(2026, 5, 30, 12, 2, 0, 0, time.UTC)
-
-	if err := store.UpdateHeartbeat(context.Background(), run.RunID, heartbeat); err != nil {
-		t.Fatalf("UpdateHeartbeat: %v", err)
-	}
-	got, err := store.GetRun(context.Background(), run.RunID)
-	if err != nil {
-		t.Fatalf("GetRun: %v", err)
-	}
-	if got.HeartbeatAt == nil || !got.HeartbeatAt.Equal(heartbeat) {
-		t.Fatalf("HeartbeatAt = %v, want %v", got.HeartbeatAt, heartbeat)
-	}
-}
-
 func TestAllocateRunConcurrentSameKey(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
@@ -476,15 +459,27 @@ func TestAllocateRunRecoveryRejectsExistingRunID(t *testing.T) {
 	if got.ArtifactPath != original.ArtifactPath {
 		t.Fatalf("ArtifactPath = %q, want original %q", got.ArtifactPath, original.ArtifactPath)
 	}
-	pr, err := store.GetPR(context.Background(), original.PRKey)
-	if err != nil {
-		t.Fatalf("GetPR original: %v", err)
-	}
-	if pr.PRURL != "https://example.test/pr/36" {
-		t.Fatalf("PRURL = %q, want original URL", pr.PRURL)
-	}
 	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM runs"); count != 1 {
 		t.Fatalf("runs count = %d, want 1", count)
+	}
+}
+
+func TestAllocateRunPreservesPRFirstSeenAndUpdatesURL(t *testing.T) {
+	store := openStore(t)
+	params := validAllocateRunParams()
+	first := allocateRun(t, store, params)
+
+	params.RunID = ""
+	params.PRURL = "https://example.test/new-url"
+	params.StartedAt = params.StartedAt.Add(time.Minute)
+	params.ArtifactPath = "/tmp/second"
+	allocateRun(t, store, params)
+
+	if got := queryString(t, store.db, "SELECT pr_url FROM prs WHERE pr_key = ?", first.PRKey); got != params.PRURL {
+		t.Fatalf("PRURL = %q, want %q", got, params.PRURL)
+	}
+	if got := queryString(t, store.db, "SELECT first_seen_at FROM prs WHERE pr_key = ?", first.PRKey); got != encodeTime(first.StartedAt) {
+		t.Fatalf("FirstSeenAt = %q, want %q", got, encodeTime(first.StartedAt))
 	}
 }
 
@@ -544,29 +539,6 @@ func TestClassifyAllocateConstraintForRecoveryMode(t *testing.T) {
 func TestSQLiteConstraintClassificationRequiresDriverError(t *testing.T) {
 	if isSQLiteConstraintError(errors.New("constraint failed")) {
 		t.Fatal("isSQLiteConstraintError(text error) = true, want false")
-	}
-}
-
-func TestAllocateRunPreservesPRFirstSeenAndUpdatesURL(t *testing.T) {
-	store := openStore(t)
-	params := validAllocateRunParams()
-	first := allocateRun(t, store, params)
-
-	params.RunID = ""
-	params.PRURL = "https://example.test/new-url"
-	params.StartedAt = params.StartedAt.Add(time.Minute)
-	params.ArtifactPath = "/tmp/second"
-	allocateRun(t, store, params)
-
-	pr, err := store.GetPR(context.Background(), first.PRKey)
-	if err != nil {
-		t.Fatalf("GetPR: %v", err)
-	}
-	if pr.PRURL != "https://example.test/new-url" {
-		t.Fatalf("PRURL = %q, want updated URL", pr.PRURL)
-	}
-	if !pr.FirstSeenAt.Equal(first.StartedAt) {
-		t.Fatalf("FirstSeenAt = %s, want first run started_at %s", pr.FirstSeenAt, first.StartedAt)
 	}
 }
 
@@ -1242,10 +1214,6 @@ func TestCloseStopsWriterAndRejectsMutation(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{name: "GetPR", run: func() error {
-			_, err := store.GetPR(context.Background(), "github_open-cli_codereview-cli_36")
-			return err
-		}},
 		{name: "GetRun", run: func() error {
 			_, err := store.GetRun(context.Background(), "run-1")
 			return err

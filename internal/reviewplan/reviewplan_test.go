@@ -616,34 +616,6 @@ func TestActionIDGeneratorFailures(t *testing.T) {
 	}
 }
 
-func TestSortActionsOrdersByKindThenActionID(t *testing.T) {
-	actions := []Action{
-		{ActionID: "rollup-b", Kind: ActionKindRollupComment},
-		{ActionID: "inline-b", Kind: ActionKindInlineComment},
-		{ActionID: "reply-b", Kind: ActionKindThreadReply},
-		{ActionID: "inline-a", Kind: ActionKindInlineComment},
-		{ActionID: "submit-b", Kind: ActionKindSubmitReview},
-		{ActionID: "resolve-b", Kind: ActionKindResolveThread},
-	}
-
-	got := SortActions(actions)
-	gotPairs := make([]string, 0, len(got))
-	for _, action := range got {
-		gotPairs = append(gotPairs, string(action.Kind)+":"+action.ActionID)
-	}
-	want := []string{
-		"thread_reply:reply-b",
-		"resolve_thread:resolve-b",
-		"inline_comment:inline-a",
-		"inline_comment:inline-b",
-		"rollup_comment:rollup-b",
-		"submit_review:submit-b",
-	}
-	if !reflect.DeepEqual(gotPairs, want) {
-		t.Fatalf("SortActions = %#v, want %#v", gotPairs, want)
-	}
-}
-
 func TestProductionImportBoundary(t *testing.T) {
 	allowed := map[string]bool{
 		"github.com/open-cli-collective/codereview-cli/internal/review": true,

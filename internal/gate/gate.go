@@ -18,16 +18,6 @@ const (
 	DecisionError      DecisionKind = "error"
 )
 
-// Valid reports whether k is a known decision kind.
-func (k DecisionKind) Valid() bool {
-	switch k {
-	case DecisionResume, DecisionEarlyExit, DecisionRepair, DecisionRetryPosts, DecisionAbortStale, DecisionFresh, DecisionError:
-		return true
-	default:
-		return false
-	}
-}
-
 // Flags contains gate-affecting CLI flags.
 type Flags struct {
 	Rerun      bool
@@ -131,16 +121,6 @@ const (
 	PRStateStaleBase      PRState = "stale_base"
 )
 
-// Valid reports whether s is a known PR marker state.
-func (s PRState) Valid() bool {
-	switch s {
-	case PRStateFresh, PRStateCompleteReview, PRStateCompleteNoDiff, PRStatePartial, PRStateStaleBase:
-		return true
-	default:
-		return false
-	}
-}
-
 // PROutcome records the verdict from a rollup marker.
 type PROutcome string
 
@@ -151,16 +131,6 @@ const (
 	PROutcomeComment         PROutcome = "comment"
 	PROutcomeNothingToReview PROutcome = "nothing_to_review"
 )
-
-// Valid reports whether o is a known PR outcome.
-func (o PROutcome) Valid() bool {
-	switch o {
-	case PROutcomeApproved, PROutcomeRequestChanges, PROutcomeComment, PROutcomeNothingToReview:
-		return true
-	default:
-		return false
-	}
-}
 
 // RealVerdict reports whether o is a review verdict that needs submit_review.
 func (o PROutcome) RealVerdict() bool {
@@ -185,16 +155,6 @@ const (
 	ErrorPartialFailed                ErrorReason = "partial_failed"
 	ErrorPartialResumableInconsistent ErrorReason = "partial_resumable_inconsistent"
 )
-
-// Valid reports whether r is a known error reason.
-func (r ErrorReason) Valid() bool {
-	switch r {
-	case ErrorInvalidInput, ErrorMutuallyExclusiveFlags, ErrorRetryPostsIneligible, ErrorPartialFailed, ErrorPartialResumableInconsistent:
-		return true
-	default:
-		return false
-	}
-}
 
 // RunSummary is the local ledger state needed by the pure gate.
 type RunSummary struct {

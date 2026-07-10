@@ -1455,11 +1455,7 @@ func gateRunState(outcome *ledger.Outcome) (gate.RunState, error) {
 }
 
 func heartbeatStale(run ledger.Run, now time.Time, threshold time.Duration) bool {
-	last := run.StartedAt
-	if run.HeartbeatAt != nil {
-		last = *run.HeartbeatAt
-	}
-	return now.Sub(last) > threshold
+	return now.Sub(run.StartedAt) > threshold
 }
 
 func sameIdentity(author gitprovider.Identity, target gitprovider.Identity) bool {

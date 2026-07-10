@@ -492,23 +492,6 @@ func TestDecideInvalidInputs(t *testing.T) {
 }
 
 func TestEnumValidity(t *testing.T) {
-	for _, value := range []DecisionKind{
-		DecisionResume,
-		DecisionEarlyExit,
-		DecisionRepair,
-		DecisionRetryPosts,
-		DecisionAbortStale,
-		DecisionFresh,
-		DecisionError,
-	} {
-		if !value.Valid() {
-			t.Fatalf("DecisionKind(%q).Valid() = false, want true", value)
-		}
-	}
-	if DecisionKind("done").Valid() {
-		t.Fatal("DecisionKind(done).Valid() = true, want false")
-	}
-
 	for _, value := range []PostMode{PostModeLive, PostModeDryRun} {
 		if !value.Valid() {
 			t.Fatalf("PostMode(%q).Valid() = false, want true", value)
@@ -555,34 +538,6 @@ func TestEnumValidity(t *testing.T) {
 		t.Fatal("LockState(unknown).Valid() = true, want false")
 	}
 
-	for _, value := range []PRState{
-		PRStateFresh,
-		PRStateCompleteReview,
-		PRStateCompleteNoDiff,
-		PRStatePartial,
-		PRStateStaleBase,
-	} {
-		if !value.Valid() {
-			t.Fatalf("PRState(%q).Valid() = false, want true", value)
-		}
-	}
-	if PRState("complete").Valid() {
-		t.Fatal("PRState(complete).Valid() = true, want false")
-	}
-
-	for _, value := range []PROutcome{
-		PROutcomeApproved,
-		PROutcomeRequestChanges,
-		PROutcomeComment,
-		PROutcomeNothingToReview,
-	} {
-		if !value.Valid() {
-			t.Fatalf("PROutcome(%q).Valid() = false, want true", value)
-		}
-	}
-	if PROutcome("rejected").Valid() {
-		t.Fatal("PROutcome(rejected).Valid() = true, want false")
-	}
 	for _, value := range []PROutcome{PROutcomeApproved, PROutcomeRequestChanges, PROutcomeComment} {
 		if !value.RealVerdict() {
 			t.Fatalf("PROutcome(%q).RealVerdict() = false, want true", value)
@@ -592,20 +547,6 @@ func TestEnumValidity(t *testing.T) {
 		t.Fatal("PROutcomeNothingToReview.RealVerdict() = true, want false")
 	}
 
-	for _, value := range []ErrorReason{
-		ErrorInvalidInput,
-		ErrorMutuallyExclusiveFlags,
-		ErrorRetryPostsIneligible,
-		ErrorPartialFailed,
-		ErrorPartialResumableInconsistent,
-	} {
-		if !value.Valid() {
-			t.Fatalf("ErrorReason(%q).Valid() = false, want true", value)
-		}
-	}
-	if ErrorReason("blocked").Valid() {
-		t.Fatal("ErrorReason(blocked).Valid() = true, want false")
-	}
 }
 
 func requestWithPR(pr PRSummary, mutate ...func(*Request)) Request {

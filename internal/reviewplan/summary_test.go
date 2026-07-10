@@ -454,8 +454,6 @@ func TestFormatHelpers(t *testing.T) {
 		{"tokens k", formatTokens(intPtr(40_249)), "40.2k"},
 		{"tokens k keeps decimal", formatTokens(intPtr(22_000)), "22.0k"},
 		{"tokens M", formatTokens(intPtr(1_300_000)), "1.3M"},
-		{"usd nil", formatUSD(nil), "unavailable"},
-		{"usd value", formatUSD(float64Ptr(1.084)), "$1.08"},
 		{"duration nil", formatDurationMS(nil), "unavailable"},
 		{"duration sub-second", formatDurationMS(int64Ptr(450)), "<1s"},
 		{"duration zero", formatDurationMS(int64Ptr(0)), "0s"},

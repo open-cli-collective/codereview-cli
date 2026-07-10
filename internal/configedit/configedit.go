@@ -28,8 +28,6 @@ var (
 	ErrProfileNameRequired = errors.New("profile name is required")
 	// ErrProfileExists means the destination profile already exists.
 	ErrProfileExists = errors.New("profile already exists")
-	// ErrReviewerCredentialsNotConfigured means reviewer credentials are absent.
-	ErrReviewerCredentialsNotConfigured = errors.New("reviewer credentials are not configured")
 )
 
 // RepositoryRouteSpec identifies one namespace route or one set of repo routes.
@@ -264,14 +262,6 @@ func RemoveAgentSource(existing []string, raw string) ([]string, bool, error) {
 	return out, true, nil
 }
 
-// ResetAgentSources clears agent sources while reporting whether anything changed.
-func ResetAgentSources(existing []string) ([]string, bool) {
-	if len(existing) == 0 {
-		return existing, false
-	}
-	return nil, true
-}
-
 // FirstProfileName returns the lexicographically first profile name.
 func FirstProfileName(profiles map[string]config.Profile) string {
 	if len(profiles) == 0 {
@@ -314,68 +304,6 @@ func RenameProfile(cfg config.File, oldName string, newName string) (config.File
 	cfg.Profiles = profiles
 	cfg.RepositoryProfiles, _ = UpdateRepositoryProfileReferences(cfg.RepositoryProfiles, oldName, newName)
 	return cfg, true, nil
-}
-
-// SetGitCredentialRef updates the profile's required git credential ref.
-func SetGitCredentialRef(profile config.Profile, ref string) (config.Profile, bool) {
-	ref = strings.TrimSpace(ref)
-	if profile.Git.CredentialRef == ref {
-		return profile, false
-	}
-	profile.Git.CredentialRef = ref
-	return profile, true
-}
-
-// SetReviewerCredentialRef updates the reviewer credential ref when the section exists.
-func SetReviewerCredentialRef(profile config.Profile, ref string) (config.Profile, bool, error) {
-	if profile.ReviewerCredentials == nil {
-		return profile, false, ErrReviewerCredentialsNotConfigured
-	}
-	ref = strings.TrimSpace(ref)
-	creds := *profile.ReviewerCredentials
-	if creds.CredentialRef == ref {
-		return profile, false, nil
-	}
-	creds.CredentialRef = ref
-	profile.ReviewerCredentials = &creds
-	return profile, true, nil
-}
-
-// ClearReviewerCredentials removes the optional reviewer credential section.
-func ClearReviewerCredentials(profile config.Profile) (config.Profile, bool) {
-	if profile.ReviewerCredentials == nil {
-		return profile, false
-	}
-	profile.ReviewerCredentials = nil
-	return profile, true
-}
-
-// SetLLMCredentialRef updates the profile's LLM credential ref.
-func SetLLMCredentialRef(profile config.Profile, ref string) (config.Profile, bool) {
-	ref = strings.TrimSpace(ref)
-	if profile.LLM.CredentialRef == ref {
-		return profile, false
-	}
-	profile.LLM.CredentialRef = ref
-	return profile, true
-}
-
-// ClearLLMCredentialRef clears the optional LLM credential ref.
-func ClearLLMCredentialRef(profile config.Profile) (config.Profile, bool) {
-	if profile.LLM.CredentialRef == "" {
-		return profile, false
-	}
-	profile.LLM.CredentialRef = ""
-	return profile, true
-}
-
-// ResetModelMap clears profile-specific model mappings.
-func ResetModelMap(profile config.Profile) (config.Profile, bool) {
-	if profile.LLM.ModelMap == nil {
-		return profile, false
-	}
-	profile.LLM.ModelMap = nil
-	return profile, true
 }
 
 func newRepositoryRouteState(routes []config.RepositoryProfile) repositoryRouteState {
