@@ -451,6 +451,9 @@ func TestAllocateRunRecoveryRejectsExistingRunID(t *testing.T) {
 	if !errors.Is(err, ErrRunExists) {
 		t.Fatalf("AllocateRun duplicate error = %v, want ErrRunExists", err)
 	}
+	if got, want := err.Error(), "ledger: run already exists: same-run"; got != want {
+		t.Fatalf("AllocateRun duplicate error = %q, want %q", got, want)
+	}
 
 	got, err := store.GetRun(context.Background(), original.RunID)
 	if err != nil {

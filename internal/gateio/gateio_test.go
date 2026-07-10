@@ -1842,7 +1842,7 @@ func TestEvaluateOutboxLimiterRequiredOnlyForPostExecution(t *testing.T) {
 
 func TestAbortStaleRunsRequiresLockedTarget(t *testing.T) {
 	fixture := newFixture(t)
-	err := abortStaleRuns(context.Background(), fixture.opts(), gateState{staleLocks: map[string]staleProbe{}}, []string{"missing-run"})
+	err := abortStaleRuns(context.Background(), fixture.opts(), gateState{staleLocks: map[string]Lock{}}, []string{"missing-run"})
 	if err == nil {
 		t.Fatal("abortStaleRuns missing lock error = nil, want error")
 	}

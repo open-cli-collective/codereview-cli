@@ -2,10 +2,12 @@
 package outbox
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -263,7 +265,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				}
 				continue
 			}
-			conflictClass := classifyConflictCause(err)
+			conflictClass := classifyProviderError(err)
 			if conflictClass == failureRetryable {
 				if updateErr := recordPendingError(ctx, opts.Store, &actions[i], err); updateErr != nil {
 					return Result{ExitCode: exitFailed}, updateErr
@@ -507,24 +509,8 @@ func buildActionPlan(provider gitprovider.GitProvider, req Request, actions []le
 		if provider.Capabilities().BundleInlineOnSubmit {
 			return actionPlan{}, bundledInlineIDs, fmt.Errorf("outbox: inline comment %s should be bundled into submit review", action.ActionID)
 		}
-		payload, err := decodePayload[InlineCommentPayload](action)
+		comment, err := inlineComment(req, action)
 		if err != nil {
-			return actionPlan{}, bundledInlineIDs, err
-		}
-		body, err := bodyWithActionMarker(req, action, marker.ActionKindInlineComment, "", payload.Body)
-		if err != nil {
-			return actionPlan{}, bundledInlineIDs, err
-		}
-		comment := gitprovider.InlineComment{
-			CommitSHA:    req.Run.SHA,
-			Body:         body,
-			Path:         payload.Path,
-			Side:         payload.Side,
-			Line:         payload.Line,
-			SubjectType:  payload.SubjectType,
-			DiffPosition: payload.DiffPosition,
-		}
-		if err := comment.Validate(); err != nil {
 			return actionPlan{}, bundledInlineIDs, err
 		}
 		return actionPlan{action: action, inlineComment: &comment}, bundledInlineIDs, nil
@@ -598,33 +584,38 @@ func bundledInlineComments(req Request, actions []ledger.PlannedAction) ([]gitpr
 		if action.Kind != ledger.PlannedActionInlineComment || action.Status != ledger.PlannedActionPending {
 			continue
 		}
-		payload, err := decodePayload[InlineCommentPayload](action)
+		comment, err := inlineComment(req, action)
 		if err != nil {
 			return nil, nil, err
-		}
-		body, err := bodyWithActionMarker(req, action, marker.ActionKindInlineComment, "", payload.Body)
-		if err != nil {
-			return nil, nil, err
-		}
-		comment := gitprovider.InlineComment{
-			CommitSHA:    req.Run.SHA,
-			Body:         body,
-			Path:         payload.Path,
-			Side:         payload.Side,
-			Line:         payload.Line,
-			SubjectType:  payload.SubjectType,
-			DiffPosition: payload.DiffPosition,
 		}
 		if comment.SubjectType != review.AnchorKindLine {
 			return nil, nil, fmt.Errorf("outbox: bundled inline comment %s must be line-scoped", action.ActionID)
-		}
-		if err := comment.Validate(); err != nil {
-			return nil, nil, err
 		}
 		comments = append(comments, comment)
 		ids[action.ActionID] = true
 	}
 	return comments, ids, nil
+}
+
+func inlineComment(req Request, action ledger.PlannedAction) (gitprovider.InlineComment, error) {
+	payload, err := decodePayload[InlineCommentPayload](action)
+	if err != nil {
+		return gitprovider.InlineComment{}, err
+	}
+	body, err := bodyWithActionMarker(req, action, marker.ActionKindInlineComment, "", payload.Body)
+	if err != nil {
+		return gitprovider.InlineComment{}, err
+	}
+	comment := gitprovider.InlineComment{
+		CommitSHA:    req.Run.SHA,
+		Body:         body,
+		Path:         payload.Path,
+		Side:         payload.Side,
+		Line:         payload.Line,
+		SubjectType:  payload.SubjectType,
+		DiffPosition: payload.DiffPosition,
+	}
+	return comment, comment.Validate()
 }
 
 func markReconciledBundledInlinePosted(ctx context.Context, store Store, req Request, actions []ledger.PlannedAction, state hostState, upstreamID *string, postedAt time.Time) error {
@@ -759,21 +750,16 @@ const (
 	failureAuth
 )
 
-const (
-	failureClassStorageTerminal = ledger.PlannedActionFailureClassTerminal
-	failureClassStorageAuth     = ledger.PlannedActionFailureClassAuth
-)
-
 func failureClassPtr(class failureClass) *string {
-	value := failureClassStorageTerminal
+	value := ledger.PlannedActionFailureClassTerminal
 	if class == failureAuth {
-		value = failureClassStorageAuth
+		value = ledger.PlannedActionFailureClassAuth
 	}
 	return &value
 }
 
 func terminalFailureClass(action ledger.PlannedAction) failureClass {
-	if action.FailureClass != nil && *action.FailureClass == failureClassStorageAuth {
+	if action.FailureClass != nil && *action.FailureClass == ledger.PlannedActionFailureClassAuth {
 		return failureAuth
 	}
 	return failureTerminal
@@ -798,19 +784,6 @@ func isAdvisoryThreadResolutionError(action ledger.PlannedAction, advisoryEnable
 		return true
 	}
 	return advisoryEnabled && errors.Is(err, gitprovider.ErrPermission)
-}
-
-func classifyConflictCause(err error) failureClass {
-	switch {
-	case errors.Is(err, gitprovider.ErrRetryable):
-		return failureRetryable
-	case errors.Is(err, gitprovider.ErrAuth), errors.Is(err, gitprovider.ErrPermission):
-		return failureAuth
-	case errors.Is(err, gitprovider.ErrNotFound):
-		return failureTerminal
-	default:
-		return failureTerminal
-	}
 }
 
 func finalOutcome(success ledger.Outcome, actions []ledger.PlannedAction) (ledger.Outcome, int) {
@@ -896,20 +869,10 @@ func isContextError(err error) bool {
 
 func sortActions(actions []ledger.PlannedAction) []ledger.PlannedAction {
 	sorted := append([]ledger.PlannedAction(nil), actions...)
-	for i := 1; i < len(sorted); i++ {
-		for j := i; j > 0 && actionLess(sorted[j], sorted[j-1]); j-- {
-			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
-		}
-	}
+	slices.SortStableFunc(sorted, func(a, b ledger.PlannedAction) int {
+		return cmp.Or(cmp.Compare(actionOrder(a.Kind), actionOrder(b.Kind)), cmp.Compare(a.ActionID, b.ActionID))
+	})
 	return sorted
-}
-
-func actionLess(a, b ledger.PlannedAction) bool {
-	ao, bo := actionOrder(a.Kind), actionOrder(b.Kind)
-	if ao != bo {
-		return ao < bo
-	}
-	return a.ActionID < b.ActionID
 }
 
 func actionOrder(kind ledger.PlannedActionKind) int {
