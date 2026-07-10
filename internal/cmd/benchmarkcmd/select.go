@@ -2,9 +2,9 @@ package benchmarkcmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +24,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
+	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
 var (
@@ -73,49 +74,46 @@ func newSelectCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flags.jsonOutput {
-				enc := json.NewEncoder(opts.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(summary)
-			}
-			return renderSelectionText(opts, summary)
+			return view.Render(opts.Stdout, flags.jsonOutput, summary, func(io.Writer) error {
+				return renderSelectionText(opts, summary)
+			})
 		},
 	}
 	cmd.Flags().StringArrayVar(&flags.candidates, "candidate", nil, "Candidate ID to run")
 	cmd.Flags().StringArrayVar(&flags.cases, "case", nil, "Case ID to run")
 	cmd.Flags().StringVar(&flags.resultsDir, "results-dir", "", "Benchmark select output directory; defaults to .cr-bench/results/<suite-id>/select/<timestamp> under the current working directory")
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	return cmd
 }
 
 func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *root.Options, flags selectFlags, suitePath string) (benchmarkSuiteSummary, error) {
-	logger := newProgressLogger(opts)
+	logger := root.NewProgressLogger(opts)
 	suiteSpan := logger.Start("benchmark.select", "load_suite", "suite")
 	suite, cfg, err := loadConfigAndSuiteWithValidator(opts, suitePath, benchmark.ValidateForSelection)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(suiteSpan, err)
+		return benchmarkSuiteSummary{}, suiteSpan.End(err)
 	}
-	suiteSpan.End(nil)
+	_ = suiteSpan.End(nil)
 	selectSpan := logger.Start("benchmark.select", "select_matrix", suite.Suite.ID)
 	selectedCandidates, selectedCases, err := benchmark.Select(suite, flags.candidates, flags.cases)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(selectSpan, mapBenchmarkError(err))
+		return benchmarkSuiteSummary{}, selectSpan.End(mapBenchmarkError(err))
 	}
-	selectSpan.End(nil)
+	_ = selectSpan.End(nil)
 	started := benchmarkNow().UTC()
 	resultsSpan := logger.Start("benchmark.select", "prepare_results", suite.Suite.ID)
 	resultsDir, err := resolveSelectResultsDir(suite.Suite.ID, flags.resultsDir, started)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, err)
+		return benchmarkSuiteSummary{}, resultsSpan.End(err)
 	}
 	suiteHash, err := suiteFileSHA256(suite.Path)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, err)
+		return benchmarkSuiteSummary{}, resultsSpan.End(err)
 	}
 	if err := os.MkdirAll(resultsDir, artifactDirPerm); err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, fmt.Errorf("benchmark: create results dir: %w", err))
+		return benchmarkSuiteSummary{}, resultsSpan.End(fmt.Errorf("benchmark: create results dir: %w", err))
 	}
-	resultsSpan.End(nil)
+	_ = resultsSpan.End(nil)
 
 	var cleanups []func()
 	defer func() {
@@ -137,7 +135,7 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 		key := selectionRuntimeKey{profileName: resolvedName, host: ref.Host, owner: ref.Owner, repo: ref.Repo}
 		if resolveErr == nil {
 			if state, ok := runtimes[key]; ok {
-				runtimeSpan.End(state.err)
+				_ = runtimeSpan.End(state.err)
 				return state
 			}
 		}
@@ -153,9 +151,9 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 			runtimes[key] = state
 		}
 		if state.err != nil {
-			runtimeSpan.End(state.err)
+			_ = runtimeSpan.End(state.err)
 		} else {
-			runtimeSpan.End(nil)
+			_ = runtimeSpan.End(nil)
 		}
 		return state
 	}
@@ -209,14 +207,14 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 	summary.DurationMS = durationMS(completed.Sub(started))
 	writeArtifactsSpan := logger.Start("benchmark.select", "write_suite_artifacts", suite.Suite.ID)
 	if err := writeSuiteArtifacts(summary); err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(writeArtifactsSpan, err)
+		return benchmarkSuiteSummary{}, writeArtifactsSpan.End(err)
 	}
-	writeArtifactsSpan.End(nil)
+	_ = writeArtifactsSpan.End(nil)
 	compareSpan := logger.Start("benchmark.select", "write_comparison", suite.Suite.ID)
 	if _, err := writeComparisonArtifactsForResultsDir(summary.ResultsDir); err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(compareSpan, fmt.Errorf("benchmark: write comparison artifacts after suite artifacts were written to %s; rerun `cr benchmark compare %s`: %w", summary.ResultsDir, summary.ResultsDir, err))
+		return benchmarkSuiteSummary{}, compareSpan.End(fmt.Errorf("benchmark: write comparison artifacts after suite artifacts were written to %s; rerun `cr benchmark compare %s`: %w", summary.ResultsDir, summary.ResultsDir, err))
 	}
-	compareSpan.End(nil)
+	_ = compareSpan.End(nil)
 	return summary, nil
 }
 
@@ -224,18 +222,18 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 	runSpan := logger.Start("benchmark.select", "execute_run", runID)
 	runDir := filepath.Join(resultsDir, runID)
 	if err := os.MkdirAll(runDir, artifactDirPerm); err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, fmt.Errorf("benchmark: create run dir %s: %w", runID, err))
+		return benchmarkRun{}, runSpan.End(fmt.Errorf("benchmark: create run dir %s: %w", runID, err))
 	}
 	artifacts, err := selectionRunArtifacts(runDir)
 	if err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, err)
+		return benchmarkRun{}, runSpan.End(err)
 	}
 	recipe := benchmarkRunRecipe{
 		Candidate: summarizeCandidates(suiteDir, []benchmark.Candidate{candidate})[0],
 		Case:      summarizeCases([]benchmark.Case{benchCase})[0],
 	}
 	if err := writeJSONFile(artifacts.RecipeJSON, recipe); err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, err)
+		return benchmarkRun{}, runSpan.End(err)
 	}
 
 	runSummary := benchmarkRun{
@@ -263,34 +261,34 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 	ref, err := prref.ParseGitHubPullURL(benchCase.PR)
 	if err != nil {
 		recordSelectionRunFailure(&runSummary, &stderrBody, err)
-		parseSpan.End(err)
+		_ = parseSpan.End(err)
 		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, endProgressSpan(runSpan, ferr)
+		return finalized, runSpan.End(ferr)
 	}
-	parseSpan.End(nil)
+	_ = parseSpan.End(nil)
 
 	state := resolveRuntime(candidate.Profile, ref)
 	if state.err != nil {
 		recordSelectionRunFailure(&runSummary, &stderrBody, state.err)
 		finalized, err := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, endProgressSpan(runSpan, err)
+		return finalized, runSpan.End(err)
 	}
 	postingIdentity, err := benchmarkSelectionPostingIdentity(state.profile)
 	if err != nil {
 		recordSelectionRunFailure(&runSummary, &stderrBody, err)
 		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, endProgressSpan(runSpan, ferr)
+		return finalized, runSpan.End(ferr)
 	}
 
 	promptSpan := logger.Start("benchmark.select", "load_prompt", runID)
 	selectionPromptInstructions, err := loadSelectionPromptInstructions(suiteDir, candidate.Stages.Selection.Prompt)
 	if err != nil {
 		recordSelectionRunFailure(&runSummary, &stderrBody, err)
-		promptSpan.End(err)
+		_ = promptSpan.End(err)
 		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, endProgressSpan(runSpan, ferr)
+		return finalized, runSpan.End(ferr)
 	}
-	promptSpan.End(nil)
+	_ = promptSpan.End(nil)
 
 	selectionSpan := logger.Start("benchmark.select", "selection_pipeline", runID)
 	selectionResult, err := runSelectionOnly(ctx, pipeline.Options{
@@ -325,20 +323,20 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 	}
 	if err != nil {
 		recordSelectionRunFailure(&runSummary, &stderrBody, err)
-		selectionSpan.End(err)
+		_ = selectionSpan.End(err)
 		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, endProgressSpan(runSpan, ferr)
+		return finalized, runSpan.End(ferr)
 	}
-	selectionSpan.End(nil)
+	_ = selectionSpan.End(nil)
 
 	runSummary.FailureClassification = failureNone
 	runSummary.SelectedAgents = summarizeSelectedAgents(selectionResult.Selection.SelectedAgents)
 	runSummary.ThreadActionCount = len(selectionResult.Selection.ThreadActions)
 	finalized, err := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
 	if err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, err)
+		return benchmarkRun{}, runSpan.End(err)
 	}
-	runSpan.End(nil)
+	_ = runSpan.End(nil)
 	return finalized, nil
 }
 

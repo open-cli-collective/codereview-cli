@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -221,56 +222,53 @@ func newRunCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if flags.jsonOutput {
-				enc := json.NewEncoder(opts.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(summary)
-			}
-			return renderRunText(opts, summary)
+			return view.Render(opts.Stdout, flags.jsonOutput, summary, func(io.Writer) error {
+				return renderRunText(opts, summary)
+			})
 		},
 	}
 	cmd.Flags().StringArrayVar(&flags.candidates, "candidate", nil, "Candidate ID to run")
 	cmd.Flags().StringArrayVar(&flags.cases, "case", nil, "Case ID to run")
 	cmd.Flags().StringVar(&flags.resultsDir, "results-dir", "", "Benchmark run output directory; defaults to .cr-bench/results/<suite-id>/<timestamp> under the current working directory")
 	cmd.Flags().StringVar(&flags.crBin, "cr-bin", "", "cr binary to run; defaults to the current cr binary")
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	return cmd
 }
 
 func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, suitePath string) (benchmarkSuiteSummary, error) {
-	logger := newProgressLogger(opts)
+	logger := root.NewProgressLogger(opts)
 	suiteSpan := logger.Start("benchmark.run", "load_suite", "suite")
 	suite, _, err := loadConfigAndSuite(opts, suitePath)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(suiteSpan, err)
+		return benchmarkSuiteSummary{}, suiteSpan.End(err)
 	}
-	suiteSpan.End(nil)
+	_ = suiteSpan.End(nil)
 	selectSpan := logger.Start("benchmark.run", "select_matrix", suite.Suite.ID)
 	selectedCandidates, selectedCases, err := benchmark.Select(suite, flags.candidates, flags.cases)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(selectSpan, mapBenchmarkError(err))
+		return benchmarkSuiteSummary{}, selectSpan.End(mapBenchmarkError(err))
 	}
-	selectSpan.End(nil)
+	_ = selectSpan.End(nil)
 	resolveSpan := logger.Start("benchmark.run", "resolve_cr_bin", suite.Suite.ID)
 	crBin, err := resolveRunCRBin(flags.crBin)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(resolveSpan, mapBenchmarkError(err))
+		return benchmarkSuiteSummary{}, resolveSpan.End(mapBenchmarkError(err))
 	}
-	resolveSpan.End(nil)
+	_ = resolveSpan.End(nil)
 	started := benchmarkNow().UTC()
 	resultsSpan := logger.Start("benchmark.run", "prepare_results", suite.Suite.ID)
 	resultsDir, err := resolveRunResultsDir(suite.Suite.ID, flags.resultsDir, started)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, err)
+		return benchmarkSuiteSummary{}, resultsSpan.End(err)
 	}
 	suiteHash, err := suiteFileSHA256(suite.Path)
 	if err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, err)
+		return benchmarkSuiteSummary{}, resultsSpan.End(err)
 	}
 	if err := os.MkdirAll(resultsDir, artifactDirPerm); err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(resultsSpan, fmt.Errorf("benchmark: create results dir: %w", err))
+		return benchmarkSuiteSummary{}, resultsSpan.End(fmt.Errorf("benchmark: create results dir: %w", err))
 	}
-	resultsSpan.End(nil)
+	_ = resultsSpan.End(nil)
 
 	suiteDir := filepath.Dir(suite.Path)
 	summary := benchmarkSuiteSummary{
@@ -323,14 +321,14 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 	summary.DurationMS = durationMS(completed.Sub(started))
 	writeArtifactsSpan := logger.Start("benchmark.run", "write_suite_artifacts", suite.Suite.ID)
 	if err := writeSuiteArtifacts(summary); err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(writeArtifactsSpan, err)
+		return benchmarkSuiteSummary{}, writeArtifactsSpan.End(err)
 	}
-	writeArtifactsSpan.End(nil)
+	_ = writeArtifactsSpan.End(nil)
 	compareSpan := logger.Start("benchmark.run", "write_comparison", suite.Suite.ID)
 	if _, err := writeComparisonArtifactsForResultsDir(summary.ResultsDir); err != nil {
-		return benchmarkSuiteSummary{}, endProgressSpan(compareSpan, fmt.Errorf("benchmark: write comparison artifacts after suite artifacts were written to %s; rerun `cr benchmark compare %s`: %w", summary.ResultsDir, summary.ResultsDir, err))
+		return benchmarkSuiteSummary{}, compareSpan.End(fmt.Errorf("benchmark: write comparison artifacts after suite artifacts were written to %s; rerun `cr benchmark compare %s`: %w", summary.ResultsDir, summary.ResultsDir, err))
 	}
-	compareSpan.End(nil)
+	_ = compareSpan.End(nil)
 	return summary, nil
 }
 
@@ -338,7 +336,7 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 	runSpan := logger.Start("benchmark.run", "execute_run", runID)
 	runDir := filepath.Join(resultsDir, runID)
 	if err := os.MkdirAll(runDir, artifactDirPerm); err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, fmt.Errorf("benchmark: create run dir %s: %w", runID, err))
+		return benchmarkRun{}, runSpan.End(fmt.Errorf("benchmark: create run dir %s: %w", runID, err))
 	}
 	artifacts := runArtifacts{
 		Dir:         runDir,
@@ -349,7 +347,7 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 	args := reviewArgs(suiteDir, candidate, benchCase)
 	childSpan := logger.Start("benchmark.run", "child_review", runID)
 	child := runReviewCommand(ctx, crBin, args)
-	childSpan.End(child.Err)
+	_ = childSpan.End(child.Err)
 
 	runSummary := benchmarkRun{
 		RunID:                  runID,
@@ -391,15 +389,15 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 	}
 
 	if err := writeArtifactFile(artifacts.ReviewJSON, child.Stdout); err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, err)
+		return benchmarkRun{}, runSpan.End(err)
 	}
 	if err := writeArtifactFile(artifacts.Stderr, child.Stderr); err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, err)
+		return benchmarkRun{}, runSpan.End(err)
 	}
 	if err := writeJSONFile(artifacts.MetricsJSON, runSummary); err != nil {
-		return benchmarkRun{}, endProgressSpan(runSpan, err)
+		return benchmarkRun{}, runSpan.End(err)
 	}
-	runSpan.End(nil)
+	_ = runSpan.End(nil)
 	return runSummary, nil
 }
 

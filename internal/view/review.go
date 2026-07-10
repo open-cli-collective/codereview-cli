@@ -237,9 +237,7 @@ func RenderReviewDryRunText(w io.Writer, result ReviewDryRun) error {
 
 // RenderReviewDryRunJSON writes a dry-run summary as indented JSON.
 func RenderReviewDryRunJSON(w io.Writer, result ReviewDryRun) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // RenderReviewLiveText writes a human-readable live review summary.
@@ -289,7 +287,5 @@ func RenderReviewLiveText(w io.Writer, result ReviewLive) error {
 
 // RenderReviewLiveJSON writes a live review summary as indented JSON.
 func RenderReviewLiveJSON(w io.Writer, result ReviewLive) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }

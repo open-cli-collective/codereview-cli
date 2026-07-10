@@ -1,7 +1,6 @@
 package view
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -81,7 +80,5 @@ func RenderMeText(w io.Writer, result MeResult) error {
 
 // RenderMeJSON writes the identity summary as indented JSON.
 func RenderMeJSON(w io.Writer, result MeResult) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }

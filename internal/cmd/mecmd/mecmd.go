@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -48,13 +49,12 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Ide
 			if err != nil {
 				return err
 			}
-			if jsonOutput {
-				return view.RenderMeJSON(opts.Stdout, result)
-			}
-			return view.RenderMeText(opts.Stdout, result)
+			return view.Render(opts.Stdout, jsonOutput, result, func(w io.Writer) error {
+				return view.RenderMeText(w, result)
+			})
 		},
 	}
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &jsonOutput)
 	cmd.Flags().BoolVar(&all, "all", false, "Refresh every configured profile")
 	rootCmd.AddCommand(cmd)
 }
@@ -64,7 +64,7 @@ func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory 
 }
 
 func runMeWithSaver(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory IdentityResolverFactory, all bool, saveConfig func(string, config.File) error) (view.MeResult, error) {
-	path, err := configPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return view.MeResult{}, exitcode.AuthConfig(err)
 	}
@@ -191,20 +191,13 @@ func mapRunError(err error) error {
 	return err
 }
 
-func configPath(opts *root.Options) (string, error) {
-	if opts != nil && opts.ConfigPath != "" {
-		return opts.ConfigPath, nil
-	}
-	return config.Path()
-}
-
 func newGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
 	return &githubResolver{
 		cfg:                cfg,
 		backend:            opts.Backend,
 		backendFlagChanged: cmderr.BackendFlagChanged(cmd),
 		warnings:           opts.Stderr,
-		logger:             newProgressLogger(opts),
+		logger:             root.NewProgressLogger(opts),
 	}, nil, nil
 }
 
@@ -255,10 +248,3 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 }
 
 var _ identity.Resolver = (*githubResolver)(nil)
-
-func newProgressLogger(opts *root.Options) *progress.Logger {
-	if opts == nil {
-		return progress.New(nil, true, nil)
-	}
-	return progress.New(opts.Stderr, opts.Quiet, nil)
-}

@@ -72,10 +72,11 @@ func (l *Logger) StartFields(command, op, target string, fields ...Field) *Span 
 	return span
 }
 
-// End writes a finish or error line. It is a no-op for disabled loggers or a
-// span that has already ended.
-func (s *Span) End(err error) {
+// End writes a finish or error line and returns err. It is a no-op for disabled
+// loggers or a span that has already ended.
+func (s *Span) End(err error) error {
 	s.EndFields(err)
+	return err
 }
 
 // EndFields writes a finish or error line with additional structured fields.

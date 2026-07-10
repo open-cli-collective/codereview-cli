@@ -21,6 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -659,7 +660,7 @@ func defaultInitDeps() initDeps {
 		keyringPrompter:    nil,
 		clipboardSupported: func() bool { return !clipboard.Unsupported },
 		clipboardRead:      clipboard.ReadAll,
-		configPath:         configPath,
+		configPath:         cmdruntime.ConfigPath,
 		loadConfig:         loadConfigForInit,
 		saveConfig:         config.Save,
 		openStore: func(flagValue string, flagSet bool, cfg config.File) (initStore, error) {
@@ -7111,7 +7112,7 @@ func ingressName(stdin bool, envVar, stdinFlag, envFlag string) string {
 }
 
 func loadOptionalConfig(opts *root.Options) (config.File, error) {
-	path, err := configPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return config.File{}, err
 	}
@@ -7162,13 +7163,6 @@ func loadConfigForInteractiveInitRecovery(path string) (config.File, error) {
 		return config.File{}, err
 	}
 	return cfg, nil
-}
-
-func configPath(opts *root.Options) (string, error) {
-	if opts != nil && opts.ConfigPath != "" {
-		return opts.ConfigPath, nil
-	}
-	return config.Path()
 }
 
 func addWrite(writes map[string]map[string]string, ref, key, value string) {

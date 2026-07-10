@@ -80,7 +80,7 @@ func (a progressAdapter) start(ctx context.Context, op string, req llm.Request, 
 		stream, err = a.adapter.Start(ctx, req)
 	}
 	if err != nil {
-		span.End(err)
+		_ = span.End(err)
 		return nil, err
 	}
 	return progressStream{stream: stream, span: span}, nil

@@ -2,9 +2,9 @@
 package benchmarkcmd
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,9 +15,11 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
 type doctorFlags struct {
@@ -119,19 +121,16 @@ func newDoctorCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return mapBenchmarkError(err)
 			}
-			if flags.jsonOutput {
-				enc := json.NewEncoder(opts.Stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(report)
-			}
-			return renderDoctorText(opts, report)
+			return view.Render(opts.Stdout, flags.jsonOutput, report, func(io.Writer) error {
+				return renderDoctorText(opts, report)
+			})
 		},
 	}
 	cmd.Flags().StringArrayVar(&flags.candidates, "candidate", nil, "Candidate ID to inspect")
 	cmd.Flags().StringArrayVar(&flags.cases, "case", nil, "Case ID to inspect")
 	cmd.Flags().StringVar(&flags.resultsDir, "results-dir", "", "Benchmark results directory; defaults to .cr-bench/results/<suite-id> under the current working directory")
 	cmd.Flags().StringVar(&flags.crBin, "cr-bin", "", "cr binary to inspect")
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	return cmd
 }
 
@@ -149,7 +148,7 @@ func loadConfigAndSuiteWithValidator(opts *root.Options, suitePath string, valid
 	if err != nil {
 		return benchmark.SuiteFile{}, config.File{}, mapBenchmarkError(err)
 	}
-	path, err := configPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return benchmark.SuiteFile{}, config.File{}, exitcode.AuthConfig(err)
 	}
@@ -385,13 +384,6 @@ func mapBenchmarkError(err error) error {
 		return exitcode.Usage(err)
 	}
 	return err
-}
-
-func configPath(opts *root.Options) (string, error) {
-	if opts != nil && opts.ConfigPath != "" {
-		return opts.ConfigPath, nil
-	}
-	return config.Path()
 }
 
 func hasPathSeparator(path string) bool {

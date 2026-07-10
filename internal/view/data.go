@@ -1,7 +1,6 @@
 package view
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -134,9 +133,7 @@ func RenderDataShowText(w io.Writer, result DataShow) error {
 
 // RenderDataShowJSON writes data stats as indented JSON.
 func RenderDataShowJSON(w io.Writer, result DataShow) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // RenderDataPruneText writes a prune summary.
@@ -173,9 +170,7 @@ func RenderDataPruneText(w io.Writer, result DataPrune) error {
 
 // RenderDataPruneJSON writes a prune summary as indented JSON.
 func RenderDataPruneJSON(w io.Writer, result DataPrune) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // RenderDataPurgeText writes a purge summary.
@@ -190,9 +185,7 @@ func RenderDataPurgeText(w io.Writer, result DataPurge) error {
 
 // RenderDataPurgeJSON writes a purge summary as indented JSON.
 func RenderDataPurgeJSON(w io.Writer, result DataPurge) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 func newDataRunItems(items []datalifecycle.RunItem) []DataRunItem {

@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 )
 
@@ -85,6 +86,19 @@ func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {
 func ProfileFlagChanged(cmd *cobra.Command) bool {
 	flag := cmd.Flag(profileFlagName)
 	return flag != nil && flag.Changed
+}
+
+// AddJSONFlag adds the shared --json output flag to cmd.
+func AddJSONFlag(cmd *cobra.Command, target *bool) {
+	cmd.Flags().BoolVar(target, "json", false, "Emit JSON")
+}
+
+// NewProgressLogger returns a progress logger configured from root options.
+func NewProgressLogger(opts *Options) *progress.Logger {
+	if opts == nil {
+		return progress.New(nil, true, nil)
+	}
+	return progress.New(opts.Stderr, opts.Quiet, nil)
 }
 
 const rootLong = `cr is the Open CLI Collective code-review CLI.
