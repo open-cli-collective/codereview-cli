@@ -49,12 +49,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd := &cobra.Command{
 		Use:   "respond <PR>",
 		Short: "Respond to unresolved codereview inline discussion threads",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("respond requires one PR URL"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "respond requires one PR URL"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(cmd.Context(), cmd, opts, factory, flags, args[0])
 		},

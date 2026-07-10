@@ -50,12 +50,7 @@ func newListCommand(opts *root.Options, factory ProviderFactory) *cobra.Command 
 	cmd := &cobra.Command{
 		Use:   "list [PR]",
 		Short: "List trusted review agents",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 1 {
-				return exitcode.Usage(fmt.Errorf("agents list accepts at most one PR argument"))
-			}
-			return nil
-		},
+		Args:  exitcode.MaximumArgs(1, "agents list accepts at most one PR argument"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			prArg := ""
 			if len(args) == 1 {
@@ -81,12 +76,7 @@ func newShowCommand(opts *root.Options, factory ProviderFactory) *cobra.Command 
 	cmd := &cobra.Command{
 		Use:   "show <name> [PR]",
 		Short: "Show one trusted review agent",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) < 1 || len(args) > 2 {
-				return exitcode.Usage(fmt.Errorf("agents show requires <name> and optional PR"))
-			}
-			return nil
-		},
+		Args:  exitcode.RangeArgs(1, 2, "agents show requires <name> and optional PR"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			prArg := ""
 			if len(args) == 2 {

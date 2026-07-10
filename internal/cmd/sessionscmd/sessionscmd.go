@@ -37,12 +37,7 @@ func newListCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List named LLM sessions",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 0 {
-				return exitcode.Usage(fmt.Errorf("sessions list accepts no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("sessions list accepts no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, cleanup, err := openStore(cmd.Context(), nil, "sessions.list", false)
 			if err != nil {
@@ -76,12 +71,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show <name>",
 		Short: "Show one named LLM session",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-				return exitcode.Usage(fmt.Errorf("sessions show requires <name>"))
-			}
-			return nil
-		},
+		Args:  exitcode.NonEmptyArg("sessions show requires <name>"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
 			store, cleanup, err := openStore(cmd.Context(), nil, "sessions.show", false)
@@ -115,12 +105,7 @@ func newDeleteCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete one named LLM session",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-				return exitcode.Usage(fmt.Errorf("sessions delete requires <name>"))
-			}
-			return nil
-		},
+		Args:  exitcode.NonEmptyArg("sessions delete requires <name>"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
 			logger := newProgressLogger(opts)

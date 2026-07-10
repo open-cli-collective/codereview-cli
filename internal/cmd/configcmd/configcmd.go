@@ -42,12 +42,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	configCmd := &cobra.Command{
 		Use:   "config",
 		Short: "Inspect cr configuration",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("unknown config command %q", args[0]))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgsf("unknown config command %q"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -57,12 +52,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	showCmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show the resolved cr profile configuration",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config show takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config show takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := configPath(opts)
 			if err != nil {
@@ -122,12 +112,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	pathCmd := &cobra.Command{
 		Use:   "path",
 		Short: "Show the resolved cr config path",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config path takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config path takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := configPath(opts)
 			if err != nil {
@@ -157,12 +142,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	routeListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List repository profile routes",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config route list takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config route list takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := configPath(opts)
 			if err != nil {
@@ -187,12 +167,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	routeSetCmd := &cobra.Command{
 		Use:   "set",
 		Short: "Set repository profile routes on the selected profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config route set takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config route set takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path, cfg, profileName, profile, err := loadActiveProfile(opts)
 			if err != nil {
@@ -228,12 +203,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	routeUnsetCmd := &cobra.Command{
 		Use:   "unset",
 		Short: "Remove repository profile routes",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config route unset takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config route unset takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := configPath(opts)
 			if err != nil {
@@ -297,12 +267,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	resolveProfileCmd := &cobra.Command{
 		Use:   "resolve-profile <PR_URL>",
 		Short: "Preview which profile a PR URL would resolve to",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("config resolve-profile requires <PR_URL>"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "config resolve-profile requires <PR_URL>"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := prref.ParseGitHubPullURL(args[0])
 			if err != nil {
@@ -348,12 +313,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	agentSourceListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List agent sources on the selected profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config agent-source list takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config agent-source list takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			_, _, profileName, profile, err := loadActiveProfile(opts)
 			if err != nil {
@@ -371,12 +331,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	agentSourceAddCmd := &cobra.Command{
 		Use:   "add <path>",
 		Short: "Add an agent source to the selected profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("config agent-source add requires <path>"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "config agent-source add requires <path>"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			path, cfg, profileName, profile, err := loadActiveProfile(opts)
 			if err != nil {
@@ -400,12 +355,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	agentSourceRemoveCmd := &cobra.Command{
 		Use:   "remove <path>",
 		Short: "Remove an agent source from the selected profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("config agent-source remove requires <path>"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "config agent-source remove requires <path>"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			path, cfg, profileName, profile, err := loadActiveProfile(opts)
 			if err != nil {
@@ -434,12 +384,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	clearCmd := &cobra.Command{
 		Use:   "clear",
 		Short: "Clear stored credentials declared by the active profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config clear takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config clear takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			logger := newProgressLogger(opts)
 			mode := "live"
@@ -582,12 +527,7 @@ func newRetentionCommand(opts *root.Options) *cobra.Command {
 	getCmd := &cobra.Command{
 		Use:   "get",
 		Short: "Show data retention configuration",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config retention get takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config retention get takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := configPath(opts)
 			if err != nil {
@@ -611,12 +551,7 @@ func newRetentionCommand(opts *root.Options) *cobra.Command {
 	setCmd := &cobra.Command{
 		Use:   "set",
 		Short: "Set data retention configuration",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config retention set takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config retention set takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			maxAgeChanged := cmd.Flags().Changed("max-age-days")
 			enforcementChanged := cmd.Flags().Changed("enforcement")
@@ -662,12 +597,7 @@ func newRetentionCommand(opts *root.Options) *cobra.Command {
 	resetCmd := &cobra.Command{
 		Use:   "reset",
 		Short: "Reset data retention to defaults",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config retention reset takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config retention reset takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path, err := configPath(opts)
 			if err != nil {
@@ -710,12 +640,7 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List effective model tier mappings",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config llm models list takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config llm models list takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			_, _, profileName, profile, err := loadActiveProfile(opts)
 			if err != nil {
@@ -733,12 +658,7 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 	setCmd := &cobra.Command{
 		Use:   "set <tier> <model>",
 		Short: "Set a model tier mapping on the active profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 2 {
-				return exitcode.Usage(fmt.Errorf("config llm models set requires <tier> and <model>"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(2, "config llm models set requires <tier> and <model>"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			tier, err := parseModelTierArg(args[0])
 			if err != nil {
@@ -774,12 +694,7 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 	unsetCmd := &cobra.Command{
 		Use:   "unset <tier>",
 		Short: "Remove a model tier mapping from the active profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("config llm models unset requires <tier>"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "config llm models unset requires <tier>"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			tier, err := parseModelTierArg(args[0])
 			if err != nil {
@@ -814,12 +729,7 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 	resetCmd := &cobra.Command{
 		Use:   "reset",
 		Short: "Reset the active profile model map to built-in defaults",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config llm models reset takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config llm models reset takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			path, cfg, profileName, profile, err := loadActiveProfile(opts)
 			if err != nil {
@@ -855,12 +765,7 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 	resolveCmd := &cobra.Command{
 		Use:   "resolve <tier>",
 		Short: "Resolve a model tier under the active profile",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("config llm models resolve requires <tier>"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "config llm models resolve requires <tier>"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			tier, err := parseModelTierArg(args[0])
 			if err != nil {

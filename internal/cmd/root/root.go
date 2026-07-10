@@ -95,12 +95,7 @@ func newVersionCommand(opts *Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the build version",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("version takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("version takes no arguments"),
 		RunE: func(*cobra.Command, []string) error {
 			_, err := fmt.Fprintf(opts.Stdout, "cr %s\n", version.Info())
 			return err
