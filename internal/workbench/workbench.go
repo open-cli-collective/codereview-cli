@@ -359,37 +359,12 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 			}
 		}
 	}
-	tempDir := filepath.Join(workspaceScratch, "tmp")
-	cacheDir := filepath.Join(workspaceScratch, "cache")
-	goCacheDir := filepath.Join(cacheDir, "go-build")
-	goTmpDir := filepath.Join(tempDir, "go")
-	xdgCacheDir := filepath.Join(cacheDir, "xdg")
-	for _, dir := range []string{tempDir, cacheDir, goCacheDir, goTmpDir, xdgCacheDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			_ = cleanup()
-			return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: create reviewer workspace support dir: %w", err)
-		}
-	}
 	return llm.ReviewerWorkspaceRequest{
 		RepoDir:            workspaceRepo,
 		ScratchDir:         workspaceScratch,
-		TempDir:            tempDir,
-		CacheDir:           cacheDir,
-		Env:                reviewerWorkspaceEnv(tempDir, goCacheDir, goTmpDir, xdgCacheDir),
 		AllowedFiles:       append([]string(nil), allowedFiles...),
 		MaxToolOutputBytes: maxToolOutputBytes,
 	}, cleanup, nil
-}
-
-func reviewerWorkspaceEnv(tempDir, goCacheDir, goTmpDir, xdgCacheDir string) []string {
-	return []string{
-		"TMPDIR=" + tempDir,
-		"TMP=" + tempDir,
-		"TEMP=" + tempDir,
-		"GOCACHE=" + goCacheDir,
-		"GOTMPDIR=" + goTmpDir,
-		"XDG_CACHE_HOME=" + xdgCacheDir,
-	}
 }
 
 func isReviewerWorkspaceEscapePath(clean string) bool {

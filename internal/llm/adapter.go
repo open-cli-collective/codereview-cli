@@ -53,14 +53,12 @@ type ReviewerWorkspaceCapable interface {
 }
 
 // ReviewerWorkspaceRequest describes the disposable workspace for one reviewer
-// task. RepoDir is the reviewer-visible working tree root; ScratchDir, TempDir,
-// and CacheDir are writable harness-owned roots. Env is appended to the process
-// environment before launch.
+// task. RepoDir is the reviewer-visible working tree root and ScratchDir owns
+// per-invocation writable directories. Env is appended before invocation-owned
+// toolchain paths are applied.
 type ReviewerWorkspaceRequest struct {
 	RepoDir            string
 	ScratchDir         string
-	TempDir            string
-	CacheDir           string
 	Env                []string
 	AllowedFiles       []string
 	MaxToolOutputBytes int

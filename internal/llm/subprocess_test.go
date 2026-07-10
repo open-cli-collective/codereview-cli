@@ -206,7 +206,7 @@ func TestSubprocessClaudeReviewerWorkspaceLaunch(t *testing.T) {
 	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll(repoRoot): %v", err)
 	}
-	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
+	adapter := newClaudeHelperAdapterWithEnv("success", recordPath, configDir, 5*time.Second, "CGO_CFLAGS=-O2", "CGO_CXXFLAGS=-stdlib=libc++")
 
 	stream, err := adapter.Start(context.Background(), Request{
 		Model:  "claude-sonnet-4-6",
@@ -245,6 +245,34 @@ func TestSubprocessClaudeReviewerWorkspaceLaunch(t *testing.T) {
 	}
 	if record.PromptFileBytes == 0 || !strings.Contains(record.PromptFile, "prompt") {
 		t.Fatalf("prompt file = %q, want prompt in invocation scratch", record.PromptFile)
+	}
+	assertReviewerToolchainEnv(t, record, repoRoot, addDirs, "-O2", "-stdlib=libc++")
+}
+
+func TestReviewerInvocationEnvCreatesWritableToolchainDirs(t *testing.T) {
+	scratch := t.TempDir()
+	env, err := reviewerInvocationEnv([]string{"CGO_CFLAGS=-O2", "CGO_CXXFLAGS=-stdlib=libc++"}, scratch)
+	if err != nil {
+		t.Fatalf("reviewerInvocationEnv: %v", err)
+	}
+	clangCache := filepath.Join(scratch, "cache", "clang-module-cache")
+	for _, dir := range []string{
+		envValue(env, "TMPDIR"),
+		envValue(env, "GOTMPDIR"),
+		envValue(env, "GOCACHE"),
+		envValue(env, "XDG_CACHE_HOME"),
+		clangCache,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "writable"), []byte("ok"), 0o600); err != nil {
+			t.Fatalf("toolchain dir %q is not writable: %v", dir, err)
+		}
+	}
+	clangFlag := "-fmodules-cache-path=" + clangCache
+	if got := envValue(env, "CGO_CFLAGS"); got != "-O2 "+clangFlag {
+		t.Fatalf("CGO_CFLAGS = %q, want preserved user flag plus %q", got, clangFlag)
+	}
+	if got := envValue(env, "CGO_CXXFLAGS"); got != "-stdlib=libc++ "+clangFlag {
+		t.Fatalf("CGO_CXXFLAGS = %q, want preserved user flag plus %q", got, clangFlag)
 	}
 }
 
@@ -792,8 +820,6 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if err := os.MkdirAll(repoRoot, 0o700); err != nil {
 			t.Fatalf("MkdirAll(repoRoot): %v", err)
 		}
-		tempRoot := filepath.Join(scratchRoot, "tmp")
-		cacheRoot := filepath.Join(scratchRoot, "cache")
 		adapter := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
 		_, err := adapter.Resume(context.Background(), "prior-session", Request{
 			Model:  "gpt-5.5",
@@ -802,8 +828,6 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			ReviewerWorkspace: &ReviewerWorkspaceRequest{
 				RepoDir:    repoRoot,
 				ScratchDir: scratchRoot,
-				TempDir:    tempRoot,
-				CacheDir:   cacheRoot,
 			},
 		})
 		if !errors.Is(err, ErrUnsafeSubprocessConfig) {
@@ -811,7 +835,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		}
 	})
 
-	t.Run("reviewer workspace uses repo cwd and scratch add-dir", func(t *testing.T) {
+	t.Run("reviewer workspace toolchain env stays under scratch add-dir", func(t *testing.T) {
 		tempDir := t.TempDir()
 		recordPath := filepath.Join(tempDir, "records.jsonl")
 		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
@@ -827,7 +851,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		goCache := filepath.Join(cacheRoot, "go-build")
 		goTmp := filepath.Join(tempRoot, "go")
 		xdgCache := filepath.Join(cacheRoot, "xdg")
-		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second, "CGO_CFLAGS=-O2", "CGO_CXXFLAGS=-stdlib=libc++")
 		stream, err := adapter.Start(context.Background(), Request{
 			Model:  "gpt-5.5",
 			Effort: "high",
@@ -835,9 +859,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			ReviewerWorkspace: &ReviewerWorkspaceRequest{
 				RepoDir:            repoRoot,
 				ScratchDir:         scratchRoot,
-				TempDir:            tempRoot,
-				CacheDir:           cacheRoot,
-				Env:                []string{"TMPDIR=" + tempRoot, "GOCACHE=" + goCache, "GOTMPDIR=" + goTmp, "XDG_CACHE_HOME=" + xdgCache},
+				Env:                []string{"TMPDIR=" + tempRoot, "TMP=" + tempRoot, "TEMP=" + tempRoot, "GOCACHE=" + goCache, "GOTMPDIR=" + goTmp, "XDG_CACHE_HOME=" + xdgCache},
 				MaxToolOutputBytes: 2048,
 			},
 		})
@@ -858,9 +880,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if !strings.HasPrefix(scratch, wantRoot+string(filepath.Separator)) {
 			t.Fatalf("--add-dir = %q, want invocation scratch under %q", record.AddDir, scratchRoot)
 		}
-		if record.TMPDir != tempRoot || record.GoCache != goCache || record.GoTmpDir != goTmp || record.XDGCacheHome != xdgCache {
-			t.Fatalf("workspace env = TMPDIR:%q GOCACHE:%q GOTMPDIR:%q XDG_CACHE_HOME:%q, want %q/%q/%q/%q", record.TMPDir, record.GoCache, record.GoTmpDir, record.XDGCacheHome, tempRoot, goCache, goTmp, xdgCache)
-		}
+		assertReviewerToolchainEnv(t, record, repoRoot, []string{record.AddDir}, "-O2", "-stdlib=libc++")
 	})
 
 	t.Run("reviewer workspace caps subprocess logs", func(t *testing.T) {
@@ -1270,6 +1290,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		GoCache:         os.Getenv("GOCACHE"),
 		GoTmpDir:        os.Getenv("GOTMPDIR"),
 		XDGCacheHome:    os.Getenv("XDG_CACHE_HOME"),
+		TMP:             os.Getenv("TMP"),
+		TEMP:            os.Getenv("TEMP"),
+		CGOCFlags:       os.Getenv("CGO_CFLAGS"),
+		CGOCXXFlags:     os.Getenv("CGO_CXXFLAGS"),
 	}
 	record.AddDir = flagValue(args, "--add-dir")
 	if record.AddDir != "" {
@@ -1388,6 +1412,10 @@ type helperRecord struct {
 	GoCache         string   `json:"gocache"`
 	GoTmpDir        string   `json:"gotmpdir"`
 	XDGCacheHome    string   `json:"xdg_cache_home"`
+	TMP             string   `json:"tmp"`
+	TEMP            string   `json:"temp"`
+	CGOCFlags       string   `json:"cgo_cflags"`
+	CGOCXXFlags     string   `json:"cgo_cxxflags"`
 }
 
 func newClaudeHelperAdapter(mode string, recordPath string, configDir string, timeout time.Duration) *SubprocessAdapter {
@@ -1403,11 +1431,11 @@ func newClaudeHelperAdapterWithEnv(mode string, recordPath string, configDir str
 	})
 }
 
-func newCodexHelperAdapter(mode string, recordPath string, timeout time.Duration) *SubprocessAdapter {
+func newCodexHelperAdapter(mode string, recordPath string, timeout time.Duration, extraEnv ...string) *SubprocessAdapter {
 	return NewCodexCLIAdapter(SubprocessOptions{
 		Command:                os.Args[0],
 		commandArgsPrefix:      helperPrefix(),
-		Env:                    helperEnv(mode, recordPath),
+		Env:                    append(helperEnv(mode, recordPath), extraEnv...),
 		Timeout:                timeout,
 		AllowBestEffortNoTools: true,
 	})
@@ -1621,6 +1649,42 @@ func assertClaudeCleanup(t *testing.T, records []helperRecord, jobID string, wan
 func containsSamePath(paths []string, want string) bool {
 	for _, path := range paths {
 		if sameCleanPath(path, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func assertReviewerToolchainEnv(t *testing.T, record helperRecord, repoRoot string, addDirs []string, wantCFlags, wantCXXFlags string) {
+	t.Helper()
+	roots := append([]string{repoRoot}, addDirs...)
+	for name, path := range map[string]string{
+		"TMPDIR":         record.TMPDir,
+		"TMP":            record.TMP,
+		"TEMP":           record.TEMP,
+		"GOTMPDIR":       record.GoTmpDir,
+		"GOCACHE":        record.GoCache,
+		"XDG_CACHE_HOME": record.XDGCacheHome,
+	} {
+		if path == "" || !pathUnderAnyRoot(path, roots) {
+			t.Fatalf("%s = %q, want path under repo or explicit --add-dir roots %#v", name, path, roots)
+		}
+	}
+	clangFlag := "-fmodules-cache-path=" + filepath.Join(record.AddDir, "cache", "clang-module-cache")
+	if record.CGOCFlags != wantCFlags+" "+clangFlag {
+		t.Fatalf("CGO_CFLAGS = %q, want preserved %q plus %q", record.CGOCFlags, wantCFlags, clangFlag)
+	}
+	if record.CGOCXXFlags != wantCXXFlags+" "+clangFlag {
+		t.Fatalf("CGO_CXXFLAGS = %q, want preserved %q plus %q", record.CGOCXXFlags, wantCXXFlags, clangFlag)
+	}
+}
+
+func pathUnderAnyRoot(path string, roots []string) bool {
+	path = strings.TrimPrefix(filepath.Clean(path), "/private")
+	for _, root := range roots {
+		root = strings.TrimPrefix(filepath.Clean(root), "/private")
+		rel, err := filepath.Rel(root, path)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return true
 		}
 	}
