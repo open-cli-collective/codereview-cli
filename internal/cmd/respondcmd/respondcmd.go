@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/app"
 	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
@@ -20,7 +21,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -36,11 +36,11 @@ type flags struct {
 
 // Register attaches the respond command to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
-	RegisterWithFactory(rootCmd, opts, reviewruntime.Open)
+	RegisterWithFactory(rootCmd, opts, app.Open)
 }
 
 // RuntimeFactory builds the concrete runtime used by response lifecycle commands.
-type RuntimeFactory func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error)
+type RuntimeFactory func(context.Context, app.OpenRequest) (app.Runtime, error)
 
 // RegisterWithFactory attaches the respond command with an injected runtime factory.
 func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory RuntimeFactory) {
@@ -99,7 +99,7 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory Ru
 	if !prref.SameHost(ref.Host, profile.Git.Host) {
 		return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
 	}
-	runtime, err := factory(ctx, reviewruntime.OpenRequest{
+	runtime, err := factory(ctx, app.OpenRequest{
 		Config:              cfg,
 		Profile:             profile,
 		Backend:             opts.Backend,

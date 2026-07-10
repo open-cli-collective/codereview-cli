@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/app"
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
@@ -23,13 +24,12 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
 var (
-	openSelectionRuntime = func(ctx context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile, ref gitprovider.PRRef) (reviewruntime.SelectionRuntime, error) {
-		return reviewruntime.OpenSelection(ctx, reviewruntime.SelectionOpenRequest{
+	openSelectionRuntime = func(ctx context.Context, backend string, backendFlagChanged bool, cfg config.File, profile config.Profile, ref gitprovider.PRRef) (app.SelectionRuntime, error) {
+		return app.OpenSelection(ctx, app.SelectionOpenRequest{
 			Config:             cfg,
 			Profile:            profile,
 			Backend:            backend,
@@ -50,7 +50,7 @@ type selectFlags struct {
 type selectionRuntimeState struct {
 	profileName string
 	profile     config.Profile
-	runtime     reviewruntime.SelectionRuntime
+	runtime     app.SelectionRuntime
 	err         error
 }
 
