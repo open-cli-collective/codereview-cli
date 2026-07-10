@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -19,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
@@ -30,6 +30,7 @@ const (
 	benchmarkArtifactSchemaVersion = 2
 	benchmarkModeReview            = "review"
 	benchmarkModeSelection         = "selection"
+	benchmarkInProcessCRBin        = "in-process"
 	runTimestampLayout             = "2006-01-02T150405Z"
 	artifactDirPerm                = 0o700
 	artifactFilePerm               = 0o600
@@ -46,8 +47,8 @@ type reviewCommandResult struct {
 var (
 	// Test seams for this package. Tests that mutate these must not run in
 	// parallel with other benchmarkcmd tests.
-	benchmarkNow     = func() time.Time { return time.Now().UTC() }
-	runReviewCommand = runReviewCommandReal
+	benchmarkNow            = func() time.Time { return time.Now().UTC() }
+	benchmarkReviewExecutor ReviewExecutor
 )
 
 type benchmarkSuiteSummary struct {
@@ -208,6 +209,7 @@ type runFlags struct {
 	cases      []string
 	resultsDir string
 	crBin      string
+	inProcess  bool
 	jsonOutput bool
 }
 
@@ -218,7 +220,10 @@ func newRunCommand(opts *root.Options) *cobra.Command {
 		Short: "Run a benchmark suite",
 		Args:  exitcode.ExactArgs(1, "benchmark run requires one suite path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			summary, err := runBenchmarkSuite(cmd.Context(), opts, flags, args[0])
+			if flags.inProcess && cmd.Flags().Changed("cr-bin") {
+				return exitcode.Usage(fmt.Errorf("--in-process and --cr-bin cannot be used together"))
+			}
+			summary, err := runBenchmarkSuite(cmd.Context(), cmd, opts, flags, args[0])
 			if err != nil {
 				return err
 			}
@@ -231,14 +236,15 @@ func newRunCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().StringArrayVar(&flags.cases, "case", nil, "Case ID to run")
 	cmd.Flags().StringVar(&flags.resultsDir, "results-dir", "", "Benchmark run output directory; defaults to .cr-bench/results/<suite-id>/<timestamp> under the current working directory")
 	cmd.Flags().StringVar(&flags.crBin, "cr-bin", "", "cr binary to run; defaults to the current cr binary")
+	cmd.Flags().BoolVar(&flags.inProcess, "in-process", false, "Run reviews in the benchmark process")
 	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	return cmd
 }
 
-func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, suitePath string) (benchmarkSuiteSummary, error) {
+func runBenchmarkSuite(ctx context.Context, cmd *cobra.Command, opts *root.Options, flags runFlags, suitePath string) (benchmarkSuiteSummary, error) {
 	logger := root.NewProgressLogger(opts)
 	suiteSpan := logger.Start("benchmark.run", "load_suite", "suite")
-	suite, _, err := loadConfigAndSuite(opts, suitePath)
+	suite, cfg, err := loadConfigAndSuite(opts, suitePath)
 	if err != nil {
 		return benchmarkSuiteSummary{}, suiteSpan.End(err)
 	}
@@ -249,12 +255,25 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 		return benchmarkSuiteSummary{}, selectSpan.End(mapBenchmarkError(err))
 	}
 	_ = selectSpan.End(nil)
-	resolveSpan := logger.Start("benchmark.run", "resolve_cr_bin", suite.Suite.ID)
-	crBin, err := resolveRunCRBin(flags.crBin)
-	if err != nil {
-		return benchmarkSuiteSummary{}, resolveSpan.End(mapBenchmarkError(err))
+	crBin := benchmarkInProcessCRBin
+	executor := ReviewExecutor(inProcessExecutor{
+		opts:               opts,
+		cfg:                cfg,
+		logger:             logger,
+		backendFlagChanged: cmderr.BackendFlagChanged(cmd),
+	})
+	if !flags.inProcess {
+		resolveSpan := logger.Start("benchmark.run", "resolve_cr_bin", suite.Suite.ID)
+		crBin, err = resolveRunCRBin(flags.crBin)
+		if err != nil {
+			return benchmarkSuiteSummary{}, resolveSpan.End(mapBenchmarkError(err))
+		}
+		_ = resolveSpan.End(nil)
+		executor = subprocessExecutor{}
 	}
-	_ = resolveSpan.End(nil)
+	if benchmarkReviewExecutor != nil {
+		executor = benchmarkReviewExecutor
+	}
 	started := benchmarkNow().UTC()
 	resultsSpan := logger.Start("benchmark.run", "prepare_results", suite.Suite.ID)
 	resultsDir, err := resolveResultsDir(flags.resultsDir, ".cr-bench", "results", suite.Suite.ID, started.UTC().Format(runTimestampLayout))
@@ -298,7 +317,7 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 		for caseIndex, benchCase := range selectedCases {
 			matrixIndex++
 			runID := benchmarkRunID(matrixIndex, candidateIndex, caseIndex, candidate, benchCase)
-			runSummary, err := executeBenchmarkRun(ctx, logger, suiteDir, resultsDir, crBin, runID, candidate, benchCase)
+			runSummary, err := executeBenchmarkRun(ctx, logger, suiteDir, resultsDir, crBin, runID, candidate, benchCase, executor)
 			if err != nil {
 				return benchmarkSuiteSummary{}, err
 			}
@@ -332,7 +351,7 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 	return summary, nil
 }
 
-func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir, resultsDir, crBin, runID string, candidate benchmark.Candidate, benchCase benchmark.Case) (benchmarkRun, error) {
+func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir, resultsDir, crBin, runID string, candidate benchmark.Candidate, benchCase benchmark.Case, executor ReviewExecutor) (benchmarkRun, error) {
 	runSpan := logger.Start("benchmark.run", "execute_run", runID)
 	runDir := filepath.Join(resultsDir, runID)
 	if err := os.MkdirAll(runDir, artifactDirPerm); err != nil {
@@ -345,9 +364,19 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 		MetricsJSON: filepath.Join(runDir, "metrics.json"),
 	}
 	args := reviewArgs(suiteDir, candidate, benchCase)
-	childSpan := logger.Start("benchmark.run", "child_review", runID)
-	child := runReviewCommand(ctx, crBin, args)
-	_ = childSpan.End(child.Err)
+	reviewOperation := "child_review"
+	if _, ok := executor.(inProcessExecutor); ok {
+		reviewOperation = "in_process_review"
+	}
+	reviewSpan := logger.Start("benchmark.run", reviewOperation, runID)
+	execution := executor.Execute(ctx, reviewExecutionRequest{
+		CRBin:     crBin,
+		Args:      args,
+		SuiteDir:  suiteDir,
+		Candidate: candidate,
+		Case:      benchCase,
+	})
+	_ = reviewSpan.End(execution.Err)
 
 	runSummary := benchmarkRun{
 		RunID:                  runID,
@@ -358,18 +387,18 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 		RequestedReviewHeadSHA: benchCase.ReviewHeadSHA,
 		ExpectedBaseSHA:        benchCase.ExpectedBaseSHA,
 		ExpectedHeadSHA:        benchCase.ExpectedHeadSHA,
-		ExitCode:               child.ExitCode,
+		ExitCode:               execution.ExitCode,
 		RetryCount:             0,
-		DurationMS:             durationMS(child.Duration),
+		DurationMS:             durationMS(execution.Duration),
 		SeverityCounts:         map[string]int{},
 		Warnings:               []string{},
 		Artifacts:              artifacts,
 	}
-	if child.Err != nil && child.ExitCode < 0 {
-		runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("review command failed to start or complete: %s", child.Err.Error()))
+	if execution.Err != nil && execution.ExitCode < 0 {
+		runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("review command failed to start or complete: %s", execution.Err.Error()))
 	}
-	parsed, warnings := parseReviewDryRun(child.Stdout, child.ExitCode)
-	runSummary.FailureClassification = classifyRuntimeFailure(child.ExitCode, child.Err, child.Stdout, parsed != nil)
+	parsed := execution.Review
+	runSummary.FailureClassification = execution.FailureClassification
 	if parsed != nil {
 		runSummary.ReviewRunID = parsed.Run.RunID
 		runSummary.ReviewArtifactPath = parsed.Run.ArtifactPath
@@ -385,13 +414,13 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 			runSummary.Usage = &usage
 		}
 	} else {
-		runSummary.Warnings = append(runSummary.Warnings, warnings...)
+		runSummary.Warnings = append(runSummary.Warnings, execution.Warnings...)
 	}
 
-	if err := writeArtifactFile(artifacts.ReviewJSON, child.Stdout); err != nil {
+	if err := writeArtifactFile(artifacts.ReviewJSON, execution.Stdout); err != nil {
 		return benchmarkRun{}, runSpan.End(err)
 	}
-	if err := writeArtifactFile(artifacts.Stderr, child.Stderr); err != nil {
+	if err := writeArtifactFile(artifacts.Stderr, execution.Stderr); err != nil {
 		return benchmarkRun{}, runSpan.End(err)
 	}
 	if err := writeJSONFile(artifacts.MetricsJSON, runSummary); err != nil {
@@ -399,33 +428,6 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 	}
 	_ = runSpan.End(nil)
 	return runSummary, nil
-}
-
-func runReviewCommandReal(ctx context.Context, crBin string, args []string) reviewCommandResult {
-	start := time.Now()
-	cmd := exec.CommandContext(ctx, crBin, args...) // #nosec G204 -- benchmark run intentionally invokes a validated cr binary.
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	exitCode := exitcode.Success
-	if err != nil {
-		exitCode = -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else if ctx.Err() != nil {
-			err = ctx.Err()
-		}
-	}
-	return reviewCommandResult{
-		Stdout:   stdout.Bytes(),
-		Stderr:   stderr.Bytes(),
-		ExitCode: exitCode,
-		Duration: time.Since(start),
-		Err:      err,
-	}
 }
 
 func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchmark.Case) []string {

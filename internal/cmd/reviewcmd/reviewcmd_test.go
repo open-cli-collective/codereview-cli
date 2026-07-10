@@ -1172,7 +1172,7 @@ func TestNewReviewDryRunRejectsInvalidPlannedPayload(t *testing.T) {
 	result := testPipelineResult(false)
 	result.PlannedActions[0].PayloadJSON = "{bad"
 
-	_, err := newReviewDryRun(result)
+	_, err := view.NewReviewDryRun(result)
 	if err == nil {
 		t.Fatal("newReviewDryRun error = nil, want invalid payload failure")
 	}
@@ -1206,7 +1206,7 @@ func TestNewReviewDryRunMapsPlanSummary(t *testing.T) {
 		Totals: reviewplan.AggregateUsage{TokensIn: &tokensIn},
 	}
 
-	rendered, err := newReviewDryRun(result)
+	rendered, err := view.NewReviewDryRun(result)
 	if err != nil {
 		t.Fatalf("newReviewDryRun: %v", err)
 	}

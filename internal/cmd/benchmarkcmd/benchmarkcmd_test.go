@@ -874,7 +874,7 @@ func TestRunInvalidChildJSONWarnsAndContinues(t *testing.T) {
 	}
 }
 
-func TestRunReviewCommandRealCapturesStreamsAndExitCode(t *testing.T) {
+func TestSubprocessExecutorCapturesStreamsAndExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script subprocess fixture is POSIX-only")
 	}
@@ -887,7 +887,7 @@ func TestRunReviewCommandRealCapturesStreamsAndExitCode(t *testing.T) {
 		t.Fatalf("Chmod script: %v", err)
 	}
 
-	got := runReviewCommandReal(context.Background(), script, []string{"--ignored"})
+	got := subprocessExecutor{}.Execute(context.Background(), reviewExecutionRequest{CRBin: script, Args: []string{"--ignored"}})
 	if string(got.Stdout) != "stdout body" || string(got.Stderr) != "stderr body" || got.ExitCode != 7 || got.Err == nil {
 		t.Fatalf("result = stdout:%q stderr:%q exit:%d err:%v, want split streams and exit 7", got.Stdout, got.Stderr, got.ExitCode, got.Err)
 	}
@@ -1155,12 +1155,12 @@ type reviewInvocation struct {
 func withBenchmarkRunSeams(t *testing.T, now time.Time, runner func(context.Context, string, []string) reviewCommandResult) {
 	t.Helper()
 	oldNow := benchmarkNow
-	oldRunner := runReviewCommand
+	oldExecutor := benchmarkReviewExecutor
 	benchmarkNow = func() time.Time { return now }
-	runReviewCommand = runner
+	benchmarkReviewExecutor = subprocessExecutor{run: runner}
 	t.Cleanup(func() {
 		benchmarkNow = oldNow
-		runReviewCommand = oldRunner
+		benchmarkReviewExecutor = oldExecutor
 	})
 }
 
