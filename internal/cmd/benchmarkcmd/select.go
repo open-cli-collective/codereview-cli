@@ -67,12 +67,7 @@ func newSelectCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "select <suite.yml>",
 		Short: "Run selector-only benchmark suites",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("benchmark select requires one suite path"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "benchmark select requires one suite path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			summary, err := runBenchmarkSelectionSuite(cmd.Context(), cmd, opts, flags, args[0])
 			if err != nil {

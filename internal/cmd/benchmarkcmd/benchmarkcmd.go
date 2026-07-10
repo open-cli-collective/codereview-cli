@@ -92,12 +92,7 @@ func newValidateCommand(opts *root.Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate <suite.yml>",
 		Short: "Validate a benchmark suite",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("benchmark validate requires one suite path"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "benchmark validate requires one suite path"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			suite, err := loadAndValidateSuite(opts, args[0])
 			if err != nil {
@@ -114,12 +109,7 @@ func newDoctorCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor <suite.yml>",
 		Short: "Inspect benchmark suite readiness",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("benchmark doctor requires one suite path"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "benchmark doctor requires one suite path"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			suite, cfg, err := loadConfigAndSuite(opts, args[0])
 			if err != nil {

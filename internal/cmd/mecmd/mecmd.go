@@ -39,12 +39,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Ide
 	cmd := &cobra.Command{
 		Use:   "me",
 		Short: "Resolve and cache the active git-host identity",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("me takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("me takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if all && opts.Profile != "" {
 				return exitcode.Usage(fmt.Errorf("me --all cannot be combined with --profile"))

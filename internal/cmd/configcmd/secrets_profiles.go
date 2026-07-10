@@ -18,12 +18,7 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 	secretsCmd := &cobra.Command{
 		Use:   "credential-store",
 		Short: "Inspect configured credential stores",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("unknown config credential-store command %q", args[0]))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgsf("unknown config credential-store command %q"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
@@ -33,12 +28,7 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List effective credential stores",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("config credential-store list takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("config credential-store list takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			_, cfg, err := loadConfig(opts)
 			if err != nil {
@@ -57,12 +47,7 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 	getCmd := &cobra.Command{
 		Use:   "get <id>",
 		Short: "Show one effective credential store",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("config credential-store get requires <id>"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "config credential-store get requires <id>"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			_, cfg, err := loadConfig(opts)
 			if err != nil {

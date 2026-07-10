@@ -214,12 +214,7 @@ func newRunCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run <suite.yml>",
 		Short: "Run a benchmark suite",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("benchmark run requires one suite path"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "benchmark run requires one suite path"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			summary, err := runBenchmarkSuite(cmd.Context(), opts, flags, args[0])
 			if err != nil {

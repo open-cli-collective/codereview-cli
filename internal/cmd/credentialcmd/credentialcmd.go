@@ -52,12 +52,7 @@ func newSetCredentialCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set-credential --store <id> --name <credential-name> --key <key>",
 		Short: "Write one secret value to a credential store",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("set-credential takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("set-credential takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			result, err := runSetCredential(cmd, opts, flags)
 			if flags.json {
@@ -751,12 +746,7 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create or update non-secret cr configuration",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return exitcode.Usage(fmt.Errorf("init takes no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("init takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runInit(cmd, opts, flags)
 		},

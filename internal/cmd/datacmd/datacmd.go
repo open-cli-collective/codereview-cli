@@ -42,12 +42,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show local review data usage",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 0 {
-				return exitcode.Usage(fmt.Errorf("data show accepts no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("data show accepts no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			layout, store, cleanup, err := openStore(cmd.Context(), progress.New(nil, true, nil), "data.show", false)
 			if err != nil {
@@ -75,12 +70,7 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "prune",
 		Short: "Prune old local review data",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 0 {
-				return exitcode.Usage(fmt.Errorf("data prune accepts no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("data prune accepts no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			logger := newProgressLogger(opts)
 			olderThanChanged := cmd.Flags().Changed("older-than")
@@ -147,12 +137,7 @@ func newPurgeCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "purge",
 		Short: "Purge all local review data",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 0 {
-				return exitcode.Usage(fmt.Errorf("data purge accepts no arguments"))
-			}
-			return nil
-		},
+		Args:  exitcode.NoArgs("data purge accepts no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			logger := newProgressLogger(opts)
 			if flags.yes && flags.dryRun {

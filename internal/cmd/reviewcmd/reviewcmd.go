@@ -87,12 +87,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 		Use:   "review <PR>",
 		Short: "Run an automated pull-request review",
 		Long:  reviewLong,
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("review requires one PR URL"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "review requires one PR URL"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReview(cmd.Context(), cmd, opts, factory, flags, args[0])
 		},

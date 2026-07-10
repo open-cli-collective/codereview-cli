@@ -177,12 +177,7 @@ func newCompareCommand(opts *root.Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "compare <results-dir>",
 		Short: "Compare benchmark results",
-		Args: func(_ *cobra.Command, args []string) error {
-			if len(args) != 1 {
-				return exitcode.Usage(fmt.Errorf("benchmark compare requires one results directory"))
-			}
-			return nil
-		},
+		Args:  exitcode.ExactArgs(1, "benchmark compare requires one results directory"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			logger := newProgressLogger(opts)
 			comparison, err := writeComparisonArtifactsForResultsDirWithProgress(args[0], logger)
