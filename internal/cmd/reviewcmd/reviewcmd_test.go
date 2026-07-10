@@ -14,15 +14,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/app"
 	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -1363,16 +1364,16 @@ func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cob
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	opts := &root.Options{
 		ConfigPath: path,
 		Quiet:      true,
 		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
+	}
+	cmd, out, _ := cmdtest.New(opts, func(cmd *cobra.Command, opts *root.Options) {
+		RegisterWithFactory(cmd, opts, factory)
 	})
-	RegisterWithFactory(cmd, opts, factory)
-	return cmd, &out
+	opts.Stderr = out
+	return cmd, out
 }
 
 func newTestCommandWithStderr(t *testing.T, cfg config.File, factory RuntimeFactory, quiet bool) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
@@ -1381,57 +1382,18 @@ func newTestCommandWithStderr(t *testing.T, cfg config.File, factory RuntimeFact
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	cmd, out, errOut := cmdtest.New(&root.Options{
 		ConfigPath: path,
 		Quiet:      quiet,
 		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &errOut,
+	}, func(cmd *cobra.Command, opts *root.Options) {
+		RegisterWithFactory(cmd, opts, factory)
 	})
-	RegisterWithFactory(cmd, opts, factory)
-	return cmd, &out, &errOut
+	return cmd, out, errOut
 }
 
 func testConfig() config.File {
-	return config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"test-memory": {
-					DisplayName: "Test Memory Store",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
-				},
-			},
-		},
-		RepositoryProfiles: []config.RepositoryProfile{{
-			Profile: "home",
-			Match: config.RepositoryProfileMatch{
-				Host:      "github.com",
-				Namespace: "open-cli-collective",
-				Repos:     []string{"codereview-cli"},
-			},
-		}},
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory"},
-					CredentialRef: "codereview/home",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
-				ReviewPolicy: config.ReviewPolicy{
-					MajorEvent: config.ReviewMajorEventRequestChanges,
-				},
-			},
-		},
-	}
+	return configtest.File()
 }
 
 func testPipelineResult(failOnTriggered bool) pipeline.Result {

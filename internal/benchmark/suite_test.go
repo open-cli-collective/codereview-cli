@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 )
 
 func TestValidateAcceptsValidSuite(t *testing.T) {
@@ -516,13 +517,10 @@ func withRawSynthesisStage(body, stage string) string {
 }
 
 func testConfig() config.File {
-	return config.File{
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host: "github.com",
-				},
-			},
-		},
-	}
+	return configtest.File(
+		configtest.WithoutKeyring(),
+		configtest.WithoutSecrets(),
+		configtest.WithoutRepositoryProfiles(),
+		configtest.HomeProfile(config.Profile{Git: config.GitConfig{Host: "github.com"}}),
+	)
 }

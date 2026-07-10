@@ -19,11 +19,13 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
@@ -393,15 +395,13 @@ func TestMeMissingConfigExitCode(t *testing.T) {
 
 func TestMeProductionMissingGitCredentialExitCode(t *testing.T) {
 	path := saveTestConfig(t, testConfig())
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	opts := &root.Options{
 		ConfigPath: path,
 		Profile:    "home",
 		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
-	})
-	Register(cmd, opts)
+	}
+	cmd, out, _ := cmdtest.New(opts, Register)
+	opts.Stderr = out
 
 	err := root.Execute(cmd, []string{"--profile", "home", "me"})
 	if !errors.Is(err, gitprovider.ErrAuth) {
@@ -426,14 +426,12 @@ func TestMeProductionMissingReviewerCredentialUsesReviewerRef(t *testing.T) {
 	work.Git.Host = "localhost:1"
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	opts := &root.Options{
 		ConfigPath: path,
 		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
-	})
-	Register(cmd, opts)
+	}
+	cmd, out, _ := cmdtest.New(opts, Register)
+	opts.Stderr = out
 
 	err := root.Execute(cmd, []string{"--profile", "work", "me"})
 	if !errors.Is(err, gitprovider.ErrAuth) {
@@ -977,15 +975,15 @@ func newTestCommand(path string, resolver identity.Resolver) (*cobra.Command, *b
 }
 
 func newTestCommandWithFactory(path string, factory IdentityResolverFactory) (*cobra.Command, *bytes.Buffer) {
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	opts := &root.Options{
 		ConfigPath: path,
 		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
+	}
+	cmd, out, _ := cmdtest.New(opts, func(cmd *cobra.Command, opts *root.Options) {
+		RegisterWithFactory(cmd, opts, factory)
 	})
-	RegisterWithFactory(cmd, opts, factory)
-	return cmd, &out
+	opts.Stderr = out
+	return cmd, out
 }
 
 func runOrgDeploymentCommand(t *testing.T, path string, stdin *strings.Reader, factory IdentityResolverFactory, args []string) *bytes.Buffer {
@@ -1106,54 +1104,46 @@ func testPrivateKeyPEM(t *testing.T) string {
 }
 
 func testConfig() config.File {
-	return config.File{
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"test-memory": {
-					DisplayName: "Test Memory Store",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
-				},
+	return configtest.File(
+		configtest.WithoutKeyring(),
+		configtest.WithoutRepositoryProfiles(),
+		configtest.HomeProfile(config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
+				CredentialRef: "codereview/home",
+				IdentityCache: "old-home",
 			},
-		},
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
-					CredentialRef: "codereview/home",
-					IdentityCache: "old-home",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
-				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
 			},
-			"work": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
-					CredentialRef: "codereview/work",
-					IdentityCache: "work-user-cache",
-				},
-				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
-					CredentialRef: "codereview/work-reviewer",
-					IdentityCache: "old-bot",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
-				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+		}),
+		configtest.Profile("work", config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
+				CredentialRef: "codereview/work",
+				IdentityCache: "work-user-cache",
 			},
-		},
-	}
+			ReviewerCredentials: &config.ReviewerCredentials{
+				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
+				CredentialRef: "codereview/work-reviewer",
+				IdentityCache: "old-bot",
+			},
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+		}),
+	)
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, value any) {

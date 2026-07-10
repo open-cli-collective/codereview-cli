@@ -18,6 +18,7 @@ func TestCommandPackagesDoNotAddFeatureCommandImports(t *testing.T) {
 	cmdRoot := filepath.Join(repoRoot, "internal", "cmd")
 	sharedCommandImports := map[string]bool{
 		modulePath + "/internal/cmd/cmderr":     true,
+		modulePath + "/internal/cmd/cmdtest":    true,
 		modulePath + "/internal/cmd/cmdruntime": true,
 		modulePath + "/internal/cmd/exitcode":   true,
 		modulePath + "/internal/cmd/root":       true,
@@ -32,6 +33,7 @@ func TestCommandPackageTestsKeepFeatureCommandImportsAtCommandTreeBoundaries(t *
 	cmdRoot := filepath.Join(repoRoot, "internal", "cmd")
 	sharedCommandImports := map[string]bool{
 		modulePath + "/internal/cmd/cmderr":     true,
+		modulePath + "/internal/cmd/cmdtest":    true,
 		modulePath + "/internal/cmd/cmdruntime": true,
 		modulePath + "/internal/cmd/exitcode":   true,
 		modulePath + "/internal/cmd/root":       true,

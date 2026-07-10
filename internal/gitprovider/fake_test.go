@@ -23,6 +23,19 @@ func TestFakeCapabilities(t *testing.T) {
 	}
 }
 
+func TestFakeCallHook(t *testing.T) {
+	var fake Fake
+	var calls []Operation
+	fake.SetCallHook(func(op Operation) { calls = append(calls, op) })
+	_, _ = fake.WhoAmI(context.Background(), Credential{})
+	_, _ = fake.ListReviews(context.Background(), testPRRef())
+	fake.SetCallHook(nil)
+	_, _ = fake.ListIssueComments(context.Background(), testPRRef())
+	if want := []Operation{OperationWhoAmI, OperationListReviews}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("call hook operations = %#v, want %#v", calls, want)
+	}
+}
+
 func TestFakeIdentityAndDiffSuccessPaths(t *testing.T) {
 	ctx := context.Background()
 	ref := testPRRef()

@@ -31,6 +31,7 @@ type Fake struct {
 	caps     ProviderCaps
 	identity Identity
 	errors   map[Operation]error
+	callHook func(Operation)
 
 	prs           map[PRRef]PR
 	diffs         map[PRRef]UnifiedDiff
@@ -49,6 +50,14 @@ type Fake struct {
 
 	nextCommentID int
 	nextReviewID  int
+}
+
+// SetCallHook configures a function called before each GitProvider operation.
+// Passing nil clears the hook.
+func (f *Fake) SetCallHook(hook func(Operation)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.callHook = hook
 }
 
 // SetCapabilities configures the capabilities returned by Capabilities.
@@ -180,6 +189,7 @@ func (f *Fake) SetReviewAuthority(ref PRRef, login string, authority ReviewAutho
 
 // WhoAmI returns the configured fake identity or an injected error.
 func (f *Fake) WhoAmI(_ context.Context, _ Credential) (Identity, error) {
+	f.call(OperationWhoAmI)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ensureLocked()
@@ -191,6 +201,7 @@ func (f *Fake) WhoAmI(_ context.Context, _ Credential) (Identity, error) {
 
 // ReviewAuthority returns the configured authority for ref/login.
 func (f *Fake) ReviewAuthority(_ context.Context, ref PRRef, identity Identity) (ReviewAuthority, error) {
+	f.call(OperationReviewAuthority)
 	if err := ref.Validate(); err != nil {
 		return ReviewAuthority{}, err
 	}
@@ -209,6 +220,7 @@ func (f *Fake) ReviewAuthority(_ context.Context, ref PRRef, identity Identity) 
 
 // GetPR returns the canned PR snapshot for ref.
 func (f *Fake) GetPR(_ context.Context, ref PRRef) (PR, error) {
+	f.call(OperationGetPR)
 	if err := ref.Validate(); err != nil {
 		return PR{}, err
 	}
@@ -227,6 +239,7 @@ func (f *Fake) GetPR(_ context.Context, ref PRRef) (PR, error) {
 
 // GetDiff returns the canned unified diff for ref.
 func (f *Fake) GetDiff(_ context.Context, ref PRRef) (UnifiedDiff, error) {
+	f.call(OperationGetDiff)
 	if err := ref.Validate(); err != nil {
 		return UnifiedDiff{}, err
 	}
@@ -245,6 +258,7 @@ func (f *Fake) GetDiff(_ context.Context, ref PRRef) (UnifiedDiff, error) {
 
 // GetFileAtRef returns the canned file contents for the full ref/path selector.
 func (f *Fake) GetFileAtRef(_ context.Context, ref PRRef, gitRef string, path string) ([]byte, error) {
+	f.call(OperationGetFileAtRef)
 	selector, err := newFileSelector(ref, gitRef, path)
 	if err != nil {
 		return nil, err
@@ -264,6 +278,7 @@ func (f *Fake) GetFileAtRef(_ context.Context, ref PRRef, gitRef string, path st
 
 // ListTreeAtRef returns the canned tree entries for the full ref/path selector.
 func (f *Fake) ListTreeAtRef(_ context.Context, ref PRRef, gitRef string, path string) ([]TreeEntry, error) {
+	f.call(OperationListTreeAtRef)
 	selector, err := newFileSelector(ref, gitRef, path)
 	if err != nil {
 		return nil, err
@@ -283,6 +298,7 @@ func (f *Fake) ListTreeAtRef(_ context.Context, ref PRRef, gitRef string, path s
 
 // ListInlineThreads returns the canned inline threads for ref.
 func (f *Fake) ListInlineThreads(_ context.Context, ref PRRef) ([]InlineThread, error) {
+	f.call(OperationListInlineThreads)
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
@@ -297,6 +313,7 @@ func (f *Fake) ListInlineThreads(_ context.Context, ref PRRef) ([]InlineThread, 
 
 // ListReviews returns the canned reviews for ref.
 func (f *Fake) ListReviews(_ context.Context, ref PRRef) ([]Review, error) {
+	f.call(OperationListReviews)
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
@@ -311,6 +328,7 @@ func (f *Fake) ListReviews(_ context.Context, ref PRRef) ([]Review, error) {
 
 // ListIssueComments returns the canned issue comments for ref.
 func (f *Fake) ListIssueComments(_ context.Context, ref PRRef) ([]IssueComment, error) {
+	f.call(OperationListIssueComments)
 	if err := ref.Validate(); err != nil {
 		return nil, err
 	}
@@ -325,6 +343,7 @@ func (f *Fake) ListIssueComments(_ context.Context, ref PRRef) ([]IssueComment, 
 
 // PostInlineComment validates and records an inline comment write.
 func (f *Fake) PostInlineComment(_ context.Context, ref PRRef, c InlineComment) (CommentID, error) {
+	f.call(OperationPostInlineComment)
 	if err := ref.Validate(); err != nil {
 		return "", err
 	}
@@ -343,6 +362,7 @@ func (f *Fake) PostInlineComment(_ context.Context, ref PRRef, c InlineComment) 
 
 // ReplyToThread validates and records a thread reply write.
 func (f *Fake) ReplyToThread(_ context.Context, ref PRRef, threadID ThreadID, body string) (CommentID, error) {
+	f.call(OperationReplyToThread)
 	if err := ref.Validate(); err != nil {
 		return "", err
 	}
@@ -364,6 +384,7 @@ func (f *Fake) ReplyToThread(_ context.Context, ref PRRef, threadID ThreadID, bo
 
 // ResolveThread validates and records a thread resolution write.
 func (f *Fake) ResolveThread(_ context.Context, ref PRRef, threadID ThreadID) error {
+	f.call(OperationResolveThread)
 	if err := ref.Validate(); err != nil {
 		return err
 	}
@@ -382,6 +403,7 @@ func (f *Fake) ResolveThread(_ context.Context, ref PRRef, threadID ThreadID) er
 
 // PostIssueComment validates and records an issue comment write.
 func (f *Fake) PostIssueComment(_ context.Context, ref PRRef, body string) (CommentID, error) {
+	f.call(OperationPostIssueComment)
 	if err := ref.Validate(); err != nil {
 		return "", err
 	}
@@ -400,6 +422,7 @@ func (f *Fake) PostIssueComment(_ context.Context, ref PRRef, body string) (Comm
 
 // SubmitReview validates and records a review submission write.
 func (f *Fake) SubmitReview(_ context.Context, ref PRRef, r ReviewRequest) (ReviewID, error) {
+	f.call(OperationSubmitReview)
 	if err := ref.Validate(); err != nil {
 		return "", err
 	}
@@ -505,6 +528,15 @@ func (f *Fake) ensureLocked() {
 
 func (f *Fake) errorLocked(op Operation) error {
 	return f.errors[op]
+}
+
+func (f *Fake) call(op Operation) {
+	f.mu.Lock()
+	hook := f.callHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook(op)
+	}
 }
 
 func (f *Fake) nextCommentIDLocked() CommentID {

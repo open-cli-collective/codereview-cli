@@ -14,9 +14,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -157,15 +159,10 @@ func TestBenchmarkCompareProgressWritesToStderr(t *testing.T) {
 	if err := config.Save(cfgPath, testConfig()); err != nil {
 		t.Fatalf("config Save: %v", err)
 	}
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	cmd, stdout, stderr := cmdtest.New(&root.Options{
 		ConfigPath: cfgPath,
-		Stdout:     &stdout,
-		Stderr:     &stderr,
 		Quiet:      false,
-	})
-	Register(cmd, opts)
+	}, Register)
 
 	if err := root.Execute(cmd, []string{"benchmark", "compare", resultsDir, "--json"}); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -1043,16 +1040,11 @@ func newTestCommandWithStderr(t *testing.T, quiet bool) (*cobra.Command, *bytes.
 	if err := config.Save(cfgPath, testConfig()); err != nil {
 		t.Fatalf("config Save: %v", err)
 	}
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	cmd, out, errOut := cmdtest.New(&root.Options{
 		ConfigPath: cfgPath,
-		Stdout:     &out,
-		Stderr:     &errOut,
 		Quiet:      quiet,
-	})
-	Register(cmd, opts)
-	return cmd, &out, &errOut
+	}, Register)
+	return cmd, out, errOut
 }
 
 func writeBenchmarkSuite(t *testing.T, body string) string {
@@ -1126,25 +1118,24 @@ func withBenchmarkSynthesisStage(body, promptPath string) string {
 }
 
 func testConfig() config.File {
-	return config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/home",
-					IdentityCache: "review-bot",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
-				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+	return configtest.File(
+		configtest.WithoutSecrets(),
+		configtest.WithoutRepositoryProfiles(),
+		configtest.HomeProfile(config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+				IdentityCache: "review-bot",
 			},
-		},
-	}
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+		}),
+	)
 }
 
 type reviewInvocation struct {
