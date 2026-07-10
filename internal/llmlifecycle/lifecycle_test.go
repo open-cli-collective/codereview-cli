@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
@@ -255,7 +256,7 @@ func TestRunStructuredIgnoresPayloadWithoutMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidatedOutput: %v", err)
 	}
-	if err := WriteFileAtomic(outputPath, []byte(`{"ok":false}`)); err != nil {
+	if err := fsatomic.WriteFileAtomic(outputPath, []byte(`{"ok":false}`), 0o600); err != nil {
 		t.Fatalf("WriteFileAtomic: %v", err)
 	}
 	adapter.Queue(llm.FakeResult{
