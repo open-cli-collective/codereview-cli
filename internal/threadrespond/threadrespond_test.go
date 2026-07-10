@@ -168,14 +168,7 @@ func TestRunLiveAbortsWhenPRMovesBeforePosting(t *testing.T) {
 	setInlineThreads(t, fixture, []gitprovider.InlineThread{
 		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
 	})
-	fixture.provider.beforeGetPR = func(provider *recordingProvider, call int) error {
-		if call == 3 {
-			if err := provider.SetPR(fixture.ref, movedPR(fixture.pr)); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	moveOnThirdGetPR(t, fixture.provider, fixture.ref, fixture.pr)
 
 	result, err := Run(ctx, fixture.options(), Request{
 		PRRef:           fixture.ref,
@@ -675,14 +668,7 @@ func TestRetryAbortsWhenPRMovesBeforePosting(t *testing.T) {
 	action := responsePlannedAction(t, run.RunID, "reply-1", ledger.PlannedActionThreadReply, "thread-1", outbox.ThreadReplyPayload{Body: "Retry this"})
 	action.Status = ledger.PlannedActionFailedTerminal
 	insertAction(t, fixture.store, action)
-	fixture.provider.beforeGetPR = func(provider *recordingProvider, call int) error {
-		if call == 3 {
-			if err := provider.SetPR(fixture.ref, movedPR(fixture.pr)); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	moveOnThirdGetPR(t, fixture.provider, fixture.ref, fixture.pr)
 
 	result, err := Run(ctx, fixture.options(), Request{
 		PRRef:           fixture.ref,
@@ -885,7 +871,11 @@ func TestRunLiveLocksBeforeReadingThreads(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
 	events := &eventLog{}
-	fixture.provider = &recordingProvider{Fake: fixture.provider.Fake, events: events}
+	fixture.provider.SetCallHook(func(op gitprovider.Operation) {
+		if op == gitprovider.OperationListInlineThreads {
+			events.add("list_threads")
+		}
+	})
 	fixture.adapter.Queue(threadAnalysisResult("thread-1", threadanalysis.DecisionReplyOnly, "Reply", "", false))
 	setInlineThreads(t, fixture, []gitprovider.InlineThread{
 		markedThread(t, "thread-1", "main.go", 10, false, fixture.bot, fixture.human),
@@ -913,7 +903,7 @@ func TestRunLiveLocksBeforeReadingThreads(t *testing.T) {
 
 type fixture struct {
 	store    *ledger.Store
-	provider *recordingProvider
+	provider *gitprovider.Fake
 	adapter  *llm.FakeAdapter
 	ref      gitprovider.PRRef
 	pr       gitprovider.PR
@@ -947,7 +937,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	return &fixture{
 		store:    store,
-		provider: &recordingProvider{Fake: fake, events: &eventLog{}},
+		provider: fake,
 		adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
 		ref:      ref,
 		pr:       pr,
@@ -996,32 +986,24 @@ func (f *fixture) allocateRun(t *testing.T, runID string, mode ledger.PostMode) 
 	return run
 }
 
-type recordingProvider struct {
-	*gitprovider.Fake
-	events      *eventLog
-	mu          sync.Mutex
-	getPRCalls  int
-	beforeGetPR func(*recordingProvider, int) error
-}
-
-func (p *recordingProvider) GetPR(ctx context.Context, ref gitprovider.PRRef) (gitprovider.PR, error) {
-	p.mu.Lock()
-	p.getPRCalls++
-	call := p.getPRCalls
-	beforeGetPR := p.beforeGetPR
-	p.mu.Unlock()
-	if beforeGetPR != nil {
-		if err := beforeGetPR(p, call); err != nil {
-			return gitprovider.PR{}, err
+func moveOnThirdGetPR(t *testing.T, provider *gitprovider.Fake, ref gitprovider.PRRef, pr gitprovider.PR) {
+	t.Helper()
+	var mu sync.Mutex
+	calls := 0
+	provider.SetCallHook(func(op gitprovider.Operation) {
+		if op != gitprovider.OperationGetPR {
+			return
 		}
-	}
-	p.events.add("get_pr")
-	return p.Fake.GetPR(ctx, ref)
-}
-
-func (p *recordingProvider) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
-	p.events.add("list_threads")
-	return p.Fake.ListInlineThreads(ctx, ref)
+		mu.Lock()
+		calls++
+		move := calls == 3
+		mu.Unlock()
+		if move {
+			if err := provider.SetPR(ref, movedPR(pr)); err != nil {
+				t.Fatalf("SetPR moved: %v", err)
+			}
+		}
+	})
 }
 
 type eventLog struct {

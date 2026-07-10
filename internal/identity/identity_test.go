@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
@@ -236,41 +237,42 @@ func (f *fakeResolver) ResolveIdentity(_ context.Context, _ string, git config.G
 }
 
 func testConfig() config.File {
-	return config.File{
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/home",
-					IdentityCache: "old-home",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
-				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+	return configtest.File(
+		configtest.WithoutKeyring(),
+		configtest.WithoutSecrets(),
+		configtest.WithoutRepositoryProfiles(),
+		configtest.HomeProfile(config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
+				IdentityCache: "old-home",
 			},
-			"work": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work",
-					IdentityCache: "work-user-cache",
-				},
-				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work-reviewer",
-					IdentityCache: "old-bot",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
-				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
 			},
-		},
-	}
+			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+		}),
+		configtest.Profile("work", config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/work",
+				IdentityCache: "work-user-cache",
+			},
+			ReviewerCredentials: &config.ReviewerCredentials{
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/work-reviewer",
+				IdentityCache: "old-bot",
+			},
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+		}),
+	)
 }

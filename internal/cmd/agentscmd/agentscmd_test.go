@@ -14,9 +14,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -430,15 +432,15 @@ func newTestCommand(t *testing.T, cfg config.File, factory ProviderFactory) (*co
 	if err := config.Save(path, cfg); err != nil {
 		t.Fatalf("Save config: %v", err)
 	}
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	opts := &root.Options{
 		ConfigPath: path,
 		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &out,
+	}
+	cmd, out, _ := cmdtest.New(opts, func(cmd *cobra.Command, opts *root.Options) {
+		RegisterWithFactory(cmd, opts, factory)
 	})
-	RegisterWithFactory(cmd, opts, factory)
-	return cmd, &out
+	opts.Stderr = out
+	return cmd, out
 }
 
 func providerFactory(provider gitprovider.GitProvider) ProviderFactory {
@@ -464,18 +466,7 @@ func testConfig(agentSource string) config.File {
 	if agentSource != "" {
 		profile.AgentSources = []string{agentSource}
 	}
-	return config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
-		RepositoryProfiles: []config.RepositoryProfile{{
-			Profile: "home",
-			Match: config.RepositoryProfileMatch{
-				Host:      "github.com",
-				Namespace: "open-cli-collective",
-				Repos:     []string{"codereview-cli"},
-			},
-		}},
-		Profiles: map[string]config.Profile{"home": profile},
-	}
+	return configtest.File(configtest.WithoutSecrets(), configtest.HomeProfile(profile))
 }
 
 func fakeProviderWithRepoAgent(t *testing.T, category, agent, description string) (*gitprovider.Fake, gitprovider.PRRef) {

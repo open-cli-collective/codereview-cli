@@ -71,8 +71,9 @@ func TestEvaluateNormalLiveChecksExternalBeforeLocalResume(t *testing.T) {
 	stale := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
 	stalePath := fixture.lockPathForRun(t, stale)
 	opts := fixture.opts()
-	provider := &countingProvider{GitProvider: fixture.provider}
-	opts.Provider = provider
+	provider := &countingProvider{}
+	fixture.provider.SetCallHook(provider.record)
+	opts.Provider = fixture.provider
 	opts.Store = plannedActionErrorStore{
 		Store: fixture.store,
 		runID: stale.RunID,
@@ -245,8 +246,9 @@ func TestEvaluateIgnoresForgedOtherAuthorMarkers(t *testing.T) {
 func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testing.T) {
 	fixture := newFixture(t)
 	opts := fixture.opts()
-	provider := &countingProvider{GitProvider: fixture.provider}
-	opts.Provider = provider
+	provider := &countingProvider{}
+	fixture.provider.SetCallHook(provider.record)
+	opts.Provider = fixture.provider
 	opts.ApprovalOverride = &fakeApprovalOverrideClassifier{approve: true}
 	opts.Acquire = func(string) (Lock, error) {
 		return nil, errors.New("lock should not be acquired for active approval")
@@ -292,8 +294,9 @@ func TestEvaluateRetryPostsIgnoresActiveApprovalAndOverride(t *testing.T) {
 	classifier := &fakeApprovalOverrideClassifier{approve: true}
 	fixture.req.Flags.RetryPosts = true
 	opts := fixture.opts()
-	provider := &countingProvider{GitProvider: fixture.provider}
-	opts.Provider = provider
+	provider := &countingProvider{}
+	fixture.provider.SetCallHook(provider.record)
+	opts.Provider = fixture.provider
 	opts.ApprovalOverride = classifier
 
 	result, err := Evaluate(context.Background(), opts, fixture.req)
@@ -334,8 +337,9 @@ func TestEvaluateRerunBypassesActiveApprovalAndOverride(t *testing.T) {
 	classifier := &fakeApprovalOverrideClassifier{approve: true}
 	fixture.req.Flags.Rerun = true
 	opts := fixture.opts()
-	provider := &countingProvider{GitProvider: fixture.provider}
-	opts.Provider = provider
+	provider := &countingProvider{}
+	fixture.provider.SetCallHook(provider.record)
+	opts.Provider = fixture.provider
 	opts.ApprovalOverride = classifier
 
 	result, err := Evaluate(context.Background(), opts, fixture.req)
@@ -1032,8 +1036,9 @@ func TestEvaluateRerunSupersedesResumable(t *testing.T) {
 	stalePath := fixture.lockPathForRun(t, stale)
 	fixture.req.Flags.Rerun = true
 	opts := fixture.opts()
-	provider := &countingProvider{GitProvider: fixture.provider}
-	opts.Provider = provider
+	provider := &countingProvider{}
+	fixture.provider.SetCallHook(provider.record)
+	opts.Provider = fixture.provider
 	opts.Acquire = func(path string) (Lock, error) {
 		if path == stalePath {
 			return nil, errors.New("unexpected stale lock probe")
@@ -2023,7 +2028,6 @@ type memoryLock struct {
 }
 
 type countingProvider struct {
-	gitprovider.GitProvider
 	issueComments int
 	reviews       int
 	threads       int
@@ -2066,19 +2070,16 @@ func (s insertActionErrorStore) InsertPlannedAction(context.Context, ledger.Plan
 	return s.err
 }
 
-func (p *countingProvider) ListIssueComments(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.IssueComment, error) {
-	p.issueComments++
-	return p.GitProvider.ListIssueComments(ctx, ref)
-}
-
-func (p *countingProvider) ListReviews(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.Review, error) {
-	p.reviews++
-	return p.GitProvider.ListReviews(ctx, ref)
-}
-
-func (p *countingProvider) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
-	p.threads++
-	return p.GitProvider.ListInlineThreads(ctx, ref)
+func (p *countingProvider) record(op gitprovider.Operation) {
+	if op == gitprovider.OperationListIssueComments {
+		p.issueComments++
+	}
+	if op == gitprovider.OperationListReviews {
+		p.reviews++
+	}
+	if op == gitprovider.OperationListInlineThreads {
+		p.threads++
+	}
 }
 
 func (p *inlineThreadsErrorAfterProvider) ListInlineThreads(ctx context.Context, ref gitprovider.PRRef) ([]gitprovider.InlineThread, error) {

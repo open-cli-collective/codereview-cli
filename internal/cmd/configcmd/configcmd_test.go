@@ -18,9 +18,11 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -2891,31 +2893,16 @@ func newTestCommand(path string) (*cobra.Command, *bytes.Buffer) {
 }
 
 func newTestCommandWithOptions(opts *root.Options) (*cobra.Command, *bytes.Buffer) {
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	if opts == nil {
-		opts = &root.Options{}
-	}
-	opts.Stdin = strings.NewReader("")
-	opts.Stdout = &out
-	opts.Stderr = &errOut
-	cmd, opts := root.NewCommandWithOptions(opts)
-	Register(cmd, opts)
-	return cmd, &out
+	cmd, out, _ := cmdtest.New(opts, Register)
+	return cmd, out
 }
 
 func newTestCommandWithStderr(path string, quiet bool) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	cmd, out, errOut := cmdtest.New(&root.Options{
 		ConfigPath: path,
-		Stdin:      strings.NewReader(""),
-		Stdout:     &out,
-		Stderr:     &errOut,
 		Quiet:      quiet,
-	})
-	Register(cmd, opts)
-	return cmd, &out, &errOut
+	}, Register)
+	return cmd, out, errOut
 }
 
 const testFileCredentialStoreID = "test-file"
@@ -3150,59 +3137,47 @@ func writeConfigTestAgentSource(t *testing.T, root, prompt string) {
 }
 
 func testConfig() config.File {
-	return config.File{
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"test-memory": {
-					DisplayName: "Test Memory Store",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
-				},
+	return configtest.File(
+		configtest.WithoutKeyring(),
+		configtest.WithoutRepositoryProfiles(),
+		configtest.HomeProfile(config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
+				CredentialRef: "codereview/home",
 			},
-		},
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
-					CredentialRef: "codereview/home",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
-				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+			LLM:          config.LLMConfig{Provider: config.LLMProviderAnthropic, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterClaudeCLI},
+			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
+		}),
+		configtest.Profile("work", config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
+				CredentialRef: "codereview/work",
 			},
-			"work": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
-					CredentialRef: "codereview/work",
-				},
-				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
-					CredentialRef: "codereview/work-reviewer",
-				},
-				LLM: config.LLMConfig{
-					Provider:      config.LLMProviderAnthropic,
-					Auth:          config.LLMAuthAPIKey,
-					Adapter:       config.LLMAdapterAnthropicAPI,
-					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-llm"},
-					CredentialRef: "codereview/work-llm",
-				},
-				ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventRequestChanges},
+			ReviewerCredentials: &config.ReviewerCredentials{
+				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
+				CredentialRef: "codereview/work-reviewer",
 			},
-		},
-		Data: config.DataConfig{
+			LLM: config.LLMConfig{
+				Provider:      config.LLMProviderAnthropic,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterAnthropicAPI,
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-llm"},
+				CredentialRef: "codereview/work-llm",
+			},
+			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventRequestChanges},
+		}),
+		configtest.Data(config.DataConfig{
 			Retention: config.RetentionConfig{
 				MaxAgeDays:  intPtr(90),
 				Enforcement: config.RetentionAtWrite,
 			},
-		},
-	}
+		}),
+	)
 }
 
 func intPtr(value int) *int {

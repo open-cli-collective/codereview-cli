@@ -13,6 +13,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/app"
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -601,14 +602,10 @@ func TestRunWritesComparisonArtifactsAndEmbedsAnchors(t *testing.T) {
 }
 
 func newCompareOnlyTestCommand(configPath string) (*cobra.Command, *bytes.Buffer) {
-	var out bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	cmd, out, _ := cmdtest.New(&root.Options{
 		ConfigPath: configPath,
-		Stdout:     &out,
-		Stderr:     &bytes.Buffer{},
-	})
-	Register(cmd, opts)
-	return cmd, &out
+	}, Register)
+	return cmd, out
 }
 
 func comparisonFixtureSummary(resultsDir string) benchmarkSuiteSummary {

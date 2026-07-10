@@ -13,6 +13,7 @@ import (
 	"github.com/open-cli-collective/cli-common/statedirtest"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
@@ -924,32 +925,22 @@ func assertLedgerClosed(t *testing.T, store *ledger.Store) {
 }
 
 func testConfig() config.File {
-	return config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"test-memory": {
-					DisplayName: "Test Memory Store",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
-				},
+	return configtest.File(
+		configtest.WithoutRepositoryProfiles(),
+		configtest.HomeProfile(config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				Credential:    config.CredentialLocation{Store: "test-memory"},
+				CredentialRef: "codereview/home",
 			},
-		},
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory"},
-					CredentialRef: "codereview/home",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
 			},
-		},
-	}
+		}),
+	)
 }
 
 func testPRRef() gitprovider.PRRef {

@@ -24,6 +24,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -18581,15 +18582,10 @@ func assertFakeBundleKeys(t *testing.T, store *fakeInitStore, profile string, wa
 }
 
 func newTestCommand(path string, stdin io.Reader) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
-	var stdout, stderr bytes.Buffer
-	cmd, opts := root.NewCommandWithOptions(&root.Options{
+	return cmdtest.New(&root.Options{
 		ConfigPath: path,
 		Stdin:      stdin,
-		Stdout:     &stdout,
-		Stderr:     &stderr,
-	})
-	Register(cmd, opts)
-	return cmd, &stdout, &stderr
+	}, Register)
 }
 
 type failReader struct{}

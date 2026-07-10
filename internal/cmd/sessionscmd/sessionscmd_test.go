@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -271,17 +272,7 @@ func newTestCommand() (*cobra.Command, *bytes.Buffer) {
 }
 
 func newTestCommandWithOptions(opts *root.Options) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
-	var out bytes.Buffer
-	var errOut bytes.Buffer
-	if opts == nil {
-		opts = &root.Options{}
-	}
-	opts.Stdin = strings.NewReader("")
-	opts.Stdout = &out
-	opts.Stderr = &errOut
-	cmd, rootOpts := root.NewCommandWithOptions(opts)
-	Register(cmd, rootOpts)
-	return cmd, &out, &errOut
+	return cmdtest.New(opts, Register)
 }
 
 func insertNamedSession(t *testing.T, session ledger.NamedSession) {

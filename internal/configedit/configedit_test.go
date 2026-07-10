@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 )
 
@@ -680,56 +681,56 @@ func TestSecretsProfileHelpers(t *testing.T) {
 }
 
 func testConfig() config.File {
-	return config.File{
-		RepositoryProfiles: []config.RepositoryProfile{
-			{
+	return configtest.File(
+		configtest.WithoutKeyring(),
+		configtest.WithoutSecrets(),
+		configtest.RepositoryProfiles(
+			config.RepositoryProfile{
 				Profile: "work",
 				Match: config.RepositoryProfileMatch{
 					Host:      "github.com",
 					Namespace: "rianjs",
 				},
 			},
-			{
+			config.RepositoryProfile{
 				Profile: "home",
 				Match: config.RepositoryProfileMatch{
 					Host:      "github.com",
 					Namespace: "open-cli-collective",
 				},
 			},
-		},
-		Profiles: map[string]config.Profile{
-			"home": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/home",
-				},
-				LLM: config.LLMConfig{
-					Provider: config.LLMProviderAnthropic,
-					Auth:     config.LLMAuthSubscription,
-					Adapter:  config.LLMAdapterClaudeCLI,
-				},
+		),
+		configtest.HomeProfile(config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/home",
 			},
-			"work": {
-				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/custom-work",
-					IdentityCache: "work-user",
-				},
-				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/custom-reviewer",
-					IdentityCache: "review-bot",
-				},
-				LLM: config.LLMConfig{
-					Provider:      config.LLMProviderAnthropic,
-					Auth:          config.LLMAuthAPIKey,
-					Adapter:       config.LLMAdapterAnthropicAPI,
-					CredentialRef: "codereview/custom-llm",
-				},
-				AgentSources: []string{"~/agents"},
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
 			},
-		},
-	}
+		}),
+		configtest.Profile("work", config.Profile{
+			Git: config.GitConfig{
+				Host:          "github.com",
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/custom-work",
+				IdentityCache: "work-user",
+			},
+			ReviewerCredentials: &config.ReviewerCredentials{
+				AuthMode:      config.GitAuthModePAT,
+				CredentialRef: "codereview/custom-reviewer",
+				IdentityCache: "review-bot",
+			},
+			LLM: config.LLMConfig{
+				Provider:      config.LLMProviderAnthropic,
+				Auth:          config.LLMAuthAPIKey,
+				Adapter:       config.LLMAdapterAnthropicAPI,
+				CredentialRef: "codereview/custom-llm",
+			},
+			AgentSources: []string{"~/agents"},
+		}),
+	)
 }
