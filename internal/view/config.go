@@ -239,19 +239,38 @@ func renderConfigModelMap(w io.Writer, llm config.LLMConfig) error {
 	if _, err := fmt.Fprintln(w, "  Model map:"); err != nil {
 		return err
 	}
-	effective := config.EffectiveModelMap(llm)
-	for _, tier := range config.ModelTiers() {
-		model := "<unset>"
-		source := "unset"
-		if resolved, ok := effective[tier]; ok {
-			model = resolved.Model
-			source = string(resolved.Source)
+	for _, row := range ModelMapRows(llm) {
+		model := row.Model
+		if model == "" {
+			model = "<unset>"
 		}
-		if _, err := fmt.Fprintf(w, "    %s: %s (%s)\n", tier, model, source); err != nil {
+		if _, err := fmt.Fprintf(w, "    %s: %s (%s)\n", row.Tier, model, row.Source); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ModelMapRow is one effective model-tier mapping.
+type ModelMapRow struct {
+	Tier   string `json:"tier"`
+	Model  string `json:"model,omitempty"`
+	Source string `json:"source"`
+}
+
+// ModelMapRows builds stable rows for every supported model tier.
+func ModelMapRows(llm config.LLMConfig) []ModelMapRow {
+	effective := config.EffectiveModelMap(llm)
+	rows := make([]ModelMapRow, 0, len(config.ModelTiers()))
+	for _, tier := range config.ModelTiers() {
+		row := ModelMapRow{Tier: string(tier), Source: "unset"}
+		if resolved, ok := effective[tier]; ok {
+			row.Model = resolved.Model
+			row.Source = string(resolved.Source)
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // RenderConfigJSON writes the config summary as indented JSON.
@@ -435,6 +454,15 @@ type ConfigRoute struct {
 	Repos     []string `json:"repos,omitempty"`
 }
 
+// Target returns the stable human-readable route target.
+func (r ConfigRoute) Target() string {
+	target := r.Host + "/" + r.Namespace
+	if len(r.Repos) > 0 {
+		target += " [" + strings.Join(r.Repos, ", ") + "]"
+	}
+	return target
+}
+
 // RenderConfigRoutesText writes a stable human-readable route listing.
 func RenderConfigRoutesText(w io.Writer, result ConfigRoutes) error {
 	if len(result.Routes) == 0 {
@@ -445,11 +473,7 @@ func RenderConfigRoutesText(w io.Writer, result ConfigRoutes) error {
 		return err
 	}
 	for _, route := range result.Routes {
-		target := route.Host + "/" + route.Namespace
-		if len(route.Repos) > 0 {
-			target += " [" + strings.Join(route.Repos, ", ") + "]"
-		}
-		if _, err := fmt.Fprintf(w, "  - %s: %s\n", route.Profile, target); err != nil {
+		if _, err := fmt.Fprintf(w, "  - %s: %s\n", route.Profile, route.Target()); err != nil {
 			return err
 		}
 	}
@@ -482,11 +506,7 @@ func RenderConfigResolveProfileText(w io.Writer, result ConfigResolveProfile) er
 		return err
 	}
 	if result.MatchedRoute != nil {
-		target := result.MatchedRoute.Host + "/" + result.MatchedRoute.Namespace
-		if len(result.MatchedRoute.Repos) > 0 {
-			target += " [" + strings.Join(result.MatchedRoute.Repos, ", ") + "]"
-		}
-		if err := writeKV(w, "Matched route", target); err != nil {
+		if err := writeKV(w, "Matched route", result.MatchedRoute.Target()); err != nil {
 			return err
 		}
 	}

@@ -69,7 +69,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			store, err := credentials.OpenResolvedStore(opts.Backend, backendFlagSet, cfg, resolvedSecretsProfile)
 			var storeErr error
 			if err != nil {
-				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+				if config.IsConfigSelection(err) {
 					return cmderr.Config(err)
 				}
 				storeErr = err
@@ -398,7 +398,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			storeSpan := logger.Start("config.clear", "open_credential_store", "active-profile")
 			store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 			if err != nil {
-				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+				if config.IsConfigSelection(err) {
 					return cmderr.Config(storeSpan.End(err))
 				}
 				return cmderr.Credential(storeSpan.End(err))
@@ -429,7 +429,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			_ = clearSpan.End(nil)
 			if clearAll {
 				configSpan := logger.Start("config.clear", "remove_profile_config", profileName)
-				change, err := clearProfileFromConfig(path, cfg, profileName, clearDryRun)
+				change, err := removeProfileFromConfig(path, cfg, profileName, clearDryRun)
 				if err != nil {
 					return configSpan.End(fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err))
 				}
@@ -611,23 +611,15 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 			if model == "" {
 				return exitcode.Usage(fmt.Errorf("model must be non-empty"))
 			}
-			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			_, err = mutateActiveModelMap(opts, func(_ config.Profile, modelMap *config.ModelMap) error {
+				if *modelMap == nil {
+					*modelMap = config.ModelMap{}
+				}
+				(*modelMap)[string(tier)] = model
+				return nil
+			})
 			if err != nil {
 				return err
-			}
-			runtimeName, runtime, err := activeProfileLLMRuntime(cfg, profileName, profile)
-			if err != nil {
-				return cmderr.Config(err)
-			}
-			if runtime.ModelMap == nil {
-				runtime.ModelMap = config.ModelMap{}
-			}
-			runtime.ModelMap[string(tier)] = model
-			cfg.LLMRuntimes[runtimeName] = runtime
-			profile.LLM = runtime
-			cfg.Profiles[profileName] = profile
-			if err := saveConfigFile(path, cfg); err != nil {
-				return cmderr.Config(err)
 			}
 			_, err = fmt.Fprintf(opts.Stdout, "Set %s: %s\n", tier, model)
 			return err
@@ -643,25 +635,15 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			_, err = mutateActiveModelMap(opts, func(_ config.Profile, modelMap *config.ModelMap) error {
+				delete(*modelMap, string(tier))
+				if len(*modelMap) == 0 {
+					*modelMap = nil
+				}
+				return nil
+			})
 			if err != nil {
 				return err
-			}
-			runtimeName, runtime, err := activeProfileLLMRuntime(cfg, profileName, profile)
-			if err != nil {
-				return cmderr.Config(err)
-			}
-			if runtime.ModelMap != nil {
-				delete(runtime.ModelMap, string(tier))
-				if len(runtime.ModelMap) == 0 {
-					runtime.ModelMap = nil
-				}
-			}
-			cfg.LLMRuntimes[runtimeName] = runtime
-			profile.LLM = runtime
-			cfg.Profiles[profileName] = profile
-			if err := saveConfigFile(path, cfg); err != nil {
-				return cmderr.Config(err)
 			}
 			_, err = fmt.Fprintf(opts.Stdout, "Unset %s\n", tier)
 			return err
@@ -674,29 +656,21 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 		Short: "Reset the active profile model map to built-in defaults",
 		Args:  exitcode.NoArgs("config llm models reset takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
-			path, cfg, profileName, profile, err := loadActiveProfile(opts)
+			profileName, err := mutateActiveModelMap(opts, func(profile config.Profile, modelMap *config.ModelMap) error {
+				if guard := strings.TrimSpace(resetProvider); guard != "" {
+					provider := config.LLMProvider(guard)
+					if !provider.Valid() {
+						return exitcode.Usage(fmt.Errorf("--provider %q is invalid", guard))
+					}
+					if provider != profile.LLM.Provider {
+						return exitcode.Usage(fmt.Errorf("--provider %q does not match active profile provider %q", guard, profile.LLM.Provider))
+					}
+				}
+				*modelMap = nil
+				return nil
+			})
 			if err != nil {
 				return err
-			}
-			if guard := strings.TrimSpace(resetProvider); guard != "" {
-				provider := config.LLMProvider(guard)
-				if !provider.Valid() {
-					return exitcode.Usage(fmt.Errorf("--provider %q is invalid", guard))
-				}
-				if provider != profile.LLM.Provider {
-					return exitcode.Usage(fmt.Errorf("--provider %q does not match active profile provider %q", guard, profile.LLM.Provider))
-				}
-			}
-			runtimeName, runtime, err := activeProfileLLMRuntime(cfg, profileName, profile)
-			if err != nil {
-				return cmderr.Config(err)
-			}
-			runtime.ModelMap = nil
-			cfg.LLMRuntimes[runtimeName] = runtime
-			profile.LLM = runtime
-			cfg.Profiles[profileName] = profile
-			if err := saveConfigFile(path, cfg); err != nil {
-				return cmderr.Config(err)
 			}
 			_, err = fmt.Fprintf(opts.Stdout, "Reset model map for profile %s\n", profileName)
 			return err
@@ -743,16 +717,10 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 }
 
 type modelMapResultView struct {
-	ActiveProfile string        `json:"active_profile"`
-	Provider      string        `json:"provider"`
-	Adapter       string        `json:"adapter"`
-	Models        []modelMapRow `json:"models"`
-}
-
-type modelMapRow struct {
-	Tier   string `json:"tier"`
-	Model  string `json:"model,omitempty"`
-	Source string `json:"source"`
+	ActiveProfile string             `json:"active_profile"`
+	Provider      string             `json:"provider"`
+	Adapter       string             `json:"adapter"`
+	Models        []view.ModelMapRow `json:"models"`
 }
 
 type modelResolveResult struct {
@@ -910,21 +878,33 @@ func mustMarkFlagRequired(cmd *cobra.Command, name string) {
 }
 
 func modelMapResult(profileName string, profile config.Profile) modelMapResultView {
-	effective := config.EffectiveModelMap(profile.LLM)
-	result := modelMapResultView{
+	return modelMapResultView{
 		ActiveProfile: profileName,
 		Provider:      string(profile.LLM.Provider),
 		Adapter:       string(profile.LLM.Adapter),
+		Models:        view.ModelMapRows(profile.LLM),
 	}
-	for _, tier := range config.ModelTiers() {
-		row := modelMapRow{Tier: string(tier), Source: "unset"}
-		if resolved, ok := effective[tier]; ok {
-			row.Model = resolved.Model
-			row.Source = string(resolved.Source)
-		}
-		result.Models = append(result.Models, row)
+}
+
+func mutateActiveModelMap(opts *root.Options, mutate func(config.Profile, *config.ModelMap) error) (string, error) {
+	path, cfg, profileName, profile, err := loadActiveProfile(opts)
+	if err != nil {
+		return "", err
 	}
-	return result
+	runtimeName, runtime, err := activeProfileLLMRuntime(cfg, profileName, profile)
+	if err != nil {
+		return "", cmderr.Config(err)
+	}
+	if err := mutate(profile, &runtime.ModelMap); err != nil {
+		return "", err
+	}
+	cfg.LLMRuntimes[runtimeName] = runtime
+	profile.LLM = runtime
+	cfg.Profiles[profileName] = profile
+	if err := saveConfigFile(path, cfg); err != nil {
+		return "", cmderr.Config(err)
+	}
+	return profileName, nil
 }
 
 func renderModelMapText(w io.Writer, result modelMapResultView) error {
@@ -1019,11 +999,17 @@ func credentialStatuses(store *credstore.Store, refs []config.CredentialRef, sto
 	return viewStatuses, nil
 }
 
-func removeProfileFromConfig(path string, cfg config.File, profileName string) (configClearChange, error) {
+func removeProfileFromConfig(path string, cfg config.File, profileName string, dryRun bool) (configClearChange, error) {
 	if _, ok := cfg.Profiles[profileName]; !ok {
 		return configClearChange{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName)
 	}
 	change := configClearChange{profileRemoved: profileName}
+	if dryRun {
+		if len(cfg.Profiles) == 1 {
+			change.configPathRemoved = path
+		}
+		return change, nil
+	}
 	delete(cfg.Profiles, profileName)
 	if len(cfg.Profiles) == 0 {
 		if err := removeConfigFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -1064,27 +1050,6 @@ func resolvedSecretsProfileViewPtr(resolved credentials.ResolvedSecretsProfile) 
 		ReadOnly: resolved.Source == config.EffectiveSecretsStoreSourceBuiltIn,
 		Source:   string(resolved.Source),
 	}
-}
-
-func clearProfileFromConfig(path string, cfg config.File, profileName string, dryRun bool) (configClearChange, error) {
-	if dryRun {
-		return previewProfileFromConfig(path, cfg, profileName)
-	}
-	return removeProfileFromConfig(path, cfg, profileName)
-}
-
-func previewProfileFromConfig(path string, cfg config.File, profileName string) (configClearChange, error) {
-	if _, ok := cfg.Profiles[profileName]; !ok {
-		return configClearChange{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, profileName)
-	}
-	// Keep this preview in lockstep with removeProfileFromConfig so dry-run
-	// reports exactly what the mutating path would change.
-	change := configClearChange{profileRemoved: profileName}
-	if len(cfg.Profiles) == 1 {
-		change.configPathRemoved = path
-		return change, nil
-	}
-	return change, nil
 }
 
 func clearCacheRoot(dryRun bool) (view.CacheClear, error) {
