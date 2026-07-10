@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -506,34 +507,126 @@ const (
 	LLMAdapterPiRPC        LLMAdapter = "pi_rpc"
 )
 
+// LLMRuntimeSpec describes one built-in LLM runtime shape. An empty Auth keeps
+// the runtime's existing auth validation permissive.
+type LLMRuntimeSpec struct {
+	Provider              LLMProvider
+	Auth                  LLMAuth
+	Adapter               LLMAdapter
+	SuggestedName         string
+	DisplayName           string
+	BuiltInModelMap       ModelMap
+	RequiresCredentialRef bool
+}
+
+var llmRuntimeSpecs = []LLMRuntimeSpec{
+	{
+		Provider:      LLMProviderAnthropic,
+		Auth:          "", // Preserve the current permissive claude_cli auth behavior.
+		Adapter:       LLMAdapterClaudeCLI,
+		SuggestedName: "claude-cli",
+		DisplayName:   "Claude CLI",
+		BuiltInModelMap: ModelMap{
+			string(ModelTierMedium): "claude-sonnet-4-6",
+			string(ModelTierLarge):  "claude-opus-4-8",
+		},
+	},
+	{
+		Provider:              LLMProviderAnthropic,
+		Auth:                  LLMAuthAPIKey,
+		Adapter:               LLMAdapterAnthropicAPI,
+		SuggestedName:         "anthropic-api-key",
+		DisplayName:           "Anthropic API",
+		BuiltInModelMap:       ModelMap{},
+		RequiresCredentialRef: true,
+	},
+	{
+		Provider:      LLMProviderOpenAI,
+		Auth:          LLMAuthSubscription,
+		Adapter:       LLMAdapterCodexCLI,
+		SuggestedName: "codex-cli",
+		DisplayName:   "Codex CLI",
+		BuiltInModelMap: ModelMap{
+			string(ModelTierSmall):  "gpt-5.4-mini",
+			string(ModelTierMedium): "gpt-5.4",
+			string(ModelTierLarge):  "gpt-5.5",
+		},
+	},
+	{
+		Provider:      LLMProviderOpenAI,
+		Auth:          LLMAuthAPIKey,
+		Adapter:       LLMAdapterOpenAIAPI,
+		SuggestedName: "openai-api-key",
+		DisplayName:   "OpenAI API",
+		BuiltInModelMap: ModelMap{
+			string(ModelTierSmall):  "gpt-5.4-mini",
+			string(ModelTierMedium): "gpt-5.4",
+			string(ModelTierLarge):  "gpt-5.5",
+		},
+		RequiresCredentialRef: true,
+	},
+	{
+		Provider:        LLMProviderPi,
+		Auth:            LLMAuthSubscription,
+		Adapter:         LLMAdapterPiRPC,
+		SuggestedName:   "pi-local",
+		DisplayName:     "Pi RPC",
+		BuiltInModelMap: ModelMap{},
+	},
+}
+
+// LLMRuntimeSpecs returns the built-in LLM runtime specifications.
+func LLMRuntimeSpecs() []LLMRuntimeSpec {
+	specs := make([]LLMRuntimeSpec, len(llmRuntimeSpecs))
+	for i, spec := range llmRuntimeSpecs {
+		spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+		specs[i] = spec
+	}
+	return specs
+}
+
+// FindLLMRuntimeSpec finds a built-in runtime matching provider, auth, and
+// adapter. A spec with empty Auth matches either supported auth mode.
+func FindLLMRuntimeSpec(provider LLMProvider, auth LLMAuth, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
+	for _, spec := range llmRuntimeSpecs {
+		if spec.Provider == provider && (spec.Auth == "" || spec.Auth == auth) && spec.Adapter == adapter {
+			spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+			return spec, true
+		}
+	}
+	return LLMRuntimeSpec{}, false
+}
+
+func findLLMRuntimeSpecByProviderAdapter(provider LLMProvider, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
+	for _, spec := range llmRuntimeSpecs {
+		if spec.Provider == provider && spec.Adapter == adapter {
+			return spec, true
+		}
+	}
+	return LLMRuntimeSpec{}, false
+}
+
+func findLLMRuntimeSpecByAdapter(adapter LLMAdapter) (LLMRuntimeSpec, bool) {
+	for _, spec := range llmRuntimeSpecs {
+		if spec.Adapter == adapter {
+			return spec, true
+		}
+	}
+	return LLMRuntimeSpec{}, false
+}
+
 // Valid reports whether a is a known LLM adapter.
 func (a LLMAdapter) Valid() bool {
-	switch a {
-	case LLMAdapterClaudeCLI, LLMAdapterAnthropicAPI, LLMAdapterCodexCLI, LLMAdapterOpenAIAPI, LLMAdapterPiRPC:
-		return true
-	default:
-		return false
-	}
+	_, ok := findLLMRuntimeSpecByAdapter(a)
+	return ok
 }
 
 // BuiltInModelMap returns this CLI's provider+adapter model-tier defaults.
 func BuiltInModelMap(provider LLMProvider, adapter LLMAdapter) ModelMap {
-	switch {
-	case provider == LLMProviderOpenAI && adapter == LLMAdapterCodexCLI,
-		provider == LLMProviderOpenAI && adapter == LLMAdapterOpenAIAPI:
-		return ModelMap{
-			string(ModelTierSmall):  "gpt-5.4-mini",
-			string(ModelTierMedium): "gpt-5.4",
-			string(ModelTierLarge):  "gpt-5.5",
-		}
-	case provider == LLMProviderAnthropic && adapter == LLMAdapterClaudeCLI:
-		return ModelMap{
-			string(ModelTierMedium): "claude-sonnet-4-6",
-			string(ModelTierLarge):  "claude-opus-4-8",
-		}
-	default:
-		return ModelMap{}
+	if spec, ok := findLLMRuntimeSpecByProviderAdapter(provider, adapter); ok {
+		return maps.Clone(spec.BuiltInModelMap)
 	}
+	return ModelMap{}
 }
 
 // EffectiveModelMap merges built-in defaults with profile model_map overrides.
@@ -1235,20 +1328,20 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 	if !llm.Adapter.Valid() {
 		return invalid("%s.adapter %q is invalid", field, llm.Adapter)
 	}
+	runtimeSpec, runtimeKnown := FindLLMRuntimeSpec(llm.Provider, llm.Auth, llm.Adapter)
 	if llm.Provider == LLMProviderPi {
-		if llm.Auth != LLMAuthSubscription || llm.Adapter != LLMAdapterPiRPC {
+		if !runtimeKnown || runtimeSpec.Adapter != LLMAdapterPiRPC {
 			return invalid("%s provider pi requires auth subscription and adapter pi_rpc", field)
 		}
 	}
 	if llm.Adapter == LLMAdapterPiRPC {
-		if llm.Provider != LLMProviderPi || llm.Auth != LLMAuthSubscription {
+		if !runtimeKnown {
 			return invalid("%s adapter pi_rpc requires provider pi and auth subscription", field)
 		}
 	}
-	if llm.Adapter == LLMAdapterCodexCLI {
-		if llm.Provider != LLMProviderOpenAI || llm.Auth != LLMAuthSubscription {
-			return invalid("%s adapter codex_cli requires provider openai and auth subscription", field)
-		}
+	adapterSpec, _ := findLLMRuntimeSpecByAdapter(llm.Adapter)
+	if !adapterSpec.RequiresCredentialRef && adapterSpec.Auth != "" && !runtimeKnown {
+		return invalid("%s adapter %s requires provider %s and auth %s", field, llm.Adapter, adapterSpec.Provider, adapterSpec.Auth)
 	}
 	if llm.Auth == LLMAuthAPIKey && llm.Credential.empty() {
 		return invalid("%s.credential is required for api_key auth", field)
@@ -1802,17 +1895,9 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 }
 
 func suggestedLLMRuntimeName(llm LLMConfig) string {
-	switch {
-	case llm.Provider == LLMProviderAnthropic && llm.Auth == LLMAuthSubscription && llm.Adapter == LLMAdapterClaudeCLI:
-		return "claude-cli"
-	case llm.Provider == LLMProviderOpenAI && llm.Auth == LLMAuthSubscription && llm.Adapter == LLMAdapterCodexCLI:
-		return "codex-cli"
-	case llm.Provider == LLMProviderPi && llm.Auth == LLMAuthSubscription && llm.Adapter == LLMAdapterPiRPC:
-		return "pi-local"
-	case llm.Provider == LLMProviderAnthropic && llm.Auth == LLMAuthAPIKey && llm.Adapter == LLMAdapterAnthropicAPI:
-		return "anthropic-api-key"
-	case llm.Provider == LLMProviderOpenAI && llm.Auth == LLMAuthAPIKey && llm.Adapter == LLMAdapterOpenAIAPI:
-		return "openai-api-key"
+	if spec, ok := FindLLMRuntimeSpec(llm.Provider, llm.Auth, llm.Adapter); ok &&
+		(spec.Auth == llm.Auth || spec.Auth == "" && llm.Auth == LLMAuthSubscription) {
+		return spec.SuggestedName
 	}
 	name := strings.Trim(strings.Join([]string{string(llm.Provider), string(llm.Auth), string(llm.Adapter)}, "-"), "-")
 	if name == "" {

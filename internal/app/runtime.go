@@ -605,25 +605,36 @@ func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvide
 	return provider.WhoAmI(ctx, credential)
 }
 
-func newAdapter(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
-	switch llmConfig.Adapter {
-	case config.LLMAdapterClaudeCLI:
+var adapterConstructors = map[config.LLMAdapter]AdapterFactory{
+	config.LLMAdapterClaudeCLI: func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
 		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
-	case config.LLMAdapterCodexCLI:
+	},
+	config.LLMAdapterCodexCLI: func(llmConfig config.LLMConfig, _ credentials.Reader) (llm.Adapter, error) {
 		if llmConfig.Provider != config.LLMProviderOpenAI || llmConfig.Auth != config.LLMAuthSubscription {
 			return nil, fmt.Errorf("%w: codex_cli requires provider openai with subscription auth", config.ErrUnsupported)
 		}
 		return llm.NewCodexCLIAdapter(llm.SubprocessOptions{AllowBestEffortNoTools: true}), nil
-	case config.LLMAdapterPiRPC:
+	},
+	config.LLMAdapterPiRPC: func(llmConfig config.LLMConfig, _ credentials.Reader) (llm.Adapter, error) {
 		if llmConfig.Provider != config.LLMProviderPi || llmConfig.Auth != config.LLMAuthSubscription {
 			return nil, fmt.Errorf("%w: pi_rpc requires provider pi with subscription auth", config.ErrUnsupported)
 		}
 		return llm.NewPiRPCAdapter(llm.PiRPCOptions{}), nil
-	case config.LLMAdapterAnthropicAPI, config.LLMAdapterOpenAIAPI:
+	},
+	config.LLMAdapterAnthropicAPI: func(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
 		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
-	default:
+	},
+	config.LLMAdapterOpenAIAPI: func(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
+		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
+	},
+}
+
+func newAdapter(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
+	constructor, ok := adapterConstructors[llmConfig.Adapter]
+	if !ok {
 		return nil, fmt.Errorf("%w: unsupported LLM adapter %q", config.ErrUnsupported, llmConfig.Adapter)
 	}
+	return constructor(llmConfig, store)
 }
 
 var _ Runner = reviewRunner{}
