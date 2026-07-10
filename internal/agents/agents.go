@@ -3,15 +3,18 @@ package agents
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -292,14 +295,8 @@ func unsafeSourceError(source SourceInfo, invocationRoot string) error {
 }
 
 func unsafeSourceReasons(source SourceInfo, invocationRoot string) []string {
-	var reasons []string
 	expanded, err := expandPath(source.ConfiguredPath)
-	if err == nil && !filepath.IsAbs(expanded) {
-		reasons = append(reasons, "configured path is relative; use an absolute org-managed path for rollout")
-	}
-	if pathWithin(source.CanonicalPath, os.TempDir()) {
-		reasons = append(reasons, "canonical path is under the OS temp directory; temp locations are mutable")
-	}
+	reasons := sourcePathWarnings(expanded, source.CanonicalPath, err == nil)
 	if pathWithin(source.CanonicalPath, invocationRoot) {
 		root := invocationRoot
 		if canonicalRoot, err := canonicalizePath(invocationRoot); err == nil {
@@ -330,14 +327,9 @@ func (b *catalogBuilder) sorted() []Agent {
 	if len(b.agents) == 0 {
 		return nil
 	}
-	out := make([]Agent, 0, len(b.agents))
-	for _, agent := range b.agents {
-		out = append(out, agent)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].ID < out[j].ID
+	return slices.SortedFunc(maps.Values(b.agents), func(a, b Agent) int {
+		return cmp.Compare(a.ID, b.ID)
 	})
-	return out
 }
 
 type categoryYAML struct {
@@ -455,6 +447,12 @@ func readFileAgent(agentPath string, category Category, pathName string, provena
 
 func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance, allowSoftFailures bool) ([]Agent, SourceInfo, error) {
 	repoSource := provenance.SourceInfo()
+	fail := func(err error) ([]Agent, SourceInfo, error) {
+		if classified, ok := classifyRepoCatalogError(repoSource, err); allowSoftFailures && ok {
+			return nil, classified, nil
+		}
+		return nil, repoSource, err
+	}
 	if source.Reader == nil {
 		return nil, repoSource, fmt.Errorf("%w: repo reader is required", ErrInvalid)
 	}
@@ -491,48 +489,25 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			continue
 		}
 		if err := validateName("category", categoryName); err != nil {
-			if allowSoftFailures {
-				return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
-			}
-			return nil, repoSource, err
+			return fail(err)
 		}
 		categoryPath := path.Join(repoAgentsRoot, categoryName)
 		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
 		if err != nil {
-			if classified, ok := classifyRepoCatalogError(repoSource, err); ok {
-				if allowSoftFailures {
-					return nil, classified, nil
-				}
-				return nil, repoSource, err
-			}
-			return nil, repoSource, err
+			return fail(err)
 		}
 		categoryAgents, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
 		if err != nil {
-			if classified, ok := classifyRepoCatalogError(repoSource, err); ok {
-				if allowSoftFailures {
-					return nil, classified, nil
-				}
-				return nil, repoSource, err
-			}
-			return nil, repoSource, err
+			return fail(err)
 		}
 		if len(categoryAgents) == 0 {
-			err := fmt.Errorf("%w: repo source %s category %q contains no agents", ErrInvalid, repoAgentsRoot, categoryName)
-			if allowSoftFailures {
-				return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
-			}
-			return nil, repoSource, err
+			return fail(fmt.Errorf("%w: repo source %s category %q contains no agents", ErrInvalid, repoAgentsRoot, categoryName))
 		}
 		loadedAgent = true
 		agents = append(agents, categoryAgents...)
 	}
 	if !loadedAgent {
-		err := fmt.Errorf("%w: repo source %s contains no agents", ErrInvalid, repoAgentsRoot)
-		if allowSoftFailures {
-			return nil, repoSourceError(repoSource, SourceStatusInvalid, err), nil
-		}
-		return nil, repoSource, err
+		return fail(fmt.Errorf("%w: repo source %s contains no agents", ErrInvalid, repoAgentsRoot))
 	}
 	return agents, repoSource, nil
 }
@@ -657,12 +632,7 @@ func validateAgentYAML(categoryName, agentName string, index agentYAML) error {
 }
 
 func validModelTier(value string) bool {
-	switch value {
-	case "small", "medium", "large":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains([]string{"small", "medium", "large"}, value)
 }
 
 func decodeYAMLFile(filePath string, out any) error {
@@ -778,27 +748,15 @@ func inspectFileSource(rawDir string, provenance Provenance) (SourceInfo, error)
 	}
 	canonical, err := filepath.EvalSymlinks(expanded)
 	if err != nil {
-		source.Status = SourceStatusUnreadable
-		source.Present = true
-		loadErr := fmt.Errorf("agents: canonicalize source %s: %w", rawDir, err)
-		source.Error = loadErr.Error()
-		return source, loadErr
+		return failSource(source, fmt.Errorf("agents: canonicalize source %s: %w", rawDir, err))
 	}
 	canonical, err = filepath.Abs(canonical)
 	if err != nil {
-		source.Status = SourceStatusUnreadable
-		source.Present = true
-		loadErr := fmt.Errorf("agents: canonicalize source %s: %w", rawDir, err)
-		source.Error = loadErr.Error()
-		return source, loadErr
+		return failSource(source, fmt.Errorf("agents: canonicalize source %s: %w", rawDir, err))
 	}
 	fingerprint, err := fingerprintFileSource(canonical)
 	if err != nil {
-		source.Status = SourceStatusUnreadable
-		source.Present = true
-		loadErr := fmt.Errorf("agents: fingerprint source %s: %w", rawDir, err)
-		source.Error = loadErr.Error()
-		return source, loadErr
+		return failSource(source, fmt.Errorf("agents: fingerprint source %s: %w", rawDir, err))
 	}
 	source.Present = true
 	source.Status = SourceStatusAvailable
@@ -807,6 +765,13 @@ func inspectFileSource(rawDir string, provenance Provenance) (SourceInfo, error)
 	source.Warnings = sourceWarnings(expanded, canonical)
 	source.ProvenanceLabel = provenanceFromSource(source).String()
 	return source, nil
+}
+
+func failSource(source SourceInfo, err error) (SourceInfo, error) {
+	source.Status = SourceStatusUnreadable
+	source.Present = true
+	source.Error = err.Error()
+	return source, err
 }
 
 func provenanceFromSource(source SourceInfo) Provenance {
@@ -877,15 +842,20 @@ func fingerprintFileSource(root string) (string, error) {
 }
 
 func sourceWarnings(expanded, canonical string) []string {
+	warnings := sourcePathWarnings(expanded, canonical, true)
+	if root, ok := gitWorktreeRoot(canonical); ok {
+		warnings = append(warnings, fmt.Sprintf("canonical path is inside Git worktree %s; PR review only blocks sources inside the current invocation worktree", root))
+	}
+	return warnings
+}
+
+func sourcePathWarnings(expanded, canonical string, checkRelative bool) []string {
 	var warnings []string
-	if !filepath.IsAbs(expanded) {
+	if checkRelative && !filepath.IsAbs(expanded) {
 		warnings = append(warnings, "configured path is relative; use an absolute org-managed path for rollout")
 	}
 	if pathWithin(canonical, os.TempDir()) {
 		warnings = append(warnings, "canonical path is under the OS temp directory; temp locations are mutable")
-	}
-	if root, ok := gitWorktreeRoot(canonical); ok {
-		warnings = append(warnings, fmt.Sprintf("canonical path is inside Git worktree %s; PR review only blocks sources inside the current invocation worktree", root))
 	}
 	return warnings
 }

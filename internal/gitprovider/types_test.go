@@ -47,6 +47,27 @@ func TestPRRefValidate(t *testing.T) {
 	}
 }
 
+func TestIdentitySame(t *testing.T) {
+	tests := []struct {
+		name        string
+		left, right Identity
+		want        bool
+	}{
+		{name: "matching IDs override logins", left: Identity{ID: "1", Login: "old"}, right: Identity{ID: "1", Login: "new"}, want: true},
+		{name: "different IDs override matching login", left: Identity{ID: "1", Login: "bot"}, right: Identity{ID: "2", Login: "bot"}},
+		{name: "matching login fallback", left: Identity{Login: "bot"}, right: Identity{Login: "bot"}, want: true},
+		{name: "login is case sensitive", left: Identity{Login: "Bot"}, right: Identity{Login: "bot"}},
+		{name: "empty identities do not match"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.left.Same(tt.right); got != tt.want {
+				t.Fatalf("Same() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestInlineCommentValidate(t *testing.T) {
 	validLine := testInlineComment()
 	validFile := InlineComment{

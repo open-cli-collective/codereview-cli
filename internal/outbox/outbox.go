@@ -387,7 +387,7 @@ func reconcileAction(req Request, actions []ledger.PlannedAction, action ledger.
 func reconcileInline(req Request, action ledger.PlannedAction, state hostState) reconcileMatch {
 	for _, thread := range state.threads {
 		for _, comment := range thread.Comments {
-			if !sameIdentity(comment.Author, req.PostingIdentity) {
+			if !comment.Author.Same(req.PostingIdentity) {
 				continue
 			}
 			if actionMarkerMatches(req, action, marker.ActionKindInlineComment, "", comment.Body) {
@@ -407,7 +407,7 @@ func reconcileThreadReply(req Request, action ledger.PlannedAction, payload Thre
 			continue
 		}
 		for _, comment := range thread.Comments {
-			if !sameIdentity(comment.Author, req.PostingIdentity) {
+			if !comment.Author.Same(req.PostingIdentity) {
 				continue
 			}
 			if payload.Summary {
@@ -428,7 +428,7 @@ func reconcileThreadReply(req Request, action ledger.PlannedAction, payload Thre
 
 func reconcileRollup(req Request, action ledger.PlannedAction, state hostState) reconcileMatch {
 	for _, comment := range state.issueComments {
-		if !sameIdentity(comment.Author, req.PostingIdentity) {
+		if !comment.Author.Same(req.PostingIdentity) {
 			continue
 		}
 		if actionMarkerMatches(req, action, marker.ActionKindRollupComment, string(req.DesiredOutcome), comment.Body) {
@@ -440,7 +440,7 @@ func reconcileRollup(req Request, action ledger.PlannedAction, state hostState) 
 
 func reconcileSubmitReview(req Request, action ledger.PlannedAction, state hostState) reconcileMatch {
 	for _, review := range state.reviews {
-		if !sameIdentity(review.Author, req.PostingIdentity) {
+		if !review.Author.Same(req.PostingIdentity) {
 			continue
 		}
 		if actionMarkerMatches(req, action, marker.ActionKindSubmitReview, "", review.Body) {
@@ -890,13 +890,6 @@ func actionOrder(kind ledger.PlannedActionKind) int {
 	default:
 		return 99
 	}
-}
-
-func sameIdentity(author gitprovider.Identity, target gitprovider.Identity) bool {
-	if strings.TrimSpace(author.ID) != "" && strings.TrimSpace(target.ID) != "" {
-		return author.ID == target.ID
-	}
-	return strings.TrimSpace(author.Login) != "" && author.Login == target.Login
 }
 
 func strPtr(value string) *string {

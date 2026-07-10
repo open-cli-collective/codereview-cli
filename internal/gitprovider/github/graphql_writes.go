@@ -106,17 +106,7 @@ func isGitHubAppThreadResolutionUnsupportedGraphQLError(gqlErrors []graphQLError
 	if len(gqlErrors) != 1 {
 		return false
 	}
-	err := gqlErrors[0]
-	classification := strings.ToUpper(strings.TrimSpace(err.Type))
-	if classification == "" && err.Extensions != nil {
-		if value, ok := err.Extensions["type"].(string); ok {
-			classification = strings.ToUpper(strings.TrimSpace(value))
-		}
-		if value, ok := err.Extensions["code"].(string); ok && classification == "" {
-			classification = strings.ToUpper(strings.TrimSpace(value))
-		}
-	}
-	message := strings.ToUpper(strings.TrimSpace(err.Message))
+	classification, message := graphQLErrorClassification(gqlErrors[0])
 	return strings.Contains(classification, "FORBIDDEN") &&
 		strings.Contains(message, "RESOURCE NOT ACCESSIBLE BY INTEGRATION")
 }

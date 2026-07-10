@@ -4,9 +4,10 @@ package credentials
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -217,9 +218,6 @@ type ResolvedSecretsProfile struct {
 	SelectionSource SecretsProfileSelectionSource
 }
 
-// ResolvedCredentialStore is the current name for ResolvedSecretsProfile.
-type ResolvedCredentialStore = ResolvedSecretsProfile
-
 // DisplayName returns the best user-facing label for the resolved store.
 func (r ResolvedSecretsProfile) DisplayName() string {
 	if strings.TrimSpace(r.Label) != "" {
@@ -271,18 +269,18 @@ func PlatformOSBackend(goos string) (credstore.Backend, error) {
 }
 
 // ResolveCredentialStore resolves one explicit credential-store ID.
-func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedCredentialStore, error) {
+func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedSecretsProfile, error) {
 	cfg = config.Normalize(cfg)
 	storeID = strings.TrimSpace(storeID)
 	if storeID == "" {
-		return ResolvedCredentialStore{}, fmt.Errorf("%w: credential store is required", config.ErrInvalid)
+		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential store is required", config.ErrInvalid)
 	}
 	if storeID == config.LocalOSCredentialStoreID {
 		backend, err := PlatformOSBackend(runtime.GOOS)
 		if err != nil {
-			return ResolvedCredentialStore{}, fmt.Errorf("%w: no OS credential store backend for GOOS %q", err, runtime.GOOS)
+			return ResolvedSecretsProfile{}, fmt.Errorf("%w: no OS credential store backend for GOOS %q", err, runtime.GOOS)
 		}
-		return ResolvedCredentialStore{
+		return ResolvedSecretsProfile{
 			ID:              config.LocalOSCredentialStoreID,
 			Label:           "OS credential store",
 			Backend:         string(backend),
@@ -292,29 +290,23 @@ func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedCredential
 	}
 	store, ok := cfg.Secrets.Stores[storeID]
 	if !ok {
-		return ResolvedCredentialStore{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, storeID)
+		return ResolvedSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, storeID)
 	}
 	backend, err := credstore.ParseBackend(string(store.Backend.Kind))
 	if err != nil {
-		return ResolvedCredentialStore{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+		return ResolvedSecretsProfile{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 	}
 	label := strings.TrimSpace(store.DisplayName)
 	if label == "" {
 		label = storeID
 	}
-	return ResolvedCredentialStore{
+	return ResolvedSecretsProfile{
 		ID:              storeID,
 		Label:           label,
 		Backend:         string(backend),
 		Source:          config.EffectiveSecretsStoreSourceConfigured,
 		SelectionSource: SecretsProfileSelectionExplicit,
 	}, nil
-}
-
-// ResolveCredentialStoreForLocation resolves the credential store referenced
-// by one configured credential location.
-func ResolveCredentialStoreForLocation(cfg config.File, location config.CredentialLocation) (ResolvedCredentialStore, error) {
-	return ResolveCredentialStore(cfg, location.Store)
 }
 
 // ResolveSecretsProfileForProfile resolves the effective credential store for
@@ -326,7 +318,7 @@ func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (R
 	profile = config.Normalize(config.File{
 		Profiles: map[string]config.Profile{"profile": profile},
 	}).Profiles["profile"]
-	return ResolveCredentialStoreForLocation(cfg, profile.Git.Credential)
+	return ResolveCredentialStore(cfg, profile.Git.Credential.Store)
 }
 
 // ResolveSecretsProfileForRef resolves the effective credential store for a
@@ -373,15 +365,9 @@ func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile st
 	return resolved, nil
 }
 
-// StoreOptionsForResolvedProfile builds credstore options for one resolved
-// credential store.
-func StoreOptionsForResolvedProfile(flagValue string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (credstore.Options, error) {
-	return StoreOptionsForResolvedStore(flagValue, flagSet, cfg, resolved)
-}
-
 // StoreOptionsForResolvedStore builds credstore options for one resolved
 // credential store.
-func StoreOptionsForResolvedStore(_ string, flagSet bool, cfg config.File, resolved ResolvedCredentialStore) (credstore.Options, error) {
+func StoreOptionsForResolvedStore(flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (credstore.Options, error) {
 	if flagSet {
 		return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with credential store %q", config.ErrInvalid, resolved.DisplayName())
 	}
@@ -411,8 +397,8 @@ func StoreOptionsForResolvedStore(_ string, flagSet bool, cfg config.File, resol
 }
 
 // OpenResolvedStore opens the resolved service-scoped keyring store.
-func OpenResolvedStore(flagValue string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (*credstore.Store, error) {
-	opts, err := StoreOptionsForResolvedProfile(flagValue, flagSet, cfg, resolved)
+func OpenResolvedStore(_ string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (*credstore.Store, error) {
+	opts, err := StoreOptionsForResolvedStore(flagSet, cfg, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -436,14 +422,8 @@ func StoreOptions(flagValue string, flagSet bool, _ config.File) (credstore.Opti
 		return credstore.Options{}, err
 	}
 	if opts.Backend == "" {
-		if value := os.Getenv(BackendEnvVar()); value != "" {
-			backend, err := credstore.ParseBackend(value)
-			if err != nil {
-				return credstore.Options{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
-			}
-			if err := rejectLegacyOnePasswordBackend(backend); err != nil {
-				return credstore.Options{}, err
-			}
+		if _, _, err := envBackend(); err != nil {
+			return credstore.Options{}, err
 		}
 	}
 	return opts, nil
@@ -493,11 +473,7 @@ type credentialRefOwner struct {
 }
 
 func profilesDeclaringCredentialRef(cfg config.File, ref string) []credentialRefOwner {
-	names := make([]string, 0, len(cfg.Profiles))
-	for name := range cfg.Profiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := slices.Sorted(maps.Keys(cfg.Profiles))
 	owners := make([]credentialRefOwner, 0, len(names))
 	for _, name := range names {
 		profile := cfg.Profiles[name]
@@ -538,14 +514,9 @@ func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore
 	if opts.Backend != "" {
 		return opts.Backend, credstore.SourceExplicit, nil
 	}
-	if value := os.Getenv(BackendEnvVar()); value != "" {
-		backend, err := credstore.ParseBackend(value)
-		if err != nil {
-			return "", "", fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
-		}
-		if err := rejectLegacyOnePasswordBackend(backend); err != nil {
-			return "", "", err
-		}
+	if backend, ok, err := envBackend(); err != nil {
+		return "", "", err
+	} else if ok {
 		return backend, credstore.SourceEnv, nil
 	}
 	if opts.ConfigBackend != "" {
@@ -558,16 +529,26 @@ func BackendMetadata(flagValue string, flagSet bool, cfg config.File) (credstore
 		}
 		return backend, credstore.SourceConfig, nil
 	}
-	switch runtime.GOOS {
-	case "darwin":
-		return credstore.BackendKeychain, credstore.SourceAuto, nil
-	case "windows":
-		return credstore.BackendWinCred, credstore.SourceAuto, nil
-	case "linux":
-		return credstore.BackendSecretService, credstore.SourceAuto, nil
-	default:
-		return "", "", credstore.ErrBackendNotImplemented
+	backend, err := PlatformOSBackend(runtime.GOOS)
+	if err != nil {
+		return "", "", err
 	}
+	return backend, credstore.SourceAuto, nil
+}
+
+func envBackend() (credstore.Backend, bool, error) {
+	value := os.Getenv(BackendEnvVar())
+	if value == "" {
+		return "", false, nil
+	}
+	backend, err := credstore.ParseBackend(value)
+	if err != nil {
+		return "", false, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+	}
+	if err := rejectLegacyOnePasswordBackend(backend); err != nil {
+		return "", false, err
+	}
+	return backend, true, nil
 }
 
 func rejectLegacyOnePasswordBackend(kind credstore.Backend) error {
@@ -792,12 +773,7 @@ func ExpectedKeysForConfigRef(cfg config.File, ref string) ([]string, error) {
 		}
 		return nil, nil
 	}
-	out := make([]string, 0, len(keys))
-	for key := range keys {
-		out = append(out, key)
-	}
-	sort.Strings(out)
-	return out, nil
+	return slices.Sorted(maps.Keys(keys)), nil
 }
 
 func matchingCredentialRefs(profile config.Profile, ref string) []config.CredentialRef {
@@ -851,12 +827,10 @@ func normalizedCredentialLocation(location config.CredentialLocation, legacyRef 
 // ValidateAllowedKey fails when key is not in cr's write allowlist.
 func ValidateAllowedKey(key string) error {
 	allowed := AllowedKeys()
-	for _, candidate := range allowed {
-		if key == candidate {
-			return nil
-		}
+	if slices.Contains(allowed, key) {
+		return nil
 	}
-	sort.Strings(allowed)
+	slices.Sort(allowed)
 	return &credstore.KeyError{Key: key, Allowed: allowed}
 }
 
