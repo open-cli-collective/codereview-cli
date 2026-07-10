@@ -17,6 +17,7 @@ func TestWriteFileAtomic(t *testing.T) {
 		t.Fatalf("WriteFileAtomic replace: %v", err)
 	}
 
+	// #nosec G304 -- test path is controlled by t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -48,6 +49,7 @@ func TestWriteFileAtomicDoesNotReplaceTargetWhenTempWriteFails(t *testing.T) {
 	if err := WriteFileAtomic(path, []byte("replacement"), 0o600); err == nil {
 		t.Fatal("WriteFileAtomic error = nil, want temp write failure")
 	}
+	// #nosec G304 -- test path is controlled by t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile target: %v", err)
@@ -68,6 +70,7 @@ func TestWriteJSONAndReadJSON(t *testing.T) {
 		t.Fatalf("WriteJSON: %v", err)
 	}
 
+	// #nosec G304 -- test path is controlled by t.TempDir.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
