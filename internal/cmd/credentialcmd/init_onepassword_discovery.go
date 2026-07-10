@@ -317,33 +317,6 @@ func (d initOnePasswordDesktopDiscovery) LinearVaultOptions(accountSelection, se
 	return options
 }
 
-func (d initOnePasswordDesktopDiscovery) Options() []huh.Option[string] {
-	if !d.HasVaultChoices() {
-		return []huh.Option[string]{huh.NewOption("Enter account and vault manually", initOnePasswordManualSelection)}
-	}
-	options := []huh.Option[string]{}
-	for accountIndex, account := range d.Accounts {
-		accountLabel := account.DisplayName()
-		for vaultIndex, vault := range account.Vaults {
-			vaultLabel := vault.DisplayName()
-			if vaultLabel == "" {
-				continue
-			}
-			label := vaultLabel
-			if accountLabel != "" {
-				label = fmt.Sprintf("%s (%s)", vaultLabel, accountLabel)
-			}
-			options = append(options, huh.NewOption(label, initOnePasswordDesktopSelectionValue(accountIndex, vaultIndex)))
-		}
-	}
-	options = append(options, huh.NewOption("Enter account and vault manually", initOnePasswordManualSelection))
-	return options
-}
-
-func (d initOnePasswordDesktopDiscovery) LinearOptions(selected string) []initLinearOption {
-	return initLinearOptionsFromHuh(d.Options(), selected)
-}
-
 func (d initOnePasswordDesktopDiscovery) Account(value string) (initOnePasswordDiscoveredAccount, bool) {
 	accountIndex, ok := parseInitOnePasswordDesktopAccountSelectionValue(value)
 	if !ok || accountIndex < 0 || accountIndex >= len(d.Accounts) {
@@ -381,24 +354,6 @@ func (d initOnePasswordDesktopDiscovery) AccountSelection(accountSelection strin
 	return initOnePasswordDesktopSelection{
 		AccountID:  account.ID,
 		AccountURL: account.URL,
-	}, true
-}
-
-func (d initOnePasswordDesktopDiscovery) Selection(value string) (initOnePasswordDesktopSelection, bool) {
-	accountIndex, vaultIndex, ok := parseInitOnePasswordDesktopSelectionValue(value)
-	if !ok || accountIndex < 0 || accountIndex >= len(d.Accounts) {
-		return initOnePasswordDesktopSelection{}, false
-	}
-	account := d.Accounts[accountIndex]
-	if vaultIndex < 0 || vaultIndex >= len(account.Vaults) {
-		return initOnePasswordDesktopSelection{}, false
-	}
-	vault := account.Vaults[vaultIndex]
-	return initOnePasswordDesktopSelection{
-		AccountID:  account.ID,
-		AccountURL: account.URL,
-		VaultID:    vault.ID,
-		VaultName:  vault.Name,
 	}, true
 }
 
@@ -490,34 +445,6 @@ func initOnePasswordAccountLabelToken(value string) string {
 	return strings.TrimSpace(host)
 }
 
-func (d initOnePasswordDesktopDiscovery) SelectionFor(accountID, accountURL, vaultID, vaultName string) string {
-	accountID = strings.TrimSpace(accountID)
-	accountURL = strings.TrimSpace(accountURL)
-	vaultID = strings.TrimSpace(vaultID)
-	vaultName = strings.TrimSpace(vaultName)
-	for accountIndex, account := range d.Accounts {
-		accountMatches := accountID == "" && accountURL == ""
-		if accountID != "" && account.ID == accountID {
-			accountMatches = true
-		}
-		if accountURL != "" && account.URL == accountURL {
-			accountMatches = true
-		}
-		if !accountMatches {
-			continue
-		}
-		for vaultIndex, vault := range account.Vaults {
-			if vaultID != "" && vault.ID == vaultID {
-				return initOnePasswordDesktopSelectionValue(accountIndex, vaultIndex)
-			}
-			if vaultName != "" && vault.Name == vaultName {
-				return initOnePasswordDesktopSelectionValue(accountIndex, vaultIndex)
-			}
-		}
-	}
-	return initOnePasswordManualSelection
-}
-
 func (d initOnePasswordDesktopDiscovery) normalizeAccountSelection(selected string) string {
 	if selected == initOnePasswordManualSelection && d.AccountChoiceCount() != 1 {
 		return selected
@@ -536,10 +463,6 @@ func (d initOnePasswordDesktopDiscovery) normalizeVaultSelection(accountSelectio
 		return selected
 	}
 	return d.VaultSelectionFor(accountSelection, "", "")
-}
-
-func initOnePasswordDesktopSelectionValue(accountIndex, vaultIndex int) string {
-	return strconv.Itoa(accountIndex) + ":" + strconv.Itoa(vaultIndex)
 }
 
 func initOnePasswordDesktopAccountSelectionValue(accountIndex int) string {
@@ -570,20 +493,4 @@ func parseInitOnePasswordDesktopVaultSelectionValue(value string) (int, bool) {
 		return 0, false
 	}
 	return vaultIndex, true
-}
-
-func parseInitOnePasswordDesktopSelectionValue(value string) (int, int, bool) {
-	parts := strings.Split(value, ":")
-	if len(parts) != 2 {
-		return 0, 0, false
-	}
-	accountIndex, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return 0, 0, false
-	}
-	vaultIndex, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return 0, 0, false
-	}
-	return accountIndex, vaultIndex, true
 }
