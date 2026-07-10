@@ -145,7 +145,7 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 	if err != nil {
 		return Result{PR: pr, PRKey: prKey, ExitCode: exitFailed}, err
 	}
-	eligible := eligibleThreads(threads)
+	eligible := threadcontext.PendingCRAuthoredFindingThreads(threads)
 
 	mode := postMode(req)
 	run, artifacts, err := allocateOrResumeRun(ctx, opts, req, pr, prKey, mode)
@@ -183,19 +183,16 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		result.PlannedActions = existingActions
 	} else {
 		if len(eligible) > 0 {
-			if opts.Adapter == nil {
-				return result, fmt.Errorf("threadrespond: adapter is required")
-			}
-			runtime, err := resolveRuntime(opts, req)
+			analysisOpts, err := buildThreadAnalysisOptions(opts, req, run, artifacts)
 			if err != nil {
 				return result, err
 			}
-			analyses, err := analyzeThreads(ctx, opts, run, artifacts, runtime, eligible)
+			analyses, err := analyzeThreads(ctx, analysisOpts, artifacts, eligible)
 			if err != nil {
 				return result, err
 			}
 			result.Analyses = analyses
-			result.Responses = responsesFromAnalyses(analyses)
+			result.Responses = threadanalysis.ResponseActions(analyses)
 		}
 
 		plan, err := reviewplan.BuildThreadResponses(reviewplan.ThreadResponseRequest{
@@ -250,47 +247,12 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		result.ExitCode = exitUpstream
 		return result, err
 	} else if moved {
-		run, err := opts.Store.GetRun(ctx, run.RunID)
-		if err != nil {
-			return result, err
-		}
-		result.Run = run
-		result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
-		result.ExitCode = exitUpstream
-		result.Message = message
-		return result, nil
+		return completeAndRefresh(ctx, opts.Store, result, message, exitOK)
 	}
 	if opts.Limiter == nil {
 		return result, fmt.Errorf("threadrespond: outbox limiter is required")
 	}
-
-	postResult, err := outbox.Post(ctx, outbox.Options{
-		Store:    opts.Store,
-		Provider: opts.Provider,
-		Limiter:  opts.Limiter,
-		Now:      opts.now,
-	}, outbox.Request{
-		Run:             run,
-		PRRef:           req.PRRef,
-		PostingIdentity: req.PostingIdentity,
-		DesiredOutcome:  desiredOutcomeForRetry(result.PlannedActions),
-	})
-	result.Outbox = postResult
-	result.ExitCode = postResult.ExitCode
-	if err != nil {
-		return result, err
-	}
-	run, err = opts.Store.GetRun(ctx, run.RunID)
-	if err != nil {
-		return result, err
-	}
-	plannedActions, err := opts.Store.ListPlannedActions(ctx, run.RunID)
-	if err != nil {
-		return result, err
-	}
-	result.Run = run
-	result.PlannedActions = plannedActions
-	return result, nil
+	return postAndRefresh(ctx, opts, req, result, desiredOutcomeForRetry(result.PlannedActions))
 }
 
 func retry(ctx context.Context, opts Options, req Request) (Result, error) {
@@ -328,7 +290,9 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 		result.ExitCode = exitFailed
 		return result, fmt.Errorf("threadrespond: outbox limiter is required")
 	}
-	if err := resetFailedTerminalResponseActions(ctx, opts.Store, actions); err != nil {
+	if err := ledger.ResetFailedTerminalActions(ctx, opts.Store, actions, func(action ledger.PlannedAction) bool {
+		return action.Required && isResponseAction(action.Kind)
+	}); err != nil {
 		result.ExitCode = exitFailed
 		return result, err
 	}
@@ -342,17 +306,26 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 		result.ExitCode = exitUpstream
 		return result, err
 	} else if moved {
-		run, err := opts.Store.GetRun(ctx, run.RunID)
-		if err != nil {
-			result.ExitCode = exitFailed
-			return result, err
-		}
-		result.Run = run
-		result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
-		result.ExitCode = exitUpstream
-		result.Message = message
-		return result, nil
+		return completeAndRefresh(ctx, opts.Store, result, message, exitFailed)
 	}
+	return postAndRefresh(ctx, opts, req, result, desiredOutcomeForRetry(actions))
+}
+
+func completeAndRefresh(ctx context.Context, store Store, result Result, message string, refreshErrorExitCode int) (Result, error) {
+	run, err := store.GetRun(ctx, result.Run.RunID)
+	if err != nil {
+		result.ExitCode = refreshErrorExitCode
+		return result, err
+	}
+	result.Run = run
+	result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
+	result.ExitCode = exitUpstream
+	result.Message = message
+	return result, nil
+}
+
+func postAndRefresh(ctx context.Context, opts Options, req Request, result Result, desiredOutcome ledger.Outcome) (Result, error) {
+	run := result.Run
 	postResult, err := outbox.Post(ctx, outbox.Options{
 		Store:    opts.Store,
 		Provider: opts.Provider,
@@ -362,7 +335,7 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 		Run:             run,
 		PRRef:           req.PRRef,
 		PostingIdentity: req.PostingIdentity,
-		DesiredOutcome:  desiredOutcomeForRetry(actions),
+		DesiredOutcome:  desiredOutcome,
 	})
 	result.Outbox = postResult
 	result.ExitCode = postResult.ExitCode
@@ -373,7 +346,7 @@ func retry(ctx context.Context, opts Options, req Request) (Result, error) {
 	if err != nil {
 		return result, err
 	}
-	actions, err = opts.Store.ListPlannedActions(ctx, run.RunID)
+	actions, err := opts.Store.ListPlannedActions(ctx, run.RunID)
 	if err != nil {
 		return result, err
 	}
@@ -445,21 +418,32 @@ func abortIfMoved(ctx context.Context, opts Options, req Request, run ledger.Run
 	return true, fmt.Sprintf("threadrespond premises moved: head %s -> %s, base %s -> %s", run.SHA, pr.Head.SHA, run.BaseSHA, pr.Base.SHA), nil
 }
 
-func analyzeThreads(ctx context.Context, opts Options, run ledger.Run, artifacts runartifact.Paths, runtime llmRuntime, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
+func buildThreadAnalysisOptions(opts Options, req Request, run ledger.Run, artifacts runartifact.Paths) (threadanalysis.Options, error) {
+	if opts.Adapter == nil {
+		return threadanalysis.Options{}, fmt.Errorf("threadrespond: adapter is required")
+	}
+	runtime, err := resolveRuntime(opts, req)
+	if err != nil {
+		return threadanalysis.Options{}, err
+	}
+	return threadanalysis.Options{
+		Store:          opts.Store,
+		RunID:          run.RunID,
+		Adapter:        opts.Adapter,
+		Model:          runtime.model,
+		Effort:         runtime.effort,
+		LifecyclePaths: llmlifecycle.Paths{LLMTasksDir: artifacts.LLMTasksDir},
+		Progress:       opts.TaskProgress,
+		Now:            opts.now,
+		NewStepID:      opts.newStepID,
+	}, nil
+}
+
+func analyzeThreads(ctx context.Context, opts threadanalysis.Options, artifacts runartifact.Paths, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
 	results := make([]threadanalysis.Result, 0, len(threads))
 	for _, thread := range threads {
-		result, err := threadanalysis.AnalyzeThread(ctx, threadanalysis.Options{
-			Store:          opts.Store,
-			RunID:          run.RunID,
-			Adapter:        opts.Adapter,
-			Model:          runtime.model,
-			Effort:         runtime.effort,
-			LogPath:        threadLogPath(artifacts, thread.ID),
-			LifecyclePaths: llmlifecycle.Paths{LLMTasksDir: artifacts.LLMTasksDir},
-			Progress:       opts.TaskProgress,
-			Now:            opts.now,
-			NewStepID:      opts.newStepID,
-		}, thread)
+		opts.LogPath = threadLogPath(artifacts, thread.ID)
+		result, err := threadanalysis.AnalyzeThread(ctx, opts, thread)
 		if err != nil {
 			return nil, err
 		}
@@ -473,10 +457,7 @@ func validateCachedResponseActionThreads(opts Options, req Request, run ledger.R
 	if len(threadIDs) == 0 {
 		return nil
 	}
-	if opts.Adapter == nil {
-		return fmt.Errorf("threadrespond: adapter is required")
-	}
-	runtime, err := resolveRuntime(opts, req)
+	analysisOpts, err := buildThreadAnalysisOptions(opts, req, run, artifacts)
 	if err != nil {
 		return err
 	}
@@ -489,18 +470,8 @@ func validateCachedResponseActionThreads(opts Options, req Request, run ledger.R
 		if !ok {
 			return fmt.Errorf("threadrespond: thread %s is no longer eligible for cached response actions; pass --rerun to start fresh", threadID)
 		}
-		if err := threadanalysis.ValidateCachedThread(threadanalysis.Options{
-			Store:          opts.Store,
-			RunID:          run.RunID,
-			Adapter:        opts.Adapter,
-			Model:          runtime.model,
-			Effort:         runtime.effort,
-			LogPath:        threadLogPath(artifacts, thread.ID),
-			LifecyclePaths: llmlifecycle.Paths{LLMTasksDir: artifacts.LLMTasksDir},
-			Progress:       opts.TaskProgress,
-			Now:            opts.now,
-			NewStepID:      opts.newStepID,
-		}, thread); err != nil {
+		analysisOpts.LogPath = threadLogPath(artifacts, thread.ID)
+		if err := threadanalysis.ValidateCachedThread(analysisOpts, thread); err != nil {
 			return err
 		}
 	}
@@ -528,14 +499,6 @@ func responseActionThreadIDs(actions []ledger.PlannedAction) []string {
 		ids = append(ids, threadID)
 	}
 	return ids
-}
-
-func eligibleThreads(threads []threadcontext.Thread) []threadcontext.Thread {
-	return threadcontext.PendingCRAuthoredFindingThreads(threads)
-}
-
-func responsesFromAnalyses(analyses []threadanalysis.Result) []review.ThreadResponseAction {
-	return threadanalysis.ResponseActions(analyses)
 }
 
 func allocateOrResumeRun(ctx context.Context, opts Options, req Request, pr gitprovider.PR, prKey string, mode ledger.PostMode) (ledger.Run, runartifact.Paths, error) {
@@ -636,26 +599,6 @@ func completeFailedOnError(ctx context.Context, opts Options, result *Result, er
 		result.Run = run
 	}
 	result.ExitCode = exitFailed
-}
-
-func resetFailedTerminalResponseActions(ctx context.Context, store Store, actions []ledger.PlannedAction) error {
-	for _, action := range actions {
-		if !action.Required || action.Status != ledger.PlannedActionFailedTerminal {
-			continue
-		}
-		if !isResponseAction(action.Kind) {
-			continue
-		}
-		action.Status = ledger.PlannedActionPending
-		action.PostedAt = nil
-		action.UpstreamID = nil
-		action.Error = nil
-		action.FailureClass = nil
-		if err := store.UpdatePlannedAction(ctx, action); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func validateResponseActions(actions []ledger.PlannedAction) error {

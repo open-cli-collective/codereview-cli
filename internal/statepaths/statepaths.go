@@ -330,11 +330,6 @@ func Encode(value string) string {
 	return percent.Encode(value, disallowedRunes(value))
 }
 
-// Decode reverses Encode.
-func Decode(value string) string {
-	return percent.Decode(value)
-}
-
 func encodePRKeySegment(value string) string {
 	return encodeDelimiterSegment(value)
 }

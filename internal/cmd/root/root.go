@@ -39,11 +39,6 @@ func DefaultOptions() *Options {
 	}
 }
 
-// NewCommand builds a fresh cr root command and its injectable options.
-func NewCommand() (*cobra.Command, *Options) {
-	return NewCommandWithOptions(DefaultOptions())
-}
-
 // NewCommandWithOptions builds a fresh cr root command using caller-provided
 // options and wires the command output streams from those options.
 func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {

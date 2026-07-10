@@ -6,18 +6,9 @@ import (
 	"testing"
 )
 
-func TestRenderSkipAndHasSkip(t *testing.T) {
+func TestRenderSkip(t *testing.T) {
 	if got, want := RenderSkip(), "<!-- codereview:skip -->"; got != want {
 		t.Fatalf("RenderSkip() = %q, want %q", got, want)
-	}
-	if !HasSkip("before\n<!-- codereview:skip -->\nafter") {
-		t.Fatal("HasSkip() = false, want true")
-	}
-	if HasSkip(mustRenderThreadSummary(t, ThreadSummaryMarker{
-		RunID:    "run-1",
-		ActionID: "thread-summary-1",
-	})) {
-		t.Fatal("HasSkip(thread-summary marker) = true, want false")
 	}
 }
 
@@ -467,7 +458,7 @@ func TestSanitizeModelContent(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("SanitizeModelContent(%q) = %q, want %q", tt.input, got, tt.want)
 			}
-			if HasSkip(got) {
+			if strings.Contains(got, RenderSkip()) {
 				t.Fatalf("sanitized output still has skip marker: %q", got)
 			}
 			if actions := FindActions(got); len(actions) != 0 {

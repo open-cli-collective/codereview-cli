@@ -261,12 +261,6 @@ func (e *TaskError) Status() Status {
 	return e.status
 }
 
-// IsTaskStatus reports whether err is a TaskError with the requested status.
-func IsTaskStatus(err error, status Status) bool {
-	var taskErr *TaskError
-	return errors.As(err, &taskErr) && taskErr.Status() == status
-}
-
 // RunStructured executes or loads one durable structured LLM task.
 func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T]) (Result[T], error) {
 	var zero Result[T]

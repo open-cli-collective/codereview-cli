@@ -43,12 +43,6 @@ func EstimateUSD(model string, tokensIn, tokensOut, cacheRead, cacheCreate *int)
 	return cost, true
 }
 
-// Known reports whether a model has a price entry.
-func Known(model string) bool {
-	_, ok := rates[model]
-	return ok
-}
-
 func deref(p *int) int {
 	if p == nil {
 		return 0

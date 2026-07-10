@@ -31,12 +31,3 @@ func TestEstimateUSDNilTokensAreZero(t *testing.T) {
 		t.Fatalf("nil tokens: cost=%v ok=%v, want 0,true", cost, ok)
 	}
 }
-
-func TestKnown(t *testing.T) {
-	if !Known("claude-opus-4-8") {
-		t.Fatal("opus should be known")
-	}
-	if Known("definitely-not-a-model") {
-		t.Fatal("unknown model should not be known")
-	}
-}
