@@ -26,6 +26,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -2688,14 +2689,14 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, ca
 	if err := os.MkdirAll(paths.SlicesDir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create slices dir: %w", err)
 	}
-	if err := os.WriteFile(paths.DiffPatch, []byte(rawDiff), 0o600); err != nil {
+	if err := fsatomic.WriteFileAtomic(paths.DiffPatch, []byte(rawDiff), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write diff: %w", err)
 	}
 	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog, reviewerRuntime), "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(paths.AgentSourcesJSON, append(sourceJSON, '\n'), 0o600); err != nil {
+	if err := fsatomic.WriteFileAtomic(paths.AgentSourcesJSON, append(sourceJSON, '\n'), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write agent source provenance: %w", err)
 	}
 	for _, selected := range selection.SelectedAgents {
@@ -2711,7 +2712,7 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, ca
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				return fmt.Errorf("pipeline: create slice dir: %w", err)
 			}
-			if err := os.WriteFile(path, []byte(patch.Patch), 0o600); err != nil {
+			if err := fsatomic.WriteFileAtomic(path, []byte(patch.Patch), 0o600); err != nil {
 				return fmt.Errorf("pipeline: write slice: %w", err)
 			}
 		}
@@ -2720,10 +2721,10 @@ func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, ca
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(paths.FindingsJSON, append(findingsJSON, '\n'), 0o600); err != nil {
+	if err := fsatomic.WriteFileAtomic(paths.FindingsJSON, append(findingsJSON, '\n'), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write findings: %w", err)
 	}
-	if err := os.WriteFile(paths.RollupMarkdown, []byte(rollup+"\n"), 0o600); err != nil {
+	if err := fsatomic.WriteFileAtomic(paths.RollupMarkdown, []byte(rollup+"\n"), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write rollup: %w", err)
 	}
 	return nil
@@ -3634,7 +3635,7 @@ func writeDossierSummaryArtifacts(paths ArtifactPaths, summary dossierDiscussion
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(mdPath, []byte(renderDossierDiscussionSummaryMarkdown(summary, "# Discussion Summary")), 0o600); err != nil {
+	if err := fsatomic.WriteFileAtomic(mdPath, []byte(renderDossierDiscussionSummaryMarkdown(summary, "# Discussion Summary")), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write dossier artifact %s: %w", filepath.Base(mdPath), err)
 	}
 	return nil
@@ -3652,7 +3653,7 @@ func writeFinalDossierArtifacts(paths ArtifactPaths, raw dossierRawArtifacts, su
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		if err := fsatomic.WriteFileAtomic(path, []byte(body), 0o600); err != nil {
 			return fmt.Errorf("pipeline: write dossier artifact %s: %w", name, err)
 		}
 	}
@@ -4387,7 +4388,7 @@ func writeJSONFile(path string, payload any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+	if err := fsatomic.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("pipeline: write dossier artifact %s: %w", filepath.Base(path), err)
 	}
 	return nil

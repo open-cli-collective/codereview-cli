@@ -20,6 +20,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/benchmark"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -849,7 +850,7 @@ func writeSummaryJSONL(path string, runs []benchmarkRun) error {
 }
 
 func writeArtifactFile(path string, data []byte) error {
-	if err := os.WriteFile(path, data, artifactFilePerm); err != nil {
+	if err := fsatomic.WriteFileAtomic(path, data, artifactFilePerm); err != nil {
 		return fmt.Errorf("benchmark: write %s: %w", path, err)
 	}
 	if err := os.Chmod(path, artifactFilePerm); err != nil {
