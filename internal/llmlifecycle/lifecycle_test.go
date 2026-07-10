@@ -23,6 +23,22 @@ type lifecyclePayload struct {
 	OK bool `json:"ok"`
 }
 
+func TestFingerprintPreservesPipelineCacheKey(t *testing.T) {
+	got := Fingerprint(
+		"fake",
+		"reviewer:harness:alpha",
+		"reviewer",
+		"claude-sonnet-4-6",
+		"high",
+		"review changed code",
+		[]string{"orchestrator-selection", "discussion=abc123"},
+	)
+	const want = "6dde97e6bd16df08b6753200e4ef26bfc556548ab370ca2a454e1c089f483ba1"
+	if got != want {
+		t.Fatalf("Fingerprint() = %q, want legacy pipeline cache key %q", got, want)
+	}
+}
+
 func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
