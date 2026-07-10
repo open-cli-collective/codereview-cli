@@ -215,7 +215,7 @@ func TestProgressStoreReaderLogsBackendRead(t *testing.T) {
 		tick++
 		return now
 	})
-	reader := ProgressStoreReader("review", logger, ResolvedSecretsProfile{Backend: "keychain"}, store)
+	reader := ProgressStoreReader("review", logger, ResolvedSecretsStore{Backend: "keychain"}, store)
 
 	got, err := reader.Get("work", GitTokenKey)
 	if err != nil {
@@ -246,7 +246,7 @@ func TestProgressCachingReaderLogsCacheHitAndMiss(t *testing.T) {
 		tick++
 		return now
 	})
-	resolved := ResolvedSecretsProfile{Backend: "keychain"}
+	resolved := ResolvedSecretsStore{Backend: "keychain"}
 	base := ProgressStoreReader("review", logger, resolved, store)
 	reader := ProgressCachingReader("review", logger, "store-a", resolved, base)
 
@@ -583,64 +583,64 @@ func TestResolveCredentialStoreForProfileAndRef(t *testing.T) {
 		t.Fatalf("Validate config: %v", err)
 	}
 
-	homeResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["home"])
+	homeResolved, err := ResolveSecretsStoreForProfile(cfg, cfg.Profiles["home"])
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile(home): %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile(home): %v", err)
 	}
-	wantHome := ResolvedSecretsProfile{
+	wantHome := ResolvedSecretsStore{
 		ID:              "personal-keychain",
 		Label:           "Personal Keychain",
 		Backend:         "keychain",
-		Source:          config.EffectiveSecretsProfileSourceConfigured,
-		SelectionSource: SecretsProfileSelectionExplicit,
+		Source:          config.EffectiveSecretsStoreSourceConfigured,
+		SelectionSource: SecretsStoreSelectionExplicit,
 	}
 	if !reflect.DeepEqual(homeResolved, wantHome) {
 		t.Fatalf("home resolved secrets profile = %#v, want %#v", homeResolved, wantHome)
 	}
 
-	workResolved, err := ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	workResolved, err := ResolveSecretsStoreForProfile(cfg, cfg.Profiles["work"])
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile(work): %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile(work): %v", err)
 	}
-	wantWork := ResolvedSecretsProfile{
+	wantWork := ResolvedSecretsStore{
 		ID:              "work-file",
 		Label:           "Work File Store",
 		Backend:         "file",
-		Source:          config.EffectiveSecretsProfileSourceConfigured,
-		SelectionSource: SecretsProfileSelectionExplicit,
+		Source:          config.EffectiveSecretsStoreSourceConfigured,
+		SelectionSource: SecretsStoreSelectionExplicit,
 	}
 	if !reflect.DeepEqual(workResolved, wantWork) {
 		t.Fatalf("work resolved secrets profile = %#v, want %#v", workResolved, wantWork)
 	}
 
-	if _, err := ResolveSecretsProfileForRef(cfg, "codereview/shared-git", ""); !errors.Is(err, config.ErrInvalid) {
-		t.Fatalf("ResolveSecretsProfileForRef(shared-git) error = %v, want ErrInvalid ambiguity", err)
+	if _, err := ResolveSecretsStoreForRef(cfg, "codereview/shared-git", ""); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("ResolveSecretsStoreForRef(shared-git) error = %v, want ErrInvalid ambiguity", err)
 	}
-	selectedResolved, err := ResolveSecretsProfileForRef(cfg, "codereview/shared-git", "home")
+	selectedResolved, err := ResolveSecretsStoreForRef(cfg, "codereview/shared-git", "home")
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForRef(shared-git, home): %v", err)
+		t.Fatalf("ResolveSecretsStoreForRef(shared-git, home): %v", err)
 	}
 	if !reflect.DeepEqual(selectedResolved, wantHome) {
 		t.Fatalf("selected resolved secrets profile = %#v, want %#v", selectedResolved, wantHome)
 	}
-	if _, err := ResolveSecretsProfileForRef(cfg, "codereview/custom-ref", "work"); !errors.Is(err, config.ErrInvalid) {
-		t.Fatalf("ResolveSecretsProfileForRef(custom-ref, work) error = %v, want ErrInvalid", err)
+	if _, err := ResolveSecretsStoreForRef(cfg, "codereview/custom-ref", "work"); !errors.Is(err, config.ErrInvalid) {
+		t.Fatalf("ResolveSecretsStoreForRef(custom-ref, work) error = %v, want ErrInvalid", err)
 	}
 	localProfile := matrixProfile("codereview/local-git", "codereview/local-llm", config.LLMProviderAnthropic)
-	legacyResolved, err := ResolveSecretsProfileForProfile(cfg, localProfile)
+	legacyResolved, err := ResolveSecretsStoreForProfile(cfg, localProfile)
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile(local-os): %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile(local-os): %v", err)
 	}
 	platformBackend, err := PlatformOSBackend(runtime.GOOS)
 	if err != nil {
 		t.Fatalf("PlatformOSBackend(%s): %v", runtime.GOOS, err)
 	}
-	wantLegacy := ResolvedSecretsProfile{
+	wantLegacy := ResolvedSecretsStore{
 		ID:              config.LocalOSCredentialStoreID,
 		Label:           "OS credential store",
 		Backend:         string(platformBackend),
-		Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-		SelectionSource: SecretsProfileSelectionBuiltInOS,
+		Source:          config.EffectiveSecretsStoreSourceBuiltIn,
+		SelectionSource: SecretsStoreSelectionBuiltInOS,
 	}
 	if !reflect.DeepEqual(legacyResolved, wantLegacy) {
 		t.Fatalf("legacy resolved secrets profile = %#v, want %#v", legacyResolved, wantLegacy)
@@ -673,17 +673,17 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 	tests := []struct {
 		name        string
 		backendKind credstore.Backend
-		profile     config.SecretsProfile
+		profile     config.SecretsStore
 		assert      func(*testing.T, *credstore.OnePasswordOptions)
 	}{
 		{
 			name:        "service account",
 			backendKind: credstore.BackendOP,
-			profile: config.SecretsProfile{
+			profile: config.SecretsStore{
 				Label: "Work 1Password",
-				Backend: config.SecretsProfileBackend{
+				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOP),
-					OnePassword: &config.SecretsProfileOnePasswordConfig{
+					OnePassword: &config.SecretsStoreOnePasswordConfig{
 						Timeout: "7s",
 						VaultID: "vault-123",
 					},
@@ -699,11 +699,11 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 		{
 			name:        "connect",
 			backendKind: credstore.BackendOPConnect,
-			profile: config.SecretsProfile{
+			profile: config.SecretsStore{
 				Label: "Work 1Password",
-				Backend: config.SecretsProfileBackend{
+				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
-					OnePassword: &config.SecretsProfileOnePasswordConfig{
+					OnePassword: &config.SecretsStoreOnePasswordConfig{
 						Timeout:         "7s",
 						VaultID:         "vault-123",
 						ConnectHost:     "https://connect.example",
@@ -721,11 +721,11 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 		{
 			name:        "desktop",
 			backendKind: credstore.BackendOPDesktop,
-			profile: config.SecretsProfile{
+			profile: config.SecretsStore{
 				Label: "Work 1Password",
-				Backend: config.SecretsProfileBackend{
+				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
-					OnePassword: &config.SecretsProfileOnePasswordConfig{
+					OnePassword: &config.SecretsStoreOnePasswordConfig{
 						Timeout:          "9s",
 						VaultID:          "Employee",
 						DesktopAccountID: "desktop-account",
@@ -745,7 +745,7 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := config.File{
 				Secrets: config.SecretsConfig{
-					Profiles: map[string]config.SecretsProfile{
+					Stores: map[string]config.SecretsStore{
 						"work-op": tt.profile,
 					},
 				},
@@ -758,11 +758,11 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 				t.Fatalf("Validate: %v", err)
 			}
 
-			resolved := ResolvedSecretsProfile{
+			resolved := ResolvedSecretsStore{
 				ID:      "work-op",
 				Label:   "Work 1Password",
 				Backend: string(tt.backendKind),
-				Source:  config.EffectiveSecretsProfileSourceConfigured,
+				Source:  config.EffectiveSecretsStoreSourceConfigured,
 			}
 			got, err := StoreOptionsForResolvedStore(false, cfg, resolved)
 			if err != nil {

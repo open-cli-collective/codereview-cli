@@ -57,7 +57,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return err
 			}
-			resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+			resolvedSecretsStore, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
 			if err != nil {
 				return cmderr.Config(err)
 			}
@@ -66,7 +66,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				return cmderr.Config(err)
 			}
 			backendFlagSet := cmderr.BackendFlagChanged(cmd)
-			store, err := credentials.OpenResolvedStore(opts.Backend, backendFlagSet, cfg, resolvedSecretsProfile)
+			store, err := credentials.OpenResolvedStore(opts.Backend, backendFlagSet, cfg, resolvedSecretsStore)
 			var storeErr error
 			if err != nil {
 				if config.IsConfigSelection(err) {
@@ -77,7 +77,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if store != nil {
 				defer store.Close()
 			}
-			backend, source, err := backendMetadata(store, opts.Backend, backendFlagSet, cfg, resolvedSecretsProfile)
+			backend, source, err := backendMetadata(store, opts.Backend, backendFlagSet, cfg, resolvedSecretsStore)
 			if err != nil {
 				return cmderr.Credential(err)
 			}
@@ -88,8 +88,8 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			show := view.NewConfigShow(profileName, profile, cfg.Data, statuses)
 			show.Backend = string(backend)
 			show.BackendSource = string(source)
-			show.ActiveSecretsProfile = resolvedSecretsProfileViewPtr(resolvedSecretsProfile)
-			show.SecretsProfiles = config.EffectiveSecretsProfiles(cfg)
+			show.ActiveSecretsStore = resolvedSecretsStoreViewPtr(resolvedSecretsStore)
+			show.SecretsStores = config.EffectiveSecretsStores(cfg)
 			show.AgentSources = agents.InspectProfileSources(profile.AgentSources)
 			return view.Render(opts.Stdout, jsonOutput, show, func(w io.Writer) error {
 				return view.RenderConfigText(w, show)
@@ -382,7 +382,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return cmderr.Config(profileSpan.End(err))
 			}
-			resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+			resolvedSecretsStore, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
 			if err != nil {
 				return cmderr.Config(profileSpan.End(err))
 			}
@@ -396,7 +396,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			}
 			_ = profileSpan.End(nil)
 			storeSpan := logger.Start("config.clear", "open_credential_store", "active-profile")
-			store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
+			store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsStore)
 			if err != nil {
 				if config.IsConfigSelection(err) {
 					return cmderr.Config(storeSpan.End(err))
@@ -404,16 +404,16 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				return cmderr.Credential(storeSpan.End(err))
 			}
 			defer store.Close()
-			backend, source, err := backendMetadata(store, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
+			backend, source, err := backendMetadata(store, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsStore)
 			if err != nil {
 				return cmderr.Credential(storeSpan.End(err))
 			}
 			_ = storeSpan.End(nil)
 			result := view.ConfigClear{
-				Backend:              string(backend),
-				BackendSource:        string(source),
-				ActiveSecretsProfile: resolvedSecretsProfileViewPtr(resolvedSecretsProfile),
-				DryRun:               clearDryRun,
+				Backend:            string(backend),
+				BackendSource:      string(source),
+				ActiveSecretsStore: resolvedSecretsStoreViewPtr(resolvedSecretsStore),
+				DryRun:             clearDryRun,
 			}
 			clearSpan := logger.Start("config.clear", "clear_credentials", "active-profile")
 			for _, credentialProfile := range profiles {
@@ -467,7 +467,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	root.AddJSONFlag(clearCmd, &clearJSON)
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsProfileCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsStoreCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -957,13 +957,13 @@ type configClearChange struct {
 	configPathRemoved string
 }
 
-func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File, resolvedSecretsProfile credentials.ResolvedSecretsProfile) (credstore.Backend, credstore.Source, error) {
+func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File, resolvedSecretsStore credentials.ResolvedSecretsStore) (credstore.Backend, credstore.Source, error) {
 	if store != nil {
 		backend, _ := store.Backend()
 		return backend, credentials.BackendSourceCredentialStore, nil
 	}
-	if resolvedSecretsProfile.IsNamed() {
-		backend, err := credstore.ParseBackend(resolvedSecretsProfile.Backend)
+	if resolvedSecretsStore.IsNamed() {
+		backend, err := credstore.ParseBackend(resolvedSecretsStore.Backend)
 		if err != nil {
 			return "", "", fmt.Errorf("%w: %w", credentials.ErrInvalidBackendSelection, err)
 		}
@@ -1042,8 +1042,8 @@ func clearCredentialBundle(store *credstore.Store, profile string, dryRun bool) 
 	return store.DeleteBundle(profile)
 }
 
-func resolvedSecretsProfileViewPtr(resolved credentials.ResolvedSecretsProfile) *view.ConfigSecretsProfile {
-	return &view.ConfigSecretsProfile{
+func resolvedSecretsStoreViewPtr(resolved credentials.ResolvedSecretsStore) *view.ConfigSecretsStore {
+	return &view.ConfigSecretsStore{
 		ID:       resolved.ID,
 		Label:    resolved.Label,
 		Backend:  resolved.Backend,

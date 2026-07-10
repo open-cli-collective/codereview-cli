@@ -734,7 +734,7 @@ func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx in
 	}
 	editDraft.ReviewerCredentialWriteRef = ref
 	editDraft.ReviewerCredentialStore = initCredentialStoreDraftValue(status.Ref.Store)
-	editDraft.ReviewerCredentialWriteStore = status.SecretsProfile
+	editDraft.ReviewerCredentialWriteStore = status.SecretsStore
 	editDraft.ReviewerCredentialWrites = writes
 	editDraft.ReviewerCredentialOverwrite = overwrite
 	editDraft.ReviewerCredentialSatisfied = reviewerEntityPreservesExistingCredentialRefWithoutWrites(state, document) || len(missingReviewerEntityInlineCredentialKeys(state, status, document)) == 0

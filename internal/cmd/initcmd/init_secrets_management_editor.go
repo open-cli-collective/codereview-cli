@@ -34,7 +34,7 @@ const (
 
 type initPendingSecretsManagementDelete struct {
 	ID      string
-	Profile config.SecretsProfile
+	Profile config.SecretsStore
 }
 
 func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
@@ -70,12 +70,12 @@ func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyri
 			if !ok {
 				continue
 			}
-			patch := configedit.SecretsProfilePatch{Backend: &pending.Profile.Backend}
+			patch := configedit.SecretsStorePatch{Backend: &pending.Profile.Backend}
 			if strings.TrimSpace(pending.Profile.Label) != "" {
 				label := pending.Profile.Label
 				patch.Label = &label
 			}
-			nextCfg, _, _, err := configedit.SetSecretsProfile(working, id, patch)
+			nextCfg, _, _, err := configedit.SetSecretsStore(working, id, patch)
 			if err != nil {
 				return initKeyringBackendEdit{}, err
 			}
@@ -128,7 +128,7 @@ func initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg config.Fi
 	document.addSectionField(initSecretsManagementSectionBuiltIn, "Built in", initSecretsManagementBuiltInSectionDescription())
 	document.addEditableSelect(initSecretsManagementFieldTarget, "Actions", "Configure a new credential store or edit a configured store.", targetOptions, selectedTarget)
 	document.addSectionField(initSecretsManagementSectionProfile, "Credential store details", "Configured credential stores are reusable destinations for secrets.")
-	document.addEditableSelect(initSecretsManagementFieldBackend, "Credential store backend", "", initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile)), string(credstore.BackendFile))
+	document.addEditableSelect(initSecretsManagementFieldBackend, "Credential store backend", "", initSecretsStoreBackendOptions(config.SecretsBackendKind(credstore.BackendFile)), string(credstore.BackendFile))
 	document.addEditableSelect(initSecretsManagementFieldDesktopAccount, "1Password account", "Discovered from the local 1Password desktop app.", desktopDiscovery.AccountOptions(), initOnePasswordManualSelection)
 	document.addEditableSelect(initSecretsManagementFieldDesktopVault, "1Password vault", "Vaults available in the selected 1Password account. Choose manual entry if this list is incomplete.", desktopDiscovery.VaultOptions(initOnePasswordManualSelection), initOnePasswordManualSelection)
 	document.addEditableInput(initSecretsManagementFieldDesktopAccountURL, "1Password account URL", "Account sign-in address such as myorg.1password.com for organizational 1Password accounts, or my.1password.com for personal or family accounts. Required only when desktop discovery is unavailable or manual entry is selected.", "", validateOptionalDisplayName)
@@ -206,7 +206,7 @@ func initSecretsManagementTargetOptions(cfg config.File, pendingDeletes map[stri
 	options = append(options, commandOptions...)
 	for _, id := range pendingIDs {
 		pending := pendingDeletes[id]
-		options = append(options, huh.NewOption(initPendingDeleteLabel(initSecretsProfilePendingDeleteTitle(id, pending.Profile)), initLinearRestoreSelection("secrets_management", id)))
+		options = append(options, huh.NewOption(initPendingDeleteLabel(initSecretsStorePendingDeleteTitle(id, pending.Profile)), initLinearRestoreSelection("secrets_management", id)))
 	}
 	return dedupeInitStringOptions(options)
 }
@@ -253,7 +253,7 @@ func removeInitSecretsManagementPendingDeleteOrder(order []string, id string) []
 }
 
 type initSecretsManagementSelectionState struct {
-	Profile  config.SecretsProfile
+	Profile  config.SecretsStore
 	ID       string
 	Creating bool
 	BuiltIn  bool
@@ -269,9 +269,9 @@ func initSecretsManagementSelectionStateForSelection(cfg config.File, selection 
 	if selection == config.LocalOSCredentialStoreID {
 		return initSecretsManagementSelectionState{ID: config.LocalOSCredentialStoreID, BuiltIn: true}, nil
 	}
-	if kind, ok := initSecretsProfileSelectionKind(selection); ok {
+	if kind, ok := initSecretsStoreSelectionKind(selection); ok {
 		return initSecretsManagementSelectionState{
-			Profile:  config.SecretsProfile{Backend: normalizeInitSecretsProfileBackend(config.SecretsProfileBackend{Kind: kind})},
+			Profile:  config.SecretsStore{Backend: normalizeInitSecretsStoreBackend(config.SecretsStoreBackend{Kind: kind})},
 			Creating: true,
 		}, nil
 	}
@@ -280,7 +280,7 @@ func initSecretsManagementSelectionStateForSelection(cfg config.File, selection 
 	}
 	profile, ok := cfg.Secrets.Stores[selection]
 	if !ok {
-		return initSecretsManagementSelectionState{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, selection)
+		return initSecretsManagementSelectionState{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, selection)
 	}
 	return initSecretsManagementSelectionState{
 		Profile: profile,
@@ -315,16 +315,16 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 	model.setFieldDescription(initSecretsManagementSectionProfile, initSecretsManagementProfileSectionDescription(model.document, state))
 	profile := state.Profile
 	if strings.TrimSpace(string(profile.Backend.Kind)) == "" {
-		profile.Backend = normalizeInitSecretsProfileBackend(config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)})
+		profile.Backend = normalizeInitSecretsStoreBackend(config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)})
 	} else {
-		profile.Backend = normalizeInitSecretsProfileBackend(profile.Backend)
+		profile.Backend = normalizeInitSecretsStoreBackend(profile.Backend)
 	}
 	if resetDetails {
-		labelSeed := initSecretsProfileEditorLabelSeed(profile, state.ID, profile.Backend.Kind, state.Creating)
+		labelSeed := initSecretsStoreEditorLabelSeed(profile, state.ID, profile.Backend.Kind, state.Creating)
 		model.setFieldValue(initSecretsManagementFieldLabel, labelSeed.DisplayValue)
 		initSecretsManagementSetBackendOptions(model, profile.Backend.Kind, state.Creating)
 		model.selectFieldValue(initSecretsManagementFieldBackend, string(profile.Backend.Kind))
-		onePassword := config.SecretsProfileOnePasswordConfig{}
+		onePassword := config.SecretsStoreOnePasswordConfig{}
 		if profile.Backend.OnePassword != nil {
 			onePassword = *profile.Backend.OnePassword
 		}
@@ -408,7 +408,7 @@ func initSecretsManagementSetBackendOptions(model *initLinearEditorModel, curren
 	if selected == "" {
 		selected = string(current)
 	}
-	model.document[index].Options = initLinearOptionsFromHuh(initSecretsProfileBackendOptions(current), selected)
+	model.document[index].Options = initLinearOptionsFromHuh(initSecretsStoreBackendOptions(current), selected)
 }
 
 func initSecretsManagementSetDesktopDiscoveryOptions(model *initLinearEditorModel, discovery initOnePasswordDesktopDiscovery, accountSelection, vaultSelection string) {
@@ -500,12 +500,12 @@ func initSecretsManagementProfileSectionDescription(document initLinearDocument,
 	return "Configured credential stores are reusable destinations for secrets."
 }
 
-func initSecretsProfilePendingDeleteTitle(id string, profile config.SecretsProfile) string {
-	return initSecretsProfileInventoryTitle(config.EffectiveSecretsProfile{
+func initSecretsStorePendingDeleteTitle(id string, profile config.SecretsStore) string {
+	return initSecretsStoreInventoryTitle(config.EffectiveSecretsStore{
 		ID:      id,
 		Label:   profile.DisplayName,
 		Backend: string(profile.Backend.Kind),
-		Source:  config.EffectiveSecretsProfileSourceConfigured,
+		Source:  config.EffectiveSecretsStoreSourceConfigured,
 	})
 }
 
@@ -557,7 +557,7 @@ func initSecretsManagementDeleteEditFromDocument(cfg config.File, document initL
 		return initKeyringBackendEdit{}, fmt.Errorf("only configured credential stores can be deleted")
 	}
 	working := config.Normalize(cloneInitConfigFile(cfg))
-	nextCfg, _, err := configedit.RemoveSecretsProfile(working, state.ID)
+	nextCfg, _, err := configedit.RemoveSecretsStore(working, state.ID)
 	if err != nil {
 		return initKeyringBackendEdit{}, err
 	}
@@ -581,43 +581,43 @@ func initSecretsManagementEditFromDocumentWithDiscovery(cfg config.File, documen
 		return initKeyringBackendEdit{}, err
 	}
 	if state.Creating {
-		id := initSecretsProfileIDFromLabel(edit.StoredLabel, edit.Backend.Kind, working.Secrets.Profiles)
-		patch := configedit.SecretsProfilePatch{Backend: &edit.Backend}
+		id := initSecretsStoreIDFromLabel(edit.StoredLabel, edit.Backend.Kind, working.Secrets.Stores)
+		patch := configedit.SecretsStorePatch{Backend: &edit.Backend}
 		if edit.StoredLabel != "" {
 			label := edit.StoredLabel
 			patch.Label = &label
 		}
-		nextCfg, _, _, err := configedit.SetSecretsProfile(working, id, patch)
+		nextCfg, _, _, err := configedit.SetSecretsStore(working, id, patch)
 		if err != nil {
 			return initKeyringBackendEdit{}, err
 		}
 		return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: nextCfg}, nil
 	}
-	patch := configedit.SecretsProfilePatch{Backend: &edit.Backend}
+	patch := configedit.SecretsStorePatch{Backend: &edit.Backend}
 	if edit.StoredLabel != "" {
 		label := edit.StoredLabel
 		patch.Label = &label
 	} else {
 		patch.ClearLabel = true
 	}
-	nextCfg, _, _, err := configedit.SetSecretsProfile(working, state.ID, patch)
+	nextCfg, _, _, err := configedit.SetSecretsStore(working, state.ID, patch)
 	if err != nil {
 		return initKeyringBackendEdit{}, err
 	}
 	return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: nextCfg}, nil
 }
 
-func initSecretsManagementProfileEditFromDocument(state initSecretsManagementSelectionState, document initLinearDocument, desktopDiscovery initOnePasswordDesktopDiscovery) (initSecretsProfileEditorResult, error) {
+func initSecretsManagementProfileEditFromDocument(state initSecretsManagementSelectionState, document initLinearDocument, desktopDiscovery initOnePasswordDesktopDiscovery) (initSecretsStoreEditorResult, error) {
 	profile := state.Profile
 	if strings.TrimSpace(string(profile.Backend.Kind)) == "" {
-		profile.Backend = normalizeInitSecretsProfileBackend(config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)})
+		profile.Backend = normalizeInitSecretsStoreBackend(config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendKeychain)})
 	} else {
-		profile.Backend = normalizeInitSecretsProfileBackend(profile.Backend)
+		profile.Backend = normalizeInitSecretsStoreBackend(profile.Backend)
 	}
-	labelSeed := initSecretsProfileEditorLabelSeed(profile, state.ID, profile.Backend.Kind, state.Creating)
+	labelSeed := initSecretsStoreEditorLabelSeed(profile, state.ID, profile.Backend.Kind, state.Creating)
 	labelInput := document.fieldValue(initSecretsManagementFieldLabel)
 	if err := validateOptionalDisplayName(labelInput); err != nil {
-		return initSecretsProfileEditorResult{}, err
+		return initSecretsStoreEditorResult{}, err
 	}
 	kindValue := document.selectedValue(initSecretsManagementFieldBackend)
 	kind := config.SecretsBackendKind(kindValue)
@@ -648,12 +648,12 @@ func initSecretsManagementProfileEditFromDocument(state initSecretsManagementSel
 			requiresVault = false
 		}
 		if err := validateInitSecretsRequiredSingleLine(vaultValue, requiresVault, "1Password vault name or id"); err != nil {
-			return initSecretsProfileEditorResult{}, err
+			return initSecretsStoreEditorResult{}, err
 		}
 	}
 	if kind == config.SecretsBackendKind(credstore.BackendOPConnect) {
 		if err := validateInitSecretsRequiredSingleLine(document.fieldValue(initSecretsManagementFieldConnectHost), true, "1Password Connect host"); err != nil {
-			return initSecretsProfileEditorResult{}, err
+			return initSecretsStoreEditorResult{}, err
 		}
 	}
 	for _, field := range []struct {
@@ -667,10 +667,10 @@ func initSecretsManagementProfileEditFromDocument(state initSecretsManagementSel
 		{initSecretsManagementFieldDesktopAccountID, validateOptionalDisplayName},
 	} {
 		if err := field.validate(document.fieldValue(field.id)); err != nil {
-			return initSecretsProfileEditorResult{}, err
+			return initSecretsStoreEditorResult{}, err
 		}
 	}
-	backend := initSecretsProfileBackendFromInputs(initSecretsProfileBackendInput{
+	backend := initSecretsStoreBackendFromInputs(initSecretsStoreBackendInput{
 		KindValue:       kindValue,
 		Timeout:         document.fieldValue(initSecretsManagementFieldTimeout),
 		AccountID:       accountID,
@@ -681,10 +681,10 @@ func initSecretsManagementProfileEditFromDocument(state initSecretsManagementSel
 		ConnectTokenEnv: document.fieldValue(initSecretsManagementFieldConnectTokenEnv),
 		ServiceTokenEnv: document.fieldValue(initSecretsManagementFieldServiceTokenEnv),
 	})
-	return initSecretsProfileEditorResult{
+	return initSecretsStoreEditorResult{
 		Apply:       true,
 		Label:       strings.TrimSpace(labelInput),
-		StoredLabel: normalizeInitSecretsProfileStoredLabel(labelInput, labelSeed.FallbackValue, labelSeed.StoredLabel, state.Creating),
+		StoredLabel: normalizeInitSecretsStoreStoredLabel(labelInput, labelSeed.FallbackValue, labelSeed.StoredLabel, state.Creating),
 		Backend:     backend,
 	}, nil
 }

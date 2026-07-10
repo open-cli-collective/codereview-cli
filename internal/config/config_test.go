@@ -1580,10 +1580,10 @@ func TestValidateCredentialLocations(t *testing.T) {
 	}
 }
 
-func TestSecretsProfileBackendNormalizedOnePasswordDefaults(t *testing.T) {
-	service := SecretsProfileBackend{
+func TestSecretsStoreBackendNormalizedOnePasswordDefaults(t *testing.T) {
+	service := SecretsStoreBackend{
 		Kind: SecretsBackendKind(credstore.BackendOP),
-		OnePassword: &SecretsProfileOnePasswordConfig{
+		OnePassword: &SecretsStoreOnePasswordConfig{
 			VaultID: "vault-123",
 		},
 	}.normalized()
@@ -1597,9 +1597,9 @@ func TestSecretsProfileBackendNormalizedOnePasswordDefaults(t *testing.T) {
 		t.Fatalf("service token env = %q, want %q", service.OnePassword.ServiceTokenEnv, credstore.DefaultOnePasswordServiceTokenEnv)
 	}
 
-	connect := SecretsProfileBackend{
+	connect := SecretsStoreBackend{
 		Kind: SecretsBackendKind(credstore.BackendOPConnect),
-		OnePassword: &SecretsProfileOnePasswordConfig{
+		OnePassword: &SecretsStoreOnePasswordConfig{
 			VaultID:     "vault-123",
 			ConnectHost: "https://connect.example",
 		},
@@ -1611,9 +1611,9 @@ func TestSecretsProfileBackendNormalizedOnePasswordDefaults(t *testing.T) {
 		t.Fatalf("connect token env = %q, want %q", connect.OnePassword.ConnectTokenEnv, credstore.DefaultOnePasswordConnectTokenEnv)
 	}
 
-	desktop := SecretsProfileBackend{
+	desktop := SecretsStoreBackend{
 		Kind: SecretsBackendKind(credstore.BackendOPDesktop),
-		OnePassword: &SecretsProfileOnePasswordConfig{
+		OnePassword: &SecretsStoreOnePasswordConfig{
 			VaultID: "vault-123",
 		},
 	}.normalized()

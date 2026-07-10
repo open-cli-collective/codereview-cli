@@ -293,11 +293,11 @@ func TestConfigCredentialStoreGetJSON(t *testing.T) {
 	if err := root.Execute(cmd, []string{"config", "credential-store", "get", "work-file", "--json"}); err != nil {
 		t.Fatalf("Execute get: %v", err)
 	}
-	var got view.ConfigSecretsProfile
+	var got view.ConfigSecretsStore
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal get JSON: %v\n%s", err, out.String())
 	}
-	want := view.ConfigSecretsProfile{ID: "work-file", Label: "Work File Store", Backend: "file", Source: "configured"}
+	want := view.ConfigSecretsStore{ID: "work-file", Label: "Work File Store", Backend: "file", Source: "configured"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("get JSON = %#v, want %#v", got, want)
 	}
@@ -1256,7 +1256,7 @@ func TestConfigShowReportsEffectiveCredentialStores(t *testing.T) {
 	if got.Backend != "memory" || got.BackendSource != "credential_store" {
 		t.Fatalf("backend = (%q,%q), want (memory,credential_store)", got.Backend, got.BackendSource)
 	}
-	want := []config.EffectiveSecretsProfile{{
+	want := []config.EffectiveSecretsStore{{
 		ID:          config.LocalOSCredentialStoreID,
 		DisplayName: "OS credential store",
 		Label:       "OS credential store",
@@ -1270,8 +1270,8 @@ func TestConfigShowReportsEffectiveCredentialStores(t *testing.T) {
 		Backend:     "memory",
 		Source:      config.EffectiveSecretsStoreSourceConfigured,
 	}}
-	if !reflect.DeepEqual(got.SecretsProfiles, want) {
-		t.Fatalf("credential stores = %#v, want %#v", got.SecretsProfiles, want)
+	if !reflect.DeepEqual(got.SecretsStores, want) {
+		t.Fatalf("credential stores = %#v, want %#v", got.SecretsStores, want)
 	}
 }
 
@@ -1299,10 +1299,10 @@ func TestConfigShowSelectsProfileCredentialStore(t *testing.T) {
 	if got.Backend != "file" || got.BackendSource != "credential_store" {
 		t.Fatalf("backend = (%q,%q), want selected credential-store backend (file,credential_store)", got.Backend, got.BackendSource)
 	}
-	if got.ActiveSecretsProfile == nil || got.ActiveSecretsProfile.ID != "work-file" || got.ActiveSecretsProfile.Label != "Work File Store" {
-		t.Fatalf("active credential store = %#v, want work-file", got.ActiveSecretsProfile)
+	if got.ActiveSecretsStore == nil || got.ActiveSecretsStore.ID != "work-file" || got.ActiveSecretsStore.Label != "Work File Store" {
+		t.Fatalf("active credential store = %#v, want work-file", got.ActiveSecretsStore)
 	}
-	want := []config.EffectiveSecretsProfile{
+	want := []config.EffectiveSecretsStore{
 		{
 			ID:          config.LocalOSCredentialStoreID,
 			DisplayName: "OS credential store",
@@ -1316,25 +1316,25 @@ func TestConfigShowSelectsProfileCredentialStore(t *testing.T) {
 			DisplayName: "Personal Keychain",
 			Label:       "Personal Keychain",
 			Backend:     "keychain",
-			Source:      config.EffectiveSecretsProfileSourceConfigured,
+			Source:      config.EffectiveSecretsStoreSourceConfigured,
 		},
 		{
 			ID:          "test-memory",
 			DisplayName: "Test Memory Store",
 			Label:       "Test Memory Store",
 			Backend:     "memory",
-			Source:      config.EffectiveSecretsProfileSourceConfigured,
+			Source:      config.EffectiveSecretsStoreSourceConfigured,
 		},
 		{
 			ID:          "work-file",
 			DisplayName: "Work File Store",
 			Label:       "Work File Store",
 			Backend:     "file",
-			Source:      config.EffectiveSecretsProfileSourceConfigured,
+			Source:      config.EffectiveSecretsStoreSourceConfigured,
 		},
 	}
-	if !reflect.DeepEqual(got.SecretsProfiles, want) {
-		t.Fatalf("credential stores = %#v, want %#v", got.SecretsProfiles, want)
+	if !reflect.DeepEqual(got.SecretsStores, want) {
+		t.Fatalf("credential stores = %#v, want %#v", got.SecretsStores, want)
 	}
 }
 

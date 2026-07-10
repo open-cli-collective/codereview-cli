@@ -97,9 +97,9 @@ type initPromptContext struct {
 	ProfileReviewerEntities            map[string]string
 	ReviewerCredentialStatuses         []initReviewerCredentialStatus
 	StandaloneReviewerEntityMode       bool
-	SecretsProfiles                    []config.EffectiveSecretsProfile
-	ProfileSecretsProfiles             map[string]string
-	BrokenProfileSecretsProfiles       map[string]string
+	SecretsStores                      []config.EffectiveSecretsStore
+	ProfileSecretsStores               map[string]string
+	BrokenProfileSecretsStores         map[string]string
 	LLMRuntimes                        map[string]initLLMRuntimeDraft
 	ProfileLLMRuntimes                 map[string]string
 	ProfileWarnings                    map[string][]string
@@ -144,16 +144,16 @@ type initDraft struct {
 	ReviewerGitHubAppInstallationMode string
 	ReviewerGitHubAppInstallationID   string
 	GitCredentialWriteRef             string
-	GitCredentialWriteStore           credentials.ResolvedSecretsProfile
+	GitCredentialWriteStore           credentials.ResolvedSecretsStore
 	GitCredentialWrites               map[string]string
 	GitCredentialOverwrite            bool
 	GitCredentialSatisfied            bool
 	ReviewerCredentialWriteRef        string
-	ReviewerCredentialWriteStore      credentials.ResolvedSecretsProfile
+	ReviewerCredentialWriteStore      credentials.ResolvedSecretsStore
 	ReviewerCredentialWrites          map[string]string
 	ReviewerCredentialOverwrite       bool
 	ReviewerCredentialSatisfied       bool
-	SecretsProfile                    string
+	SecretsStore                      string
 	LLMProvider                       string
 	LLMAuth                           string
 	LLMAdapter                        string
@@ -261,7 +261,7 @@ type initDeps struct {
 	loadConfig         func(string) (config.File, bool, error)
 	saveConfig         func(string, config.File) error
 	openStore          func(string, bool, config.File) (initStore, error)
-	openResolvedStore  func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error)
+	openResolvedStore  func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error)
 	readSecret         func(io.Reader, bool, string, string, string) (string, bool, error)
 }
 
@@ -330,7 +330,7 @@ type initSessionDraft struct {
 	workspace                      *initWorkspaceDraft
 	touchedProfiles                map[string]string
 	writes                         map[string]map[string]string
-	credentialWriteStores          map[string]credentials.ResolvedSecretsProfile
+	credentialWriteStores          map[string]credentials.ResolvedSecretsStore
 	credentialDecisions            map[initCredentialDecisionKey]initCredentialDecisionKind
 	overwriteRefs                  map[string]bool
 	satisfiedRefs                  map[string]bool
@@ -458,7 +458,7 @@ const (
 type initCredentialPlanEntry struct {
 	Ref                 config.CredentialRef
 	PreviousRef         *config.CredentialRef
-	SecretsProfile      credentials.ResolvedSecretsProfile
+	SecretsStore        credentials.ResolvedSecretsStore
 	KeySpecs            []credentials.KeySpec
 	PlannedWriteKeys    []string
 	MissingRequiredKeys []string
@@ -526,7 +526,7 @@ func defaultInitDeps() initDeps {
 		openStore: func(flagValue string, flagSet bool, cfg config.File) (initStore, error) {
 			return credentials.OpenStore(flagValue, flagSet, cfg)
 		},
-		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, flagValue string, flagSet bool, cfg config.File) (initStore, error) {
+		openResolvedStore: func(resolved credentials.ResolvedSecretsStore, flagValue string, flagSet bool, cfg config.File) (initStore, error) {
 			return credentials.OpenResolvedStore(flagValue, flagSet, cfg, resolved)
 		},
 		readSecret: cmdruntime.ReadOptionalSecretIngress,
@@ -556,7 +556,7 @@ func (deps initDeps) withDefaults() initDeps {
 	}
 	if deps.openResolvedStore == nil {
 		if hasInjectedOpenStore {
-			deps.openResolvedStore = func(_ credentials.ResolvedSecretsProfile, flagValue string, flagSet bool, cfg config.File) (initStore, error) {
+			deps.openResolvedStore = func(_ credentials.ResolvedSecretsStore, flagValue string, flagSet bool, cfg config.File) (initStore, error) {
 				return deps.openStore(flagValue, flagSet, cfg)
 			}
 		} else {
@@ -819,7 +819,7 @@ const (
 func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromptContext {
 	ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
 	ctx.ReviewerEntities, ctx.ProfileReviewerEntities = buildInitReviewerEntityInventory(ctx.ExistingConfig)
-	ctx.SecretsProfiles, ctx.ProfileSecretsProfiles, ctx.BrokenProfileSecretsProfiles = buildInitSecretsProfileInventory(ctx.ExistingConfig)
+	ctx.SecretsStores, ctx.ProfileSecretsStores, ctx.BrokenProfileSecretsStores = buildInitSecretsStoreInventory(ctx.ExistingConfig)
 	ctx.LLMRuntimes, ctx.ProfileLLMRuntimes = buildInitLLMRuntimeInventory(ctx.ExistingConfig)
 	return ctx
 }
@@ -1403,7 +1403,7 @@ func mergeGitCredentialDraftWrites(session initSessionDraft, draft initDraft) in
 		session.satisfiedRefs = map[string]bool{}
 	}
 	if session.credentialWriteStores == nil {
-		session.credentialWriteStores = map[string]credentials.ResolvedSecretsProfile{}
+		session.credentialWriteStores = map[string]credentials.ResolvedSecretsStore{}
 	}
 	hadStagedWrites := len(session.writes[ref]) > 0
 	if session.writes[ref] != nil {
@@ -1476,7 +1476,7 @@ func mergeReviewerCredentialDraftWrites(session initSessionDraft, draft initDraf
 		session.satisfiedRefs = map[string]bool{}
 	}
 	if session.credentialWriteStores == nil {
-		session.credentialWriteStores = map[string]credentials.ResolvedSecretsProfile{}
+		session.credentialWriteStores = map[string]credentials.ResolvedSecretsStore{}
 	}
 	hadStagedWrites := len(session.writes[ref]) > 0
 	if session.writes[ref] != nil {
@@ -2308,10 +2308,10 @@ func reviewerEntitySelectionDescription() string {
 	return "Choose who posts COMMENT, APPROVE, or REQUEST_CHANGES. Review profiles can use a reviewer entity or post using the profile Git account."
 }
 
-func buildInitSecretsProfileInventory(cfg config.File) ([]config.EffectiveSecretsProfile, map[string]string, map[string]string) {
-	profiles := make([]config.EffectiveSecretsProfile, 0, len(cfg.Secrets.Profiles))
-	for _, profile := range config.EffectiveSecretsProfiles(cfg) {
-		if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
+func buildInitSecretsStoreInventory(cfg config.File) ([]config.EffectiveSecretsStore, map[string]string, map[string]string) {
+	profiles := make([]config.EffectiveSecretsStore, 0, len(cfg.Secrets.Stores))
+	for _, profile := range config.EffectiveSecretsStores(cfg) {
+		if profile.Source != config.EffectiveSecretsStoreSourceConfigured {
 			continue
 		}
 		profiles = append(profiles, profile)
@@ -2319,12 +2319,12 @@ func buildInitSecretsProfileInventory(cfg config.File) ([]config.EffectiveSecret
 	selectedByProfile := make(map[string]string, len(cfg.Profiles))
 	brokenByProfile := map[string]string{}
 	for name, profile := range cfg.Profiles {
-		selection := strings.TrimSpace(profile.SecretsProfile)
+		selection := strings.TrimSpace(profile.SecretsStore)
 		selectedByProfile[name] = selection
 		if selection == "" {
 			continue
 		}
-		if _, ok := cfg.Secrets.Profiles[selection]; ok {
+		if _, ok := cfg.Secrets.Stores[selection]; ok {
 			continue
 		}
 		brokenByProfile[name] = selection
@@ -2822,8 +2822,8 @@ func (p huhInitSecretPrompter) ChooseCredentialAction(prompt initCredentialSecre
 func initCredentialSecretPromptTitle(prompt initCredentialSecretPrompt) string {
 	title := fmt.Sprintf("How should init handle %s?", initCredentialSecretBundleLabel(prompt.Entry))
 	if prompt.Entry.Ref.Ref != "" {
-		title = fmt.Sprintf("%s (%s%s)", title, prompt.Entry.Ref.Ref, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
-	} else if suffix := initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile); suffix != "" {
+		title = fmt.Sprintf("%s (%s%s)", title, prompt.Entry.Ref.Ref, initSecretsStorePromptSuffix(prompt.Entry.SecretsStore))
+	} else if suffix := initSecretsStorePromptSuffix(prompt.Entry.SecretsStore); suffix != "" {
 		title += suffix
 	}
 	if prompt.Entry.Ref.Purpose == "reviewer_credentials" {
@@ -2873,14 +2873,14 @@ func (p huhInitSecretPrompter) ChooseSecretSource(prompt initSecretValuePrompt) 
 }
 
 func initSecretSourcePromptTitle(prompt initSecretValuePrompt) string {
-	return fmt.Sprintf("How should init get %s%s?", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))
+	return fmt.Sprintf("How should init get %s%s?", prompt.Key, initSecretsStorePromptSuffix(prompt.Entry.SecretsStore))
 }
 
 func (p huhInitSecretPrompter) PasteSecret(prompt initSecretValuePrompt) (string, error) {
 	var value string
 	action := initDetailActionEdit
 	field := huh.NewInput().
-		Title(fmt.Sprintf("Paste %s%s", prompt.Key, initSecretsProfilePromptSuffix(prompt.Entry.SecretsProfile))).
+		Title(fmt.Sprintf("Paste %s%s", prompt.Key, initSecretsStorePromptSuffix(prompt.Entry.SecretsStore))).
 		Description(initSecretPasteDescription(prompt)).
 		Value(&value).
 		EchoMode(huh.EchoModePassword).
@@ -3118,7 +3118,7 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		draft.ModelMap = copyModelMap(existingProfile.LLM.ModelMap)
 		draft.AgentSources = append([]string(nil), existingProfile.AgentSources...)
 		draft.ReviewPolicy = existingProfile.ReviewPolicy
-		draft.SecretsProfile = strings.TrimSpace(existingProfile.SecretsProfile)
+		draft.SecretsStore = strings.TrimSpace(existingProfile.SecretsStore)
 		if existingProfile.Reviewer.GitHubAppInstallation != nil {
 			installation := existingProfile.Reviewer.GitHubAppInstallation
 			draft.ReviewerGitHubAppInstallationMode = strings.TrimSpace(string(installation.Mode))
@@ -3714,7 +3714,7 @@ func mergeInteractiveInitSessionPlanEntry(entriesByKey map[string]initCredential
 		entriesByKey[key] = entry
 		return nil
 	}
-	if existing.State != initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef && !sameInitCredentialStore(existing.SecretsProfile, entry.SecretsProfile) {
+	if existing.State != initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef && !sameInitCredentialStore(existing.SecretsStore, entry.SecretsStore) {
 		return fmt.Errorf("%w: credential name %q is staged for multiple credential stores in one session", config.ErrInvalid, entry.Ref.Ref)
 	}
 	if existing.State == initCredentialPlanStateClearRef && entry.State != initCredentialPlanStateClearRef {
@@ -3751,7 +3751,7 @@ func standaloneRepositoryAccessPlanEntries(cfg config.File, plannedWriteKeys map
 		}
 		entry := initCredentialPlanEntry{
 			Ref:              ref,
-			SecretsProfile:   resolved,
+			SecretsStore:     resolved,
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
 		}
@@ -3828,7 +3828,7 @@ func standaloneReviewerEntityPlanEntries(cfg config.File, plannedWriteKeys map[s
 		}
 		entry := initCredentialPlanEntry{
 			Ref:              ref,
-			SecretsProfile:   resolved,
+			SecretsStore:     resolved,
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
 		}
@@ -4737,12 +4737,6 @@ func cloneInitSecretsConfig(secrets config.SecretsConfig) config.SecretsConfig {
 			cloned.Stores[id] = cloneInitSecretsStore(store)
 		}
 	}
-	if secrets.Profiles != nil {
-		cloned.Profiles = make(map[string]config.SecretsProfile, len(secrets.Profiles))
-		for id, store := range secrets.Profiles {
-			cloned.Profiles[id] = cloneInitSecretsStore(store)
-		}
-	}
 	return cloned
 }
 
@@ -4901,7 +4895,7 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if draft.ReviewPolicySet {
 		profile.ReviewPolicy = draft.ReviewPolicy
 	}
-	profile.SecretsProfile = strings.TrimSpace(draft.SecretsProfile)
+	profile.SecretsStore = strings.TrimSpace(draft.SecretsStore)
 	return profile, nil
 }
 
@@ -5353,24 +5347,24 @@ func validateInteractiveInitConfig(cfg config.File) error {
 	if err == nil {
 		return nil
 	}
-	if !errors.Is(err, config.ErrSecretsProfileNotFound) {
+	if !errors.Is(err, config.ErrSecretsStoreNotFound) {
 		return err
 	}
 	recovered := cloneInitConfigFile(cfg)
-	hadBrokenSecretsProfile := false
+	hadBrokenSecretsStore := false
 	for name, profile := range recovered.Profiles {
-		selection := strings.TrimSpace(profile.SecretsProfile)
+		selection := strings.TrimSpace(profile.SecretsStore)
 		if selection == "" || selection == config.LocalOSCredentialStoreID {
 			continue
 		}
-		if _, ok := recovered.Secrets.Profiles[selection]; ok {
+		if _, ok := recovered.Secrets.Stores[selection]; ok {
 			continue
 		}
-		profile.SecretsProfile = ""
+		profile.SecretsStore = ""
 		recovered.Profiles[name] = profile
-		hadBrokenSecretsProfile = true
+		hadBrokenSecretsStore = true
 	}
-	if !hadBrokenSecretsProfile {
+	if !hadBrokenSecretsStore {
 		return err
 	}
 	if recoveredErr := config.Validate(recovered); recoveredErr != nil {
@@ -5396,17 +5390,17 @@ func interactiveInitBackendArg(opts *root.Options, backendFlagSet bool, _ config
 	return fmt.Sprintf(" --backend %s", opts.Backend)
 }
 
-func sameInitCredentialStore(a, b credentials.ResolvedSecretsProfile) bool {
+func sameInitCredentialStore(a, b credentials.ResolvedSecretsStore) bool {
 	return a.Equal(b)
 }
 
-func initCredentialStoreKey(resolved credentials.ResolvedSecretsProfile) string {
+func initCredentialStoreKey(resolved credentials.ResolvedSecretsStore) string {
 	return fmt.Sprintf("%s|%s|%s", resolved.ID, resolved.Source, resolved.Backend)
 }
 
 func initCredentialDecisionMapKey(entry initCredentialPlanEntry, key string) initCredentialDecisionKey {
 	return initCredentialDecisionKey{
-		Store:   initCredentialStoreKey(entry.SecretsProfile),
+		Store:   initCredentialStoreKey(entry.SecretsStore),
 		Purpose: entry.Ref.Purpose,
 		Mode:    entry.Ref.Mode,
 		Ref:     entry.Ref.Ref,
@@ -5446,13 +5440,13 @@ func initCredentialEntryDeferredByDecision(decisions map[initCredentialDecisionK
 }
 
 type initWriteGroup struct {
-	Resolved      credentials.ResolvedSecretsProfile
+	Resolved      credentials.ResolvedSecretsStore
 	Writes        map[string]map[string]string
 	OverwriteRefs map[string]bool
 }
 
 type initReviewerCredentialCleanupGroup struct {
-	Resolved credentials.ResolvedSecretsProfile
+	Resolved credentials.ResolvedSecretsStore
 	Entries  map[string][]initCredentialPlanEntry
 }
 
@@ -5471,11 +5465,11 @@ func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string
 		if len(bundle) == 0 {
 			continue
 		}
-		key := initCredentialStoreKey(entry.SecretsProfile)
+		key := initCredentialStoreKey(entry.SecretsStore)
 		group := groups[key]
 		if group == nil {
 			group = &initWriteGroup{
-				Resolved:      entry.SecretsProfile,
+				Resolved:      entry.SecretsStore,
 				Writes:        map[string]map[string]string{},
 				OverwriteRefs: map[string]bool{},
 			}
@@ -5508,7 +5502,7 @@ func groupStaleReviewerCredentialCleanupsByStore(cfg config.File, entries []init
 		if !initCredentialEntryUsesActiveReviewerRef(entry) {
 			continue
 		}
-		storeKey := initCredentialStoreKey(entry.SecretsProfile)
+		storeKey := initCredentialStoreKey(entry.SecretsStore)
 		if initCredentialEntryChangesReviewerModeInPlace(entry) {
 			if cleanupRefsByStore[storeKey] == nil {
 				cleanupRefsByStore[storeKey] = map[string]struct{}{}
@@ -5547,9 +5541,9 @@ func groupStaleReviewerCredentialCleanupsByStore(cfg config.File, entries []init
 	return groups, nil
 }
 
-func activeReviewerCredentialEntriesByStoreRef(cfg config.File, fallback []initCredentialPlanEntry) (map[string]map[string][]initCredentialPlanEntry, map[string]credentials.ResolvedSecretsProfile, error) {
+func activeReviewerCredentialEntriesByStoreRef(cfg config.File, fallback []initCredentialPlanEntry) (map[string]map[string][]initCredentialPlanEntry, map[string]credentials.ResolvedSecretsStore, error) {
 	activeByStoreRef := map[string]map[string][]initCredentialPlanEntry{}
-	resolvedByStore := map[string]credentials.ResolvedSecretsProfile{}
+	resolvedByStore := map[string]credentials.ResolvedSecretsStore{}
 	if len(cfg.Profiles) == 0 {
 		for _, entry := range fallback {
 			if !initCredentialEntryUsesActiveReviewerRef(entry) {
@@ -5583,19 +5577,19 @@ func activeReviewerCredentialEntriesByStoreRef(cfg config.File, fallback []initC
 				return nil, nil, err
 			}
 			addActiveReviewerCredentialEntry(activeByStoreRef, resolvedByStore, initCredentialPlanEntry{
-				Ref:            ref,
-				SecretsProfile: resolved,
-				KeySpecs:       append([]credentials.KeySpec(nil), specs...),
-				State:          initCredentialPlanStateKeepExisting,
+				Ref:          ref,
+				SecretsStore: resolved,
+				KeySpecs:     append([]credentials.KeySpec(nil), specs...),
+				State:        initCredentialPlanStateKeepExisting,
 			})
 		}
 	}
 	return activeByStoreRef, resolvedByStore, nil
 }
 
-func addActiveReviewerCredentialEntry(activeByStoreRef map[string]map[string][]initCredentialPlanEntry, resolvedByStore map[string]credentials.ResolvedSecretsProfile, entry initCredentialPlanEntry) {
-	storeKey := initCredentialStoreKey(entry.SecretsProfile)
-	resolvedByStore[storeKey] = entry.SecretsProfile
+func addActiveReviewerCredentialEntry(activeByStoreRef map[string]map[string][]initCredentialPlanEntry, resolvedByStore map[string]credentials.ResolvedSecretsStore, entry initCredentialPlanEntry) {
+	storeKey := initCredentialStoreKey(entry.SecretsStore)
+	resolvedByStore[storeKey] = entry.SecretsStore
 	if activeByStoreRef[storeKey] == nil {
 		activeByStoreRef[storeKey] = map[string][]initCredentialPlanEntry{}
 	}
@@ -5623,9 +5617,9 @@ func openInitStoreForEntry(deps initDeps, opts *root.Options, flagSet bool, cfg 
 		backend = opts.Backend
 	}
 	if deps.openResolvedStore != nil {
-		return deps.openResolvedStore(entry.SecretsProfile, backend, flagSet, cfg)
+		return deps.openResolvedStore(entry.SecretsStore, backend, flagSet, cfg)
 	}
-	if !entry.SecretsProfile.IsNamed() && deps.openStore != nil {
+	if !entry.SecretsStore.IsNamed() && deps.openStore != nil {
 		return deps.openStore(backend, flagSet, cfg)
 	}
 	return nil, errors.New("credential store opener unavailable")
@@ -5660,7 +5654,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 	}
 	stores := map[string]initStore{}
 	openStore := func(entry initCredentialPlanEntry) (initStore, error) {
-		key := initCredentialStoreKey(entry.SecretsProfile)
+		key := initCredentialStoreKey(entry.SecretsStore)
 		if store := stores[key]; store != nil {
 			return store, nil
 		}
@@ -5948,7 +5942,7 @@ func loadInteractiveCredentialPlanStateWithResolver(entries []initCredentialPlan
 			normalized = append(normalized, entry)
 			continue
 		}
-		key := initCredentialStoreKey(entry.SecretsProfile)
+		key := initCredentialStoreKey(entry.SecretsStore)
 		store := stores[key]
 		if store == nil {
 			var err error
@@ -6097,8 +6091,8 @@ func filterInitWritesByRefs(writes map[string]map[string]string, activeRefs map[
 	return filtered
 }
 
-func filterInitCredentialWriteStoresByRefs(values map[string]credentials.ResolvedSecretsProfile, activeRefs map[string]bool) map[string]credentials.ResolvedSecretsProfile {
-	filtered := map[string]credentials.ResolvedSecretsProfile{}
+func filterInitCredentialWriteStoresByRefs(values map[string]credentials.ResolvedSecretsStore, activeRefs map[string]bool) map[string]credentials.ResolvedSecretsStore {
+	filtered := map[string]credentials.ResolvedSecretsStore{}
 	for ref, resolved := range values {
 		if !activeRefs[ref] {
 			continue
@@ -6112,7 +6106,7 @@ func filterInteractiveInitStagedCredentialStateByStore(
 	writes map[string]map[string]string,
 	overwriteRefs map[string]bool,
 	satisfiedRefs map[string]bool,
-	writeStores map[string]credentials.ResolvedSecretsProfile,
+	writeStores map[string]credentials.ResolvedSecretsStore,
 	entries []initCredentialPlanEntry,
 ) (map[string]map[string]string, map[string]bool, map[string]bool) {
 	currentStores := activeInitCredentialStoresByRef(entries)
@@ -6130,25 +6124,25 @@ func filterInteractiveInitStagedCredentialStateByStore(
 	return writes, overwriteRefs, satisfiedRefs
 }
 
-func initCredentialStoreBindingEmpty(resolved credentials.ResolvedSecretsProfile) bool {
+func initCredentialStoreBindingEmpty(resolved credentials.ResolvedSecretsStore) bool {
 	return resolved.ID == "" && resolved.Source == "" && resolved.Backend == ""
 }
 
-func activeInitCredentialStoresByRef(entries []initCredentialPlanEntry) map[string][]credentials.ResolvedSecretsProfile {
-	stores := map[string][]credentials.ResolvedSecretsProfile{}
+func activeInitCredentialStoresByRef(entries []initCredentialPlanEntry) map[string][]credentials.ResolvedSecretsStore {
+	stores := map[string][]credentials.ResolvedSecretsStore{}
 	for _, entry := range entries {
 		if entry.State == initCredentialPlanStateClearRef || strings.TrimSpace(entry.Ref.Ref) == "" {
 			continue
 		}
-		if initCredentialStoreListContains(stores[entry.Ref.Ref], entry.SecretsProfile) {
+		if initCredentialStoreListContains(stores[entry.Ref.Ref], entry.SecretsStore) {
 			continue
 		}
-		stores[entry.Ref.Ref] = append(stores[entry.Ref.Ref], entry.SecretsProfile)
+		stores[entry.Ref.Ref] = append(stores[entry.Ref.Ref], entry.SecretsStore)
 	}
 	return stores
 }
 
-func initCredentialStoreListContains(values []credentials.ResolvedSecretsProfile, target credentials.ResolvedSecretsProfile) bool {
+func initCredentialStoreListContains(values []credentials.ResolvedSecretsStore, target credentials.ResolvedSecretsStore) bool {
 	for _, value := range values {
 		if sameInitCredentialStore(value, target) {
 			return true
@@ -6306,7 +6300,7 @@ func buildInteractiveInitProfileReadiness(plan initSessionPlan) []initProfileRea
 }
 
 func initCredentialReadinessNote(entry initCredentialPlanEntry) string {
-	label := initCredentialPurposeLabel(entry.Ref.Purpose) + initSecretsProfileHintLabel(entry.SecretsProfile)
+	label := initCredentialPurposeLabel(entry.Ref.Purpose) + initSecretsStoreHintLabel(entry.SecretsStore)
 	switch entry.State {
 	case initCredentialPlanStateKeepExisting, initCredentialPlanStateWrite, initCredentialPlanStateClearRef:
 		return ""
@@ -6373,7 +6367,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 			return cmderr.Config(err)
 		}
 		for _, group := range groups {
-			store, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+			store, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsStore: group.Resolved})
 			if err != nil {
 				if config.IsConfigSelection(err) {
 					return cmderr.Config(err)
@@ -6475,15 +6469,15 @@ func interactiveInitSessionSummaryLines(plan initSessionPlan) []string {
 
 func changedInitSecretsManagementProfileCount(before, after config.SecretsConfig) int {
 	ids := map[string]struct{}{}
-	for id := range before.Profiles {
+	for id := range before.Stores {
 		ids[id] = struct{}{}
 	}
-	for id := range after.Profiles {
+	for id := range after.Stores {
 		ids[id] = struct{}{}
 	}
 	changed := 0
 	for id := range ids {
-		if !reflect.DeepEqual(before.Profiles[id], after.Profiles[id]) {
+		if !reflect.DeepEqual(before.Stores[id], after.Stores[id]) {
 			changed++
 		}
 	}
@@ -6537,20 +6531,20 @@ func initCredentialSecretBundleLabel(entry initCredentialPlanEntry) string {
 	}
 }
 
-func initSecretsProfilePromptSuffix(resolved credentials.ResolvedSecretsProfile) string {
+func initSecretsStorePromptSuffix(resolved credentials.ResolvedSecretsStore) string {
 	if !resolved.IsNamed() {
 		return ""
 	}
 	return fmt.Sprintf(" via %s", resolved.DisplayName())
 }
 
-func initSecretsProfileHintLabel(resolved credentials.ResolvedSecretsProfile) string {
-	return initSecretsProfilePromptSuffix(resolved)
+func initSecretsStoreHintLabel(resolved credentials.ResolvedSecretsStore) string {
+	return initSecretsStorePromptSuffix(resolved)
 }
 
 func applyStaleReviewerCredentialCleanups(opts *root.Options, deps initDeps, backendFlagSet bool, cfg config.File, groups []initReviewerCredentialCleanupGroup) error {
 	for _, group := range groups {
-		store, err := openInitStoreForEntry(deps, opts, backendFlagSet, cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+		store, err := openInitStoreForEntry(deps, opts, backendFlagSet, cfg, initCredentialPlanEntry{SecretsStore: group.Resolved})
 		if err != nil {
 			return cmderr.Credential(fmt.Errorf("init saved config before failing to open credential store for stale reviewer cleanup; stale credential names needing manual cleanup: %v: %w", sortedCredentialEntryRefs(group.Entries), err))
 		}
@@ -6566,32 +6560,32 @@ func applyStaleReviewerCredentialCleanups(opts *root.Options, deps initDeps, bac
 
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store initStore
-	var primaryResolved credentials.ResolvedSecretsProfile
+	var primaryResolved credentials.ResolvedSecretsStore
 	cleanupGroups, err := groupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
 	if err != nil {
 		return cmderr.Config(err)
 	}
 	needsPrimaryStore := len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM)
-	openPrimaryStore := func() (initStore, credentials.ResolvedSecretsProfile, error) {
+	openPrimaryStore := func() (initStore, credentials.ResolvedSecretsStore, error) {
 		if store != nil {
 			return store, primaryResolved, nil
 		}
 		entry := initCredentialPlanEntry{}
 		if len(plan.credentialPlan) > 0 {
-			entry.SecretsProfile = plan.credentialPlan[0].SecretsProfile
+			entry.SecretsStore = plan.credentialPlan[0].SecretsStore
 		} else {
-			resolved, err := credentials.ResolveSecretsProfileForProfile(plan.cfg, plan.profile)
+			resolved, err := credentials.ResolveSecretsStoreForProfile(plan.cfg, plan.profile)
 			if err != nil {
-				return nil, credentials.ResolvedSecretsProfile{}, err
+				return nil, credentials.ResolvedSecretsStore{}, err
 			}
-			entry.SecretsProfile = resolved
+			entry.SecretsStore = resolved
 		}
 		opened, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 		if err != nil {
-			return nil, credentials.ResolvedSecretsProfile{}, err
+			return nil, credentials.ResolvedSecretsStore{}, err
 		}
 		store = opened
-		primaryResolved = entry.SecretsProfile
+		primaryResolved = entry.SecretsStore
 		return store, primaryResolved, nil
 	}
 	if needsPrimaryStore {
@@ -6634,7 +6628,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		for _, group := range groups {
 			groupStore := store
 			if groupStore == nil || !sameInitCredentialStore(group.Resolved, primaryResolved) {
-				groupStore, err = openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
+				groupStore, err = openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsStore: group.Resolved})
 				if err != nil {
 					if config.IsConfigSelection(err) {
 						return cmderr.Config(err)
@@ -6692,12 +6686,12 @@ func writeInitCredentialPlanHints(w io.Writer, _ string, entry initCredentialPla
 		keys = initCredentialRequiredKeys(entry)
 	}
 	hintPrefix := "Next"
-	if hintLabel := initSecretsProfileHintLabel(entry.SecretsProfile); hintLabel != "" {
+	if hintLabel := initSecretsStoreHintLabel(entry.SecretsStore); hintLabel != "" {
 		hintPrefix += hintLabel
 	}
 	storeID := strings.TrimSpace(entry.Ref.Store)
 	if storeID == "" {
-		storeID = strings.TrimSpace(entry.SecretsProfile.ID)
+		storeID = strings.TrimSpace(entry.SecretsStore.ID)
 	}
 	if storeID == "" {
 		storeID = config.LocalOSCredentialStoreID
@@ -6779,7 +6773,7 @@ func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Prof
 		}
 		entry := initCredentialPlanEntry{
 			Ref:              ref,
-			SecretsProfile:   resolvedStore,
+			SecretsStore:     resolvedStore,
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: writeKeys,
 		}
@@ -6801,9 +6795,9 @@ func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Prof
 			return nil, err
 		}
 		entries = append(entries, initCredentialPlanEntry{
-			Ref:            ref,
-			SecretsProfile: resolvedStore,
-			State:          initCredentialPlanStateClearRef,
+			Ref:          ref,
+			SecretsStore: resolvedStore,
+			State:        initCredentialPlanStateClearRef,
 		})
 	}
 	return entries, nil
@@ -6903,7 +6897,7 @@ func loadConfigForInit(path string) (config.File, bool, error) {
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{Profiles: map[string]config.Profile{}}, false, nil
 	}
-	if err != nil && errors.Is(err, config.ErrSecretsProfileNotFound) {
+	if err != nil && errors.Is(err, config.ErrSecretsStoreNotFound) {
 		recovered, recoverErr := loadConfigForInteractiveInitRecovery(path)
 		if recoverErr != nil {
 			return config.File{}, true, recoverErr

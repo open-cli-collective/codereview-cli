@@ -16,7 +16,7 @@ type progressReader struct {
 }
 
 // ProgressStoreReader adapts a credstore-backed reader and logs backend reads.
-func ProgressStoreReader(command string, logger *progress.Logger, resolved ResolvedSecretsProfile, store *credstore.Store) Reader {
+func ProgressStoreReader(command string, logger *progress.Logger, resolved ResolvedSecretsStore, store *credstore.Store) Reader {
 	if store == nil {
 		return nil
 	}
@@ -39,7 +39,7 @@ func (r progressReader) Get(profile, key string) (string, error) {
 }
 
 // ProgressCachingReader wraps a caching reader with cache hit/miss breadcrumbs.
-func ProgressCachingReader(command string, logger *progress.Logger, storeID string, resolved ResolvedSecretsProfile, base Reader) Reader {
+func ProgressCachingReader(command string, logger *progress.Logger, storeID string, resolved ResolvedSecretsStore, base Reader) Reader {
 	return newCachingReader(storeID, base, logger, progressCommand(command), resolved.Backend)
 }
 

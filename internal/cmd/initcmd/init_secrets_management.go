@@ -14,7 +14,7 @@ import (
 
 const (
 	// #nosec G101 -- selection sentinel, not a credential.
-	initConfigureSecretsProfileSelectionPrefix = "__configure_secrets_profile__:"
+	initConfigureSecretsStoreSelectionPrefix = "__configure_secrets_profile__:"
 )
 
 type initSecretsBackendPresentation struct {
@@ -25,14 +25,14 @@ type initSecretsBackendPresentation struct {
 	LegacyCompatible bool
 }
 
-type initSecretsProfileEditorResult struct {
+type initSecretsStoreEditorResult struct {
 	Apply       bool
 	Label       string
 	StoredLabel string
-	Backend     config.SecretsProfileBackend
+	Backend     config.SecretsStoreBackend
 }
 
-type initSecretsProfileBackendInput struct {
+type initSecretsStoreBackendInput struct {
 	KindValue       string
 	Timeout         string
 	AccountID       string
@@ -195,7 +195,7 @@ func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
 			})
 			continue
 		}
-		title := initSecretsProfileInventoryTitle(store)
+		title := initSecretsStoreInventoryTitle(store)
 		rows = append(rows, initInventoryRow{
 			ID:          store.ID,
 			Title:       title,
@@ -213,7 +213,7 @@ func initSecretsManagementInventoryRows(cfg config.File) []initInventoryRow {
 			desc = strings.TrimSpace(strings.Join([]string{desc, "Unavailable in this build."}, " "))
 		}
 		rows = append(rows, initInventoryRow{
-			ID:            initConfigureSecretsProfileSelectionPrefix + string(backend.Kind),
+			ID:            initConfigureSecretsStoreSelectionPrefix + string(backend.Kind),
 			Title:         title,
 			Description:   desc,
 			Kind:          initInventoryRowKindCommand,
@@ -251,47 +251,47 @@ func initConfigureSecretsStoreTitle(kind config.SecretsBackendKind) string {
 	}
 }
 
-func initSecretsProfileInventoryTitle(profile config.EffectiveSecretsProfile) string {
+func initSecretsStoreInventoryTitle(profile config.EffectiveSecretsStore) string {
 	backendLabel := profile.Backend
 	if item, ok := initSecretsBackendByKind(config.SecretsBackendKind(profile.Backend)); ok {
 		backendLabel = item.Label
 	} else if profile.Backend != "" {
 		backendLabel = initSecretsBackendDisplayLabel(config.SecretsBackendKind(profile.Backend))
 	}
-	title := fmt.Sprintf("%s (%s)", initSecretsProfileDisplayName(profile.ID, profile.Label), backendLabel)
+	title := fmt.Sprintf("%s (%s)", initSecretsStoreDisplayName(profile.ID, profile.Label), backendLabel)
 	return title
 }
 
-func initSecretsProfileDisplayName(id string, label string) string {
+func initSecretsStoreDisplayName(id string, label string) string {
 	if trimmed := strings.TrimSpace(label); trimmed != "" {
 		return trimmed
 	}
 	return strings.TrimSpace(id)
 }
 
-func initSecretsProfileSelectionKind(selection string) (config.SecretsBackendKind, bool) {
-	if !strings.HasPrefix(selection, initConfigureSecretsProfileSelectionPrefix) {
+func initSecretsStoreSelectionKind(selection string) (config.SecretsBackendKind, bool) {
+	if !strings.HasPrefix(selection, initConfigureSecretsStoreSelectionPrefix) {
 		return "", false
 	}
-	return config.SecretsBackendKind(strings.TrimPrefix(selection, initConfigureSecretsProfileSelectionPrefix)), true
+	return config.SecretsBackendKind(strings.TrimPrefix(selection, initConfigureSecretsStoreSelectionPrefix)), true
 }
 
-type initSecretsProfileLabelSeed struct {
+type initSecretsStoreLabelSeed struct {
 	DisplayValue  string
 	StoredLabel   string
 	FallbackValue string
 }
 
-func initSecretsProfileEditorLabelSeed(profile config.SecretsProfile, id string, kind config.SecretsBackendKind, creating bool) initSecretsProfileLabelSeed {
+func initSecretsStoreEditorLabelSeed(profile config.SecretsStore, id string, kind config.SecretsBackendKind, creating bool) initSecretsStoreLabelSeed {
 	if trimmed := strings.TrimSpace(profile.Label); trimmed != "" {
-		return initSecretsProfileLabelSeed{
+		return initSecretsStoreLabelSeed{
 			DisplayValue: trimmed,
 			StoredLabel:  trimmed,
 		}
 	}
 	if !creating && strings.TrimSpace(id) != "" {
 		fallback := strings.TrimSpace(id)
-		return initSecretsProfileLabelSeed{
+		return initSecretsStoreLabelSeed{
 			DisplayValue:  fallback,
 			FallbackValue: fallback,
 		}
@@ -300,13 +300,13 @@ func initSecretsProfileEditorLabelSeed(profile config.SecretsProfile, id string,
 	if creating && kind == config.SecretsBackendKind(credstore.BackendOPDesktop) {
 		fallback = "1Password"
 	}
-	return initSecretsProfileLabelSeed{
+	return initSecretsStoreLabelSeed{
 		DisplayValue:  fallback,
 		FallbackValue: fallback,
 	}
 }
 
-func initSecretsProfileBackendOptions(current config.SecretsBackendKind) []huh.Option[string] {
+func initSecretsStoreBackendOptions(current config.SecretsBackendKind) []huh.Option[string] {
 	options := make([]huh.Option[string], 0, len(initSecretsBackendCatalog()))
 	for _, backend := range initSecretsBackendCatalog() {
 		if !backend.Available && backend.Kind != current {
@@ -321,14 +321,14 @@ func initSecretsProfileBackendOptions(current config.SecretsBackendKind) []huh.O
 	return options
 }
 
-func initSecretsProfileBackendFromInputs(input initSecretsProfileBackendInput) config.SecretsProfileBackend {
-	backend := config.SecretsProfileBackend{
+func initSecretsStoreBackendFromInputs(input initSecretsStoreBackendInput) config.SecretsStoreBackend {
+	backend := config.SecretsStoreBackend{
 		Kind: config.SecretsBackendKind(strings.TrimSpace(input.KindValue)),
 	}
 	if !config.IsOnePasswordSecretsBackend(backend.Kind) {
-		return normalizeInitSecretsProfileBackend(backend)
+		return normalizeInitSecretsStoreBackend(backend)
 	}
-	backend.OnePassword = &config.SecretsProfileOnePasswordConfig{
+	backend.OnePassword = &config.SecretsStoreOnePasswordConfig{
 		Timeout:         strings.TrimSpace(input.Timeout),
 		AccountID:       strings.TrimSpace(input.AccountID),
 		AccountURL:      strings.TrimSpace(input.AccountURL),
@@ -338,10 +338,10 @@ func initSecretsProfileBackendFromInputs(input initSecretsProfileBackendInput) c
 		ConnectTokenEnv: strings.TrimSpace(input.ConnectTokenEnv),
 		ServiceTokenEnv: strings.TrimSpace(input.ServiceTokenEnv),
 	}
-	return normalizeInitSecretsProfileBackend(backend)
+	return normalizeInitSecretsStoreBackend(backend)
 }
 
-func normalizeInitSecretsProfileStoredLabel(labelInput string, fallbackSeed string, explicitExistingLabel string, creating bool) string {
+func normalizeInitSecretsStoreStoredLabel(labelInput string, fallbackSeed string, explicitExistingLabel string, creating bool) string {
 	label := strings.TrimSpace(labelInput)
 	if label == "" {
 		return ""
@@ -356,10 +356,10 @@ func normalizeInitSecretsProfileStoredLabel(labelInput string, fallbackSeed stri
 	return label
 }
 
-func initSecretsProfileIDFromLabel(label string, kind config.SecretsBackendKind, existing map[string]config.SecretsProfile) string {
-	base := normalizeInitSecretsProfileIDToken(label)
+func initSecretsStoreIDFromLabel(label string, kind config.SecretsBackendKind, existing map[string]config.SecretsStore) string {
+	base := normalizeInitSecretsStoreIDToken(label)
 	if base == "" {
-		base = normalizeInitSecretsProfileIDToken(initSecretsBackendDisplayLabel(kind))
+		base = normalizeInitSecretsStoreIDToken(initSecretsBackendDisplayLabel(kind))
 	}
 	if base == "" {
 		base = "secrets-profile"
@@ -376,7 +376,7 @@ func initSecretsProfileIDFromLabel(label string, kind config.SecretsBackendKind,
 	}
 }
 
-func normalizeInitSecretsProfileIDToken(value string) string {
+func normalizeInitSecretsStoreIDToken(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	if value == "" {
 		return ""
@@ -398,16 +398,16 @@ func normalizeInitSecretsProfileIDToken(value string) string {
 	return strings.Trim(b.String(), "-")
 }
 
-func normalizeInitSecretsProfileBackend(backend config.SecretsProfileBackend) config.SecretsProfileBackend {
+func normalizeInitSecretsStoreBackend(backend config.SecretsStoreBackend) config.SecretsStoreBackend {
 	working := config.File{
 		Profiles: map[string]config.Profile{"default": {}},
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"seed": {Backend: backend},
 			},
 		},
 	}
-	return config.Normalize(working).Secrets.Profiles["seed"].Backend
+	return config.Normalize(working).Secrets.Stores["seed"].Backend
 }
 
 func initConfigsEqual(a, b config.File) bool {

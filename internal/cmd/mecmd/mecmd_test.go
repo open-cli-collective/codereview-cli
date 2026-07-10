@@ -94,7 +94,7 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	}
 }
 
-func TestMeUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing.T) {
+func TestMeUsesNamedSecretsStoreWithoutBackendOverride(t *testing.T) {
 	const token = "named-secrets-profile-token"
 	store := openFileStore(t)
 	defer store.Close()

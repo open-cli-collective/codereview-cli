@@ -197,44 +197,44 @@ type Ref struct {
 	Full    string
 }
 
-// SecretsProfileSelectionSource identifies why a credential store was selected.
-type SecretsProfileSelectionSource string
+// SecretsStoreSelectionSource identifies why a credential store was selected.
+type SecretsStoreSelectionSource string
 
 const (
-	// SecretsProfileSelectionExplicit means the credential location selected a
+	// SecretsStoreSelectionExplicit means the credential location selected a
 	// configured store directly.
-	SecretsProfileSelectionExplicit SecretsProfileSelectionSource = "profile"
-	// SecretsProfileSelectionBuiltInOS means the credential location selected
+	SecretsStoreSelectionExplicit SecretsStoreSelectionSource = "profile"
+	// SecretsStoreSelectionBuiltInOS means the credential location selected
 	// the built-in OS credential store.
-	SecretsProfileSelectionBuiltInOS SecretsProfileSelectionSource = "local_os"
+	SecretsStoreSelectionBuiltInOS SecretsStoreSelectionSource = "local_os"
 )
 
-// ResolvedSecretsProfile is the typed runtime store-selection result.
-type ResolvedSecretsProfile struct {
+// ResolvedSecretsStore is the typed runtime store-selection result.
+type ResolvedSecretsStore struct {
 	ID              string
 	Label           string
 	Backend         string
-	Source          config.EffectiveSecretsProfileSource
-	SelectionSource SecretsProfileSelectionSource
+	Source          config.EffectiveSecretsStoreSource
+	SelectionSource SecretsStoreSelectionSource
 }
 
 // DisplayName returns the best user-facing label for the resolved store.
-func (r ResolvedSecretsProfile) DisplayName() string {
+func (r ResolvedSecretsStore) DisplayName() string {
 	if strings.TrimSpace(r.Label) != "" {
 		return strings.TrimSpace(r.Label)
 	}
 	return strings.TrimSpace(r.ID)
 }
 
-// Equal reports whether two resolved secrets-profile selections point at the
+// Equal reports whether two resolved credential-store selections point at the
 // same logical credential store.
-func (r ResolvedSecretsProfile) Equal(other ResolvedSecretsProfile) bool {
+func (r ResolvedSecretsStore) Equal(other ResolvedSecretsStore) bool {
 	return r.ID == other.ID && r.Source == other.Source && r.Backend == other.Backend
 }
 
-// IsNamed reports whether the selection came from an explicit named secrets profile.
-func (r ResolvedSecretsProfile) IsNamed() bool {
-	return r.Source == config.EffectiveSecretsProfileSourceConfigured
+// IsNamed reports whether the selection came from an explicit named credential store.
+func (r ResolvedSecretsStore) IsNamed() bool {
+	return r.Source == config.EffectiveSecretsStoreSourceConfigured
 }
 
 // FormatRef returns the canonical ref for a cr profile segment.
@@ -269,50 +269,50 @@ func PlatformOSBackend(goos string) (credstore.Backend, error) {
 }
 
 // ResolveCredentialStore resolves one explicit credential-store ID.
-func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedSecretsProfile, error) {
+func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedSecretsStore, error) {
 	cfg = config.Normalize(cfg)
 	storeID = strings.TrimSpace(storeID)
 	if storeID == "" {
-		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential store is required", config.ErrInvalid)
+		return ResolvedSecretsStore{}, fmt.Errorf("%w: credential store is required", config.ErrInvalid)
 	}
 	if storeID == config.LocalOSCredentialStoreID {
 		backend, err := PlatformOSBackend(runtime.GOOS)
 		if err != nil {
-			return ResolvedSecretsProfile{}, fmt.Errorf("%w: no OS credential store backend for GOOS %q", err, runtime.GOOS)
+			return ResolvedSecretsStore{}, fmt.Errorf("%w: no OS credential store backend for GOOS %q", err, runtime.GOOS)
 		}
-		return ResolvedSecretsProfile{
+		return ResolvedSecretsStore{
 			ID:              config.LocalOSCredentialStoreID,
 			Label:           "OS credential store",
 			Backend:         string(backend),
 			Source:          config.EffectiveSecretsStoreSourceBuiltIn,
-			SelectionSource: SecretsProfileSelectionBuiltInOS,
+			SelectionSource: SecretsStoreSelectionBuiltInOS,
 		}, nil
 	}
 	store, ok := cfg.Secrets.Stores[storeID]
 	if !ok {
-		return ResolvedSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, storeID)
+		return ResolvedSecretsStore{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, storeID)
 	}
 	backend, err := credstore.ParseBackend(string(store.Backend.Kind))
 	if err != nil {
-		return ResolvedSecretsProfile{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
+		return ResolvedSecretsStore{}, fmt.Errorf("%w: %w", ErrInvalidBackendSelection, err)
 	}
 	label := strings.TrimSpace(store.DisplayName)
 	if label == "" {
 		label = storeID
 	}
-	return ResolvedSecretsProfile{
+	return ResolvedSecretsStore{
 		ID:              storeID,
 		Label:           label,
 		Backend:         string(backend),
 		Source:          config.EffectiveSecretsStoreSourceConfigured,
-		SelectionSource: SecretsProfileSelectionExplicit,
+		SelectionSource: SecretsStoreSelectionExplicit,
 	}, nil
 }
 
-// ResolveSecretsProfileForProfile resolves the effective credential store for
+// ResolveSecretsStoreForProfile resolves the effective credential store for
 // one review profile.
-func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (ResolvedSecretsProfile, error) {
-	if selection := strings.TrimSpace(profile.SecretsProfile); selection != "" {
+func ResolveSecretsStoreForProfile(cfg config.File, profile config.Profile) (ResolvedSecretsStore, error) {
+	if selection := strings.TrimSpace(profile.SecretsStore); selection != "" {
 		return ResolveCredentialStore(cfg, selection)
 	}
 	profile = config.Normalize(config.File{
@@ -321,53 +321,53 @@ func ResolveSecretsProfileForProfile(cfg config.File, profile config.Profile) (R
 	return ResolveCredentialStore(cfg, profile.Git.Credential.Store)
 }
 
-// ResolveSecretsProfileForRef resolves the effective credential store for a
+// ResolveSecretsStoreForRef resolves the effective credential store for a
 // low-level credential-name write/read, optionally narrowed by the global
 // --profile selection.
-func ResolveSecretsProfileForRef(cfg config.File, ref string, selectedProfile string) (ResolvedSecretsProfile, error) {
+func ResolveSecretsStoreForRef(cfg config.File, ref string, selectedProfile string) (ResolvedSecretsStore, error) {
 	selectedProfile = strings.TrimSpace(selectedProfile)
 	if selectedProfile != "" {
 		profile, ok := cfg.Profiles[selectedProfile]
 		if !ok {
-			return ResolvedSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, selectedProfile)
+			return ResolvedSecretsStore{}, fmt.Errorf("%w: %s", config.ErrProfileNotFound, selectedProfile)
 		}
 		matches := matchingCredentialRefs(profile, ref)
 		if len(matches) == 0 {
 			owners := profilesDeclaringCredentialRef(cfg, ref)
 			if len(owners) == 0 {
-				return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential name %q is not declared by selected profile %q", config.ErrInvalid, ref, selectedProfile)
+				return ResolvedSecretsStore{}, fmt.Errorf("%w: credential name %q is not declared by selected profile %q", config.ErrInvalid, ref, selectedProfile)
 			}
-			return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential name %q is not declared by selected profile %q; declared by %s", config.ErrInvalid, ref, selectedProfile, strings.Join(ownerNames(owners), ", "))
+			return ResolvedSecretsStore{}, fmt.Errorf("%w: credential name %q is not declared by selected profile %q; declared by %s", config.ErrInvalid, ref, selectedProfile, strings.Join(ownerNames(owners), ", "))
 		}
 		return ResolveCredentialStore(cfg, matches[0].Store)
 	}
 
 	owners := profilesDeclaringCredentialRef(cfg, ref)
 	if len(owners) == 0 {
-		return ResolvedSecretsProfile{}, fmt.Errorf("%w: credential name %q is not declared by any profile", config.ErrInvalid, ref)
+		return ResolvedSecretsStore{}, fmt.Errorf("%w: credential name %q is not declared by any profile", config.ErrInvalid, ref)
 	}
 	matches := matchingCredentialRefs(owners[0].Profile, ref)
 	resolved, err := ResolveCredentialStore(cfg, matches[0].Store)
 	if err != nil {
-		return ResolvedSecretsProfile{}, err
+		return ResolvedSecretsStore{}, err
 	}
 	for _, owner := range owners[1:] {
 		nextMatches := matchingCredentialRefs(owner.Profile, ref)
 		next, err := ResolveCredentialStore(cfg, nextMatches[0].Store)
 		if err != nil {
-			return ResolvedSecretsProfile{}, err
+			return ResolvedSecretsStore{}, err
 		}
 		if resolved.Equal(next) {
 			continue
 		}
-		return ResolvedSecretsProfile{}, ambiguousSecretsProfileError(ref, cfg, owners)
+		return ResolvedSecretsStore{}, ambiguousSecretsStoreError(ref, cfg, owners)
 	}
 	return resolved, nil
 }
 
 // StoreOptionsForResolvedStore builds credstore options for one resolved
 // credential store.
-func StoreOptionsForResolvedStore(flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (credstore.Options, error) {
+func StoreOptionsForResolvedStore(flagSet bool, cfg config.File, resolved ResolvedSecretsStore) (credstore.Options, error) {
 	if flagSet {
 		return credstore.Options{}, fmt.Errorf("%w: --backend conflicts with credential store %q", config.ErrInvalid, resolved.DisplayName())
 	}
@@ -397,7 +397,7 @@ func StoreOptionsForResolvedStore(flagSet bool, cfg config.File, resolved Resolv
 }
 
 // OpenResolvedStore opens the resolved service-scoped keyring store.
-func OpenResolvedStore(_ string, flagSet bool, cfg config.File, resolved ResolvedSecretsProfile) (*credstore.Store, error) {
+func OpenResolvedStore(_ string, flagSet bool, cfg config.File, resolved ResolvedSecretsStore) (*credstore.Store, error) {
 	opts, err := StoreOptionsForResolvedStore(flagSet, cfg, resolved)
 	if err != nil {
 		return nil, err
@@ -442,13 +442,13 @@ func OpenStore(flagValue string, flagSet bool, cfg config.File) (*credstore.Stor
 	return store, nil
 }
 
-func onePasswordOptionsFromConfig(backend config.SecretsProfileBackend) (*credstore.OnePasswordOptions, error) {
+func onePasswordOptionsFromConfig(backend config.SecretsStoreBackend) (*credstore.OnePasswordOptions, error) {
 	if !config.IsOnePasswordSecretsBackend(backend.Kind) {
 		return nil, nil
 	}
 	onePasswordCfg := backend.OnePassword
 	if onePasswordCfg == nil {
-		onePasswordCfg = &config.SecretsProfileOnePasswordConfig{}
+		onePasswordCfg = &config.SecretsStoreOnePasswordConfig{}
 	}
 	options := &credstore.OnePasswordOptions{
 		VaultID:          strings.TrimSpace(onePasswordCfg.VaultID),
@@ -493,10 +493,10 @@ func ownerNames(owners []credentialRefOwner) []string {
 	return names
 }
 
-func ambiguousSecretsProfileError(ref string, cfg config.File, owners []credentialRefOwner) error {
+func ambiguousSecretsStoreError(ref string, cfg config.File, owners []credentialRefOwner) error {
 	details := make([]string, 0, len(owners))
 	for _, owner := range owners {
-		resolved, err := ResolveSecretsProfileForProfile(cfg, owner.Profile)
+		resolved, err := ResolveSecretsStoreForProfile(cfg, owner.Profile)
 		if err != nil {
 			return err
 		}

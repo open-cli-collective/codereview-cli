@@ -465,137 +465,137 @@ func TestFirstProfileAndPruneHelpers(t *testing.T) {
 	}
 }
 
-func TestSecretsProfileHelpers(t *testing.T) {
+func TestSecretsStoreHelpers(t *testing.T) {
 	t.Run("set creates, updates, clears label, and preserves omitted fields", func(t *testing.T) {
 		cfg := testConfig()
-		backend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")}
+		backend := config.SecretsStoreBackend{Kind: config.SecretsBackendKind("keychain")}
 		label := " Personal Keychain "
-		updated, changed, created, err := configedit.SetSecretsProfile(cfg, " personal ", configedit.SecretsProfilePatch{
+		updated, changed, created, err := configedit.SetSecretsStore(cfg, " personal ", configedit.SecretsStorePatch{
 			Backend: &backend,
 			Label:   &label,
 		})
 		if err != nil {
-			t.Fatalf("SetSecretsProfile create: %v", err)
+			t.Fatalf("SetSecretsStore create: %v", err)
 		}
 		if !changed || !created {
-			t.Fatalf("SetSecretsProfile create = changed:%t created:%t, want true,true", changed, created)
+			t.Fatalf("SetSecretsStore create = changed:%t created:%t, want true,true", changed, created)
 		}
-		got := updated.Secrets.Profiles["personal"]
+		got := updated.Secrets.Stores["personal"]
 		if got.Label != "Personal Keychain" || got.Backend.Kind != backend.Kind {
 			t.Fatalf("created profile = %#v, want trimmed label + backend", got)
 		}
-		if len(cfg.Secrets.Profiles) != 0 {
-			t.Fatalf("original cfg mutated on create: %#v", cfg.Secrets.Profiles)
+		if len(cfg.Secrets.Stores) != 0 {
+			t.Fatalf("original cfg mutated on create: %#v", cfg.Secrets.Stores)
 		}
 
-		nextBackend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")}
-		updated2, changed, created, err := configedit.SetSecretsProfile(updated, "personal", configedit.SecretsProfilePatch{
+		nextBackend := config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")}
+		updated2, changed, created, err := configedit.SetSecretsStore(updated, "personal", configedit.SecretsStorePatch{
 			Backend: &nextBackend,
 		})
 		if err != nil {
-			t.Fatalf("SetSecretsProfile backend update: %v", err)
+			t.Fatalf("SetSecretsStore backend update: %v", err)
 		}
 		if !changed || created {
-			t.Fatalf("SetSecretsProfile backend update = changed:%t created:%t, want true,false", changed, created)
+			t.Fatalf("SetSecretsStore backend update = changed:%t created:%t, want true,false", changed, created)
 		}
-		got = updated2.Secrets.Profiles["personal"]
+		got = updated2.Secrets.Stores["personal"]
 		if got.Label != "Personal Keychain" || got.Backend.Kind != nextBackend.Kind {
 			t.Fatalf("updated profile = %#v, want preserved label + new backend", got)
 		}
 
-		updated3, changed, created, err := configedit.SetSecretsProfile(updated2, "personal", configedit.SecretsProfilePatch{
+		updated3, changed, created, err := configedit.SetSecretsStore(updated2, "personal", configedit.SecretsStorePatch{
 			ClearLabel: true,
 		})
 		if err != nil {
-			t.Fatalf("SetSecretsProfile clear label: %v", err)
+			t.Fatalf("SetSecretsStore clear label: %v", err)
 		}
 		if !changed || created {
-			t.Fatalf("SetSecretsProfile clear label = changed:%t created:%t, want true,false", changed, created)
+			t.Fatalf("SetSecretsStore clear label = changed:%t created:%t, want true,false", changed, created)
 		}
-		if got := updated3.Secrets.Profiles["personal"]; got.Label != "" || got.Backend.Kind != nextBackend.Kind {
+		if got := updated3.Secrets.Stores["personal"]; got.Label != "" || got.Backend.Kind != nextBackend.Kind {
 			t.Fatalf("cleared label profile = %#v, want empty label + preserved backend", got)
 		}
 	})
 
 	t.Run("set replaces 1password backend payloads", func(t *testing.T) {
 		cfg := testConfig()
-		backend := config.SecretsProfileBackend{
+		backend := config.SecretsStoreBackend{
 			Kind: config.SecretsBackendKind("op-connect"),
-			OnePassword: &config.SecretsProfileOnePasswordConfig{
+			OnePassword: &config.SecretsStoreOnePasswordConfig{
 				VaultID:         "vault-123",
 				ConnectHost:     "https://connect.example",
 				ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
 			},
 		}
-		updated, changed, created, err := configedit.SetSecretsProfile(cfg, "work-op", configedit.SecretsProfilePatch{Backend: &backend})
+		updated, changed, created, err := configedit.SetSecretsStore(cfg, "work-op", configedit.SecretsStorePatch{Backend: &backend})
 		if err != nil {
-			t.Fatalf("SetSecretsProfile 1password create: %v", err)
+			t.Fatalf("SetSecretsStore 1password create: %v", err)
 		}
 		if !changed || !created {
-			t.Fatalf("SetSecretsProfile 1password create = changed:%t created:%t, want true,true", changed, created)
+			t.Fatalf("SetSecretsStore 1password create = changed:%t created:%t, want true,true", changed, created)
 		}
-		got := updated.Secrets.Profiles["work-op"]
+		got := updated.Secrets.Stores["work-op"]
 		if got.Backend.OnePassword == nil || got.Backend.OnePassword.ConnectHost != "https://connect.example" {
 			t.Fatalf("created 1password profile = %#v, want connect host payload", got)
 		}
 
-		replacement := config.SecretsProfileBackend{
+		replacement := config.SecretsStoreBackend{
 			Kind: config.SecretsBackendKind("op"),
-			OnePassword: &config.SecretsProfileOnePasswordConfig{
+			OnePassword: &config.SecretsStoreOnePasswordConfig{
 				VaultID:         "vault-123",
 				ServiceTokenEnv: "CUSTOM_SERVICE_TOKEN",
 			},
 		}
-		updated, changed, created, err = configedit.SetSecretsProfile(updated, "work-op", configedit.SecretsProfilePatch{Backend: &replacement})
+		updated, changed, created, err = configedit.SetSecretsStore(updated, "work-op", configedit.SecretsStorePatch{Backend: &replacement})
 		if err != nil {
-			t.Fatalf("SetSecretsProfile 1password replace: %v", err)
+			t.Fatalf("SetSecretsStore 1password replace: %v", err)
 		}
 		if !changed || created {
-			t.Fatalf("SetSecretsProfile 1password replace = changed:%t created:%t, want true,false", changed, created)
+			t.Fatalf("SetSecretsStore 1password replace = changed:%t created:%t, want true,false", changed, created)
 		}
-		got = updated.Secrets.Profiles["work-op"]
+		got = updated.Secrets.Stores["work-op"]
 		if got.Backend.OnePassword == nil || got.Backend.OnePassword.ServiceTokenEnv != "CUSTOM_SERVICE_TOKEN" {
 			t.Fatalf("replaced 1password profile = %#v, want service token env payload", got)
 		}
 
-		downgraded := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("file")}
-		updated, changed, created, err = configedit.SetSecretsProfile(updated, "work-op", configedit.SecretsProfilePatch{Backend: &downgraded})
+		downgraded := config.SecretsStoreBackend{Kind: config.SecretsBackendKind("file")}
+		updated, changed, created, err = configedit.SetSecretsStore(updated, "work-op", configedit.SecretsStorePatch{Backend: &downgraded})
 		if err != nil {
-			t.Fatalf("SetSecretsProfile 1password downgrade: %v", err)
+			t.Fatalf("SetSecretsStore 1password downgrade: %v", err)
 		}
 		if !changed || created {
-			t.Fatalf("SetSecretsProfile 1password downgrade = changed:%t created:%t, want true,false", changed, created)
+			t.Fatalf("SetSecretsStore 1password downgrade = changed:%t created:%t, want true,false", changed, created)
 		}
-		got = updated.Secrets.Profiles["work-op"]
+		got = updated.Secrets.Stores["work-op"]
 		if got.Backend.Kind != "file" || got.Backend.OnePassword != nil {
 			t.Fatalf("downgraded profile = %#v, want file backend without 1password payload", got)
 		}
 	})
 
 	t.Run("set allows stores before review profiles exist", func(t *testing.T) {
-		backend := config.SecretsProfileBackend{
+		backend := config.SecretsStoreBackend{
 			Kind: config.SecretsBackendKind("op-desktop"),
-			OnePassword: &config.SecretsProfileOnePasswordConfig{
+			OnePassword: &config.SecretsStoreOnePasswordConfig{
 				AccountURL: "my.1password.com",
 				VaultID:    "vault-private",
 				VaultName:  "Private",
 			},
 		}
 		label := "1Password-Personal"
-		updated, changed, created, err := configedit.SetSecretsProfile(config.File{}, "1password-personal", configedit.SecretsProfilePatch{
+		updated, changed, created, err := configedit.SetSecretsStore(config.File{}, "1password-personal", configedit.SecretsStorePatch{
 			Backend: &backend,
 			Label:   &label,
 		})
 		if err != nil {
-			t.Fatalf("SetSecretsProfile store-only create: %v", err)
+			t.Fatalf("SetSecretsStore store-only create: %v", err)
 		}
 		if !changed || !created {
-			t.Fatalf("SetSecretsProfile store-only create = changed:%t created:%t, want true,true", changed, created)
+			t.Fatalf("SetSecretsStore store-only create = changed:%t created:%t, want true,true", changed, created)
 		}
 		if len(updated.Profiles) != 0 {
 			t.Fatalf("updated config unexpectedly added review profile data: %#v", updated)
 		}
-		got := updated.Secrets.Profiles["1password-personal"]
+		got := updated.Secrets.Stores["1password-personal"]
 		if got.Label != "1Password-Personal" || got.Backend.OnePassword == nil || got.Backend.OnePassword.VaultName != "Private" {
 			t.Fatalf("created store = %#v, want named 1Password store", got)
 		}
@@ -603,79 +603,79 @@ func TestSecretsProfileHelpers(t *testing.T) {
 
 	t.Run("set validates edge cases", func(t *testing.T) {
 		cfg := testConfig()
-		backend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("keychain")}
+		backend := config.SecretsStoreBackend{Kind: config.SecretsBackendKind("keychain")}
 		label := "name"
 		spaceLabel := "   "
 		tests := []struct {
 			name  string
 			id    string
-			patch configedit.SecretsProfilePatch
+			patch configedit.SecretsStorePatch
 			want  error
 		}{
-			{name: "missing id", id: " ", patch: configedit.SecretsProfilePatch{Backend: &backend}, want: configedit.ErrSecretsProfileIDRequired},
-			{name: "reserved id", id: config.LocalOSCredentialStoreID, patch: configedit.SecretsProfilePatch{Backend: &backend}, want: configedit.ErrSecretsProfileReserved},
-			{name: "create missing backend", id: "personal", patch: configedit.SecretsProfilePatch{}, want: configedit.ErrSecretsProfileBackendRequired},
-			{name: "conflicting label flags", id: "personal", patch: configedit.SecretsProfilePatch{Backend: &backend, Label: &label, ClearLabel: true}, want: configedit.ErrSecretsProfileLabelConflict},
-			{name: "blank label", id: "personal", patch: configedit.SecretsProfilePatch{Backend: &backend, Label: &spaceLabel}, want: configedit.ErrSecretsProfileLabelRequired},
+			{name: "missing id", id: " ", patch: configedit.SecretsStorePatch{Backend: &backend}, want: configedit.ErrSecretsStoreIDRequired},
+			{name: "reserved id", id: config.LocalOSCredentialStoreID, patch: configedit.SecretsStorePatch{Backend: &backend}, want: configedit.ErrSecretsStoreReserved},
+			{name: "create missing backend", id: "personal", patch: configedit.SecretsStorePatch{}, want: configedit.ErrSecretsStoreBackendRequired},
+			{name: "conflicting label flags", id: "personal", patch: configedit.SecretsStorePatch{Backend: &backend, Label: &label, ClearLabel: true}, want: configedit.ErrSecretsStoreLabelConflict},
+			{name: "blank label", id: "personal", patch: configedit.SecretsStorePatch{Backend: &backend, Label: &spaceLabel}, want: configedit.ErrSecretsStoreLabelRequired},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				_, _, _, err := configedit.SetSecretsProfile(cfg, tt.id, tt.patch)
+				_, _, _, err := configedit.SetSecretsStore(cfg, tt.id, tt.patch)
 				if !errors.Is(err, tt.want) {
-					t.Fatalf("SetSecretsProfile error = %v, want %v", err, tt.want)
+					t.Fatalf("SetSecretsStore error = %v, want %v", err, tt.want)
 				}
 			})
 		}
 
-		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
-			"personal": {Backend: config.SecretsProfileBackend{Kind: backend.Kind}},
+		cfg.Secrets.Stores = map[string]config.SecretsStore{
+			"personal": {Backend: config.SecretsStoreBackend{Kind: backend.Kind}},
 		}
-		_, _, _, err := configedit.SetSecretsProfile(cfg, "personal", configedit.SecretsProfilePatch{})
-		if !errors.Is(err, configedit.ErrSecretsProfileMutationRequired) {
-			t.Fatalf("SetSecretsProfile update without flags error = %v, want ErrSecretsProfileMutationRequired", err)
+		_, _, _, err := configedit.SetSecretsStore(cfg, "personal", configedit.SecretsStorePatch{})
+		if !errors.Is(err, configedit.ErrSecretsStoreMutationRequired) {
+			t.Fatalf("SetSecretsStore update without flags error = %v, want ErrSecretsStoreMutationRequired", err)
 		}
 
 		cfg = testConfig()
-		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
-			"personal": {Backend: config.SecretsProfileBackend{Kind: backend.Kind}},
+		cfg.Secrets.Stores = map[string]config.SecretsStore{
+			"personal": {Backend: config.SecretsStoreBackend{Kind: backend.Kind}},
 		}
-		invalidBackend := config.SecretsProfileBackend{Kind: config.SecretsBackendKind("bogus")}
-		before := cfg.Secrets.Profiles["personal"]
-		_, _, _, err = configedit.SetSecretsProfile(cfg, "personal", configedit.SecretsProfilePatch{Backend: &invalidBackend})
+		invalidBackend := config.SecretsStoreBackend{Kind: config.SecretsBackendKind("bogus")}
+		before := cfg.Secrets.Stores["personal"]
+		_, _, _, err = configedit.SetSecretsStore(cfg, "personal", configedit.SecretsStorePatch{Backend: &invalidBackend})
 		if !errors.Is(err, config.ErrInvalid) {
-			t.Fatalf("SetSecretsProfile invalid backend error = %v, want ErrInvalid", err)
+			t.Fatalf("SetSecretsStore invalid backend error = %v, want ErrInvalid", err)
 		}
-		if after := cfg.Secrets.Profiles["personal"]; !reflect.DeepEqual(after, before) {
+		if after := cfg.Secrets.Stores["personal"]; !reflect.DeepEqual(after, before) {
 			t.Fatalf("original cfg mutated on failed update: got %#v want %#v", after, before)
 		}
 	})
 
 	t.Run("remove is idempotent but blocks reserved id", func(t *testing.T) {
 		cfg := testConfig()
-		cfg.Secrets.Profiles = map[string]config.SecretsProfile{
-			"work": {Backend: config.SecretsProfileBackend{Kind: "file"}},
+		cfg.Secrets.Stores = map[string]config.SecretsStore{
+			"work": {Backend: config.SecretsStoreBackend{Kind: "file"}},
 		}
-		_, _, err := configedit.RemoveSecretsProfile(cfg, config.LocalOSCredentialStoreID)
-		if !errors.Is(err, configedit.ErrSecretsProfileReserved) {
-			t.Fatalf("RemoveSecretsProfile reserved error = %v, want ErrSecretsProfileReserved", err)
+		_, _, err := configedit.RemoveSecretsStore(cfg, config.LocalOSCredentialStoreID)
+		if !errors.Is(err, configedit.ErrSecretsStoreReserved) {
+			t.Fatalf("RemoveSecretsStore reserved error = %v, want ErrSecretsStoreReserved", err)
 		}
 
-		updated, changed, err := configedit.RemoveSecretsProfile(cfg, "work")
+		updated, changed, err := configedit.RemoveSecretsStore(cfg, "work")
 		if err != nil {
-			t.Fatalf("RemoveSecretsProfile existing: %v", err)
+			t.Fatalf("RemoveSecretsStore existing: %v", err)
 		}
-		if !changed || len(updated.Secrets.Profiles) != 0 {
-			t.Fatalf("RemoveSecretsProfile existing = changed:%t profiles:%#v, want true/empty", changed, updated.Secrets.Profiles)
+		if !changed || len(updated.Secrets.Stores) != 0 {
+			t.Fatalf("RemoveSecretsStore existing = changed:%t profiles:%#v, want true/empty", changed, updated.Secrets.Stores)
 		}
-		if len(cfg.Secrets.Profiles) != 1 {
-			t.Fatalf("original cfg mutated on remove: %#v", cfg.Secrets.Profiles)
+		if len(cfg.Secrets.Stores) != 1 {
+			t.Fatalf("original cfg mutated on remove: %#v", cfg.Secrets.Stores)
 		}
-		updated, changed, err = configedit.RemoveSecretsProfile(updated, "work")
+		updated, changed, err = configedit.RemoveSecretsStore(updated, "work")
 		if err != nil {
-			t.Fatalf("RemoveSecretsProfile idempotent: %v", err)
+			t.Fatalf("RemoveSecretsStore idempotent: %v", err)
 		}
 		if changed {
-			t.Fatalf("RemoveSecretsProfile idempotent changed = %t, want false", changed)
+			t.Fatalf("RemoveSecretsStore idempotent changed = %t, want false", changed)
 		}
 	})
 }

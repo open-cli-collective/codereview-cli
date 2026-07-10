@@ -495,7 +495,7 @@ func applyRepositoryAccessCredentialDraftFromDocument(draft *initDraft, ctx init
 	}
 	draft.GitCredentialWriteRef = ref
 	draft.GitCredentialStore = initCredentialStoreDraftValue(status.Ref.Store)
-	draft.GitCredentialWriteStore = status.SecretsProfile
+	draft.GitCredentialWriteStore = status.SecretsStore
 	draft.GitCredentialWrites = writes
 	draft.GitCredentialOverwrite = overwrite
 	draft.GitCredentialSatisfied = repositoryAccessKeepsCurrentCredentialRef(ctx, document) || len(missingRepositoryAccessInlineCredentialKeys(ctx, status, document)) == 0

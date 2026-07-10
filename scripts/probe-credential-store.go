@@ -19,12 +19,12 @@ import (
 func main() {
 	var configPath string
 	var reviewProfile string
-	var secretsProfile string
+	var secretsStore string
 	var ref string
 	var keep bool
 	flag.StringVar(&configPath, "config", "", "cr config path; defaults to the standard cr config path")
 	flag.StringVar(&reviewProfile, "profile", "", "review profile whose resolved secrets-management profile should be probed")
-	flag.StringVar(&secretsProfile, "secrets-profile", "", "configured secrets-management profile id to probe directly")
+	flag.StringVar(&secretsStore, "secrets-profile", "", "configured secrets-management profile id to probe directly")
 	flag.StringVar(&ref, "ref", "", "temporary credential ref to write; defaults to codereview/probe-<timestamp>")
 	flag.BoolVar(&keep, "keep", false, "leave the probe credential behind instead of deleting it")
 	flag.Parse()
@@ -37,7 +37,7 @@ func main() {
 	cfg, err := config.Load(configPath)
 	fatalIf(err, "load config")
 
-	resolved, err := resolveProbeSecretsProfile(cfg, reviewProfile, secretsProfile)
+	resolved, err := resolveProbeSecretsStore(cfg, reviewProfile, secretsStore)
 	fatalIf(err, "resolve secrets-management profile")
 
 	if ref == "" {
@@ -78,34 +78,34 @@ func main() {
 	fmt.Printf("OK: wrote, read, and deleted probe credential\n")
 }
 
-func resolveProbeSecretsProfile(cfg config.File, reviewProfile string, secretsProfile string) (credentials.ResolvedSecretsProfile, error) {
-	if strings.TrimSpace(secretsProfile) != "" {
-		query := strings.TrimSpace(secretsProfile)
-		profile, ok := cfg.Secrets.Profiles[query]
+func resolveProbeSecretsStore(cfg config.File, reviewProfile string, secretsStore string) (credentials.ResolvedSecretsStore, error) {
+	if strings.TrimSpace(secretsStore) != "" {
+		query := strings.TrimSpace(secretsStore)
+		profile, ok := cfg.Secrets.Stores[query]
 		if ok {
-			return resolvedProbeSecretsProfile(query, profile), nil
+			return resolvedProbeSecretsStore(query, profile), nil
 		}
-		matches := matchingProbeSecretsProfiles(cfg, query)
+		matches := matchingProbeSecretsStores(cfg, query)
 		if len(matches) == 1 {
 			profileID := matches[0]
-			return resolvedProbeSecretsProfile(profileID, cfg.Secrets.Profiles[profileID]), nil
+			return resolvedProbeSecretsStore(profileID, cfg.Secrets.Stores[profileID]), nil
 		}
 		if len(matches) > 1 {
-			return credentials.ResolvedSecretsProfile{}, fmt.Errorf("%w: %s matched multiple secrets-management profiles: %s", config.ErrSecretsProfileNotFound, query, strings.Join(matches, ", "))
+			return credentials.ResolvedSecretsStore{}, fmt.Errorf("%w: %s matched multiple secrets-management profiles: %s", config.ErrSecretsStoreNotFound, query, strings.Join(matches, ", "))
 		}
-		return credentials.ResolvedSecretsProfile{}, fmt.Errorf("%w: %s\nconfigured secrets-management profiles: %s", config.ErrSecretsProfileNotFound, query, availableProbeSecretsProfiles(cfg))
+		return credentials.ResolvedSecretsStore{}, fmt.Errorf("%w: %s\nconfigured secrets-management profiles: %s", config.ErrSecretsStoreNotFound, query, availableProbeSecretsStores(cfg))
 	}
 	_, profile, err := config.ResolveProfile(cfg, reviewProfile)
 	if err != nil {
-		return credentials.ResolvedSecretsProfile{}, err
+		return credentials.ResolvedSecretsStore{}, err
 	}
-	return credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	return credentials.ResolveSecretsStoreForProfile(cfg, profile)
 }
 
-func matchingProbeSecretsProfiles(cfg config.File, query string) []string {
+func matchingProbeSecretsStores(cfg config.File, query string) []string {
 	query = strings.TrimSpace(query)
 	var matches []string
-	for id, profile := range cfg.Secrets.Profiles {
+	for id, profile := range cfg.Secrets.Stores {
 		if strings.EqualFold(id, query) || strings.EqualFold(strings.TrimSpace(profile.Label), query) {
 			matches = append(matches, id)
 		}
@@ -114,28 +114,28 @@ func matchingProbeSecretsProfiles(cfg config.File, query string) []string {
 	return matches
 }
 
-func resolvedProbeSecretsProfile(id string, profile config.SecretsProfile) credentials.ResolvedSecretsProfile {
-	return credentials.ResolvedSecretsProfile{
+func resolvedProbeSecretsStore(id string, profile config.SecretsStore) credentials.ResolvedSecretsStore {
+	return credentials.ResolvedSecretsStore{
 		ID:              id,
 		Label:           strings.TrimSpace(profile.Label),
 		Backend:         string(profile.Backend.Kind),
-		Source:          config.EffectiveSecretsProfileSourceConfigured,
-		SelectionSource: credentials.SecretsProfileSelectionExplicit,
+		Source:          config.EffectiveSecretsStoreSourceConfigured,
+		SelectionSource: credentials.SecretsStoreSelectionExplicit,
 	}
 }
 
-func availableProbeSecretsProfiles(cfg config.File) string {
-	if len(cfg.Secrets.Profiles) == 0 {
+func availableProbeSecretsStores(cfg config.File) string {
+	if len(cfg.Secrets.Stores) == 0 {
 		return "none configured"
 	}
-	ids := make([]string, 0, len(cfg.Secrets.Profiles))
-	for id := range cfg.Secrets.Profiles {
+	ids := make([]string, 0, len(cfg.Secrets.Stores))
+	for id := range cfg.Secrets.Stores {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	items := make([]string, 0, len(ids))
 	for _, id := range ids {
-		profile := cfg.Secrets.Profiles[id]
+		profile := cfg.Secrets.Stores[id]
 		label := strings.TrimSpace(profile.Label)
 		if label != "" {
 			items = append(items, fmt.Sprintf("%s (%s, backend %s)", id, label, profile.Backend.Kind))

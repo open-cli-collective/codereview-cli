@@ -2950,7 +2950,7 @@ func TestInitInteractivePromptDrivenFlowStillExportsReviewerNilAfterDraftInvento
 		},
 		saveConfig: func(string, config.File) error { return nil },
 
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(map[string]map[string]string{
 				"office-git": {credentials.GitTokenKey: "existing-token"},
 			}), nil
@@ -3023,7 +3023,7 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 			return nil
 		},
 
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(map[string]map[string]string{
 				"office-git": {
 					credentials.GitTokenKey: "existing-git-token",
@@ -3097,7 +3097,7 @@ func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T
 			t.Fatal("clipboard should not be read")
 			return "", nil
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
 	}
@@ -3126,17 +3126,17 @@ func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T
 func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts(t *testing.T) {
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"team-vault": {
 					Label:   "Team Vault",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "team-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "team-vault"})
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 	refs := []config.CredentialRef{
 		{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
@@ -3151,7 +3151,7 @@ func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts
 		}
 		entries = append(entries, initCredentialPlanEntry{
 			Ref:                 ref,
-			SecretsProfile:      resolved,
+			SecretsStore:        resolved,
 			KeySpecs:            specs,
 			MissingRequiredKeys: initCredentialRequiredKeys(initCredentialPlanEntry{KeySpecs: specs}),
 			State:               initCredentialPlanStateMissingRequired,
@@ -3171,7 +3171,7 @@ func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts
 		pastes: []string{"git-token", "llm-key", "reviewer-token"},
 	}
 	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return false },
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
 	}, initWorkspaceDraft{
@@ -3216,12 +3216,12 @@ func TestCollectInteractiveInitSecretsDestinationUsesRawRuntimeBackend(t *testin
 		cfg: config.File{},
 		credentialPlan: []initCredentialPlanEntry{{
 			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
-			SecretsProfile: credentials.ResolvedSecretsProfile{
+			SecretsStore: credentials.ResolvedSecretsStore{
 				ID:              config.LocalOSCredentialStoreID,
 				Label:           "OS credential store",
 				Backend:         config.ProjectedOSCredentialStoreBackendKind,
-				Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-				SelectionSource: credentials.SecretsProfileSelectionBuiltInOS,
+				Source:          config.EffectiveSecretsStoreSourceBuiltIn,
+				SelectionSource: credentials.SecretsStoreSelectionBuiltInOS,
 			},
 			KeySpecs:            []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
 			MissingRequiredKeys: []string{credentials.GitTokenKey},
@@ -3255,12 +3255,12 @@ func TestCollectInteractiveInitSecretsDestinationUsesInferredDefaultBackend(t *t
 		cfg: config.File{},
 		credentialPlan: []initCredentialPlanEntry{{
 			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
-			SecretsProfile: credentials.ResolvedSecretsProfile{
+			SecretsStore: credentials.ResolvedSecretsStore{
 				ID:              config.LocalOSCredentialStoreID,
 				Label:           "OS credential store",
 				Backend:         config.ProjectedOSCredentialStoreBackendKind,
-				Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-				SelectionSource: credentials.SecretsProfileSelectionBuiltInOS,
+				Source:          config.EffectiveSecretsStoreSourceBuiltIn,
+				SelectionSource: credentials.SecretsStoreSelectionBuiltInOS,
 			},
 			KeySpecs:            []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
 			MissingRequiredKeys: []string{credentials.GitTokenKey},
@@ -3297,7 +3297,7 @@ func TestCollectInteractiveInitSecretsSourceBackReturnsToCredentialChoices(t *te
 			t.Fatal("clipboard should not be read")
 			return "", nil
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
 	}, testInitSecretWorkspace())
@@ -3328,7 +3328,7 @@ func TestCollectInteractiveInitSecretsPasteBackReturnsToSourceChoices(t *testing
 			clipboardReads++
 			return "clipboard-token", nil
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
 	}, testInitSecretWorkspace())
@@ -3367,7 +3367,7 @@ func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScrat
 			t.Fatal("clipboard should not be read")
 			return "", nil
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
 	}, testInitMultiKeySecretWorkspace())
@@ -3385,13 +3385,13 @@ func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScrat
 	}
 }
 
-func TestCollectInteractiveInitSecretsMapsNamedSecretsProfileOpenConflictAsConfigError(t *testing.T) {
+func TestCollectInteractiveInitSecretsMapsNamedSecretsStoreOpenConflictAsConfigError(t *testing.T) {
 	workspace := testInitSecretWorkspace()
-	workspace.credentialPlan[0].SecretsProfile = credentials.ResolvedSecretsProfile{
+	workspace.credentialPlan[0].SecretsStore = credentials.ResolvedSecretsStore{
 		ID:      "work-file",
 		Label:   "Work File Store",
 		Backend: string(credstore.BackendFile),
-		Source:  config.EffectiveSecretsProfileSourceConfigured,
+		Source:  config.EffectiveSecretsStoreSourceConfigured,
 	}
 	workspace.backendFlagSet = true
 	prompter := &fakeInitSecretPrompter{
@@ -3407,7 +3407,7 @@ func TestCollectInteractiveInitSecretsMapsNamedSecretsProfileOpenConflictAsConfi
 			t.Fatal("legacy openStore should not be used for configured credential stores")
 			return nil, nil
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return nil, fmt.Errorf("%w: configured credential store conflict", config.ErrInvalid)
 		},
 	}, workspace)
@@ -3419,7 +3419,7 @@ func TestCollectInteractiveInitSecretsMapsNamedSecretsProfileOpenConflictAsConfi
 	}
 }
 
-func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsProfileLoadConflictAsConfigError(t *testing.T) {
+func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsStoreLoadConflictAsConfigError(t *testing.T) {
 	plan := initSessionPlan{
 		cfg: config.File{},
 		credentialPlan: []initCredentialPlanEntry{{
@@ -3429,11 +3429,11 @@ func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsProfileLoadConflict
 				Mode:    string(config.GitAuthModePAT),
 			},
 			State: initCredentialPlanStateMissingRequired,
-			SecretsProfile: credentials.ResolvedSecretsProfile{
+			SecretsStore: credentials.ResolvedSecretsStore{
 				ID:      "work-file",
 				Label:   "Work File Store",
 				Backend: string(credstore.BackendFile),
-				Source:  config.EffectiveSecretsProfileSourceConfigured,
+				Source:  config.EffectiveSecretsStoreSourceConfigured,
 			},
 		}},
 	}
@@ -3443,7 +3443,7 @@ func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsProfileLoadConflict
 			t.Fatal("legacy openStore should not be used for configured credential stores")
 			return nil, nil
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return nil, fmt.Errorf("%w: configured credential store conflict", config.ErrInvalid)
 		},
 	}, plan)
@@ -3455,15 +3455,15 @@ func TestCollectInteractiveInitSessionSecretsMapsNamedSecretsProfileLoadConflict
 	}
 }
 
-func TestMergeInteractiveInitSessionPlanEntryRejectsSameRefAcrossDifferentSecretsProfiles(t *testing.T) {
+func TestMergeInteractiveInitSessionPlanEntryRejectsSameRefAcrossDifferentSecretsStores(t *testing.T) {
 	entriesByKey := map[string]initCredentialPlanEntry{}
 	first := initCredentialPlanEntry{
 		Ref:   config.CredentialRef{Purpose: "git", Ref: "codereview/shared", Mode: string(config.GitAuthModePAT)},
 		State: initCredentialPlanStateMissingRequired,
-		SecretsProfile: credentials.ResolvedSecretsProfile{
+		SecretsStore: credentials.ResolvedSecretsStore{
 			ID:      "personal-memory",
 			Backend: string(credstore.BackendMemory),
-			Source:  config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsStoreSourceConfigured,
 		},
 	}
 	if err := mergeInteractiveInitSessionPlanEntry(entriesByKey, first); err != nil {
@@ -3473,10 +3473,10 @@ func TestMergeInteractiveInitSessionPlanEntryRejectsSameRefAcrossDifferentSecret
 	err := mergeInteractiveInitSessionPlanEntry(entriesByKey, initCredentialPlanEntry{
 		Ref:   config.CredentialRef{Purpose: "git", Ref: "codereview/shared", Mode: string(config.GitAuthModePAT)},
 		State: initCredentialPlanStateMissingRequired,
-		SecretsProfile: credentials.ResolvedSecretsProfile{
+		SecretsStore: credentials.ResolvedSecretsStore{
 			ID:      "work-file",
 			Backend: string(credstore.BackendFile),
-			Source:  config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsStoreSourceConfigured,
 		},
 	})
 	if !errors.Is(err, config.ErrInvalid) {
@@ -5841,10 +5841,10 @@ func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *te
 	t.Setenv("TERM", "dumb")
 	draft := seedInteractiveInitDraft("work", "work", nil)
 	draft.ReviewerCredentialStore = "work-file"
-	resolved := credentials.ResolvedSecretsProfile{
+	resolved := credentials.ResolvedSecretsStore{
 		ID:      "work-file",
 		Label:   "Work file",
-		Source:  config.EffectiveSecretsProfileSourceConfigured,
+		Source:  config.EffectiveSecretsStoreSourceConfigured,
 		Backend: string(credstore.BackendFile),
 	}
 	ctx := initPromptContext{
@@ -5865,7 +5865,7 @@ func TestHuhInitReviewerEntityDetailsPreservesPromptContextCredentialStore(t *te
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModeGitHubApp),
 			},
-			SecretsProfile: resolved,
+			SecretsStore: resolved,
 			Keys: []initReviewerCredentialKeyStatus{
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true, State: initReviewerCredentialKeyMissing},
 			},
@@ -6117,7 +6117,7 @@ func TestValidateInteractiveInitConfigDoesNotMaskUnrelatedInvalidState(t *testin
 	}
 }
 
-func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T) {
+func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsStore(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	var stderr bytes.Buffer
 	prompter := huhInitSecretPrompter{
@@ -6127,11 +6127,11 @@ func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T
 	_, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
 		Entry: initCredentialPlanEntry{
 			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
-			SecretsProfile: credentials.ResolvedSecretsProfile{
+			SecretsStore: credentials.ResolvedSecretsStore{
 				ID:      "team-vault",
 				Label:   "Team Vault",
 				Backend: string(credstore.BackendFile),
-				Source:  config.EffectiveSecretsProfileSourceConfigured,
+				Source:  config.EffectiveSecretsStoreSourceConfigured,
 			},
 		},
 	})
@@ -6143,18 +6143,18 @@ func TestHuhInitSecretPrompterAccessibleNamesSelectedSecretsProfile(t *testing.T
 	}
 }
 
-func TestWriteInitCredentialPlanHintsNamesSelectedSecretsProfile(t *testing.T) {
+func TestWriteInitCredentialPlanHintsNamesSelectedSecretsStore(t *testing.T) {
 	var out bytes.Buffer
 	err := writeInitCredentialPlanHints(&out, "", initCredentialPlanEntry{
 		Ref: config.CredentialRef{
 			Purpose: "git",
 			Ref:     "codereview/work",
 		},
-		SecretsProfile: credentials.ResolvedSecretsProfile{
+		SecretsStore: credentials.ResolvedSecretsStore{
 			ID:      "team-vault",
 			Label:   "Team Vault",
 			Backend: string(credstore.BackendFile),
-			Source:  config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsStoreSourceConfigured,
 		},
 		KeySpecs: []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}},
 	})
@@ -6166,14 +6166,14 @@ func TestWriteInitCredentialPlanHintsNamesSelectedSecretsProfile(t *testing.T) {
 	}
 }
 
-func TestInitCredentialReadinessNoteNamesSelectedSecretsProfile(t *testing.T) {
+func TestInitCredentialReadinessNoteNamesSelectedSecretsStore(t *testing.T) {
 	note := initCredentialReadinessNote(initCredentialPlanEntry{
 		Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
-		SecretsProfile: credentials.ResolvedSecretsProfile{
+		SecretsStore: credentials.ResolvedSecretsStore{
 			ID:      "team-vault",
 			Label:   "Team Vault",
 			Backend: string(credstore.BackendFile),
-			Source:  config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsStoreSourceConfigured,
 		},
 		State: initCredentialPlanStateDefer,
 	})
@@ -6253,64 +6253,64 @@ func TestInitProfileReadinessLineIncludesNotes(t *testing.T) {
 	}
 }
 
-func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileSelection(t *testing.T) {
+func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsStoreSelection(t *testing.T) {
 	cfg := config.Normalize(config.File{
 		Profiles: map[string]config.Profile{
 			"work": func() config.Profile {
 				profile := basicProfile("work")
-				profile.SecretsProfile = "missing-vault"
+				profile.SecretsStore = "missing-vault"
 				return profile
 			}(),
 		},
 	})
 	profile := cfg.Profiles["work"]
 	draft := seedInteractiveInitDraft("work", "work", &profile)
-	draft.SecretsProfile = ""
+	draft.SecretsStore = ""
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
 	if err != nil {
 		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
 	}
-	if got := workspace.profile.SecretsProfile; got != "" {
-		t.Fatalf("workspace.profile.SecretsProfile = %q, want cleared explicit selection", got)
+	if got := workspace.profile.SecretsStore; got != "" {
+		t.Fatalf("workspace.profile.SecretsStore = %q, want cleared explicit selection", got)
 	}
 }
 
-func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsProfileToConfiguredProfile(t *testing.T) {
+func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsStoreToConfiguredProfile(t *testing.T) {
 	cfg := config.Normalize(config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"team-vault": {
 					Label:   "Team Vault",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 		Profiles: map[string]config.Profile{
 			"work": func() config.Profile {
 				profile := basicProfile("work")
-				profile.SecretsProfile = "missing-vault"
+				profile.SecretsStore = "missing-vault"
 				return profile
 			}(),
 		},
 	})
 	profile := cfg.Profiles["work"]
 	draft := seedInteractiveInitDraft("work", "work", &profile)
-	draft.SecretsProfile = "team-vault"
+	draft.SecretsStore = "team-vault"
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
 	if err != nil {
 		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
 	}
-	if got := workspace.profile.SecretsProfile; got != "team-vault" {
-		t.Fatalf("workspace.profile.SecretsProfile = %q, want team-vault", got)
+	if got := workspace.profile.SecretsStore; got != "team-vault" {
+		t.Fatalf("workspace.profile.SecretsStore = %q, want team-vault", got)
 	}
-	if got := workspace.cfg.Profiles["work"].SecretsProfile; got != "team-vault" {
+	if got := workspace.cfg.Profiles["work"].SecretsStore; got != "team-vault" {
 		t.Fatalf("workspace cfg secrets_profile = %q, want team-vault", got)
 	}
 }
 
-func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
+func TestRunInitWithDepsDeferredHintsUseSelectedSecretsStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -6354,7 +6354,7 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 		},
 		saveConfig: func(string, config.File) error { return nil },
 
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
 	}
@@ -6367,13 +6367,13 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 	}
 }
 
-func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBrokenSecretsProfile(t *testing.T) {
+func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBrokenSecretsStore(t *testing.T) {
 	cfg := config.Normalize(config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"team-vault": {
 					Label:   "Team Vault",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
@@ -6381,21 +6381,21 @@ func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBro
 			"home": basicProfile("home"),
 			"work": func() config.Profile {
 				profile := basicProfile("work")
-				profile.SecretsProfile = "missing-vault"
+				profile.SecretsStore = "missing-vault"
 				return profile
 			}(),
 		},
 	})
 	home := cfg.Profiles["home"]
 	draft := seedInteractiveInitDraft("home", "home", &home)
-	draft.SecretsProfile = "team-vault"
+	draft.SecretsStore = "team-vault"
 
 	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
 	if err != nil {
 		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
 	}
-	if got := workspace.profile.SecretsProfile; got != "team-vault" {
-		t.Fatalf("workspace.profile.SecretsProfile = %q, want team-vault", got)
+	if got := workspace.profile.SecretsStore; got != "team-vault" {
+		t.Fatalf("workspace.profile.SecretsStore = %q, want team-vault", got)
 	}
 }
 
@@ -7775,14 +7775,14 @@ func TestHuhInitFinalizePrompterAccessibleShowsCommitAndDiscardOptions(t *testin
 	}
 }
 
-func TestInitSecretsProfileIDFromLabelDeconflictsDeterministically(t *testing.T) {
-	existing := map[string]config.SecretsProfile{
+func TestInitSecretsStoreIDFromLabelDeconflictsDeterministically(t *testing.T) {
+	existing := map[string]config.SecretsStore{
 		"work-vault":   {},
 		"work-vault-2": {},
 	}
-	got := initSecretsProfileIDFromLabel("Work Vault", config.SecretsBackendKind(credstore.BackendFile), existing)
+	got := initSecretsStoreIDFromLabel("Work Vault", config.SecretsBackendKind(credstore.BackendFile), existing)
 	if got != "work-vault-3" {
-		t.Fatalf("initSecretsProfileIDFromLabel = %q, want work-vault-3", got)
+		t.Fatalf("initSecretsStoreIDFromLabel = %q, want work-vault-3", got)
 	}
 }
 
@@ -7790,7 +7790,7 @@ func TestInitSecretsManagementInventoryRowsOmitBuiltInBackendsFromConfigureActio
 	rows := initSecretsManagementInventoryRows(config.File{})
 	availability := map[string]bool{}
 	for _, row := range rows {
-		if strings.HasPrefix(row.ID, initConfigureSecretsProfileSelectionPrefix) {
+		if strings.HasPrefix(row.ID, initConfigureSecretsStoreSelectionPrefix) {
 			availability[row.ID] = row.Selectable
 		}
 	}
@@ -7799,11 +7799,11 @@ func TestInitSecretsManagementInventoryRowsOmitBuiltInBackendsFromConfigureActio
 		credstore.BackendWinCred,
 		credstore.BackendSecretService,
 	} {
-		if _, ok := availability[initConfigureSecretsProfileSelectionPrefix+string(backend)]; ok {
+		if _, ok := availability[initConfigureSecretsStoreSelectionPrefix+string(backend)]; ok {
 			t.Fatalf("%s should not be a configure-new action; OS credential stores are projected as local-os", backend)
 		}
 	}
-	if _, ok := availability[initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile)]; !ok {
+	if _, ok := availability[initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendFile)]; !ok {
 		t.Fatalf("encrypted file backend should be configurable: %#v", availability)
 	}
 }
@@ -7817,8 +7817,8 @@ func TestValidateInitSecretsRequiredSingleLine(t *testing.T) {
 	}
 }
 
-func TestInitSecretsProfileBackendOptionsExcludeUnavailableChoicesUnlessCurrent(t *testing.T) {
-	options := initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile))
+func TestInitSecretsStoreBackendOptionsExcludeUnavailableChoicesUnlessCurrent(t *testing.T) {
+	options := initSecretsStoreBackendOptions(config.SecretsBackendKind(credstore.BackendFile))
 	values := make([]string, 0, len(options))
 	for _, option := range options {
 		values = append(values, option.Value)
@@ -7844,8 +7844,8 @@ func TestInitSecretsProfileBackendOptionsExcludeUnavailableChoicesUnlessCurrent(
 	}
 }
 
-func TestInitSecretsProfileBackendOptionsUsePreferredOrder(t *testing.T) {
-	options := initSecretsProfileBackendOptions(config.SecretsBackendKind(credstore.BackendFile))
+func TestInitSecretsStoreBackendOptionsUsePreferredOrder(t *testing.T) {
+	options := initSecretsStoreBackendOptions(config.SecretsBackendKind(credstore.BackendFile))
 	values := make([]string, 0, len(options))
 	for _, option := range options {
 		values = append(values, option.Value)
@@ -7885,7 +7885,7 @@ func TestInitSecretsManagementLinearEditorHidesOnePasswordCreateTargetsWhenUnava
 		credstore.BackendOP,
 		credstore.BackendOPConnect,
 	} {
-		targetValue := initConfigureSecretsProfileSelectionPrefix + string(backend)
+		targetValue := initConfigureSecretsStoreSelectionPrefix + string(backend)
 		for _, option := range model.document[targetIndex].Options {
 			if option.Value == targetValue {
 				t.Fatalf("target options include %q in keyring_no1password build: %#v", targetValue, model.document[targetIndex].Options)
@@ -7901,7 +7901,7 @@ func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *
 		discoveryMode: initSecretsBackendDiscoveryModeOff,
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 180, 32)
-			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile))
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendFile))
 			_, _ = io.WriteString(out, model.layout.Content)
 			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
@@ -7919,9 +7919,9 @@ func TestHuhInitKeyringBackendPrompterDefaultUsesLinearSecretsManagementFlow(t *
 	if !edit.Apply || !edit.HasConfigEdit {
 		t.Fatalf("edit = %#v, want config edit", edit)
 	}
-	profile, ok := edit.Config.Secrets.Profiles["encrypted-file"]
+	profile, ok := edit.Config.Secrets.Stores["encrypted-file"]
 	if !ok {
-		t.Fatalf("secrets profiles = %#v, want generated encrypted-file profile", edit.Config.Secrets.Profiles)
+		t.Fatalf("secrets profiles = %#v, want generated encrypted-file profile", edit.Config.Secrets.Stores)
 	}
 	if profile.Backend.Kind != config.SecretsBackendKind(credstore.BackendFile) {
 		t.Fatalf("backend kind = %q, want file", profile.Backend.Kind)
@@ -8077,7 +8077,7 @@ func TestHuhInitKeyringBackendPrompterSafeDiscoverySkipsActiveInventory(t *testi
 		},
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 180, 32)
-			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 			_, _ = io.WriteString(out, model.layout.Content)
 			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
@@ -8130,7 +8130,7 @@ func TestHuhInitKeyringBackendPrompterOffDiscoverySkipsAllBackendProbes(t *testi
 		},
 		editorRunner: func(editor initLinearEditor, _ io.Reader, out io.Writer) (initLinearEditorModel, error) {
 			model := newInitLinearEditorModel(editor, 180, 32)
-			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 			_, _ = io.WriteString(out, model.layout.Content)
 			model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionBack)
@@ -8231,23 +8231,23 @@ func TestInitSecretsManagementLinearEditorShowsBuiltInOSStoreReadOnly(t *testing
 	}
 }
 
-func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t *testing.T) {
+func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsStore(t *testing.T) {
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"personal": {
 					Label: "1Password",
-					Backend: config.SecretsProfileBackend{
+					Backend: config.SecretsStoreBackend{
 						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
-						OnePassword: &config.SecretsProfileOnePasswordConfig{VaultID: "Personal"},
+						OnePassword: &config.SecretsStoreOnePasswordConfig{VaultID: "Personal"},
 					},
 				},
 				"onepasswordfoo": {
 					Label: "1PasswordFoo",
-					Backend: config.SecretsProfileBackend{
+					Backend: config.SecretsStoreBackend{
 						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
-						OnePassword: &config.SecretsProfileOnePasswordConfig{VaultID: "Personal"},
+						OnePassword: &config.SecretsStoreOnePasswordConfig{VaultID: "Personal"},
 					},
 				},
 			},
@@ -8283,11 +8283,11 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsProfile(t 
 	if !edit.Apply || !edit.HasConfigEdit {
 		t.Fatalf("edit = %#v, want config edit", edit)
 	}
-	if _, ok := edit.Config.Secrets.Profiles["onepasswordfoo"]; ok {
-		t.Fatalf("secrets profiles = %#v, want onepasswordfoo removed", edit.Config.Secrets.Profiles)
+	if _, ok := edit.Config.Secrets.Stores["onepasswordfoo"]; ok {
+		t.Fatalf("secrets profiles = %#v, want onepasswordfoo removed", edit.Config.Secrets.Stores)
 	}
-	if _, ok := edit.Config.Secrets.Profiles["personal"]; !ok {
-		t.Fatalf("secrets profiles = %#v, want personal retained", edit.Config.Secrets.Profiles)
+	if _, ok := edit.Config.Secrets.Stores["personal"]; !ok {
+		t.Fatalf("secrets profiles = %#v, want personal retained", edit.Config.Secrets.Stores)
 	}
 	if editorCalls != 1 {
 		t.Fatalf("editorCalls = %d, want one delete editor call", editorCalls)
@@ -8301,22 +8301,22 @@ func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletion
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"personal": {
 					Label:   "Personal",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 	}
 	pendingDeletes := map[string]initPendingSecretsManagementDelete{
-		"alpha": {ID: "alpha", Profile: config.SecretsProfile{
+		"alpha": {ID: "alpha", Profile: config.SecretsStore{
 			Label:   "Alpha",
-			Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+			Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 		}},
-		"beta": {ID: "beta", Profile: config.SecretsProfile{
+		"beta": {ID: "beta", Profile: config.SecretsStore{
 			Label:   "Beta",
-			Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+			Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 		}},
 	}
 
@@ -8347,21 +8347,21 @@ func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredPro
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"personal": {
 					Label:   "1Password",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 				"unused": {
 					Label:   "Unused",
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendFile))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendFile))
 	actionIndex := model.document.fieldIndexByID(initSecretsManagementFieldAction)
 	if actionIndex < 0 {
 		t.Fatal("action field missing")
@@ -8451,10 +8451,10 @@ func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"work-secrets": {
 					Label: "Work secrets",
-					Backend: config.SecretsProfileBackend{
+					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendFile),
 					},
 				},
@@ -8514,7 +8514,7 @@ func TestInitSecretsManagementLinearEditorCreateBackendTargetLocksBackend(t *tes
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOP))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOP))
 
 	backendIndex := model.document.fieldIndexByID(initSecretsManagementFieldBackend)
 	if backendIndex < 0 {
@@ -8545,7 +8545,7 @@ func TestInitSecretsManagementLinearEditorDesktopTargetSeedsFriendlyLabel(t *tes
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 
 	if got := model.document.fieldValue(initSecretsManagementFieldLabel); got != "1Password" {
 		t.Fatalf("profile label = %q, want friendly 1Password default", got)
@@ -8736,7 +8736,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 32)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
 	for _, want := range []string{
 		"1Password account",
@@ -8797,7 +8797,7 @@ func TestInitSecretsManagementLinearEditorCanCreateStoreBeforeReviewProfile(t *t
 	}}}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(config.File{}, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldAction, initDetailActionEdit)
 	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -8853,7 +8853,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVaul
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 
 	out := model.layout.Content
 	for _, want := range []string{
@@ -8911,7 +8911,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryIncludesAccountWithout
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 
 	out := model.layout.Content
 	for _, want := range []string{
@@ -8957,7 +8957,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualVaultInSel
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopVault, initOnePasswordManualSelection)
 	model.setFieldValue(initSecretsManagementFieldVaultID, "ExternalConfidential")
 
@@ -9004,7 +9004,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualAccount(t 
 	}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopAccount, initOnePasswordManualSelection)
 	out := model.layout.Content
 	for _, want := range []string{
@@ -9045,7 +9045,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryFailureAllowsManualPro
 	discovery := initOnePasswordDesktopDiscovery{Err: os.ErrNotExist}
 	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
 	model := newInitLinearEditorModel(editor, 180, 32)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
 	for _, want := range []string{
 		"1Password account URL",
@@ -9095,7 +9095,7 @@ func TestInitSecretsManagementLinearEditorShowsOnePasswordBackendRolloverDescrip
 		t.Run(tc.name, func(t *testing.T) {
 			editor := initSecretsManagementLinearEditor(cfg)
 			model := newInitLinearEditorModel(editor, 180, 32)
-			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(tc.kind))
+			model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(tc.kind))
 			index := model.document.fieldIndexByID(initSecretsManagementFieldBackend)
 			if index < 0 {
 				t.Fatal("backend field missing")
@@ -9116,13 +9116,13 @@ func TestInitSecretsManagementEditStoresOnePasswordVaultNameOrIDAsEntered(t *tes
 	}
 	editor := initSecretsManagementLinearEditor(cfg)
 	model := newInitLinearEditorModel(editor, 180, 32)
-	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsProfileSelectionPrefix+string(credstore.BackendOPDesktop))
+	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model.setFieldValue(initSecretsManagementFieldVaultID, "Employee")
 	edit, err := initSecretsManagementEditFromDocument(cfg, model.document)
 	if err != nil {
 		t.Fatalf("initSecretsManagementEditFromDocument: %v", err)
 	}
-	profile := edit.Config.Secrets.Profiles["1password"]
+	profile := edit.Config.Secrets.Stores["1password"]
 	if profile.Backend.OnePassword == nil {
 		t.Fatal("saved onepassword config = nil")
 	}
@@ -9135,10 +9135,10 @@ func TestInitSecretsManagementLinearEditorConfiguredProfileKeepsBackendEditable(
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"work-secrets": {
 					Label: "Work secrets",
-					Backend: config.SecretsProfileBackend{
+					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendFile),
 					},
 				},
@@ -9161,8 +9161,8 @@ func TestInitSecretsManagementLinearEditorConfiguredProfileKeepsBackendEditable(
 	}
 }
 
-func TestInitSecretsProfileBackendFromInputsSwitchingAwayFromOnePasswordClearsBackendFields(t *testing.T) {
-	backend := initSecretsProfileBackendFromInputs(initSecretsProfileBackendInput{ // #nosec G101 -- fixture values are account/env-var names, not secret values.
+func TestInitSecretsStoreBackendFromInputsSwitchingAwayFromOnePasswordClearsBackendFields(t *testing.T) {
+	backend := initSecretsStoreBackendFromInputs(initSecretsStoreBackendInput{ // #nosec G101 -- fixture values are account/env-var names, not secret values.
 		KindValue:       string(credstore.BackendFile),
 		Timeout:         "5s",
 		AccountID:       "desktop-account",
@@ -12072,9 +12072,9 @@ func TestInitRepositoryAccessEditorAcceptsExistingPATCredential(t *testing.T) {
 	}
 	ctx := initPromptContext{
 		RepositoryAccessCredentialStatuses: []initReviewerCredentialStatus{{
-			Ref:            config.CredentialRef{Purpose: "git", Store: config.LocalOSCredentialStoreID, Ref: "codereview/github-com-pat", Mode: string(config.GitAuthModePAT)},
-			SecretsProfile: resolved,
-			Keys:           []initReviewerCredentialKeyStatus{{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyExisting}},
+			Ref:          config.CredentialRef{Purpose: "git", Store: config.LocalOSCredentialStoreID, Ref: "codereview/github-com-pat", Mode: string(config.GitAuthModePAT)},
+			SecretsStore: resolved,
+			Keys:         []initReviewerCredentialKeyStatus{{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyExisting}},
 		}},
 	}
 	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
@@ -12094,9 +12094,9 @@ func TestInitRepositoryAccessEditorEnteredSecretMarksOverwriteAndUpdatesHelperTe
 	}
 	ctx := initPromptContext{
 		RepositoryAccessCredentialStatuses: []initReviewerCredentialStatus{{
-			Ref:            config.CredentialRef{Purpose: "git", Store: config.LocalOSCredentialStoreID, Ref: "codereview/github-com-pat", Mode: string(config.GitAuthModePAT)},
-			SecretsProfile: resolved,
-			Keys:           []initReviewerCredentialKeyStatus{{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyExisting}},
+			Ref:          config.CredentialRef{Purpose: "git", Store: config.LocalOSCredentialStoreID, Ref: "codereview/github-com-pat", Mode: string(config.GitAuthModePAT)},
+			SecretsStore: resolved,
+			Keys:         []initReviewerCredentialKeyStatus{{Key: credentials.GitTokenKey, Required: true, State: initReviewerCredentialKeyExisting}},
 		}},
 	}
 	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
@@ -12773,7 +12773,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 				initCredentialSecretActionKeep,
 				initCredentialSecretActionKeep,
 			},
-		}).PasteSecret}, openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		}).PasteSecret}, openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 		return newFakeInitStore(map[string]map[string]string{
 			"default":     {credentials.GitTokenKey: "existing-token"},
 			"default-llm": {credentials.OpenAIAPIKeyKey: "existing-openai-key"},
@@ -13162,7 +13162,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 				initCredentialSecretActionKeep,
 				initCredentialSecretActionKeep,
 			},
-		}).PasteSecret}, openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		}).PasteSecret}, openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 		return newFakeInitStore(map[string]map[string]string{
 			"default": {
 				credentials.GitTokenKey: "existing-token",
@@ -13281,12 +13281,12 @@ func TestInitCredentialDestinationDescriptionLegacyAutoUsesPlatformCopy(t *testi
 	t.Setenv(credentials.BackendEnvVar(), "")
 	entry := initCredentialPlanEntry{
 		Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
-		SecretsProfile: credentials.ResolvedSecretsProfile{
+		SecretsStore: credentials.ResolvedSecretsStore{
 			ID:              config.LocalOSCredentialStoreID,
 			Label:           "OS credential store",
 			Backend:         config.ProjectedOSCredentialStoreBackendKind,
-			Source:          config.EffectiveSecretsProfileSourceProjectedLegacy,
-			SelectionSource: credentials.SecretsProfileSelectionBuiltInOS,
+			Source:          config.EffectiveSecretsStoreSourceBuiltIn,
+			SelectionSource: credentials.SecretsStoreSelectionBuiltInOS,
 		},
 	}
 
@@ -13330,15 +13330,15 @@ func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithout
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "team-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "team-vault"})
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 
 	description := initCredentialDestinationDescription(initCredentialDestinationContext{
 		Entry: initCredentialPlanEntry{
-			Ref:            config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/rianjs-bot", Mode: string(config.GitAuthModePAT)},
-			SecretsProfile: resolved,
+			Ref:          config.CredentialRef{Purpose: "reviewer_credentials", Ref: "codereview/rianjs-bot", Mode: string(config.GitAuthModePAT)},
+			SecretsStore: resolved,
 		},
 		Config: cfg,
 	})
@@ -13390,15 +13390,15 @@ func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenV
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "connect-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "connect-vault"})
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 
 	description := initCredentialDestinationDescription(initCredentialDestinationContext{
 		Entry: initCredentialPlanEntry{
-			Ref:            config.CredentialRef{Purpose: "llm", Ref: "codereview/work-llm", Mode: string(config.LLMAuthAPIKey), Provider: string(config.LLMProviderAnthropic)},
-			SecretsProfile: resolved,
+			Ref:          config.CredentialRef{Purpose: "llm", Ref: "codereview/work-llm", Mode: string(config.LLMAuthAPIKey), Provider: string(config.LLMProviderAnthropic)},
+			SecretsStore: resolved,
 		},
 		Config: cfg,
 	})
@@ -13435,15 +13435,15 @@ func TestInitCredentialDestinationDescriptionOnePasswordDesktopShowsAccountID(t 
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, config.Profile{SecretsProfile: "desktop-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "desktop-vault"})
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 
 	description := initCredentialDestinationDescription(initCredentialDestinationContext{
 		Entry: initCredentialPlanEntry{
-			Ref:            config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
-			SecretsProfile: resolved,
+			Ref:          config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
+			SecretsStore: resolved,
 		},
 		Config: cfg,
 	})
@@ -13464,11 +13464,11 @@ func TestInitCredentialDestinationDescriptionUnavailableIsNonFatal(t *testing.T)
 	description := initCredentialDestinationDescription(initCredentialDestinationContext{
 		Entry: initCredentialPlanEntry{
 			Ref: config.CredentialRef{Purpose: "llm", Ref: "codereview/work-llm"},
-			SecretsProfile: credentials.ResolvedSecretsProfile{
+			SecretsStore: credentials.ResolvedSecretsStore{
 				ID:      "missing-profile",
 				Label:   "Missing Profile",
 				Backend: string(credstore.BackendOPConnect),
-				Source:  config.EffectiveSecretsProfileSourceConfigured,
+				Source:  config.EffectiveSecretsStoreSourceConfigured,
 			},
 		},
 		Config: config.File{},
@@ -13497,11 +13497,11 @@ func TestHuhInitSecretPrompterAccessibleShowsCredentialDestination(t *testing.T)
 	_, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
 		Entry: initCredentialPlanEntry{
 			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work"},
-			SecretsProfile: credentials.ResolvedSecretsProfile{
+			SecretsStore: credentials.ResolvedSecretsStore{
 				ID:      "team-vault",
 				Label:   "Team Vault",
 				Backend: string(credstore.BackendFile),
-				Source:  config.EffectiveSecretsProfileSourceConfigured,
+				Source:  config.EffectiveSecretsStoreSourceConfigured,
 			},
 		},
 		Destination: "Destination: Team Vault / codereview/work",
@@ -13685,7 +13685,7 @@ func TestInitReviewerCredentialStatusBackendUnavailableDoesNotLeakOrBlock(t *tes
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return nil, errors.New("sentinel backend unavailable")
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return nil, errors.New("sentinel backend unavailable")
 		},
 	}
@@ -13702,7 +13702,7 @@ func TestInitReviewerCredentialStatusBackendUnavailableDoesNotLeakOrBlock(t *tes
 	}
 }
 
-func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestination(t *testing.T) {
+func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsStoreDestination(t *testing.T) {
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:   config.GitAuthModePAT,
@@ -13743,7 +13743,7 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 			t.Fatal("legacy openStore called for named secrets profile")
 			return nil, nil
 		},
-		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, _ string, _ bool, _ config.File) (initStore, error) {
+		openResolvedStore: func(resolved credentials.ResolvedSecretsStore, _ string, _ bool, _ config.File) (initStore, error) {
 			opened = append(opened, resolved.ID)
 			return store, nil
 		},
@@ -13792,7 +13792,7 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
 	}
 	originalCfg := config.File{Profiles: map[string]config.Profile{"work": originalProfile}}
-	originalResolved, err := credentials.ResolveSecretsProfileForProfile(originalCfg, originalProfile)
+	originalResolved, err := credentials.ResolveSecretsStoreForProfile(originalCfg, originalProfile)
 	if err != nil {
 		t.Fatalf("Resolve original secrets profile: %v", err)
 	}
@@ -13820,7 +13820,7 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 				credentials.GitHubAppPrivateKeyKey: "private-key",
 			},
 		},
-		credentialWriteStores: map[string]credentials.ResolvedSecretsProfile{
+		credentialWriteStores: map[string]credentials.ResolvedSecretsStore{
 			"codereview/work-reviewer": originalResolved,
 		},
 		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
@@ -13831,7 +13831,7 @@ func TestInitReviewerCredentialStatusDropsStagedWritesWhenSecretsStoreChanges(t 
 			t.Fatal("legacy openStore called after profile moved to named secrets profile")
 			return nil, nil
 		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
 	}
@@ -13868,7 +13868,7 @@ func TestInitReviewerCredentialStatusIncludesSelectableReviewerEntities(t *testi
 		credentialDecisions: map[initCredentialDecisionKey]initCredentialDecisionKind{},
 	}
 	deps := initDeps{
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
 	}
@@ -13997,7 +13997,7 @@ func testReviewerGitHubAppPrivateKey() string {
 	}, "\n")
 }
 
-func testLocalOSResolvedCredentialStore() credentials.ResolvedSecretsProfile {
+func testLocalOSResolvedCredentialStore() credentials.ResolvedSecretsStore {
 	resolved, err := credentials.ResolveCredentialStore(config.File{}, config.LocalOSCredentialStoreID)
 	if err != nil {
 		panic(err)
@@ -16893,12 +16893,12 @@ func TestApplyInteractiveInitSessionPlanSummarizesSecretsStorageOnlyChanges(t *t
 	}
 	next := original
 	next.Secrets = config.SecretsConfig{
-		Profiles: map[string]config.SecretsProfile{
+		Stores: map[string]config.SecretsStore{
 			"one-password": {
 				Label: "1Password",
-				Backend: config.SecretsProfileBackend{
+				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
-					OnePassword: &config.SecretsProfileOnePasswordConfig{
+					OnePassword: &config.SecretsStoreOnePasswordConfig{
 						VaultID: "Personal",
 					},
 				},
@@ -17003,7 +17003,7 @@ func TestApplyInteractiveInitSessionPlanOverwriteConflictFailsBeforeWrite(t *tes
 	}
 }
 
-func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependently(t *testing.T) {
+func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsStoresIndependently(t *testing.T) {
 	homeStore := newFakeInitStore(nil)
 	workStore := newFakeInitStore(nil)
 	opts := &root.Options{
@@ -17012,33 +17012,33 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependent
 	}
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"personal-memory": {
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendMemory)},
 				},
 				"work-file": {
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 		Profiles: map[string]config.Profile{
 			"home": func() config.Profile {
 				p := basicProfile("home")
-				p.SecretsProfile = "personal-memory"
+				p.SecretsStore = "personal-memory"
 				return p
 			}(),
 			"work": func() config.Profile {
 				p := basicProfile("work")
-				p.SecretsProfile = "work-file"
+				p.SecretsStore = "work-file"
 				return p
 			}(),
 		},
 	}
-	homeResolved, err := credentials.ResolveSecretsProfileForProfile(cfg, cfg.Profiles["home"])
+	homeResolved, err := credentials.ResolveSecretsStoreForProfile(cfg, cfg.Profiles["home"])
 	if err != nil {
 		t.Fatalf("Resolve home secrets profile: %v", err)
 	}
-	workResolved, err := credentials.ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	workResolved, err := credentials.ResolveSecretsStoreForProfile(cfg, cfg.Profiles["work"])
 	if err != nil {
 		t.Fatalf("Resolve work secrets profile: %v", err)
 	}
@@ -17051,8 +17051,8 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependent
 			"codereview/work": {credentials.GitTokenKey: "work-token"},
 		},
 		credentialPlan: []initCredentialPlanEntry{
-			{Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/home", Mode: string(config.GitAuthModePAT)}, SecretsProfile: homeResolved},
-			{Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)}, SecretsProfile: workResolved},
+			{Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/home", Mode: string(config.GitAuthModePAT)}, SecretsStore: homeResolved},
+			{Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)}, SecretsStore: workResolved},
 		},
 	}
 	var opened []string
@@ -17061,7 +17061,7 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependent
 			t.Fatal("legacy openStore called for named secrets-profile writes")
 			return nil, nil
 		},
-		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, _ string, _ bool, _ config.File) (initStore, error) {
+		openResolvedStore: func(resolved credentials.ResolvedSecretsStore, _ string, _ bool, _ config.File) (initStore, error) {
 			opened = append(opened, resolved.ID)
 			switch resolved.ID {
 			case "personal-memory":
@@ -17092,7 +17092,7 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsProfilesIndependent
 func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *testing.T) {
 	workStore := newFakeInitStore(nil)
 	profile := basicProfile("work")
-	profile.SecretsProfile = "work-file"
+	profile.SecretsStore = "work-file"
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
@@ -17100,15 +17100,15 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 	}
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"work-file": {
-					Backend: config.SecretsProfileBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 		Profiles: map[string]config.Profile{"work": profile},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
 	if err != nil {
 		t.Fatalf("Resolve work secrets profile: %v", err)
 	}
@@ -17127,7 +17127,7 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModeGitHubApp),
 			},
-			SecretsProfile: resolved,
+			SecretsStore: resolved,
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
 			},
@@ -17140,7 +17140,7 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 			t.Fatal("legacy openStore called for named reviewer secrets")
 			return nil, nil
 		},
-		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, _ string, _ bool, _ config.File) (initStore, error) {
+		openResolvedStore: func(resolved credentials.ResolvedSecretsStore, _ string, _ bool, _ config.File) (initStore, error) {
 			if resolved.ID != "work-file" {
 				t.Fatalf("opened secrets profile %q, want work-file", resolved.ID)
 			}
@@ -17159,7 +17159,7 @@ func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *
 	}
 }
 
-func TestApplyInteractiveInitSessionPlanNamedSecretsProfileWriteFailureStopsConfigSave(t *testing.T) {
+func TestApplyInteractiveInitSessionPlanNamedSecretsStoreWriteFailureStopsConfigSave(t *testing.T) {
 	store := newFakeInitStore(nil)
 	store.setBundleFunc = func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error) {
 		return credstore.Result{}, errors.New("backend vault unreachable")
@@ -17170,12 +17170,12 @@ func TestApplyInteractiveInitSessionPlanNamedSecretsProfileWriteFailureStopsConf
 	}
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
-			Profiles: map[string]config.SecretsProfile{
+			Stores: map[string]config.SecretsStore{
 				"work-1password": {
 					Label: "Work 1Password",
-					Backend: config.SecretsProfileBackend{
+					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
-						OnePassword: &config.SecretsProfileOnePasswordConfig{
+						OnePassword: &config.SecretsStoreOnePasswordConfig{
 							VaultID: "Not A Real Vault",
 						},
 					},
@@ -17185,12 +17185,12 @@ func TestApplyInteractiveInitSessionPlanNamedSecretsProfileWriteFailureStopsConf
 		Profiles: map[string]config.Profile{
 			"work": func() config.Profile {
 				p := basicProfile("work")
-				p.SecretsProfile = "work-1password"
+				p.SecretsStore = "work-1password"
 				return p
 			}(),
 		},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, cfg.Profiles["work"])
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, cfg.Profiles["work"])
 	if err != nil {
 		t.Fatalf("Resolve work secrets profile: %v", err)
 	}
@@ -17207,11 +17207,11 @@ func TestApplyInteractiveInitSessionPlanNamedSecretsProfileWriteFailureStopsConf
 				Ref:     "codereview/work",
 				Mode:    string(config.GitAuthModePAT),
 			},
-			SecretsProfile: resolved,
+			SecretsStore: resolved,
 		}},
 	}
 	err = applyInteractiveInitSessionPlan(opts, initDeps{
-		openResolvedStore: func(resolved credentials.ResolvedSecretsProfile, _ string, _ bool, _ config.File) (initStore, error) {
+		openResolvedStore: func(resolved credentials.ResolvedSecretsStore, _ string, _ bool, _ config.File) (initStore, error) {
 			if resolved.ID != "work-1password" {
 				t.Fatalf("opened secrets profile %q, want work-1password", resolved.ID)
 			}
@@ -18129,9 +18129,9 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"work": profile},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 	refs, err := config.CredentialRefs(profile)
 	if err != nil {
@@ -18153,7 +18153,7 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModePAT),
 			},
-			SecretsProfile: resolved,
+			SecretsStore: resolved,
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
 			},
@@ -18203,9 +18203,9 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 		CredentialRef: "codereview/work-reviewer",
 	}
 	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 	plan := initSessionPlan{
 		path:         filepath.Join(t.TempDir(), "config.yml"),
@@ -18222,7 +18222,7 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModePAT),
 			},
-			SecretsProfile: resolved,
+			SecretsStore: resolved,
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
 			},
@@ -18263,9 +18263,9 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 			"pat": patProfile,
 		},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, appProfile)
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, appProfile)
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 	plan := initSessionPlan{
 		path:         filepath.Join(t.TempDir(), "config.yml"),
@@ -18287,7 +18287,7 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 				Ref:     "codereview/shared-reviewer",
 				Mode:    string(config.GitAuthModePAT),
 			},
-			SecretsProfile: resolved,
+			SecretsStore: resolved,
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
 			},
@@ -18326,9 +18326,9 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 		DisplayName:   "work bot",
 	}
 	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 	plan := initPlan{
 		path:        filepath.Join(t.TempDir(), "config.yml"),
@@ -18346,7 +18346,7 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 				Ref:     "codereview/work-reviewer",
 				Mode:    string(config.GitAuthModePAT),
 			},
-			SecretsProfile: resolved,
+			SecretsStore: resolved,
 			KeySpecs: []credentials.KeySpec{
 				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
 			},
@@ -18412,11 +18412,11 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 			"pat": patProfile,
 		},
 	}
-	resolved, err := credentials.ResolveSecretsProfileForProfile(cfg, appProfile)
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, appProfile)
 	if err != nil {
-		t.Fatalf("ResolveSecretsProfileForProfile: %v", err)
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
-	appEntry.SecretsProfile = resolved
+	appEntry.SecretsStore = resolved
 	groups, err := groupStaleReviewerCredentialCleanupsByStore(cfg, []initCredentialPlanEntry{appEntry})
 	if err != nil {
 		t.Fatalf("groupStaleReviewerCredentialCleanupsByStore: %v", err)
@@ -18717,7 +18717,7 @@ func runNonInteractiveInitWithFakeStore(t *testing.T, path string, profile strin
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		openResolvedStore: func(credentials.ResolvedSecretsStore, string, bool, config.File) (initStore, error) {
 			return store, nil
 		},
 	}

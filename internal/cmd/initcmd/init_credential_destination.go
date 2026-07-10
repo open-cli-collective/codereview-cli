@@ -33,7 +33,7 @@ func initCredentialDestinationDescription(ctx initCredentialDestinationContext) 
 func initCredentialDestinationDetails(ctx initCredentialDestinationContext, ref string) (string, []string) {
 	storeID := strings.TrimSpace(ctx.Entry.Ref.Store)
 	if storeID == "" {
-		storeID = strings.TrimSpace(ctx.Entry.SecretsProfile.ID)
+		storeID = strings.TrimSpace(ctx.Entry.SecretsStore.ID)
 	}
 	if storeID == "" {
 		return initLegacyCredentialDestinationDetails(ctx, ref)
@@ -43,7 +43,7 @@ func initCredentialDestinationDetails(ctx initCredentialDestinationContext, ref 
 	if value := strings.TrimSpace(storeID); value != "" {
 		lines = append(lines, "Credential store: "+value)
 	}
-	if value := strings.TrimSpace(ctx.Entry.SecretsProfile.Backend); value != "" {
+	if value := strings.TrimSpace(ctx.Entry.SecretsStore.Backend); value != "" {
 		lines = append(lines, "Backend kind: "+value)
 	}
 	destination := initCredentialDestinationLabel(ctx.Config, location)
@@ -60,7 +60,7 @@ func initCredentialDestinationDetails(ctx initCredentialDestinationContext, ref 
 	if profile, ok := ctx.Config.Secrets.Stores[storeID]; ok {
 		lines = append(lines, initOnePasswordDestinationDetails(profile.Backend)...)
 	} else if storeID != config.LocalOSCredentialStoreID {
-		if displayName := strings.TrimSpace(ctx.Entry.SecretsProfile.DisplayName()); displayName != "" {
+		if displayName := strings.TrimSpace(ctx.Entry.SecretsStore.DisplayName()); displayName != "" {
 			destination = strings.Join([]string{displayName, ref}, " / ")
 		}
 		lines = append(lines, "credential destination unavailable.")
@@ -87,7 +87,7 @@ func initCredentialBackendMetadataLabel(backend credstore.Backend, source credst
 	return initSecretsBackendDisplayLabel(config.SecretsBackendKind(backend))
 }
 
-func initOnePasswordDestinationDetails(backend config.SecretsProfileBackend) []string {
+func initOnePasswordDestinationDetails(backend config.SecretsStoreBackend) []string {
 	if !config.IsOnePasswordSecretsBackend(backend.Kind) || backend.OnePassword == nil {
 		return nil
 	}

@@ -21,7 +21,7 @@ func Config(err error) error {
 	case errors.Is(err, config.ErrNotConfigured),
 		errors.Is(err, config.ErrProfileNotFound),
 		errors.Is(err, config.ErrRepositoryProfileAmbiguous),
-		errors.Is(err, config.ErrSecretsProfileNotFound),
+		errors.Is(err, config.ErrSecretsStoreNotFound),
 		errors.Is(err, config.ErrUnsupported):
 		return exitcode.AuthConfig(err)
 	default:
