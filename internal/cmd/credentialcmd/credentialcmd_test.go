@@ -13686,9 +13686,6 @@ func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithout
 						Kind: config.SecretsBackendKind(credstore.BackendOP),
 						OnePassword: &config.SecretsStoreOnePasswordConfig{
 							VaultID:         "Engineering",
-							ItemTitlePrefix: "cr-",
-							ItemTag:         "code-review",
-							ItemFieldTitle:  "credential",
 							ServiceTokenEnv: serviceTokenEnv,
 						},
 					},
@@ -14083,9 +14080,6 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsProfileDestinatio
 						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
 						OnePassword: &config.SecretsStoreOnePasswordConfig{
 							VaultID:          "Engineering",
-							ItemTitlePrefix:  "cr-",
-							ItemTag:          "code-review",
-							ItemFieldTitle:   "credential",
 							DesktopAccountID: "account-123",
 						},
 					},

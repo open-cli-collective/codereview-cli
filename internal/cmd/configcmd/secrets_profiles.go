@@ -105,9 +105,6 @@ func configSecretsProfileView(cfg config.File, profile config.EffectiveSecretsPr
 		onePassword := &view.ConfigSecretsProfileOnePassword{
 			Timeout:         configured.Backend.OnePassword.Timeout,
 			VaultID:         configured.Backend.OnePassword.VaultID,
-			ItemTitlePrefix: configured.Backend.OnePassword.ItemTitlePrefix,
-			ItemTag:         configured.Backend.OnePassword.ItemTag,
-			ItemFieldTitle:  configured.Backend.OnePassword.ItemFieldTitle,
 		}
 		switch configured.Backend.Kind {
 		case config.SecretsBackendKind(credstore.BackendOP):

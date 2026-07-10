@@ -472,9 +472,6 @@ func onePasswordOptionsFromConfig(backend config.SecretsProfileBackend) (*credst
 	}
 	options := &credstore.OnePasswordOptions{
 		VaultID:          strings.TrimSpace(onePasswordCfg.VaultID),
-		ItemTitlePrefix:  strings.TrimSpace(onePasswordCfg.ItemTitlePrefix),
-		ItemTag:          strings.TrimSpace(onePasswordCfg.ItemTag),
-		ItemFieldTitle:   strings.TrimSpace(onePasswordCfg.ItemFieldTitle),
 		ConnectHost:      strings.TrimSpace(onePasswordCfg.ConnectHost),
 		ConnectTokenEnv:  strings.TrimSpace(onePasswordCfg.ConnectTokenEnv),
 		ServiceTokenEnv:  strings.TrimSpace(onePasswordCfg.ServiceTokenEnv),

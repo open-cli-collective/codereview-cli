@@ -350,9 +350,6 @@ type ConfigSecretsProfileBackendDetails struct {
 type ConfigSecretsProfileOnePassword struct {
 	Timeout                string `json:"timeout,omitempty"`
 	VaultID                string `json:"vault_id,omitempty"`
-	ItemTitlePrefix        string `json:"item_title_prefix,omitempty"`
-	ItemTag                string `json:"item_tag,omitempty"`
-	ItemFieldTitle         string `json:"item_field_title,omitempty"`
 	ConnectHost            string `json:"connect_host,omitempty"`
 	ConnectTokenEnv        string `json:"connect_token_env,omitempty"`
 	ServiceAccountTokenEnv string `json:"service_account_token_env,omitempty"`
