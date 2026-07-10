@@ -14,7 +14,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/open-cli-collective/codereview-cli/internal/dbmig"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	sqlite "modernc.org/sqlite" // register the SQLite database/sql driver.
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -215,6 +217,40 @@ type Store struct {
 	closeErr error
 	mu       sync.Mutex
 	closed   bool
+}
+
+// OpenLedger resolves the data layout, optionally migrates legacy data, and
+// opens the ledger when it exists.
+func OpenLedger(ctx context.Context, logger *progress.Logger, command, target string, migrateLegacyData bool) (statepaths.Layout, *Store, func(), error) {
+	if logger == nil {
+		logger = progress.New(nil, true, nil)
+	}
+	layoutSpan := logger.Start(command, "resolve_layout", target)
+	layout, err := statepaths.DefaultLayout()
+	if err != nil {
+		return statepaths.Layout{}, nil, nil, layoutSpan.End(err)
+	}
+	_ = layoutSpan.End(nil)
+	if migrateLegacyData {
+		migrateSpan := logger.Start(command, "migrate_legacy", target)
+		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
+			return statepaths.Layout{}, nil, nil, migrateSpan.End(err)
+		}
+		_ = migrateSpan.End(nil)
+	}
+	ledgerSpan := logger.Start(command, "open_ledger", target)
+	if _, err := os.Stat(layout.LedgerDB()); errors.Is(err, os.ErrNotExist) {
+		_ = ledgerSpan.End(nil)
+		return layout, nil, func() {}, nil
+	} else if err != nil {
+		return statepaths.Layout{}, nil, nil, ledgerSpan.End(err)
+	}
+	store, err := Open(ctx, layout.LedgerDB())
+	if err != nil {
+		return statepaths.Layout{}, nil, nil, ledgerSpan.End(err)
+	}
+	_ = ledgerSpan.End(nil)
+	return layout, store, func() { _ = store.Close() }, nil
 }
 
 type writeRequest struct {

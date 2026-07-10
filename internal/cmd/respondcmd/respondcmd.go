@@ -3,7 +3,6 @@ package respondcmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -58,7 +57,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
 	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass incomplete response-run resume and start a fresh response attempt")
 	cmd.Flags().StringVar(&flags.retryPosts, "retry-posts", "", "Retry missing or failed required posts for the given response run ID")
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	cmd.Flags().BoolVar(&flags.noResolveThreads, "no-resolve-threads", false, "Do not plan thread-resolution actions")
 	rootCmd.AddCommand(cmd)
 }
@@ -137,14 +136,10 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory Ru
 		return cmdruntime.MapRunError(err)
 	}
 	rendered := newResult(result)
-	if flags.jsonOutput {
-		if err := renderJSON(opts.Stdout, rendered); err != nil {
-			return err
-		}
-	} else {
-		if err := renderText(opts.Stdout, rendered); err != nil {
-			return err
-		}
+	if err := view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
+		return renderText(w, rendered)
+	}); err != nil {
+		return err
 	}
 	if result.ExitCode != exitcode.Success {
 		return exitcode.With(result.ExitCode, resultError(result))
@@ -216,12 +211,6 @@ func newResult(result threadrespond.Result) renderedResult {
 		},
 		Message: result.Message,
 	}
-}
-
-func renderJSON(w io.Writer, rendered renderedResult) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(rendered)
 }
 
 func renderText(w io.Writer, rendered renderedResult) error {

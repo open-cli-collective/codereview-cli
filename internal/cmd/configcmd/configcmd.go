@@ -2,7 +2,6 @@
 package configcmd
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,12 +15,12 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
-	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -54,17 +53,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Short: "Show the resolved cr profile configuration",
 		Args:  exitcode.NoArgs("config show takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			path, err := configPath(opts)
+			_, cfg, profileName, profile, err := loadActiveProfile(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
-			}
-			profileName, profile, err := config.ResolveProfile(cfg, opts.Profile)
-			if err != nil {
-				return cmderr.Config(err)
+				return err
 			}
 			resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 			if err != nil {
@@ -100,13 +91,12 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			show.ActiveSecretsProfile = resolvedSecretsProfileViewPtr(resolvedSecretsProfile)
 			show.SecretsProfiles = config.EffectiveSecretsProfiles(cfg)
 			show.AgentSources = agents.InspectProfileSources(profile.AgentSources)
-			if jsonOutput {
-				return view.RenderConfigJSON(opts.Stdout, show)
-			}
-			return view.RenderConfigText(opts.Stdout, show)
+			return view.Render(opts.Stdout, jsonOutput, show, func(w io.Writer) error {
+				return view.RenderConfigText(w, show)
+			})
 		},
 	}
-	showCmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(showCmd, &jsonOutput)
 
 	var pathJSON bool
 	pathCmd := &cobra.Command{
@@ -114,7 +104,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Short: "Show the resolved cr config path",
 		Args:  exitcode.NoArgs("config path takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
-			path, err := configPath(opts)
+			path, err := cmdruntime.ConfigPath(opts)
 			if err != nil {
 				return exitcode.AuthConfig(err)
 			}
@@ -122,13 +112,12 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				ConfigPath: path,
 				ConfigDir:  filepath.Dir(path),
 			}
-			if pathJSON {
-				return view.RenderConfigPathJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigPathText(opts.Stdout, result)
+			return view.Render(opts.Stdout, pathJSON, result, func(w io.Writer) error {
+				return view.RenderConfigPathText(w, result)
+			})
 		},
 	}
-	pathCmd.Flags().BoolVar(&pathJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(pathCmd, &pathJSON)
 
 	routeCmd := &cobra.Command{
 		Use:   "route",
@@ -144,22 +133,17 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Short: "List repository profile routes",
 		Args:  exitcode.NoArgs("config route list takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
-			path, err := configPath(opts)
+			_, cfg, err := loadConfig(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
+				return err
 			}
 			result := view.ConfigRoutes{Routes: configRoutesView(configedit.CanonicalRepositoryRoutes(cfg.RepositoryProfiles))}
-			if routeListJSON {
-				return view.RenderConfigRoutesJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigRoutesText(opts.Stdout, result)
+			return view.Render(opts.Stdout, routeListJSON, result, func(w io.Writer) error {
+				return view.RenderConfigRoutesText(w, result)
+			})
 		},
 	}
-	routeListCmd.Flags().BoolVar(&routeListJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(routeListCmd, &routeListJSON)
 
 	var routeSetHost string
 	var routeSetNamespace string
@@ -205,13 +189,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Short: "Remove repository profile routes",
 		Args:  exitcode.NoArgs("config route unset takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			path, err := configPath(opts)
+			path, cfg, err := loadConfig(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
+				return err
 			}
 			spec, err := parseConfigRouteSpec(routeUnsetHost, routeUnsetNamespace, routeUnsetRepos)
 			if err != nil {
@@ -273,13 +253,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return exitcode.Usage(err)
 			}
-			path, err := configPath(opts)
+			_, cfg, err := loadConfig(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
+				return err
 			}
 			resolution, err := config.ResolveProfileForRepositoryWithSource(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
 				Host:      ref.Host,
@@ -293,13 +269,12 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, resolution.Profile.Git.Host))
 			}
 			result := configResolveProfileView(args[0], resolution)
-			if resolveProfileJSON {
-				return view.RenderConfigResolveProfileJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigResolveProfileText(opts.Stdout, result)
+			return view.Render(opts.Stdout, resolveProfileJSON, result, func(w io.Writer) error {
+				return view.RenderConfigResolveProfileText(w, result)
+			})
 		},
 	}
-	resolveProfileCmd.Flags().BoolVar(&resolveProfileJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(resolveProfileCmd, &resolveProfileJSON)
 
 	agentSourceCmd := &cobra.Command{
 		Use:   "agent-source",
@@ -320,13 +295,12 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 				return err
 			}
 			result := configAgentSourcesView(profileName, profile.AgentSources)
-			if agentSourceListJSON {
-				return view.RenderConfigAgentSourcesJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigAgentSourcesText(opts.Stdout, result)
+			return view.Render(opts.Stdout, agentSourceListJSON, result, func(w io.Writer) error {
+				return view.RenderConfigAgentSourcesText(w, result)
+			})
 		},
 	}
-	agentSourceListCmd.Flags().BoolVar(&agentSourceListJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(agentSourceListCmd, &agentSourceListJSON)
 
 	agentSourceAddCmd := &cobra.Command{
 		Use:   "add <path>",
@@ -386,55 +360,55 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Short: "Clear stored credentials declared by the active profile",
 		Args:  exitcode.NoArgs("config clear takes no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			logger := newProgressLogger(opts)
+			logger := root.NewProgressLogger(opts)
 			mode := "live"
 			if clearDryRun {
 				mode = "dry-run"
 			}
 			modeSpan := logger.Start("config.clear", "mode", mode)
-			modeSpan.End(nil)
+			_ = modeSpan.End(nil)
 			loadSpan := logger.Start("config.clear", "load_config", "active-profile")
-			path, err := configPath(opts)
+			path, err := cmdruntime.ConfigPath(opts)
 			if err != nil {
-				return exitcode.AuthConfig(endProgressSpan(loadSpan, err))
+				return exitcode.AuthConfig(loadSpan.End(err))
 			}
 			cfg, err := config.Load(path)
 			if err != nil {
-				return cmderr.Config(endProgressSpan(loadSpan, err))
+				return cmderr.Config(loadSpan.End(err))
 			}
-			loadSpan.End(nil)
+			_ = loadSpan.End(nil)
 			profileSpan := logger.Start("config.clear", "resolve_profile", "active-profile")
 			profileName, profile, err := config.ResolveProfile(cfg, opts.Profile)
 			if err != nil {
-				return cmderr.Config(endProgressSpan(profileSpan, err))
+				return cmderr.Config(profileSpan.End(err))
 			}
 			resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForProfile(cfg, profile)
 			if err != nil {
-				return cmderr.Config(endProgressSpan(profileSpan, err))
+				return cmderr.Config(profileSpan.End(err))
 			}
 			refs, err := config.CredentialRefs(profile)
 			if err != nil {
-				return cmderr.Config(endProgressSpan(profileSpan, err))
+				return cmderr.Config(profileSpan.End(err))
 			}
 			profiles, err := distinctCredentialProfiles(refs)
 			if err != nil {
-				return cmderr.Credential(endProgressSpan(profileSpan, err))
+				return cmderr.Credential(profileSpan.End(err))
 			}
-			profileSpan.End(nil)
+			_ = profileSpan.End(nil)
 			storeSpan := logger.Start("config.clear", "open_credential_store", "active-profile")
 			store, err := credentials.OpenResolvedStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 			if err != nil {
 				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
-					return cmderr.Config(endProgressSpan(storeSpan, err))
+					return cmderr.Config(storeSpan.End(err))
 				}
-				return cmderr.Credential(endProgressSpan(storeSpan, err))
+				return cmderr.Credential(storeSpan.End(err))
 			}
 			defer store.Close()
 			backend, source, err := backendMetadata(store, opts.Backend, cmderr.BackendFlagChanged(cmd), cfg, resolvedSecretsProfile)
 			if err != nil {
-				return cmderr.Credential(endProgressSpan(storeSpan, err))
+				return cmderr.Credential(storeSpan.End(err))
 			}
-			storeSpan.End(nil)
+			_ = storeSpan.End(nil)
 			result := view.ConfigClear{
 				Backend:              string(backend),
 				BackendSource:        string(source),
@@ -445,21 +419,21 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			for _, credentialProfile := range profiles {
 				keys, err := clearCredentialBundle(store, credentialProfile.Profile, clearDryRun)
 				if err != nil {
-					return cmderr.Credential(endProgressSpan(clearSpan, err))
+					return cmderr.Credential(clearSpan.End(err))
 				}
 				result.Cleared = append(result.Cleared, view.ClearedCredentialRef{
 					Ref:  credentialProfile.Full,
 					Keys: keys,
 				})
 			}
-			clearSpan.End(nil)
+			_ = clearSpan.End(nil)
 			if clearAll {
 				configSpan := logger.Start("config.clear", "remove_profile_config", profileName)
 				change, err := clearProfileFromConfig(path, cfg, profileName, clearDryRun)
 				if err != nil {
-					return endProgressSpan(configSpan, fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err))
+					return configSpan.End(fmt.Errorf("config clear --all credentials already cleared for profile %q (%s), but config reset failed: %w", profileName, credentialRefList(profiles), err))
 				}
-				configSpan.End(nil)
+				_ = configSpan.End(nil)
 				result.ConfigProfileRemoved = change.profileRemoved
 				result.ConfigPathRemoved = change.configPathRemoved
 
@@ -475,43 +449,26 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 					if clearDryRun {
 						cacheErr = fmt.Errorf("config clear --all --dry-run inspected profile %q but cache preview failed for %s: %w", profileName, cachePath, err)
 					}
-					if clearJSON {
-						if renderErr := view.RenderConfigClearJSON(opts.Stdout, result); renderErr != nil {
-							return endProgressSpan(cacheSpan, renderErr)
-						}
-					} else if renderErr := view.RenderConfigClearText(opts.Stdout, result); renderErr != nil {
-						return endProgressSpan(cacheSpan, renderErr)
+					if renderErr := view.Render(opts.Stdout, clearJSON, result, func(w io.Writer) error {
+						return view.RenderConfigClearText(w, result)
+					}); renderErr != nil {
+						return cacheSpan.End(renderErr)
 					}
-					return endProgressSpan(cacheSpan, cacheErr)
+					return cacheSpan.End(cacheErr)
 				}
-				cacheSpan.End(nil)
+				_ = cacheSpan.End(nil)
 			}
-			if clearJSON {
-				return view.RenderConfigClearJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigClearText(opts.Stdout, result)
+			return view.Render(opts.Stdout, clearJSON, result, func(w io.Writer) error {
+				return view.RenderConfigClearText(w, result)
+			})
 		},
 	}
 	clearCmd.Flags().BoolVar(&clearAll, "all", false, "Also remove the active profile from config and clear disposable cache")
-	clearCmd.Flags().BoolVar(&clearJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(clearCmd, &clearJSON)
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
 	configCmd.AddCommand(showCmd, pathCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsProfileCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
-}
-
-func newProgressLogger(opts *root.Options) *progress.Logger {
-	if opts == nil {
-		return progress.New(nil, true, nil)
-	}
-	return progress.New(opts.Stderr, opts.Quiet, nil)
-}
-
-func endProgressSpan(span *progress.Span, err error) error {
-	if span != nil {
-		span.End(err)
-	}
-	return err
 }
 
 func newRetentionCommand(opts *root.Options) *cobra.Command {
@@ -529,22 +486,17 @@ func newRetentionCommand(opts *root.Options) *cobra.Command {
 		Short: "Show data retention configuration",
 		Args:  exitcode.NoArgs("config retention get takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
-			path, err := configPath(opts)
+			_, cfg, err := loadConfig(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
+				return err
 			}
 			result := view.NewConfigRetention(cfg.Data.Retention)
-			if getJSON {
-				return view.RenderConfigRetentionJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigRetentionText(opts.Stdout, result)
+			return view.Render(opts.Stdout, getJSON, result, func(w io.Writer) error {
+				return view.RenderConfigRetentionText(w, result)
+			})
 		},
 	}
-	getCmd.Flags().BoolVar(&getJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(getCmd, &getJSON)
 
 	var setMaxAgeDays int
 	var setEnforcement string
@@ -558,13 +510,9 @@ func newRetentionCommand(opts *root.Options) *cobra.Command {
 			if !maxAgeChanged && !enforcementChanged {
 				return exitcode.Usage(fmt.Errorf("config retention set requires --max-age-days or --enforcement"))
 			}
-			path, err := configPath(opts)
+			path, cfg, err := loadConfig(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
+				return err
 			}
 			retention := cfg.Data.Retention
 			if maxAgeChanged {
@@ -599,13 +547,9 @@ func newRetentionCommand(opts *root.Options) *cobra.Command {
 		Short: "Reset data retention to defaults",
 		Args:  exitcode.NoArgs("config retention reset takes no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
-			path, err := configPath(opts)
+			path, cfg, err := loadConfig(opts)
 			if err != nil {
-				return exitcode.AuthConfig(err)
-			}
-			cfg, err := config.Load(path)
-			if err != nil {
-				return cmderr.Config(err)
+				return err
 			}
 			retention := config.DefaultRetentionConfig()
 			cfg.Data.Retention = retention
@@ -647,13 +591,12 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 				return err
 			}
 			result := modelMapResult(profileName, profile)
-			if listJSON {
-				return renderModelJSON(opts.Stdout, result)
-			}
-			return renderModelMapText(opts.Stdout, result)
+			return view.Render(opts.Stdout, listJSON, result, func(w io.Writer) error {
+				return renderModelMapText(w, result)
+			})
 		},
 	}
-	listCmd.Flags().BoolVar(&listJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(listCmd, &listJSON)
 
 	setCmd := &cobra.Command{
 		Use:   "set <tier> <model>",
@@ -787,13 +730,12 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 				Model:         resolved.Model,
 				Source:        string(resolved.Source),
 			}
-			if resolveJSON {
-				return renderModelJSON(opts.Stdout, result)
-			}
-			return renderModelResolveText(opts.Stdout, result)
+			return view.Render(opts.Stdout, resolveJSON, result, func(w io.Writer) error {
+				return renderModelResolveText(w, result)
+			})
 		},
 	}
-	resolveCmd.Flags().BoolVar(&resolveJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(resolveCmd, &resolveJSON)
 
 	modelsCmd.AddCommand(listCmd, setCmd, unsetCmd, resetCmd, resolveCmd)
 	llmCmd.AddCommand(modelsCmd)
@@ -855,7 +797,7 @@ func configAgentSourcesView(profileName string, sources []string) view.ConfigAge
 }
 
 func loadConfig(opts *root.Options) (string, config.File, error) {
-	path, err := configPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return "", config.File{}, exitcode.AuthConfig(err)
 	}
@@ -985,12 +927,6 @@ func modelMapResult(profileName string, profile config.Profile) modelMapResultVi
 	return result
 }
 
-func renderModelJSON(w io.Writer, value any) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
-}
-
 func renderModelMapText(w io.Writer, result modelMapResultView) error {
 	if _, err := fmt.Fprintf(w, "Profile: %s\n", result.ActiveProfile); err != nil {
 		return err
@@ -1039,13 +975,6 @@ func renderModelResolveText(w io.Writer, result modelResolveResult) error {
 type configClearChange struct {
 	profileRemoved    string
 	configPathRemoved string
-}
-
-func configPath(opts *root.Options) (string, error) {
-	if opts != nil && opts.ConfigPath != "" {
-		return opts.ConfigPath, nil
-	}
-	return config.Path()
 }
 
 func backendMetadata(store *credstore.Store, flagValue string, flagSet bool, cfg config.File, resolvedSecretsProfile credentials.ResolvedSecretsProfile) (credstore.Backend, credstore.Source, error) {

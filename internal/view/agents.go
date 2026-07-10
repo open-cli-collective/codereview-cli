@@ -1,7 +1,6 @@
 package view
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -140,9 +139,7 @@ func RenderAgentsListText(w io.Writer, result AgentsList) error {
 
 // RenderAgentsListJSON writes the agent list as indented JSON.
 func RenderAgentsListJSON(w io.Writer, result AgentsList) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // RenderAgentsShowText writes a stable human-readable agent detail.
@@ -209,9 +206,7 @@ func RenderAgentsShowText(w io.Writer, result AgentsShow) error {
 
 // RenderAgentsShowJSON writes the agent detail as indented JSON.
 func RenderAgentsShowJSON(w io.Writer, result AgentsShow) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 func trustNote(catalog agents.Catalog) string {

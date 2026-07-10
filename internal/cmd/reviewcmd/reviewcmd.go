@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -99,7 +100,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
 	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Named LLM session to reuse for live reviews")
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	cmd.Flags().StringVar(&flags.selectionModel, "selection-model", "", "Override selection model for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionEffort, "selection-effort", "", "Override selection effort for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionPrompt, "selection-prompt", "", "Override selection instructions from a file for dry-run review")
@@ -217,23 +218,23 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		failOn = &threshold
 	}
 
-	logger := newProgressLogger(opts)
+	logger := root.NewProgressLogger(opts)
 	configSpan := logger.Start("review", "load_config", "config")
 	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
-		return exitcode.AuthConfig(endProgressSpan(configSpan, err))
+		return exitcode.AuthConfig(configSpan.End(err))
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
-		return cmderr.Config(endProgressSpan(configSpan, err))
+		return cmderr.Config(configSpan.End(err))
 	}
-	configSpan.End(nil)
+	_ = configSpan.End(nil)
 	parseSpan := logger.Start("review", "parse_pr", "pr")
 	ref, err := prref.ParseGitHubPullURL(prArg)
 	if err != nil {
-		return exitcode.Usage(endProgressSpan(parseSpan, err))
+		return exitcode.Usage(parseSpan.End(err))
 	}
-	parseSpan.End(nil)
+	_ = parseSpan.End(nil)
 	profileSpan := logger.Start("review", "resolve_profile", "profile")
 	profileName, profile, err := config.ResolveProfileForRepository(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
 		Host:      ref.Host,
@@ -241,12 +242,12 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		Repo:      ref.Repo,
 	})
 	if err != nil {
-		return cmderr.Config(endProgressSpan(profileSpan, err))
+		return cmderr.Config(profileSpan.End(err))
 	}
 	if !prref.SameHost(ref.Host, profile.Git.Host) {
-		return exitcode.Usage(endProgressSpan(profileSpan, fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host)))
+		return exitcode.Usage(profileSpan.End(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host)))
 	}
-	profileSpan.End(nil)
+	_ = profileSpan.End(nil)
 
 	runtimeReq := reviewruntime.OpenRequest{
 		Config:                            cfg,
@@ -267,9 +268,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(ctx, runtimeReq)
 	if err != nil {
-		return endProgressSpan(runtimeSpan, cmdruntime.MapRunError(err))
+		return runtimeSpan.End(cmdruntime.MapRunError(err))
 	}
-	runtimeSpan.End(nil)
+	_ = runtimeSpan.End(nil)
 	if runtime.Cleanup != nil {
 		defer runtime.Cleanup()
 	}
@@ -308,23 +309,21 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	execSpan := logger.Start("review", "execute_dry_run", "pr")
 	result, err := runtime.Runner.DryRun(ctx, pipelineReq)
 	if err != nil {
-		return endProgressSpan(execSpan, cmdruntime.MapRunError(err))
+		return execSpan.End(cmdruntime.MapRunError(err))
 	}
-	execSpan.End(nil)
+	_ = execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
 	rendered, err := newReviewDryRun(result)
 	if err != nil {
-		return endProgressSpan(renderSpan, err)
+		return renderSpan.End(err)
 	}
-	if flags.jsonOutput {
-		err = view.RenderReviewDryRunJSON(opts.Stdout, rendered)
-	} else {
-		err = view.RenderReviewDryRunText(opts.Stdout, rendered)
-	}
+	err = view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
+		return view.RenderReviewDryRunText(w, rendered)
+	})
 	if err != nil {
-		return endProgressSpan(renderSpan, err)
+		return renderSpan.End(err)
 	}
-	renderSpan.End(nil)
+	_ = renderSpan.End(nil)
 	if result.FailOnTriggered && failOn != nil {
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
 	}
@@ -389,20 +388,18 @@ func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, f
 	execSpan := logger.Start("review", "execute_live", "pr")
 	result, err := runner.Live(ctx, req, reviewrun.Flags{Rerun: flags.rerun, RetryPosts: flags.retryPosts})
 	if err != nil {
-		return endProgressSpan(execSpan, cmdruntime.MapRunError(err))
+		return execSpan.End(cmdruntime.MapRunError(err))
 	}
-	execSpan.End(nil)
+	_ = execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
 	rendered := newReviewLive(result)
-	if flags.jsonOutput {
-		err = view.RenderReviewLiveJSON(opts.Stdout, rendered)
-	} else {
-		err = view.RenderReviewLiveText(opts.Stdout, rendered)
-	}
+	err = view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
+		return view.RenderReviewLiveText(w, rendered)
+	})
 	if err != nil {
-		return endProgressSpan(renderSpan, err)
+		return renderSpan.End(err)
 	}
-	renderSpan.End(nil)
+	_ = renderSpan.End(nil)
 	if result.ExitCode != exitcode.Success {
 		return exitcode.With(result.ExitCode, liveResultError(result))
 	}

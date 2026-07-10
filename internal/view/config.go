@@ -2,7 +2,6 @@
 package view
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -257,9 +256,7 @@ func renderConfigModelMap(w io.Writer, llm config.LLMConfig) error {
 
 // RenderConfigJSON writes the config summary as indented JSON.
 func RenderConfigJSON(w io.Writer, show ConfigShow) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(show)
+	return RenderJSON(w, show)
 }
 
 // ConfigPath is the presentation model for `cr config path`.
@@ -278,9 +275,7 @@ func RenderConfigPathText(w io.Writer, result ConfigPath) error {
 
 // RenderConfigPathJSON writes the config-path summary as indented JSON.
 func RenderConfigPathJSON(w io.Writer, result ConfigPath) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // ConfigRetention is the presentation model for `cr config retention`.
@@ -314,9 +309,7 @@ func RenderConfigRetentionText(w io.Writer, result ConfigRetention) error {
 
 // RenderConfigRetentionJSON writes the retention summary as indented JSON.
 func RenderConfigRetentionJSON(w io.Writer, result ConfigRetention) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // ConfigRoutes is the presentation model for `cr config route list`.
@@ -385,9 +378,7 @@ func RenderConfigSecretsProfilesText(w io.Writer, result ConfigSecretsProfiles) 
 
 // RenderConfigSecretsProfilesJSON writes the credential-store listing as indented JSON.
 func RenderConfigSecretsProfilesJSON(w io.Writer, result ConfigSecretsProfiles) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // RenderConfigSecretsProfileText writes one stable human-readable credential-store summary.
@@ -433,9 +424,7 @@ func RenderConfigSecretsProfileText(w io.Writer, profile ConfigSecretsProfile) e
 
 // RenderConfigSecretsProfileJSON writes one credential-store summary as indented JSON.
 func RenderConfigSecretsProfileJSON(w io.Writer, profile ConfigSecretsProfile) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(profile)
+	return RenderJSON(w, profile)
 }
 
 // ConfigRoute is one repository-profile route.
@@ -469,9 +458,7 @@ func RenderConfigRoutesText(w io.Writer, result ConfigRoutes) error {
 
 // RenderConfigRoutesJSON writes the route listing as indented JSON.
 func RenderConfigRoutesJSON(w io.Writer, result ConfigRoutes) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // ConfigResolveProfile is the presentation model for `cr config resolve-profile`.
@@ -508,9 +495,7 @@ func RenderConfigResolveProfileText(w io.Writer, result ConfigResolveProfile) er
 
 // RenderConfigResolveProfileJSON writes the resolution summary as indented JSON.
 func RenderConfigResolveProfileJSON(w io.Writer, result ConfigResolveProfile) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // ConfigAgentSources is the presentation model for `cr config agent-source`.
@@ -541,9 +526,7 @@ func RenderConfigAgentSourcesText(w io.Writer, result ConfigAgentSources) error 
 
 // RenderConfigAgentSourcesJSON writes the agent-source list as indented JSON.
 func RenderConfigAgentSourcesJSON(w io.Writer, result ConfigAgentSources) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // ConfigClear is the presentation model for `cr config clear`.
@@ -634,9 +617,7 @@ func RenderConfigClearText(w io.Writer, result ConfigClear) error {
 
 // RenderConfigClearJSON writes the clear summary as indented JSON.
 func RenderConfigClearJSON(w io.Writer, result ConfigClear) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // CredentialWrite is the JSON envelope for `cr set-credential`.
@@ -653,9 +634,7 @@ type CredentialWrite struct {
 
 // RenderCredentialWriteJSON writes a set-credential result envelope.
 func RenderCredentialWriteJSON(w io.Writer, result CredentialWrite) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 func writeKV(w io.Writer, key, value string) error {

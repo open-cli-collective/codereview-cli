@@ -2,6 +2,7 @@ package configcmd
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/open-cli-collective/cli-common/credstore"
@@ -35,13 +36,12 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 				return err
 			}
 			result := view.ConfigSecretsProfiles{Profiles: configSecretsProfilesView(config.EffectiveSecretsProfiles(cfg))}
-			if listJSON {
-				return view.RenderConfigSecretsProfilesJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigSecretsProfilesText(opts.Stdout, result)
+			return view.Render(opts.Stdout, listJSON, result, func(w io.Writer) error {
+				return view.RenderConfigSecretsProfilesText(w, result)
+			})
 		},
 	}
-	listCmd.Flags().BoolVar(&listJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(listCmd, &listJSON)
 
 	var getJSON bool
 	getCmd := &cobra.Command{
@@ -58,13 +58,12 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 				return cmderr.Config(err)
 			}
 			result := configSecretsProfileView(cfg, profile)
-			if getJSON {
-				return view.RenderConfigSecretsProfileJSON(opts.Stdout, result)
-			}
-			return view.RenderConfigSecretsProfileText(opts.Stdout, result)
+			return view.Render(opts.Stdout, getJSON, result, func(w io.Writer) error {
+				return view.RenderConfigSecretsProfileText(w, result)
+			})
 		},
 	}
-	getCmd.Flags().BoolVar(&getJSON, "json", false, "Emit JSON")
+	root.AddJSONFlag(getCmd, &getJSON)
 
 	secretsCmd.AddCommand(listCmd, getCmd)
 	return secretsCmd
@@ -88,8 +87,8 @@ func configSecretsProfileView(cfg config.File, profile config.EffectiveSecretsPr
 	}
 	if configured, ok := configuredOnePasswordSecretsProfile(cfg, profile); ok {
 		onePassword := &view.ConfigSecretsProfileOnePassword{
-			Timeout:         configured.Backend.OnePassword.Timeout,
-			VaultID:         configured.Backend.OnePassword.VaultID,
+			Timeout: configured.Backend.OnePassword.Timeout,
+			VaultID: configured.Backend.OnePassword.VaultID,
 		}
 		switch configured.Backend.Kind {
 		case config.SecretsBackendKind(credstore.BackendOP):

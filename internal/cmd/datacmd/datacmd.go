@@ -3,9 +3,8 @@ package datacmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
+	"io"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -54,10 +53,9 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 				return err
 			}
 			result := view.NewDataShow(stats)
-			if flags.jsonOutput {
-				return view.RenderDataShowJSON(opts.Stdout, result)
-			}
-			return view.RenderDataShowText(opts.Stdout, result)
+			return view.Render(opts.Stdout, flags.jsonOutput, result, func(w io.Writer) error {
+				return view.RenderDataShowText(w, result)
+			})
 		},
 	}
 	addJSONFlag(cmd, &flags)
@@ -72,7 +70,7 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 		Short: "Prune old local review data",
 		Args:  exitcode.NoArgs("data prune accepts no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			logger := newProgressLogger(opts)
+			logger := root.NewProgressLogger(opts)
 			olderThanChanged := cmd.Flags().Changed("older-than")
 			keepLastChanged := cmd.Flags().Changed("keep-last")
 			if flags.olderThan > 0 && keepLastChanged {
@@ -110,19 +108,18 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 				legacySpan := logger.Start("data.prune", "check_legacy", "data-root")
 				legacyExists, err := statepaths.LegacyDataRootExists(layout)
 				if err != nil {
-					return endProgressSpan(legacySpan, err)
+					return legacySpan.End(err)
 				}
 				if legacyExists {
 					legacyRoot := statepaths.LegacyDataRoot(layout)
 					result.Warnings = append(result.Warnings, fmt.Sprintf("legacy data exists at %s or %s.migrating; dry-run does not migrate it, so this preview excludes legacy runs until a write command migrates them", legacyRoot, legacyRoot))
 				}
-				legacySpan.End(nil)
+				_ = legacySpan.End(nil)
 			}
 			rendered := view.NewDataPrune(result)
-			if flags.jsonOutput {
-				return view.RenderDataPruneJSON(opts.Stdout, rendered)
-			}
-			return view.RenderDataPruneText(opts.Stdout, rendered)
+			return view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
+				return view.RenderDataPruneText(w, rendered)
+			})
 		},
 	}
 	addJSONFlag(cmd, &flags)
@@ -139,27 +136,26 @@ func newPurgeCommand(opts *root.Options) *cobra.Command {
 		Short: "Purge all local review data",
 		Args:  exitcode.NoArgs("data purge accepts no arguments"),
 		RunE: func(_ *cobra.Command, _ []string) error {
-			logger := newProgressLogger(opts)
+			logger := root.NewProgressLogger(opts)
 			if flags.yes && flags.dryRun {
 				return exitcode.Usage(fmt.Errorf("--yes and --dry-run are mutually exclusive"))
 			}
 			layoutSpan := logger.Start("data.purge", "resolve_layout", "data-root")
 			layout, err := statepaths.DefaultLayout()
 			if err != nil {
-				return endProgressSpan(layoutSpan, err)
+				return layoutSpan.End(err)
 			}
-			layoutSpan.End(nil)
+			_ = layoutSpan.End(nil)
 			purgeSpan := logger.Start("data.purge", "purge_root", "data-root")
 			result, err := datalifecycle.Purge(layout, flags.dryRun, flags.yes, nil)
 			if err != nil {
-				return exitcode.Usage(endProgressSpan(purgeSpan, err))
+				return exitcode.Usage(purgeSpan.End(err))
 			}
-			purgeSpan.End(nil)
+			_ = purgeSpan.End(nil)
 			rendered := view.NewDataPurge(result)
-			if flags.jsonOutput {
-				return view.RenderDataPurgeJSON(opts.Stdout, rendered)
-			}
-			return view.RenderDataPurgeText(opts.Stdout, rendered)
+			return view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
+				return view.RenderDataPurgeText(w, rendered)
+			})
 		},
 	}
 	addJSONFlag(cmd, &flags)
@@ -169,36 +165,18 @@ func newPurgeCommand(opts *root.Options) *cobra.Command {
 }
 
 func addJSONFlag(cmd *cobra.Command, flags *commandFlags) {
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
 }
 
 func openStore(ctx context.Context, logger *progress.Logger, command string, migrateLegacyData bool) (statepaths.Layout, datalifecycle.Store, func(), error) {
-	layoutSpan := logger.Start(command, "resolve_layout", "data-root")
-	layout, err := statepaths.DefaultLayout()
+	layout, store, cleanup, err := ledger.OpenLedger(ctx, logger, command, "data-root", migrateLegacyData)
 	if err != nil {
-		return statepaths.Layout{}, nil, nil, endProgressSpan(layoutSpan, err)
+		return statepaths.Layout{}, nil, nil, err
 	}
-	layoutSpan.End(nil)
-	if migrateLegacyData {
-		migrateSpan := logger.Start(command, "migrate_legacy", "data-root")
-		if err := statepaths.MigrateLegacyDataRoot(layout); err != nil {
-			return statepaths.Layout{}, nil, nil, endProgressSpan(migrateSpan, err)
-		}
-		migrateSpan.End(nil)
+	if store == nil {
+		return layout, emptyLifecycleStore{}, cleanup, nil
 	}
-	ledgerSpan := logger.Start(command, "open_ledger", "data-root")
-	if _, err := os.Stat(layout.LedgerDB()); errors.Is(err, os.ErrNotExist) {
-		ledgerSpan.End(nil)
-		return layout, emptyLifecycleStore{}, func() {}, nil
-	} else if err != nil {
-		return statepaths.Layout{}, nil, nil, endProgressSpan(ledgerSpan, err)
-	}
-	store, err := ledger.Open(ctx, layout.LedgerDB())
-	if err != nil {
-		return statepaths.Layout{}, nil, nil, endProgressSpan(ledgerSpan, err)
-	}
-	ledgerSpan.End(nil)
-	return layout, store, func() { _ = store.Close() }, nil
+	return layout, store, cleanup, nil
 }
 
 type lifecycleProgressReporter struct {
@@ -207,22 +185,12 @@ type lifecycleProgressReporter struct {
 }
 
 func (r lifecycleProgressReporter) Start(op, target string) datalifecycle.ProgressSpan {
-	return r.logger.Start(r.command, op, target)
+	return lifecycleProgressSpan{r.logger.Start(r.command, op, target)}
 }
 
-func newProgressLogger(opts *root.Options) *progress.Logger {
-	if opts == nil {
-		return progress.New(nil, true, nil)
-	}
-	return progress.New(opts.Stderr, opts.Quiet, nil)
-}
+type lifecycleProgressSpan struct{ *progress.Span }
 
-func endProgressSpan(span *progress.Span, err error) error {
-	if span != nil {
-		span.End(err)
-	}
-	return err
-}
+func (s lifecycleProgressSpan) End(err error) { _ = s.Span.End(err) }
 
 type emptyLifecycleStore struct{}
 

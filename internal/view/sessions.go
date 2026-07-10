@@ -1,7 +1,6 @@
 package view
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -94,9 +93,7 @@ func RenderSessionsListText(w io.Writer, result SessionsList) error {
 
 // RenderSessionsListJSON writes a named-session list as indented JSON.
 func RenderSessionsListJSON(w io.Writer, result SessionsList) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // RenderSessionsShowText writes stable human-readable session details.
@@ -131,9 +128,7 @@ func RenderSessionsShowText(w io.Writer, result SessionsShow) error {
 
 // RenderSessionsShowJSON writes a named-session detail as indented JSON.
 func RenderSessionsShowJSON(w io.Writer, result SessionsShow) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 // RenderSessionsDeleteText writes a named-session deletion result.
@@ -144,9 +139,7 @@ func RenderSessionsDeleteText(w io.Writer, result SessionsDelete) error {
 
 // RenderSessionsDeleteJSON writes a named-session deletion result as JSON.
 func RenderSessionsDeleteJSON(w io.Writer, result SessionsDelete) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(result)
+	return RenderJSON(w, result)
 }
 
 func newSessionSummary(session ledger.NamedSession) SessionSummary {

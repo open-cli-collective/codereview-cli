@@ -19,7 +19,7 @@ func TestLoggerStartAndEndFormatsLines(t *testing.T) {
 	logger := New(&out, false, clock.Now)
 
 	span := logger.Start("benchmark.run", "run_suite", "suite=one")
-	span.End(nil)
+	_ = span.End(nil)
 
 	got := out.String()
 	if !strings.Contains(got, `cr progress event=start command="benchmark.run" op="run_suite" target="suite\=one"`) {
@@ -41,7 +41,7 @@ func TestLoggerEndErrorSanitizesSummary(t *testing.T) {
 	logger := New(&out, false, clock.Now)
 
 	span := logger.Start("config.clear", "cache_cleanup", "session")
-	span.End(errors.New("failed to remove /tmp/private/file\ntry again"))
+	_ = span.End(errors.New("failed to remove /tmp/private/file\ntry again"))
 
 	got := out.String()
 	if !strings.Contains(got, `event=error`) || !strings.Contains(got, `status=error`) {
@@ -86,7 +86,7 @@ func TestDisabledLoggerWritesNothing(t *testing.T) {
 	logger := New(&out, true, time.Now)
 
 	span := logger.Start("sessions.delete", "delete", "session")
-	span.End(nil)
+	_ = span.End(nil)
 
 	if out.Len() != 0 {
 		t.Fatalf("output = %q, want empty", out.String())
@@ -105,8 +105,8 @@ func TestEndOnlyWritesOnce(t *testing.T) {
 	logger := New(&out, false, clock.Now)
 
 	span := logger.Start("data.prune", "prune", "data-root")
-	span.End(nil)
-	span.End(nil)
+	_ = span.End(nil)
+	_ = span.End(nil)
 
 	if got := strings.Count(out.String(), "event=finish"); got != 1 {
 		t.Fatalf("finish count = %d, want 1; output = %q", got, out.String())

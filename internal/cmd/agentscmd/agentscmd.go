@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -61,10 +63,9 @@ func newListCommand(opts *root.Options, factory ProviderFactory) *cobra.Command 
 				return err
 			}
 			result := view.NewAgentsList(catalog)
-			if flags.jsonOutput {
-				return view.RenderAgentsListJSON(opts.Stdout, result)
-			}
-			return view.RenderAgentsListText(opts.Stdout, result)
+			return view.Render(opts.Stdout, flags.jsonOutput, result, func(w io.Writer) error {
+				return view.RenderAgentsListText(w, result)
+			})
 		},
 	}
 	addCommonFlags(cmd, &flags)
@@ -91,10 +92,9 @@ func newShowCommand(opts *root.Options, factory ProviderFactory) *cobra.Command 
 				return exitcode.With(exitcode.Failure, fmt.Errorf("%w: %s", agents.ErrNotFound, args[0]))
 			}
 			result := view.NewAgentsShow(agent, catalog)
-			if flags.jsonOutput {
-				return view.RenderAgentsShowJSON(opts.Stdout, result)
-			}
-			return view.RenderAgentsShowText(opts.Stdout, result)
+			return view.Render(opts.Stdout, flags.jsonOutput, result, func(w io.Writer) error {
+				return view.RenderAgentsShowText(w, result)
+			})
 		},
 	}
 	addCommonFlags(cmd, &flags)
@@ -103,13 +103,13 @@ func newShowCommand(opts *root.Options, factory ProviderFactory) *cobra.Command 
 
 func addCommonFlags(cmd *cobra.Command, flags *commandFlags) {
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
-	cmd.Flags().BoolVar(&flags.jsonOutput, "json", false, "Emit JSON")
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
 }
 
 // buildCatalog loads config, resolves the active profile, optionally resolves a PR,
 // manages provider lifetime, and loads the trusted agent catalog.
 func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory ProviderFactory, flags commandFlags, prArg string) (agents.Catalog, error) {
-	path, err := configPath(opts)
+	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return agents.Catalog{}, exitcode.AuthConfig(err)
 	}
@@ -187,24 +187,15 @@ func mapLoadError(err error) error {
 		errors.Is(err, gitprovider.ErrConflict),
 		errors.Is(err, gitprovider.ErrStaleSHA):
 		return cmderr.Provider(err)
-	case errors.Is(err, agents.ErrInvalid):
-		return exitcode.Usage(err)
-	case errors.Is(err, agents.ErrUnsafeSource):
+	case errors.Is(err, agents.ErrInvalid), errors.Is(err, agents.ErrUnsafeSource):
 		return exitcode.Usage(err)
 	default:
 		return err
 	}
 }
 
-func configPath(opts *root.Options) (string, error) {
-	if opts != nil && opts.ConfigPath != "" {
-		return opts.ConfigPath, nil
-	}
-	return config.Path()
-}
-
 func newGitHubProvider(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
-	store, err := credentials.OpenStore(opts.Backend, backendFlagChanged(cmd), cfg)
+	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
 	if err != nil {
 		return nil, nil, cmderr.Credential(err)
 	}
@@ -217,8 +208,4 @@ func newGitHubProvider(cmd *cobra.Command, opts *root.Options, cfg config.File, 
 		return nil, nil, mapLoadError(err)
 	}
 	return client, func() { _ = store.Close() }, nil
-}
-
-func backendFlagChanged(cmd *cobra.Command) bool {
-	return cmderr.BackendFlagChanged(cmd)
 }
