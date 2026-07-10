@@ -44,6 +44,12 @@ var (
 	ErrUnsupported = errors.New("config: not supported in v1")
 )
 
+// IsConfigSelection reports whether err identifies an invalid or missing
+// configuration selection rather than a credential-store operation failure.
+func IsConfigSelection(err error) bool {
+	return errors.Is(err, ErrInvalid) || errors.Is(err, ErrProfileNotFound) || errors.Is(err, ErrSecretsStoreNotFound)
+}
+
 // RepositoryProfileAmbiguityError describes an ambiguous repository route match.
 type RepositoryProfileAmbiguityError struct {
 	Target   RepositoryTarget
@@ -2036,16 +2042,8 @@ func (i ProfileReviewerGitHubAppInstallation) normalized() ProfileReviewerGitHub
 func (g GitConfig) normalized() GitConfig {
 	g.Host = normalizeConfigHost(g.Host)
 	g.AuthMode = GitAuthMode(strings.TrimSpace(string(g.AuthMode)))
-	g.CredentialRef = strings.TrimSpace(g.CredentialRef)
-	g.Credential = g.Credential.normalized()
-	if g.Credential.Name == "" && g.CredentialRef != "" {
-		if g.Credential.Store == "" {
-			g.Credential.Store = LocalOSCredentialStoreID
-		}
-		g.Credential.Name = g.CredentialRef
-	}
-	g.CredentialRef = g.Credential.Name
-	g.GitHubApp = normalizeGitHubAppForAuth(g.AuthMode, g.GitHubApp)
+	g.CredentialRef, g.Credential = syncCredentialRef(g.CredentialRef, g.Credential)
+	g.GitHubApp = cloneGitHubAppConfig(g.GitHubApp)
 	return g
 }
 
@@ -2065,32 +2063,16 @@ func (r RepositoryAccessConfig) normalized() RepositoryAccessConfig {
 }
 
 func (r ReviewerCredentials) normalized() ReviewerCredentials {
-	r.CredentialRef = strings.TrimSpace(r.CredentialRef)
-	r.Credential = r.Credential.normalized()
-	if r.Credential.Name == "" && r.CredentialRef != "" {
-		if r.Credential.Store == "" {
-			r.Credential.Store = LocalOSCredentialStoreID
-		}
-		r.Credential.Name = r.CredentialRef
-	}
-	r.CredentialRef = r.Credential.Name
-	r.GitHubApp = normalizeGitHubAppForAuth(r.AuthMode, r.GitHubApp)
+	r.CredentialRef, r.Credential = syncCredentialRef(r.CredentialRef, r.Credential)
+	r.GitHubApp = cloneGitHubAppConfig(r.GitHubApp)
 	return r
 }
 
 func (r ReviewerEntity) normalized() ReviewerEntity {
 	r.Host = normalizeConfigHost(r.Host)
 	r.AuthMode = GitAuthMode(strings.TrimSpace(string(r.AuthMode)))
-	r.CredentialRef = strings.TrimSpace(r.CredentialRef)
-	r.Credential = r.Credential.normalized()
-	if r.Credential.Name == "" && r.CredentialRef != "" {
-		if r.Credential.Store == "" {
-			r.Credential.Store = LocalOSCredentialStoreID
-		}
-		r.Credential.Name = r.CredentialRef
-	}
-	r.CredentialRef = r.Credential.Name
-	r.GitHubApp = normalizeGitHubAppForAuth(r.AuthMode, r.GitHubApp)
+	r.CredentialRef, r.Credential = syncCredentialRef(r.CredentialRef, r.Credential)
+	r.GitHubApp = cloneGitHubAppConfig(r.GitHubApp)
 	r.DisplayName = strings.TrimSpace(r.DisplayName)
 	r.IdentityCache = strings.TrimSpace(r.IdentityCache)
 	return r
@@ -2108,35 +2090,17 @@ func (r ReviewerEntity) reviewerCredentials() *ReviewerCredentials {
 	}
 }
 
-func normalizeGitHubAppForAuth(authMode GitAuthMode, app *GitHubAppConfig) *GitHubAppConfig {
-	if app == nil {
-		return nil
-	}
-	normalized := GitHubAppConfig{AppID: strings.TrimSpace(app.AppID)}
-	if authMode != GitAuthModeGitHubApp {
-		return &normalized
-	}
-	return &normalized
-}
-
 func cloneGitHubAppConfig(app *GitHubAppConfig) *GitHubAppConfig {
 	if app == nil {
 		return nil
 	}
 	cloned := *app
+	cloned.AppID = strings.TrimSpace(cloned.AppID)
 	return &cloned
 }
 
 func (l LLMConfig) normalized() LLMConfig {
-	l.CredentialRef = strings.TrimSpace(l.CredentialRef)
-	l.Credential = l.Credential.normalized()
-	if l.Credential.Name == "" && l.CredentialRef != "" {
-		if l.Credential.Store == "" {
-			l.Credential.Store = LocalOSCredentialStoreID
-		}
-		l.Credential.Name = l.CredentialRef
-	}
-	l.CredentialRef = l.Credential.Name
+	l.CredentialRef, l.Credential = syncCredentialRef(l.CredentialRef, l.Credential)
 	l.ReviewerModelTier = ModelTier(strings.TrimSpace(string(l.ReviewerModelTier)))
 	if len(l.ModelMap) > 0 {
 		modelMap := make(ModelMap, len(l.ModelMap))
@@ -2146,6 +2110,18 @@ func (l LLMConfig) normalized() LLMConfig {
 		l.ModelMap = modelMap
 	}
 	return l
+}
+
+func syncCredentialRef(ref string, credential CredentialLocation) (string, CredentialLocation) {
+	ref = strings.TrimSpace(ref)
+	credential = credential.normalized()
+	if credential.Name == "" && ref != "" {
+		if credential.Store == "" {
+			credential.Store = LocalOSCredentialStoreID
+		}
+		credential.Name = ref
+	}
+	return credential.Name, credential
 }
 
 func (l LLMConfig) empty() bool {

@@ -118,7 +118,7 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 	}
 	store, err := credentials.OpenResolvedStore(opts.Backend, backendFlagChanged, cfg, resolvedStore)
 	if err != nil {
-		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) || errors.Is(err, config.ErrSecretsStoreNotFound) {
+		if config.IsConfigSelection(err) {
 			return result, cmderr.Config(err)
 		}
 		return result, cmderr.Credential(err)
@@ -5902,7 +5902,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			}
 			activeStore, err := openStore(entry)
 			if err != nil {
-				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+				if config.IsConfigSelection(err) {
 					return initWorkspaceDraft{}, cmderr.Config(err)
 				}
 				return initWorkspaceDraft{}, cmderr.Credential(err)
@@ -6056,7 +6056,7 @@ func collectInteractiveInitSessionSecrets(opts *root.Options, deps initDeps, pla
 		return openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, entry)
 	})
 	if err != nil {
-		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+		if config.IsConfigSelection(err) {
 			return initSessionPlan{}, cmderr.Config(err)
 		}
 		return initSessionPlan{}, cmderr.Credential(err)
@@ -6547,7 +6547,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 		for _, group := range groups {
 			store, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
 			if err != nil {
-				if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+				if config.IsConfigSelection(err) {
 					return cmderr.Config(err)
 				}
 				return cmderr.Credential(err)
@@ -6770,7 +6770,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		var err error
 		store, primaryResolved, err = openPrimaryStore()
 		if err != nil {
-			if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+			if config.IsConfigSelection(err) {
 				return cmderr.Config(err)
 			}
 			return cmderr.Credential(err)
@@ -6808,7 +6808,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 			if groupStore == nil || !sameInitCredentialStore(group.Resolved, primaryResolved) {
 				groupStore, err = openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsProfile: group.Resolved})
 				if err != nil {
-					if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) || errors.Is(err, config.ErrSecretsProfileNotFound) {
+					if config.IsConfigSelection(err) {
 						return cmderr.Config(err)
 					}
 					return cmderr.Credential(err)
