@@ -1,6 +1,6 @@
 //go:build !keyring_no1password
 
-package credentialcmd
+package initcmd
 
 func initOnePasswordBackendsAvailable() bool {
 	return true

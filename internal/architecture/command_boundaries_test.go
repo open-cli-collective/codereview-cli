@@ -43,6 +43,7 @@ func TestCommandPackageTestsKeepFeatureCommandImportsAtCommandTreeBoundaries(t *
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd":     "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd": "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/datacmd":       "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/initcmd":       "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/mecmd":         "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd":     "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/sessionscmd":   "command-surface noleak harness registers the command tree",
@@ -118,6 +119,8 @@ func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
 	allowedImports := map[string]bool{
 		"errors": true,
 		"fmt":    true,
+		"io":     true,
+		"os":     true,
 
 		"github.com/open-cli-collective/cli-common/credstore": true,
 
@@ -130,14 +133,19 @@ func TestCommandRuntimeDoesNotOwnApplicationRuntimeContracts(t *testing.T) {
 		modulePath + "/internal/gitprovider":  true,
 	}
 	allowedExports := map[string]bool{
-		"ConfigPath":            true,
-		"MapRunError":           true,
-		"MissingResponderError": true,
+		"ConfigPath":                true,
+		"MapRunError":               true,
+		"MissingResponderError":     true,
+		"ReadOptionalSecretIngress": true,
+		"ReadSecretIngress":         true,
 	}
 	allowedFunctions := map[string]bool{
-		"ConfigPath":            true,
-		"MapRunError":           true,
-		"MissingResponderError": true,
+		"ConfigPath":                true,
+		"ingressName":               true,
+		"MapRunError":               true,
+		"MissingResponderError":     true,
+		"ReadOptionalSecretIngress": true,
+		"ReadSecretIngress":         true,
 	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(cmdRuntimeDir, func(path string, entry fs.DirEntry, walkErr error) error {
