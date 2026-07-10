@@ -1404,12 +1404,10 @@ func TestBuildInteractiveInitWorkspaceCancelLeavesConfigAndKeyringUntouched(t *t
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
 	wantErr := errors.New("canceled")
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{}, wantErr
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		configPath:   func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{}, wantErr
+	})),
+		chooseMenuAction: profileThenSaveInitMenu()}, configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -1435,12 +1433,10 @@ func TestInitNonInteractiveBypassesInteractiveWorkspacePrompter(t *testing.T) {
 		Stdout: &bytes.Buffer{},
 		Stderr: &bytes.Buffer{},
 	}
-	deps := initDeps{
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			t.Fatal("interactive prompter called during non-interactive init")
-			return initDraft{}, nil
-		}),
-		configPath: func(*root.Options) (string, error) { return filepath.Join(t.TempDir(), "config.yml"), nil },
+	deps := initDeps{prompters: prompters{runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		t.Fatal("interactive prompter called during non-interactive init")
+		return initDraft{}, nil
+	})}, configPath: func(*root.Options) (string, error) { return filepath.Join(t.TempDir(), "config.yml"), nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -2095,11 +2091,10 @@ func TestEditInteractiveInitReviewerEntityStepUpdatesConfiguredEntity(t *testing
 	draft.ReviewerCredentialRef = "codereview/open-cli-collective-rianjs-bot-renamed"
 	draft.ReviewerDisplayName = "OC Collective bot"
 
-	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
-			draft.ActionTarget = "oc-collective-bot"
-			return draft, nil
-		}),
+	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{prompters: prompters{editReviewerEntity: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
+		draft.ActionTarget = "oc-collective-bot"
+		return draft, nil
+	})},
 	}, session)
 	if err != nil {
 		t.Fatalf("editInteractiveInitReviewerEntityStep: %v", err)
@@ -2164,11 +2159,10 @@ func TestEditInteractiveInitReviewerEntityStepDefaultsBlankRefToStandaloneEntity
 	draft.ReviewerCredentialRef = ""
 	draft.ReviewerDisplayName = "OC Collective bot"
 
-	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
-			draft.ActionTarget = "reviewer-github-app"
-			return draft, nil
-		}),
+	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{prompters: prompters{editReviewerEntity: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
+		draft.ActionTarget = "reviewer-github-app"
+		return draft, nil
+	})},
 	}, session)
 	if err != nil {
 		t.Fatalf("editInteractiveInitReviewerEntityStep: %v", err)
@@ -2222,10 +2216,9 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 	draft.ReviewerCredentialRef = ""
 	draft.ReviewerDisplayName = ""
 
-	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
-			return draft, nil
-		}),
+	next, stayInCategory, err := editInteractiveInitReviewerEntityStep(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{prompters: prompters{editReviewerEntity: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
+		return draft, nil
+	})},
 	}, session)
 	if err != nil {
 		t.Fatalf("editInteractiveInitReviewerEntityStep: %v", err)
@@ -2931,29 +2924,31 @@ func TestInitInteractivePromptDrivenFlowStillExportsReviewerNilAfterDraftInvento
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
 	var savedCfg config.File
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName:        "office",
-				GitHost:            "github.mycompany.com",
-				GitAuth:            string(config.GitAuthModePAT),
-				GitCredentialStore: config.LocalOSCredentialStoreID,
-				GitCredentialRef:   "codereview/office-git",
-				ReviewerEnabled:    false,
-				LLMProvider:        string(config.LLMProviderAnthropic),
-				LLMAuth:            string(config.LLMAuthSubscription),
-				LLMAdapter:         string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		configPath:   func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName:        "office",
+			GitHost:            "github.mycompany.com",
+			GitAuth:            string(config.GitAuthModePAT),
+			GitCredentialStore: config.LocalOSCredentialStoreID,
+			GitCredentialRef:   "codereview/office-git",
+			ReviewerEnabled:    false,
+			LLMProvider:        string(config.LLMProviderAnthropic),
+			LLMAuth:            string(config.LLMAuthSubscription),
+			LLMAdapter:         string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		}).PasteSecret}, configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
 		saveConfig: func(string, config.File) error { return nil },
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
-		},
+
 		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(map[string]map[string]string{
 				"office-git": {credentials.GitTokenKey: "existing-token"},
@@ -2986,26 +2981,39 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
 	var savedCfg config.File
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName:             "office",
-				GitHost:                 "github.mycompany.com",
-				GitAuth:                 string(config.GitAuthModePAT),
-				GitCredentialStore:      config.LocalOSCredentialStoreID,
-				GitCredentialRef:        "codereview/office-git",
-				ReviewerEnabled:         true,
-				ReviewerAuth:            string(config.GitAuthModeGitHubApp),
-				ReviewerGitHubAppID:     "12345",
-				ReviewerCredentialStore: config.LocalOSCredentialStoreID,
-				ReviewerCredentialRef:   "codereview/office-reviewer",
-				LLMProvider:             string(config.LLMProviderAnthropic),
-				LLMAuth:                 string(config.LLMAuthSubscription),
-				LLMAdapter:              string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		configPath:   func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName:             "office",
+			GitHost:                 "github.mycompany.com",
+			GitAuth:                 string(config.GitAuthModePAT),
+			GitCredentialStore:      config.LocalOSCredentialStoreID,
+			GitCredentialRef:        "codereview/office-git",
+			ReviewerEnabled:         true,
+			ReviewerAuth:            string(config.GitAuthModeGitHubApp),
+			ReviewerGitHubAppID:     "12345",
+			ReviewerCredentialStore: config.LocalOSCredentialStoreID,
+			ReviewerCredentialRef:   "codereview/office-reviewer",
+			LLMProvider:             string(config.LLMProviderAnthropic),
+			LLMAuth:                 string(config.LLMAuthSubscription),
+			LLMAdapter:              string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).PasteSecret}, configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -3013,12 +3021,7 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 			savedCfg = cloneInitConfigFile(cfg)
 			return nil
 		},
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{
-				initCredentialSecretActionKeep,
-				initCredentialSecretActionKeep,
-			},
-		},
+
 		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(map[string]map[string]string{
 				"office-git": {
@@ -3067,16 +3070,28 @@ func TestCollectInteractiveInitSecretsRecordsDraftWritesBeforeApply(t *testing.T
 	if err != nil {
 		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
 	}
-	deps := initDeps{
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{
-				initCredentialSecretActionSetNow,
-				initCredentialSecretActionSetNow,
-			},
-			sources: []initSecretSource{initSecretSourcePaste},
-			pastes:  []string{"new-token"},
+	deps := initDeps{prompters: prompters{chooseCredentialAction: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionSetNow,
+			initCredentialSecretActionSetNow,
 		},
-		clipboardSupported: func() bool { return false },
+		sources: []initSecretSource{initSecretSourcePaste},
+		pastes:  []string{"new-token"},
+	}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionSetNow,
+			initCredentialSecretActionSetNow,
+		},
+		sources: []initSecretSource{initSecretSourcePaste},
+		pastes:  []string{"new-token"},
+	}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{
+			initCredentialSecretActionSetNow,
+			initCredentialSecretActionSetNow,
+		},
+		sources: []initSecretSource{initSecretSourcePaste},
+		pastes:  []string{"new-token"},
+	}).PasteSecret}, clipboardSupported: func() bool { return false },
 		clipboardRead: func() (string, error) {
 			t.Fatal("clipboard should not be read")
 			return "", nil
@@ -3154,9 +3169,7 @@ func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts
 		},
 		pastes: []string{"git-token", "llm-key", "reviewer-token"},
 	}
-	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
-		secretPrompter:     prompter,
-		clipboardSupported: func() bool { return false },
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return false },
 		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
@@ -3198,10 +3211,7 @@ func TestCollectInteractiveInitSecretsDestinationUsesRawRuntimeBackend(t *testin
 	prompter := &fakeInitSecretPrompter{
 		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
 	}
-	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{Backend: string(credstore.BackendMemory)}, initDeps{
-		secretPrompter:     prompter,
-		clipboardSupported: func() bool { return false },
-	}, initWorkspaceDraft{
+	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{Backend: string(credstore.BackendMemory)}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return false }}, initWorkspaceDraft{
 		cfg: config.File{},
 		credentialPlan: []initCredentialPlanEntry{{
 			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
@@ -3240,10 +3250,7 @@ func TestCollectInteractiveInitSecretsDestinationUsesInferredDefaultBackend(t *t
 	prompter := &fakeInitSecretPrompter{
 		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
 	}
-	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
-		secretPrompter:     prompter,
-		clipboardSupported: func() bool { return false },
-	}, initWorkspaceDraft{
+	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return false }}, initWorkspaceDraft{
 		cfg: config.File{},
 		credentialPlan: []initCredentialPlanEntry{{
 			Ref: config.CredentialRef{Purpose: "git", Ref: "codereview/work", Mode: string(config.GitAuthModePAT)},
@@ -3284,9 +3291,7 @@ func TestCollectInteractiveInitSecretsSourceBackReturnsToCredentialChoices(t *te
 		},
 		sources: []initSecretSource{initSecretSourceBack},
 	}
-	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
-		secretPrompter:     prompter,
-		clipboardSupported: func() bool { return false },
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return false },
 		clipboardRead: func() (string, error) {
 			t.Fatal("clipboard should not be read")
 			return "", nil
@@ -3317,9 +3322,7 @@ func TestCollectInteractiveInitSecretsPasteBackReturnsToSourceChoices(t *testing
 		pasteErrors: []error{errInitSecretValueBack},
 	}
 	clipboardReads := 0
-	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
-		secretPrompter:     prompter,
-		clipboardSupported: func() bool { return true },
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return true },
 		clipboardRead: func() (string, error) {
 			clipboardReads++
 			return "clipboard-token", nil
@@ -3358,9 +3361,7 @@ func TestCollectInteractiveInitSecretsBackAfterPartialMultiKeyWriteDiscardsScrat
 		},
 		pastes: []string{"private-key"},
 	}
-	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{
-		secretPrompter:     prompter,
-		clipboardSupported: func() bool { return false },
+	workspace, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return false },
 		clipboardRead: func() (string, error) {
 			t.Fatal("clipboard should not be read")
 			return "", nil
@@ -3396,9 +3397,7 @@ func TestCollectInteractiveInitSecretsMapsNamedSecretsProfileOpenConflictAsConfi
 		actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
 	}
 
-	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{Backend: "memory"}, initDeps{
-		secretPrompter:     prompter,
-		clipboardSupported: func() bool { return false },
+	_, err := collectInteractiveInitSecrets(&cobra.Command{}, &root.Options{Backend: "memory"}, initDeps{prompters: prompters{chooseCredentialAction: prompter.ChooseCredentialAction, chooseSecretSource: prompter.ChooseSecretSource, pasteSecret: prompter.PasteSecret}, clipboardSupported: func() bool { return false },
 		clipboardRead: func() (string, error) {
 			t.Fatal("clipboard should not be read")
 			return "", nil
@@ -4951,12 +4950,9 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T) {
 	existing := basicProfile("work")
 	var stderr bytes.Buffer
-	prompter, ok := newHuhInitReviewerEntityPrompter(&root.Options{
-		Stdin:  strings.NewReader(""),
-		Stderr: &stderr,
-	}).(huhInitReviewerEntityPrompter)
-	if !ok {
-		t.Fatalf("newHuhInitReviewerEntityPrompter returned %T, want huhInitReviewerEntityPrompter", newHuhInitReviewerEntityPrompter(&root.Options{}))
+	prompter := huhInitReviewerEntityPrompter{
+		stdin:  strings.NewReader(""),
+		stderr: &stderr,
 	}
 	if prompter.inventoryRunner != nil {
 		t.Fatal("reviewer entity prompter inventoryRunner = non-nil, want direct linear editor path")
@@ -5019,6 +5015,37 @@ func TestHuhInitReviewerEntityPrompterDefaultUsesLinearReviewerFlow(t *testing.T
 	}
 	if strings.Contains(out, "Back to main menu") {
 		t.Fatalf("stderr = %q, want action-local Back without staging instead of inventory Back", out)
+	}
+}
+
+func TestNewHuhInitPromptersWiresEveryField(t *testing.T) {
+	wired := newHuhInitPrompters(&root.Options{}, initSecretsBackendDiscoveryModeSafe)
+	for _, test := range []struct {
+		name string
+		fn   any
+		want string
+	}{
+		{"runProfileV2", wired.runProfileV2, "bubbleTeaInitProfileV2Prompter.Run"},
+		{"chooseMenuAction", wired.chooseMenuAction, "huhInitMenuPrompter.ChooseAction"},
+		{"editRetention", wired.editRetention, "bubbleTeaInitRetentionPrompter.EditRetention"},
+		{"editKeyringBackend", wired.editKeyringBackend, "huhInitKeyringBackendPrompter.EditKeyringBackend"},
+		{"editLLMRuntime", wired.editLLMRuntime, "huhInitLLMRuntimePrompter.EditLLMRuntime"},
+		{"editRepositoryAccess", wired.editRepositoryAccess, "huhInitRepositoryAccessPrompter.EditRepositoryAccess"},
+		{"editReviewerEntity", wired.editReviewerEntity, "huhInitReviewerEntityPrompter.EditReviewerEntity"},
+		{"chooseFinalizeAction", wired.chooseFinalizeAction, "huhInitFinalizePrompter.ChooseFinalizeAction"},
+		{"chooseCredentialAction", wired.chooseCredentialAction, "huhInitSecretPrompter.ChooseCredentialAction"},
+		{"chooseSecretSource", wired.chooseSecretSource, "huhInitSecretPrompter.ChooseSecretSource"},
+		{"pasteSecret", wired.pasteSecret, "huhInitSecretPrompter.PasteSecret"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.fn == nil {
+				t.Fatal("wiring is nil")
+			}
+			got := runtime.FuncForPC(reflect.ValueOf(test.fn).Pointer()).Name()
+			if !strings.Contains(got, test.want) {
+				t.Fatalf("wiring = %q, want %q receiver", got, test.want)
+			}
+		})
 	}
 }
 
@@ -6292,21 +6319,25 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 		Stderr:     &stderr,
 		ConfigPath: path,
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName:        "work",
-				GitHost:            "github.com",
-				GitAuth:            string(config.GitAuthModePAT),
-				GitCredentialStore: "team-vault",
-				GitCredentialRef:   "codereview/work",
-				LLMProvider:        string(config.LLMProviderAnthropic),
-				LLMAuth:            string(config.LLMAuthSubscription),
-				LLMAdapter:         string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		configPath:   func(*root.Options) (string, error) { return path, nil },
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName:        "work",
+			GitHost:            "github.com",
+			GitAuth:            string(config.GitAuthModePAT),
+			GitCredentialStore: "team-vault",
+			GitCredentialRef:   "codereview/work",
+			LLMProvider:        string(config.LLMProviderAnthropic),
+			LLMAuth:            string(config.LLMAuthSubscription),
+			LLMAdapter:         string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).PasteSecret}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{
 				Profiles: map[string]config.Profile{},
@@ -6321,9 +6352,7 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsProfile(t *testing.T) {
 			}, false, nil
 		},
 		saveConfig: func(string, config.File) error { return nil },
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
+
 		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
@@ -6496,29 +6525,27 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 		ConfigPath: path,
 	}
 	var gotCtx initPromptContext
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
-			gotCtx = ctx
-			return initDraft{
-				OriginalProfileName:   "work",
-				ProfileName:           "office",
-				GitHost:               "github.com",
-				GitAuth:               string(config.GitAuthModeGitHubApp),
-				GitHubAppID:           "12345",
-				GitCredentialRef:      "codereview/office-git",
-				ReviewerEnabled:       true,
-				ReviewerAuth:          string(config.GitAuthModeGitHubApp),
-				ReviewerGitHubAppID:   "67890",
-				ReviewerCredentialRef: "codereview/custom-office-reviewer",
-				LLMProvider:           string(config.LLMProviderOpenAI),
-				LLMAuth:               string(config.LLMAuthAPIKey),
-				LLMAdapter:            string(config.LLMAdapterOpenAIAPI),
-				LLMReviewerModelTier:  string(config.ModelTierSmall),
-				LLMCredentialRef:      "codereview/custom-office-llm",
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		gotCtx = ctx
+		return initDraft{
+			OriginalProfileName:   "work",
+			ProfileName:           "office",
+			GitHost:               "github.com",
+			GitAuth:               string(config.GitAuthModeGitHubApp),
+			GitHubAppID:           "12345",
+			GitCredentialRef:      "codereview/office-git",
+			ReviewerEnabled:       true,
+			ReviewerAuth:          string(config.GitAuthModeGitHubApp),
+			ReviewerGitHubAppID:   "67890",
+			ReviewerCredentialRef: "codereview/custom-office-reviewer",
+			LLMProvider:           string(config.LLMProviderOpenAI),
+			LLMAuth:               string(config.LLMAuthAPIKey),
+			LLMAdapter:            string(config.LLMAdapterOpenAIAPI),
+			LLMReviewerModelTier:  string(config.ModelTierSmall),
+			LLMCredentialRef:      "codereview/custom-office-llm",
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
@@ -6527,8 +6554,25 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
-		},
-		clipboardSupported: func() bool { return true },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).PasteSecret}, clipboardSupported: func() bool { return true },
 		clipboardRead: func() (string, error) {
 			t.Fatal("clipboard should not be read during deferred interactive init")
 			return "", nil
@@ -6628,27 +6672,28 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 	}
 	calls := 0
 	var reentryCtx initPromptContext
-	deps := initDeps{
-		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
-			calls++
-			if calls == 2 {
-				reentryCtx = ctx
-				return initDraft{}, errInitNavigateBack
-			}
-			work := ctx.ExistingConfig.Profiles["open-cli-collective"]
-			draft := seedInteractiveInitDraft("open-cli-collective", "open-cli-collective", &work)
-			draft.ProfileName = "open-cli-collective-lkjlkj"
-			draft.GitCredentialRef = "codereview/open-cli-collective12365"
-			draft.RoutesSet = true
-			draft.ModelMapSet = true
-			draft.AgentSourcesSet = true
-			draft.ReviewPolicySet = true
-			return draft, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
-		clipboardSupported: func() bool { return false },
+	deps := initDeps{prompters: prompters{runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		calls++
+		if calls == 2 {
+			reentryCtx = ctx
+			return initDraft{}, errInitNavigateBack
+		}
+		work := ctx.ExistingConfig.Profiles["open-cli-collective"]
+		draft := seedInteractiveInitDraft("open-cli-collective", "open-cli-collective", &work)
+		draft.ProfileName = "open-cli-collective-lkjlkj"
+		draft.GitCredentialRef = "codereview/open-cli-collective12365"
+		draft.RoutesSet = true
+		draft.ModelMapSet = true
+		draft.AgentSourcesSet = true
+		draft.ReviewPolicySet = true
+		return draft, nil
+	}), chooseCredentialAction: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}).PasteSecret}, clipboardSupported: func() bool { return false },
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
@@ -6725,33 +6770,30 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedPrimitiveCredential
 	}
 	calls := 0
 	secretPrompter := &fakeInitSecretPrompter{}
-	deps := initDeps{
-		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
-			calls++
-			if calls == 2 {
-				return initDraft{}, errInitNavigateBack
-			}
-			draft := seedInteractiveInitDraft("rianjs", "", nil)
-			applyGitScopeSelection(&draft, "github-rianjs", ctx.GitScopes)
-			applyReviewerEntityInventorySelection(&draft, "rianjs-bot", ctx.ReviewerEntities)
-			applyReviewerEntitySelection(&draft, string(initReviewerEntityDraftFromSeedDraft(draft).Kind))
-			applyLLMRuntimeInventorySelection(&draft, "openai-api", ctx.LLMRuntimes)
-			draft.RoutesSet = true
-			draft.Routes = []configedit.RepositoryRouteSpec{{
-				Host:      "github.com",
-				Namespace: "rianjs",
-			}}
-			draft.ModelMapSet = true
-			draft.AgentSourcesSet = true
-			draft.ReviewPolicySet = true
-			draft.ReviewPolicy = config.ReviewPolicy{
-				MajorEvent:     config.ReviewMajorEventRequestChanges,
-				ResolveThreads: config.ResolveThreadsAuto,
-			}
-			return draft, nil
-		}),
-		secretPrompter:     secretPrompter,
-		clipboardSupported: func() bool { return false },
+	deps := initDeps{prompters: prompters{runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		calls++
+		if calls == 2 {
+			return initDraft{}, errInitNavigateBack
+		}
+		draft := seedInteractiveInitDraft("rianjs", "", nil)
+		applyGitScopeSelection(&draft, "github-rianjs", ctx.GitScopes)
+		applyReviewerEntityInventorySelection(&draft, "rianjs-bot", ctx.ReviewerEntities)
+		applyReviewerEntitySelection(&draft, string(initReviewerEntityDraftFromSeedDraft(draft).Kind))
+		applyLLMRuntimeInventorySelection(&draft, "openai-api", ctx.LLMRuntimes)
+		draft.RoutesSet = true
+		draft.Routes = []configedit.RepositoryRouteSpec{{
+			Host:      "github.com",
+			Namespace: "rianjs",
+		}}
+		draft.ModelMapSet = true
+		draft.AgentSourcesSet = true
+		draft.ReviewPolicySet = true
+		draft.ReviewPolicy = config.ReviewPolicy{
+			MajorEvent:     config.ReviewMajorEventRequestChanges,
+			ResolveThreads: config.ResolveThreadsAuto,
+		}
+		return draft, nil
+	}), chooseCredentialAction: secretPrompter.ChooseCredentialAction, chooseSecretSource: secretPrompter.ChooseSecretSource, pasteSecret: secretPrompter.PasteSecret}, clipboardSupported: func() bool { return false },
 		openStore: func(string, bool, config.File) (initStore, error) {
 			t.Fatal("openStore should not be called for profile-owned prompts when repository access owns the PAT")
 			return nil, nil
@@ -6813,38 +6855,39 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 		AllowSelfApprove: true,
 		ResolveThreads:   config.ResolveThreadsNever,
 	}
-	deps := initDeps{
-		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
-			calls++
-			if calls == 2 {
-				reentryCtx = ctx
-				return initDraft{}, errInitNavigateBack
-			}
-			work := ctx.ExistingConfig.Profiles["work"]
-			draft := seedInteractiveInitDraft("work", "work", &work)
-			draft.GitCredentialRef = "codereview/custom-work-git"
-			draft.LLMProvider = string(config.LLMProviderOpenAI)
-			draft.LLMAuth = string(config.LLMAuthSubscription)
-			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
-			draft.LLMReviewerModelTier = string(config.ModelTierMedium)
-			draft.RoutesSet = true
-			draft.Routes = []configedit.RepositoryRouteSpec{{
-				Host:      "github.com",
-				Namespace: "open-cli-collective",
-				Repos:     []string{"codereview-cli"},
-			}}
-			draft.ModelMapSet = true
-			draft.ModelMap = config.ModelMap{"medium": "gpt-custom"}
-			draft.AgentSourcesSet = true
-			draft.AgentSources = []string{"/tmp/agents", "/tmp/agents/../agents"}
-			draft.ReviewPolicySet = true
-			draft.ReviewPolicy = policy
-			return draft, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
-		clipboardSupported: func() bool { return false },
+	deps := initDeps{prompters: prompters{runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		calls++
+		if calls == 2 {
+			reentryCtx = ctx
+			return initDraft{}, errInitNavigateBack
+		}
+		work := ctx.ExistingConfig.Profiles["work"]
+		draft := seedInteractiveInitDraft("work", "work", &work)
+		draft.GitCredentialRef = "codereview/custom-work-git"
+		draft.LLMProvider = string(config.LLMProviderOpenAI)
+		draft.LLMAuth = string(config.LLMAuthSubscription)
+		draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
+		draft.LLMReviewerModelTier = string(config.ModelTierMedium)
+		draft.RoutesSet = true
+		draft.Routes = []configedit.RepositoryRouteSpec{{
+			Host:      "github.com",
+			Namespace: "open-cli-collective",
+			Repos:     []string{"codereview-cli"},
+		}}
+		draft.ModelMapSet = true
+		draft.ModelMap = config.ModelMap{"medium": "gpt-custom"}
+		draft.AgentSourcesSet = true
+		draft.AgentSources = []string{"/tmp/agents", "/tmp/agents/../agents"}
+		draft.ReviewPolicySet = true
+		draft.ReviewPolicy = policy
+		return draft, nil
+	}), chooseCredentialAction: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+	}).PasteSecret}, clipboardSupported: func() bool { return false },
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
@@ -7557,9 +7600,8 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 		},
 	}
 	profileCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		runProfileV2: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
@@ -7590,8 +7632,7 @@ func TestInitInteractiveProfileSubflowBackPreservesBuiltWorkspace(t *testing.T) 
 				t.Fatalf("unexpected profile prompt #%d", profileCalls)
 				return initDraft{}, nil
 			}
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: func(string, config.File) error {
 			t.Fatal("saveConfig should not run after exiting without save")
@@ -7632,9 +7673,8 @@ func TestInitInteractiveSecretsManagementBackPreservesEarlierRetentionDraft(t *t
 			initMenuActionSave,
 		},
 	}
-	deps := initDeps{
-		menuPrompter: menu,
-		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editRetention: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			return initRetentionEdit{
 				Apply: true,
 				Retention: config.RetentionConfig{
@@ -7643,16 +7683,18 @@ func TestInitInteractiveSecretsManagementBackPreservesEarlierRetentionDraft(t *t
 				},
 			}, nil
 		}),
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			return initKeyringBackendEdit{}, errInitNavigateBack
 		}),
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).PasteSecret}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
 		openStore: func(string, bool, config.File) (initStore, error) {
@@ -8594,7 +8636,7 @@ func TestInitOnePasswordDesktopDiscoveryListsAccountsAndVaults(t *testing.T) {
 }
 
 func TestParseInitOnePasswordVaultsPrioritizesOwnedVaultsThenAlphabetizes(t *testing.T) {
-	vaults, err := parseInitOnePasswordVaults([]byte(`[
+	vaults, err := credentials.ParseOnePasswordVaults([]byte(`[
 		{"id":"vault-shared","name":"Shared"},
 		{"id":"vault-zeta","name":"Zeta"},
 		{"id":"vault-private","name":"Private"},
@@ -11106,7 +11148,7 @@ func TestBubbleTeaInitProfileV2PrompterBootstrapsRuntimeBeforeStaging(t *testing
 				return initProfileV2EditorResult{}, nil
 			}
 		},
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmPromptCalled = true
 			if len(prompt.Context.LLMRuntimes) != 0 {
 				t.Fatalf("bootstrap prompt runtimes = %#v, want empty first-run inventory", prompt.Context.LLMRuntimes)
@@ -11554,17 +11596,18 @@ func TestInitInteractiveMenuExitWithoutSaveLeavesConfigUntouched(t *testing.T) {
 		ConfigPath: path,
 	}
 	openStoreCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{initMenuActionExit},
-		},
-		secretPrompter: &fakeInitSecretPrompter{
-			actions: []initCredentialSecretAction{},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			openStoreCalls++
-			return newFakeInitStore(map[string]map[string]string{}), nil
-		},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{initMenuActionExit},
+	}).ChooseAction, chooseCredentialAction: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{},
+	}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{},
+	}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+		actions: []initCredentialSecretAction{},
+	}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		openStoreCalls++
+		return newFakeInitStore(map[string]map[string]string{}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -11601,9 +11644,8 @@ func TestInitInteractiveMenuStagesStandaloneRepositoryAccess(t *testing.T) {
 		},
 	}
 	repositoryPrompts := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editRepositoryAccess: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
 			repositoryPrompts++
 			if repositoryPrompts > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -11621,8 +11663,7 @@ func TestInitInteractiveMenuStagesStandaloneRepositoryAccess(t *testing.T) {
 				GitCredentialStore:   config.LocalOSCredentialStoreID,
 				GitCredentialRef:     "codereview/work-git",
 			}, nil
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -11691,17 +11732,16 @@ func TestInitInteractiveMenuRepositoryAccessOverwritesExistingBundle(t *testing.
 			credentials.GitTokenKey: "existing-token",
 		},
 	})
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionRepositoryAccess,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionRepositoryAccess,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+		editRepositoryAccess: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
 			model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(prompt.Context, initDraft{}), 160, 60)
 			model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldSelection, "work-git")
 			model.setFieldValue(initRepositoryAccessFieldGitToken, "replacement-token")
@@ -11718,10 +11758,9 @@ func TestInitInteractiveMenuRepositoryAccessOverwritesExistingBundle(t *testing.
 				t.Fatalf("resultAction = %q, want staged repository access; action error = %q", next.resultAction, next.document[next.document.fieldIndexByID(initRepositoryAccessFieldAction)].Error)
 			}
 			return initRepositoryAccessDraftFromDocument(prompt.Context, initDraft{}, next.document), nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -11883,9 +11922,8 @@ func TestInitInteractiveMenuDeletesStandaloneRepositoryAccessAndEnablesSave(t *t
 			initMenuActionSave,
 		},
 	}
-	deps := initDeps{
-		menuPrompter: menu,
-		repositoryPrompter: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editRepositoryAccess: initRepositoryAccessPrompterFunc(func(prompt initRepositoryAccessPrompt) (initDraft, error) {
 			if !prompt.Context.StandaloneRepositoryAccessMode {
 				t.Fatal("repository access prompt did not run in standalone mode")
 			}
@@ -11896,8 +11934,7 @@ func TestInitInteractiveMenuDeletesStandaloneRepositoryAccessAndEnablesSave(t *t
 				Action:       initDraftActionDeleteRepositoryAccess,
 				ActionTarget: "work-git",
 			}, nil
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{
 				Profiles: map[string]config.Profile{},
@@ -12098,14 +12135,13 @@ func TestInitInteractiveMenuWritesStandaloneRepositoryAccessPAT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveCredentialStore: %v", err)
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionRepositoryAccess,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionRepositoryAccess,
+			initMenuActionSave,
 		},
-		repositoryPrompter: initRepositoryAccessPrompterFunc(func(_ initRepositoryAccessPrompt) (initDraft, error) {
+	}).ChooseAction,
+		editRepositoryAccess: initRepositoryAccessPrompterFunc(func(_ initRepositoryAccessPrompt) (initDraft, error) {
 			return initDraft{
 				RepositoryAccessName:    "work-git",
 				GitHost:                 "github.company.com",
@@ -12117,10 +12153,9 @@ func TestInitInteractiveMenuWritesStandaloneRepositoryAccessPAT(t *testing.T) {
 				GitCredentialWrites:     map[string]string{credentials.GitTokenKey: "work-token"},
 				GitCredentialSatisfied:  true,
 			}, nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -12150,19 +12185,18 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 		Enforcement: config.RetentionManualOnly,
 	}
 	prompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionGlobalSettings,
-				initMenuActionSecretsManagement,
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionGlobalSettings,
+			initMenuActionSecretsManagement,
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -12179,20 +12213,22 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 				LLMReviewerModelTier: "",
 			}, nil
 		}),
-		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+		editRetention: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			return initRetentionEdit{Apply: true, Retention: retention}, nil
 		}),
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			return initKeyringBackendEdit{Apply: true}, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"default": {credentials.GitTokenKey: "existing-token"},
-			}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{
+			"default": {credentials.GitTokenKey: "existing-token"},
+		}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -12228,18 +12264,17 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 		ConfigPath: path,
 	}
 	prompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -12283,18 +12318,30 @@ func TestInitInteractiveMenuCanCreateMultipleProfilesBeforeSave(t *testing.T) {
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 				return initDraft{}, nil
 			}
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -12327,19 +12374,18 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 		ConfigPath: path,
 	}
 	prompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionReviewProfiles,
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionReviewProfiles,
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -12400,8 +12446,7 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 				return initDraft{}, nil
 			}
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
@@ -12409,10 +12454,25 @@ func TestInitInteractiveMenuResumesUnsavedProfileAfterSwitchingProfiles(t *testi
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -12449,17 +12509,16 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 		ConfigPath: path,
 	}
 	prompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -12486,16 +12545,24 @@ func TestInitInteractiveMenuFallbackDefaultPreservedWhenCreatingAnotherProfile(t
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 			}
 			return initDraft{}, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -12546,17 +12613,16 @@ func TestInitInteractiveMenuRenameProfileReconcilesRoutes(t *testing.T) {
 		Profile:    "work",
 	}
 	prompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -12587,16 +12653,24 @@ func TestInitInteractiveMenuRenameProfileReconcilesRoutes(t *testing.T) {
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 			}
 			return initDraft{}, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(nil), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(nil), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -12638,20 +12712,19 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 	}
 	prompterCalls := 0
 	llmPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionGlobalSettings,
-				initMenuActionSecretsManagement,
-				initMenuActionReviewProfiles,
-				initMenuActionLLMRuntimes,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionGlobalSettings,
+			initMenuActionSecretsManagement,
+			initMenuActionReviewProfiles,
+			initMenuActionLLMRuntimes,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -12665,7 +12738,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmPrompterCalls++
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -12676,27 +12749,35 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 			draft.LLMAdapter = string(config.LLMAdapterOpenAIAPI)
 			return draft, nil
 		}),
-		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+		editRetention: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			return initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
 				MaxAgeDays:  intPtr(30),
 				Enforcement: config.RetentionManualOnly,
 			}}, nil
 		}),
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			return initKeyringBackendEdit{Apply: true}, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionKeep,
 				initCredentialSecretActionKeep,
 			},
-		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"default":     {credentials.GitTokenKey: "existing-token"},
-				"default-llm": {credentials.OpenAIAPIKeyKey: "existing-openai-key"},
-			}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).PasteSecret}, openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{
+			"default":     {credentials.GitTokenKey: "existing-token"},
+			"default-llm": {credentials.OpenAIAPIKeyKey: "existing-openai-key"},
+		}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -12763,17 +12844,16 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 		ConfigPath: path,
 	}
 	llmPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionLLMRuntimes,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmPrompterCalls++
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -12783,19 +12863,27 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 			draft.LLMAuth = string(config.LLMAuthSubscription)
 			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
 			return draft, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionKeep,
 				initCredentialSecretActionKeep,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"work-git":      {credentials.GitTokenKey: "existing-token"},
-				"work-reviewer": {credentials.GitHubAppIDKey: "12345", credentials.GitHubAppPrivateKeyKey: "private-key"},
-			}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{
+			"work-git":      {credentials.GitTokenKey: "existing-token"},
+			"work-reviewer": {credentials.GitHubAppIDKey: "12345", credentials.GitHubAppPrivateKeyKey: "private-key"},
+		}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -12853,38 +12941,36 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	}
 	openStoreCalls := 0
 	llmPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionGlobalSettings,
-				initMenuActionSecretsManagement,
-				initMenuActionLLMRuntimes,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionGlobalSettings,
+			initMenuActionSecretsManagement,
+			initMenuActionLLMRuntimes,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmPrompterCalls++
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
 			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile), nil
 		}),
-		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+		editRetention: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			return initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
 				MaxAgeDays:  intPtr(14),
 				Enforcement: config.RetentionAtWrite,
 			}}, nil
 		}),
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			return initKeyringBackendEdit{Apply: true}, nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			openStoreCalls++
-			return newFakeInitStore(nil), nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		openStoreCalls++
+		return newFakeInitStore(nil), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -12923,24 +13009,22 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDoesNotOpenStoreForPromptContext(t 
 		ConfigPath: path,
 	}
 	llmPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionLLMRuntimes,
-				initMenuActionExit,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionExit,
 		},
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+	}).ChooseAction,
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmPrompterCalls++
 			if llmPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
 			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile), nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			t.Fatal("openStore should not run for focused llm prompt context")
-			return nil, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		t.Fatal("openStore should not run for focused llm prompt context")
+		return nil, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -12972,23 +13056,21 @@ func TestInitInteractiveMenuFocusedBackKeepsSessionUntouched(t *testing.T) {
 		t.Fatal("SetBundle should not run after focused Back navigation")
 		return credstore.Result{}, nil
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionLLMRuntimes,
-				initMenuActionReviewerEntities,
-				initMenuActionExit,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionLLMRuntimes,
+			initMenuActionReviewerEntities,
+			initMenuActionExit,
 		},
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
+	}).ChooseAction,
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(initLLMRuntimePrompt) (initDraft, error) {
 			return initDraft{}, errInitNavigateBack
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(initReviewerEntityPrompt) (initDraft, error) {
 			return initDraft{}, errInitNavigateBack
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: func(string, config.File) error {
@@ -13019,20 +13101,19 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	}
 	profilePrompterCalls := 0
 	reviewerPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionGlobalSettings,
-				initMenuActionSecretsManagement,
-				initMenuActionReviewProfiles,
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionGlobalSettings,
+			initMenuActionSecretsManagement,
+			initMenuActionReviewProfiles,
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			profilePrompterCalls++
 			if profilePrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -13046,7 +13127,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 			}, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -13057,31 +13138,39 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 			draft.ReviewerGitHubAppID = "12345"
 			return draft, nil
 		}),
-		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+		editRetention: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			return initRetentionEdit{Apply: true, Retention: config.RetentionConfig{
 				MaxAgeDays:  intPtr(14),
 				Enforcement: config.RetentionAtWrite,
 			}}, nil
 		}),
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			return initKeyringBackendEdit{Apply: true}, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionKeep,
 				initCredentialSecretActionKeep,
 			},
-		},
-		openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"default": {
-					credentials.GitTokenKey: "existing-token",
-				},
-				"reviewer-github-app": {
-					credentials.GitHubAppPrivateKeyKey: "private-key",
-				},
-			}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).PasteSecret}, openResolvedStore: func(credentials.ResolvedSecretsProfile, string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{
+			"default": {
+				credentials.GitTokenKey: "existing-token",
+			},
+			"reviewer-github-app": {
+				credentials.GitHubAppPrivateKeyKey: "private-key",
+			},
+		}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -14068,17 +14157,16 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 			credentials.GitTokenKey: "existing-token",
 		},
 	})
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -14090,11 +14178,9 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 			draft.ReviewerDisplayName = "rianjs-bot"
 			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "12345", privateKey)
 			return draft, nil
-		}),
-		secretPrompter: secretPrompter,
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: secretPrompter.ChooseCredentialAction, chooseSecretSource: secretPrompter.ChooseSecretSource, pasteSecret: secretPrompter.PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14165,12 +14251,11 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 		"work": {credentials.GitTokenKey: "existing-token"},
 	})
 	reviewerPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -14182,11 +14267,9 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesBeforeCommitAndD
 			draft.ReviewerDisplayName = "rianjs-bot"
 			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "12345", privateKey)
 			return draft, nil
-		}),
-		secretPrompter: secretPrompter,
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: secretPrompter.ChooseCredentialAction, chooseSecretSource: secretPrompter.ChooseSecretSource, pasteSecret: secretPrompter.PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14238,17 +14321,16 @@ func TestInitInteractiveMenuLabelDerivedReviewerRefOverwritesExistingBundle(t *t
 		},
 	})
 	privateKey := testReviewerGitHubAppPrivateKey()
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			model := newInitLinearEditorModel(initReviewerEntityLinearEditor(prompt.Context, seed), 160, 60)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
@@ -14270,11 +14352,9 @@ func TestInitInteractiveMenuLabelDerivedReviewerRefOverwritesExistingBundle(t *t
 				t.Fatalf("resultAction = %q, want staged reviewer settings; action error = %q", next.resultAction, next.document[next.document.fieldIndexByID(initReviewerEntityFieldAction)].Error)
 			}
 			return initReviewerEntityDraftFromDocument(prompt.Context, seed, next.document)
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14314,17 +14394,16 @@ func TestInitInteractiveMenuManualReviewerRefOverwritesExistingBundle(t *testing
 		},
 	})
 	privateKey := testReviewerGitHubAppPrivateKey()
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			model := newInitLinearEditorModel(initReviewerEntityLinearEditor(prompt.Context, seed), 160, 60)
 			model = selectInitLinearFieldValue(t, model, initReviewerEntityFieldSelection, string(initReviewerEntityKindGitHubApp))
@@ -14346,11 +14425,9 @@ func TestInitInteractiveMenuManualReviewerRefOverwritesExistingBundle(t *testing
 				t.Fatalf("resultAction = %q, want staged reviewer settings; action error = %q", next.resultAction, next.document[next.document.fieldIndexByID(initReviewerEntityFieldAction)].Error)
 			}
 			return initReviewerEntityDraftFromDocument(prompt.Context, seed, next.document)
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14384,28 +14461,25 @@ func TestInitInteractiveMenuFocusedPATReviewerPromptsForGitTokenOnly(t *testing.
 	store := newFakeInitStore(map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "existing-token"},
 	})
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModePAT)
 			draft.ReviewerCredentialRef = "codereview/work-reviewer"
 			stageDraftInlinePATReviewerCredential(&draft, draft.ReviewerCredentialRef, "reviewer-pat")
 			return draft, nil
-		}),
-		secretPrompter: secretPrompter,
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: secretPrompter.ChooseCredentialAction, chooseSecretSource: secretPrompter.ChooseSecretSource, pasteSecret: secretPrompter.PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14436,27 +14510,24 @@ func TestInitInteractiveMenuFocusedUseGitReviewerSkipsReviewerCredentialPrompt(t
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = false
 			return draft, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"work": {credentials.GitTokenKey: "existing-token"},
-			}), nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{
+			"work": {credentials.GitTokenKey: "existing-token"},
+		}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14491,18 +14562,17 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 		}
 		return credstore.Result{}, nil
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			switch reviewerPrompterCalls {
@@ -14518,11 +14588,9 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerCleared(
 				return initDraft{}, errInitNavigateBack
 			}
 			return draft, nil
-		}),
-		secretPrompter: secretPrompter,
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: secretPrompter.ChooseCredentialAction, chooseSecretSource: secretPrompter.ChooseSecretSource, pasteSecret: secretPrompter.PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14564,18 +14632,17 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 	store := newFakeInitStore(map[string]map[string]string{
 		"work": {credentials.GitTokenKey: "existing-token"},
 	})
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
@@ -14593,11 +14660,9 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 				return initDraft{}, errInitNavigateBack
 			}
 			return draft, nil
-		}),
-		secretPrompter: secretPrompter,
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: secretPrompter.ChooseCredentialAction, chooseSecretSource: secretPrompter.ChooseSecretSource, pasteSecret: secretPrompter.PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14655,25 +14720,22 @@ func TestInitInteractiveMenuReviewerSetNowDiscardDoesNotWriteConfigOrCredentials
 		t.Fatal("SetBundle called before commit/discard")
 		return credstore.Result{}, nil
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionExit,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionExit,
 		},
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+	}).ChooseAction,
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			draft := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 			draft.ReviewerEnabled = true
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = "codereview/rianjs-bot"
 			stageDraftInlineGitHubAppReviewerCredentials(&draft, draft.ReviewerCredentialRef, "333", "sentinel-private-key")
 			return draft, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: func(string, config.File) error {
@@ -14725,20 +14787,17 @@ func TestInitInteractiveMenuReviewerBackWithoutStagingDiscardsInlineSecretWrites
 		t.Fatal("SetBundle called after backing out of reviewer secret capture")
 		return credstore.Result{}, nil
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionExit,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionExit,
 		},
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
+	}).ChooseAction,
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(_ initReviewerEntityPrompt) (initDraft, error) {
 			return initDraft{}, errInitNavigateBack
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14786,15 +14845,14 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 		return credstore.Result{}, nil
 	}
 	reviewerPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionReviewerEntities,
-				initMenuActionExit,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionReviewerEntities,
+			initMenuActionExit,
 		},
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+	}).ChooseAction,
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			switch reviewerPrompterCalls {
 			case 1:
@@ -14819,11 +14877,9 @@ func TestInitInteractiveMenuReviewerCredentialStatusShowsStagedOnReentry(t *test
 			default:
 				return initDraft{}, errInitNavigateBack
 			}
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: func(string, config.File) error {
@@ -14890,39 +14946,46 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 		ConfigPath: path,
 	}
 	reviewerPrompterCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
 			}
 			return seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile), nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionKeep,
 				initCredentialSecretActionKeep,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{
-				"work": {
-					credentials.GitTokenKey: "existing-token",
-				},
-				"custom-work-reviewer": {
-					credentials.GitHubAppPrivateKeyKey: "private-key",
-				},
-			}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{
+			"work": {
+				credentials.GitTokenKey: "existing-token",
+			},
+			"custom-work-reviewer": {
+				credentials.GitHubAppPrivateKeyKey: "private-key",
+			},
+		}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -14988,17 +15051,16 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 		t.Fatal("SetBundle called for reviewer label-only save")
 		return credstore.Result{}, nil
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -15009,10 +15071,9 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerDisplayName = "OC Collective bot"
 			return draft, nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -15069,17 +15130,16 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesExistingCredential
 	}
 	reviewerPrompterCalls := 0
 	openStoreCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerPrompterCalls++
 			if reviewerPrompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -15090,27 +15150,35 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesExistingCredential
 			draft.ReviewerAuth = string(config.GitAuthModeGitHubApp)
 			draft.ReviewerCredentialRef = ""
 			return draft, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionKeep,
 				initCredentialSecretActionKeep,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			openStoreCalls++
-			return newFakeInitStore(map[string]map[string]string{
-				"work": {
-					credentials.GitTokenKey: "existing-token",
-				},
-				"work-reviewer": {
-					credentials.GitHubAppPrivateKeyKey: "private-key",
-				},
-				"custom-work-reviewer": {
-					credentials.GitHubAppPrivateKeyKey: "legacy-private-key",
-				},
-			}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionKeep,
+				initCredentialSecretActionKeep,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		openStoreCalls++
+		return newFakeInitStore(map[string]map[string]string{
+			"work": {
+				credentials.GitTokenKey: "existing-token",
+			},
+			"work-reviewer": {
+				credentials.GitHubAppPrivateKeyKey: "private-key",
+			},
+			"custom-work-reviewer": {
+				credentials.GitHubAppPrivateKeyKey: "legacy-private-key",
+			},
+		}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -15153,21 +15221,19 @@ func TestInitInteractiveMenuFocusedReviewerEntityPromptContextIncludesCredential
 		t.Fatal("SetBundle should not run while building focused reviewer prompt context")
 		return credstore.Result{}, nil
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewerEntities,
-				initMenuActionExit,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewerEntities,
+			initMenuActionExit,
 		},
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+	}).ChooseAction,
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			status := findReviewerCredentialStatusForTest(t, prompt.Context.ReviewerCredentialStatuses, "codereview/work-reviewer", string(config.GitAuthModePAT))
 			assertReviewerCredentialKeyState(t, status, credentials.GitTokenKey, initReviewerCredentialKeyExisting)
 			return initDraft{}, errInitNavigateBack
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -15199,14 +15265,13 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionExit,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionExit,
 		},
-		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+	}).ChooseAction,
+		runProfileV2: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			if prompt.RequestedProfileName != expectedPrompt.RequestedProfileName ||
 				prompt.ExistingProfileName != expectedPrompt.ExistingProfileName {
 				t.Fatalf("prompt identity = %#v, want %#v", prompt, expectedPrompt)
@@ -15233,11 +15298,10 @@ func TestInitInteractiveMenuFocusedReviewProfilesDoesNotOpenStoreForPromptContex
 				t.Fatalf("ProfileLLMRuntimes = %#v, want %#v", prompt.ProfileLLMRuntimes, expectedPrompt.ProfileLLMRuntimes)
 			}
 			return initDraft{}, errInitNavigateBack
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			t.Fatal("openStore should not run for focused review profile prompt context")
-			return nil, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		t.Fatal("openStore should not run for focused review profile prompt context")
+		return nil, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -15277,9 +15341,8 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 		},
 	}
 	reviewerCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerCalls++
 			switch reviewerCalls {
 			case 1:
@@ -15304,8 +15367,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 				t.Fatalf("unexpected reviewer prompt #%d", reviewerCalls)
 				return initDraft{}, nil
 			}
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
 	}
@@ -15339,9 +15401,8 @@ func TestInitInteractiveMenuFocusedReviewerEntityStageReturnsToMenu(t *testing.T
 		},
 	}
 	reviewerCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerCalls++
 			switch reviewerCalls {
 			case 1:
@@ -15353,13 +15414,15 @@ func TestInitInteractiveMenuFocusedReviewerEntityStageReturnsToMenu(t *testing.T
 				t.Fatalf("unexpected reviewer prompt #%d", reviewerCalls)
 				return initDraft{}, nil
 			}
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(nil), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(nil), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -15397,9 +15460,8 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageReturnsToMenu(t *testing.T) {
 		},
 	}
 	llmCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmCalls++
 			switch llmCalls {
 			case 1:
@@ -15412,8 +15474,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeStageReturnsToMenu(t *testing.T) {
 				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
 				return initDraft{}, nil
 			}
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
 	}
@@ -15447,9 +15508,8 @@ func TestInitInteractiveMenuCanCommitLLMRuntimeBeforeReviewProfile(t *testing.T)
 		},
 	}
 	llmCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmCalls++
 			if len(prompt.Context.ExistingConfig.Profiles) != 0 {
 				t.Fatalf("prompt profiles = %#v, want no review profiles", prompt.Context.ExistingConfig.Profiles)
@@ -15460,11 +15520,10 @@ func TestInitInteractiveMenuCanCommitLLMRuntimeBeforeReviewProfile(t *testing.T)
 			draft.LLMAdapter = string(config.LLMAdapterCodexCLI)
 			return draft, nil
 		}),
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			t.Fatalf("finalize prompter should not run for profileless LLM-runtime commit: %#v", prompt)
 			return initFinalizeActionCancel, nil
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
 	}
@@ -15518,9 +15577,8 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 		},
 	}
 	llmCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmCalls++
 			switch llmCalls {
 			case 1:
@@ -15548,8 +15606,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeDeleteUndoReturnsToMenu(t *testing.
 				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
 				return initDraft{}, nil
 			}
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
 	}
@@ -15583,9 +15640,8 @@ func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *
 		},
 	}
 	llmCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmCalls++
 			if llmCalls > 2 {
 				t.Fatalf("unexpected LLM prompt #%d", llmCalls)
@@ -15603,8 +15659,7 @@ func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *
 				LLMAuth:      string(config.LLMAuthSubscription),
 				LLMAdapter:   string(config.LLMAdapterCodexCLI),
 			}, nil
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
 	}
@@ -15641,9 +15696,8 @@ func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *
 		},
 	}
 	reloadCalls := 0
-	reloadDeps := initDeps{
-		menuPrompter: reloadMenu,
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+	reloadDeps := initDeps{prompters: prompters{chooseMenuAction: reloadMenu.ChooseAction,
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			reloadCalls++
 			if len(prompt.Context.PendingLLMRuntimeDeletes) != 0 {
 				t.Fatalf("PendingLLMRuntimeDeletes = %#v, want no stale staged deletion on reload", prompt.Context.PendingLLMRuntimeDeletes)
@@ -15655,8 +15709,7 @@ func TestInitInteractiveLLMRuntimeDeletePersistsReplacementAndReloadsCleanly(t *
 				t.Fatalf("reload LLMRuntimes = %#v, want codex-cli replacement present", prompt.Context.LLMRuntimes)
 			}
 			return initDraft{}, errInitNavigateBack
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: func(string, config.File) error {
 			t.Fatal("saveConfig called during reload-only verification")
@@ -15689,9 +15742,8 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 		},
 	}
 	profileCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		runProfileV2: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
@@ -15715,13 +15767,15 @@ func TestInitInteractiveMenuFocusedReviewProfileStageStaysInCategoryUntilBack(t 
 				t.Fatalf("unexpected profile prompt #%d", profileCalls)
 				return initDraft{}, nil
 			}
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(nil), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(nil), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -15756,9 +15810,8 @@ func TestInitInteractiveMenuFocusedReviewProfileDoesNotRunRouteSubprompt(t *test
 		},
 	}
 	profileCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		runProfileV2: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileCalls++
 			switch profileCalls {
 			case 1:
@@ -15782,8 +15835,7 @@ func TestInitInteractiveMenuFocusedReviewProfileDoesNotRunRouteSubprompt(t *test
 				t.Fatalf("unexpected profile prompt #%d", profileCalls)
 				return initDraft{}, nil
 			}
-		}),
-		configPath: func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
 	}
@@ -15838,9 +15890,8 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 	profileEdits := 0
 	reviewerEdits := 0
 	llmEdits := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		profileV2Prompter: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		runProfileV2: initPrompterFunc(func(prompt initPromptContext) (initDraft, error) {
 			profileEdits++
 			switch profileEdits {
 			case 1:
@@ -15869,7 +15920,7 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 				return initDraft{}, nil
 			}
 		}),
-		reviewerPrompter: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
+		editReviewerEntity: initReviewerEntityPrompterFunc(func(prompt initReviewerEntityPrompt) (initDraft, error) {
 			reviewerEdits++
 			switch reviewerEdits {
 			case 1:
@@ -15890,7 +15941,7 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 				return initDraft{}, nil
 			}
 		}),
-		llmRuntimePrompter: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
+		editLLMRuntime: initLLMRuntimePrompterFunc(func(prompt initLLMRuntimePrompt) (initDraft, error) {
 			llmEdits++
 			switch llmEdits {
 			case 1:
@@ -15914,10 +15965,9 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 				return initDraft{}, nil
 			}
 		}),
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionSave, nil
-		}),
-		configPath:         func(*root.Options) (string, error) { return path, nil },
+		})}, configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig:         loadConfigForInit,
 		saveConfig:         config.Save,
 		clipboardSupported: func() bool { return false },
@@ -15974,19 +16024,18 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 	}
 	prompterCalls := 0
 	var finalizePrompt initFinalizePrompt
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -16015,18 +16064,30 @@ func TestInitInteractiveMenuFinalSaveSummarizesDeferredNonActiveProfile(t *testi
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 				return initDraft{}, nil
 			}
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(map[string]map[string]string{}), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(map[string]map[string]string{}), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -16075,18 +16136,17 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 		Stderr:     &stderr,
 		ConfigPath: path,
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -16099,15 +16159,21 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 				LLMAuth:     string(config.LLMAuthSubscription),
 				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 			}, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
 			sources: []initSecretSource{initSecretSourcePaste},
 			pastes:  []string{"git-token"},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"git-token"},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"git-token"},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -16157,19 +16223,18 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 		Stderr:     &stderr,
 		ConfigPath: path,
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			finalizePrompt = prompt
 			return initFinalizeActionSave, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			switch prompterCalls {
 			case 1:
@@ -16198,8 +16263,7 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 				t.Fatalf("unexpected prompter call %d", prompterCalls)
 				return initDraft{}, nil
 			}
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionSetNow,
 				initCredentialSecretActionDefer,
@@ -16207,10 +16271,25 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 			},
 			sources: []initSecretSource{initSecretSourcePaste},
 			pastes:  []string{"home-token"},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"home-token"},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"home-token"},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -16278,14 +16357,13 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 	}
 	finalizeCalls := 0
 	openStoreCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionGlobalSettings,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionGlobalSettings,
+			initMenuActionSave,
 		},
-		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+	}).ChooseAction,
+		editRetention: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			return initRetentionEdit{
 				Apply: true,
 				Retention: config.RetentionConfig{
@@ -16294,23 +16372,21 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 				},
 			}, nil
 		}),
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			return initKeyringBackendEdit{
 				Apply: true,
 			}, nil
 		}),
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			finalizeCalls++
 			if len(prompt.Profiles) != 0 {
 				t.Fatalf("finalize prompt = %#v, want no profile readiness for untouched bootstrap profile", prompt)
 			}
 			return initFinalizeActionSave, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			openStoreCalls++
-			return newFakeInitStore(nil), nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		openStoreCalls++
+		return newFakeInitStore(nil), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -16366,30 +16442,27 @@ func TestInitInteractiveMenuSecretsManagementOnlySaveDoesNotFinalizeBootstrapped
 	}
 	finalizeCalls := 0
 	openStoreCalls := 0
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionSecretsManagement,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionSecretsManagement,
+			initMenuActionSave,
 		},
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+	}).ChooseAction,
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			return initKeyringBackendEdit{
 				Apply: true,
 			}, nil
 		}),
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			finalizeCalls++
 			if len(prompt.Profiles) != 0 {
 				t.Fatalf("finalize prompt = %#v, want no profile readiness for untouched bootstrap profile", prompt)
 			}
 			return initFinalizeActionSave, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			openStoreCalls++
-			return newFakeInitStore(nil), nil
-		},
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		openStoreCalls++
+		return newFakeInitStore(nil), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -16440,17 +16513,18 @@ func TestInitInteractiveMenuFinalizeBackReturnsToMenu(t *testing.T) {
 			initMenuActionExit,
 		},
 	}
-	deps := initDeps{
-		menuPrompter: menu,
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionBack, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
-		},
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return newFakeInitStore(nil), nil
-		},
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionDefer},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return newFakeInitStore(nil), nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: func(string, config.File) error {
@@ -16476,17 +16550,16 @@ func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionReviewProfiles,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionReviewProfiles,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			return initFinalizeActionCancel, nil
 		}),
-		profileV2Prompter: initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		runProfileV2: initPrompterFunc(func(initPromptContext) (initDraft, error) {
 			prompterCalls++
 			if prompterCalls > 1 {
 				return initDraft{}, errInitNavigateBack
@@ -16499,13 +16572,19 @@ func TestInitInteractiveMenuCancelAfterSecretEntryBeforeFinalSaveWritesNothing(t
 				LLMAuth:     string(config.LLMAuthSubscription),
 				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
 			}, nil
-		}),
-		secretPrompter: &fakeInitSecretPrompter{
+		}), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
 			sources: []initSecretSource{initSecretSourcePaste},
 			pastes:  []string{"new-token"},
-		},
-		openStore:  func(string, bool, config.File) (initStore, error) { return store, nil },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"new-token"},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourcePaste},
+			pastes:  []string{"new-token"},
+		}).PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
 		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -16535,18 +16614,17 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveCredentialStore: %v", err)
 	}
-	deps := initDeps{
-		menuPrompter: &fakeInitMenuPrompter{
-			actions: []initMenuAction{
-				initMenuActionRepositoryAccess,
-				initMenuActionSave,
-			},
+	deps := initDeps{prompters: prompters{chooseMenuAction: (&fakeInitMenuPrompter{
+		actions: []initMenuAction{
+			initMenuActionRepositoryAccess,
+			initMenuActionSave,
 		},
-		finalizePrompter: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
+	}).ChooseAction,
+		chooseFinalizeAction: initFinalizePrompterFunc(func(initFinalizePrompt) (initFinalizeAction, error) {
 			t.Fatal("finalize prompt should not run after keyring open failure")
 			return "", nil
 		}),
-		repositoryPrompter: initRepositoryAccessPrompterFunc(func(initRepositoryAccessPrompt) (initDraft, error) {
+		editRepositoryAccess: initRepositoryAccessPrompterFunc(func(initRepositoryAccessPrompt) (initDraft, error) {
 			return initDraft{
 				RepositoryAccessName:    "github-rianjs",
 				GitHost:                 "github.com",
@@ -16558,10 +16636,9 @@ func TestInitInteractiveFinalizationKeyringOpenFailure(t *testing.T) {
 				GitCredentialWrites:     map[string]string{credentials.GitTokenKey: "github-token"},
 				GitCredentialSatisfied:  true,
 			}, nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return nil, errors.New("open failed")
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		return nil, errors.New("open failed")
+	},
 		configPath: func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
@@ -16593,9 +16670,8 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 		},
 	}
 	keyringCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		keyringPrompter: initKeyringBackendPrompterFunc(func(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			keyringCalls++
 			next := cloneInitConfigFile(prompt.Config)
 			next.Secrets = config.SecretsConfig{
@@ -16610,14 +16686,13 @@ func TestInitInteractiveMenuCanCommitSecretsStorageBeforeReviewProfile(t *testin
 			}
 			return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: next}, nil
 		}),
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			t.Fatalf("finalize prompter should not run for profileless secrets-storage commit: %#v", prompt)
 			return initFinalizeActionCancel, nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			t.Fatal("openStore should not run when only credential-store config changed")
-			return nil, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		t.Fatal("openStore should not run when only credential-store config changed")
+		return nil, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -16690,22 +16765,20 @@ func TestInitInteractiveMenuCanCommitDeletingLastSecretsStore(t *testing.T) {
 		},
 	}
 	keyringCalls := 0
-	deps := initDeps{
-		menuPrompter: menu,
-		keyringPrompter: initKeyringBackendPrompterFunc(func(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: menu.ChooseAction,
+		editKeyringBackend: initKeyringBackendPrompterFunc(func(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
 			keyringCalls++
 			next := cloneInitConfigFile(prompt.Config)
 			next.Secrets = config.SecretsConfig{}
 			return initKeyringBackendEdit{Apply: true, HasConfigEdit: true, Config: next}, nil
 		}),
-		finalizePrompter: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
+		chooseFinalizeAction: initFinalizePrompterFunc(func(prompt initFinalizePrompt) (initFinalizeAction, error) {
 			t.Fatalf("finalize prompter should not run for profileless secrets-storage deletion: %#v", prompt)
 			return initFinalizeActionCancel, nil
-		}),
-		openStore: func(string, bool, config.File) (initStore, error) {
-			t.Fatal("openStore should not run when only credential-store config changed")
-			return nil, nil
-		},
+		})}, openStore: func(string, bool, config.File) (initStore, error) {
+		t.Fatal("openStore should not run when only credential-store config changed")
+		return nil, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -17165,15 +17238,14 @@ func TestInitNonInteractiveBypassesInteractiveMenuPath(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
-	deps := initDeps{
-		menuPrompter: initMenuPrompterFunc(func(initMenuPrompt) (initMenuAction, error) {
-			t.Fatal("interactive menu should not run for --non-interactive")
-			return "", nil
-		}),
-		retentionPrompter: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: initMenuPrompterFunc(func(initMenuPrompt) (initMenuAction, error) {
+		t.Fatal("interactive menu should not run for --non-interactive")
+		return "", nil
+	}),
+		editRetention: initRetentionPrompterFunc(func(initRetentionPrompt) (initRetentionEdit, error) {
 			t.Fatal("global settings should not run for --non-interactive")
 			return initRetentionEdit{}, nil
-		}),
+		})},
 	}
 	flags := initOptions{
 		nonInteractive: true,
@@ -17346,16 +17418,14 @@ func TestInitInteractiveRejectsSecretIngressFlagsBeforePrompt(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			t.Fatal("prompter called despite interactive secret-flag rejection")
-			return initDraft{}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		configPath: func(*root.Options) (string, error) {
-			t.Fatal("configPath called despite interactive secret-flag rejection")
-			return "", nil
-		},
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		t.Fatal("prompter called despite interactive secret-flag rejection")
+		return initDraft{}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu()}, configPath: func(*root.Options) (string, error) {
+		t.Fatal("configPath called despite interactive secret-flag rejection")
+		return "", nil
+	},
 	}
 
 	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{
@@ -17400,16 +17470,14 @@ func TestInitInteractiveRejectsNonInteractiveParityFlagsBeforePrompt(t *testing.
 				Stderr:     &bytes.Buffer{},
 				ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 			}
-			deps := initDeps{
-				profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-					t.Fatal("prompter called despite interactive parity-flag rejection")
-					return initDraft{}, nil
-				})),
-				menuPrompter: profileThenSaveInitMenu(),
-				configPath: func(*root.Options) (string, error) {
-					t.Fatal("configPath called despite interactive parity-flag rejection")
-					return "", nil
-				},
+			deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+				t.Fatal("prompter called despite interactive parity-flag rejection")
+				return initDraft{}, nil
+			})),
+				chooseMenuAction: profileThenSaveInitMenu()}, configPath: func(*root.Options) (string, error) {
+				t.Fatal("configPath called despite interactive parity-flag rejection")
+				return "", nil
+			},
 			}
 			cmd := &cobra.Command{}
 			cmd.Flags().String("git-auth-mode", "", "")
@@ -17441,28 +17509,37 @@ func TestInitInteractiveDeferredLLMHintUsesExplicitLocalOSStore(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	opts.Stderr = &stderr
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName:          "default",
-				GitHost:              "github.com",
-				GitAuth:              string(config.GitAuthModePAT),
-				GitCredentialRef:     "codereview/default",
-				LLMProvider:          string(config.LLMProviderOpenAI),
-				LLMAuth:              string(config.LLMAuthAPIKey),
-				LLMAdapter:           string(config.LLMAdapterOpenAIAPI),
-				LLMReviewerModelTier: string(config.ModelTierMedium),
-				LLMCredentialRef:     "codereview/default-llm",
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName:          "default",
+			GitHost:              "github.com",
+			GitAuth:              string(config.GitAuthModePAT),
+			GitCredentialRef:     "codereview/default",
+			LLMProvider:          string(config.LLMProviderOpenAI),
+			LLMAuth:              string(config.LLMAuthAPIKey),
+			LLMAdapter:           string(config.LLMAdapterOpenAIAPI),
+			LLMReviewerModelTier: string(config.ModelTierMedium),
+			LLMCredentialRef:     "codereview/default-llm",
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionDefer,
 			},
-		},
-		clipboardSupported: func() bool { return true },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionDefer,
+			},
+		}).PasteSecret, editKeyringBackend: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
+			return initKeyringBackendEdit{Apply: true}, nil
+		})}, clipboardSupported: func() bool { return true },
 		clipboardRead: func() (string, error) {
 			t.Fatal("clipboard should not be read during deferred llm init")
 			return "", nil
@@ -17470,9 +17547,7 @@ func TestInitInteractiveDeferredLLMHintUsesExplicitLocalOSStore(t *testing.T) {
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
-		keyringPrompter: initKeyringBackendPrompterFunc(func(initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-			return initKeyringBackendEdit{Apply: true}, nil
-		}),
+
 		openStore: func(string, bool, config.File) (initStore, error) {
 			return newFakeInitStore(nil), nil
 		},
@@ -17512,25 +17587,28 @@ func TestInitInteractiveCollectsClipboardGitSecretWithoutHint(t *testing.T) {
 		Stderr:     &stderr,
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName: "default",
-				GitHost:     "github.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName: "default",
+			GitHost:     "github.com",
+			GitAuth:     string(config.GitAuthModePAT),
+			LLMProvider: string(config.LLMProviderAnthropic),
+			LLMAuth:     string(config.LLMAuthSubscription),
+			LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
 			sources: []initSecretSource{initSecretSourceClipboard},
-		},
-		clipboardSupported: func() bool { return true },
-		clipboardRead:      func() (string, error) { return "clipboard-token", nil },
-		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		}).PasteSecret}, clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) { return "clipboard-token", nil },
+		configPath:    func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -17590,17 +17668,14 @@ func TestInitInteractiveSetNowOverwritesExistingTargetRef(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: path,
 	}
-	deps := initDeps{
-		menuPrompter: profileThenSaveInitMenu(),
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+	deps := initDeps{prompters: prompters{chooseMenuAction: profileThenSaveInitMenu(),
+		runProfileV2: oneShotInitPrompter(initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 			draft := seedInteractiveInitDraft("default", "default", ctx.ExistingProfile)
 			draft.GitCredentialRef = "codereview/shared-git"
 			return draft, nil
-		})),
-		secretPrompter: secretPrompter,
-		openStore: func(string, bool, config.File) (initStore, error) {
-			return store, nil
-		},
+		})), chooseCredentialAction: secretPrompter.ChooseCredentialAction, chooseSecretSource: secretPrompter.ChooseSecretSource, pasteSecret: secretPrompter.PasteSecret}, openStore: func(string, bool, config.File) (initStore, error) {
+		return store, nil
+	},
 		configPath: func(*root.Options) (string, error) { return path, nil },
 		loadConfig: loadConfigForInit,
 		saveConfig: config.Save,
@@ -17628,25 +17703,32 @@ func TestInitInteractiveCanKeepExistingSecretsAfterInspectingTargetRef(t *testin
 		Stderr:     &stderr,
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName: "default",
-				GitHost:     "github.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName: "default",
+			GitHost:     "github.com",
+			GitAuth:     string(config.GitAuthModePAT),
+			LLMProvider: string(config.LLMProviderAnthropic),
+			LLMAuth:     string(config.LLMAuthSubscription),
+			LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionSetNow,
 				initCredentialSecretActionKeep,
 			},
-		},
-		clipboardSupported: func() bool { return false },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionKeep,
+			},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionSetNow,
+				initCredentialSecretActionKeep,
+			},
+		}).PasteSecret}, clipboardSupported: func() bool { return false },
 		clipboardRead: func() (string, error) {
 			t.Fatal("clipboard should not be read when keeping existing secrets")
 			return "", nil
@@ -17680,29 +17762,38 @@ func TestInitInteractiveCollectsGitHubAppBundle(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName: "default",
-				GitHost:     "github.com",
-				GitAuth:     string(config.GitAuthModeGitHubApp),
-				GitHubAppID: "12345",
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName: "default",
+			GitHost:     "github.com",
+			GitAuth:     string(config.GitAuthModeGitHubApp),
+			GitHubAppID: "12345",
+			LLMProvider: string(config.LLMProviderAnthropic),
+			LLMAuth:     string(config.LLMAuthSubscription),
+			LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
 			sources: []initSecretSource{
 				initSecretSourcePaste,
 			},
 			pastes: []string{"private-key"},
-		},
-		clipboardSupported: func() bool { return true },
-		clipboardRead:      func() (string, error) { return "", nil },
-		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{
+				initSecretSourcePaste,
+			},
+			pastes: []string{"private-key"},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{
+				initSecretSourcePaste,
+			},
+			pastes: []string{"private-key"},
+		}).PasteSecret}, clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) { return "", nil },
+		configPath:    func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -17741,29 +17832,38 @@ func TestInitInteractiveCollectsProviderSpecificLLMKey(t *testing.T) {
 		Stderr:     &stderr,
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName:      "default",
-				GitHost:          "github.com",
-				GitAuth:          string(config.GitAuthModePAT),
-				LLMProvider:      string(config.LLMProviderOpenAI),
-				LLMAuth:          string(config.LLMAuthAPIKey),
-				LLMAdapter:       string(config.LLMAdapterOpenAIAPI),
-				LLMCredentialRef: "codereview/default-llm",
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName:      "default",
+			GitHost:          "github.com",
+			GitAuth:          string(config.GitAuthModePAT),
+			LLMProvider:      string(config.LLMProviderOpenAI),
+			LLMAuth:          string(config.LLMAuthAPIKey),
+			LLMAdapter:       string(config.LLMAdapterOpenAIAPI),
+			LLMCredentialRef: "codereview/default-llm",
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{
 				initCredentialSecretActionDefer,
 				initCredentialSecretActionSetNow,
 			},
 			sources: []initSecretSource{initSecretSourceClipboard},
-		},
-		clipboardSupported: func() bool { return true },
-		clipboardRead:      func() (string, error) { return "openai-key", nil },
-		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionSetNow,
+			},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{
+				initCredentialSecretActionDefer,
+				initCredentialSecretActionSetNow,
+			},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		}).PasteSecret}, clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) { return "openai-key", nil },
+		configPath:    func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -17790,25 +17890,28 @@ func TestInitInteractiveEmptyClipboardSecretDoesNotLeak(t *testing.T) {
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				ProfileName: "default",
-				GitHost:     "github.com",
-				GitAuth:     string(config.GitAuthModePAT),
-				LLMProvider: string(config.LLMProviderAnthropic),
-				LLMAuth:     string(config.LLMAuthSubscription),
-				LLMAdapter:  string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			ProfileName: "default",
+			GitHost:     "github.com",
+			GitAuth:     string(config.GitAuthModePAT),
+			LLMProvider: string(config.LLMProviderAnthropic),
+			LLMAuth:     string(config.LLMAuthSubscription),
+			LLMAdapter:  string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
 			sources: []initSecretSource{initSecretSourceClipboard},
-		},
-		clipboardSupported: func() bool { return true },
-		clipboardRead:      func() (string, error) { return "", nil },
-		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionSetNow},
+			sources: []initSecretSource{initSecretSourceClipboard},
+		}).PasteSecret}, clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) { return "", nil },
+		configPath:    func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{Profiles: map[string]config.Profile{}}, false, nil
 		},
@@ -17840,26 +17943,27 @@ func TestInitInteractiveRejectsKeepForChangedRefWithoutTargetBundle(t *testing.T
 		Stderr:     &bytes.Buffer{},
 		ConfigPath: filepath.Join(t.TempDir(), "config.yml"),
 	}
-	deps := initDeps{
-		profileV2Prompter: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
-			return initDraft{
-				OriginalProfileName: "work",
-				ProfileName:         "work",
-				GitHost:             "github.com",
-				GitAuth:             string(config.GitAuthModePAT),
-				GitCredentialRef:    "codereview/work-new",
-				LLMProvider:         string(config.LLMProviderAnthropic),
-				LLMAuth:             string(config.LLMAuthSubscription),
-				LLMAdapter:          string(config.LLMAdapterClaudeCLI),
-			}, nil
-		})),
-		menuPrompter: profileThenSaveInitMenu(),
-		secretPrompter: &fakeInitSecretPrompter{
+	deps := initDeps{prompters: prompters{runProfileV2: oneShotInitPrompter(initPrompterFunc(func(initPromptContext) (initDraft, error) {
+		return initDraft{
+			OriginalProfileName: "work",
+			ProfileName:         "work",
+			GitHost:             "github.com",
+			GitAuth:             string(config.GitAuthModePAT),
+			GitCredentialRef:    "codereview/work-new",
+			LLMProvider:         string(config.LLMProviderAnthropic),
+			LLMAuth:             string(config.LLMAuthSubscription),
+			LLMAdapter:          string(config.LLMAdapterClaudeCLI),
+		}, nil
+	})),
+		chooseMenuAction: profileThenSaveInitMenu(), chooseCredentialAction: (&fakeInitSecretPrompter{
 			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
-		},
-		clipboardSupported: func() bool { return true },
-		clipboardRead:      func() (string, error) { return "", nil },
-		configPath:         func(*root.Options) (string, error) { return opts.ConfigPath, nil },
+		}).ChooseCredentialAction, chooseSecretSource: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		}).ChooseSecretSource, pasteSecret: (&fakeInitSecretPrompter{
+			actions: []initCredentialSecretAction{initCredentialSecretActionKeep},
+		}).PasteSecret}, clipboardSupported: func() bool { return true },
+		clipboardRead: func() (string, error) { return "", nil },
+		configPath:    func(*root.Options) (string, error) { return opts.ConfigPath, nil },
 		loadConfig: func(string) (config.File, bool, error) {
 			return config.File{
 				Profiles: map[string]config.Profile{
@@ -18496,11 +18600,7 @@ func (failReader) Read([]byte) (int, error) {
 
 type initPrompterFunc func(initPromptContext) (initDraft, error)
 
-func (f initPrompterFunc) Run(ctx initPromptContext) (initDraft, error) {
-	return f(ctx)
-}
-
-func oneShotInitPrompter(f initPrompterFunc) initPrompter {
+func oneShotInitPrompter(f initPrompterFunc) initPrompterFunc {
 	called := false
 	return initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
 		if called {
@@ -18511,51 +18611,24 @@ func oneShotInitPrompter(f initPrompterFunc) initPrompter {
 	})
 }
 
-func profileThenSaveInitMenu() initMenuPrompter {
-	return &fakeInitMenuPrompter{actions: []initMenuAction{initMenuActionReviewProfiles, initMenuActionSave}}
+func profileThenSaveInitMenu() initMenuPrompterFunc {
+	prompter := &fakeInitMenuPrompter{actions: []initMenuAction{initMenuActionReviewProfiles, initMenuActionSave}}
+	return prompter.ChooseAction
 }
 
 type initMenuPrompterFunc func(initMenuPrompt) (initMenuAction, error)
 
-func (f initMenuPrompterFunc) ChooseAction(prompt initMenuPrompt) (initMenuAction, error) {
-	return f(prompt)
-}
-
 type initLLMRuntimePrompterFunc func(initLLMRuntimePrompt) (initDraft, error)
-
-func (f initLLMRuntimePrompterFunc) EditLLMRuntime(prompt initLLMRuntimePrompt) (initDraft, error) {
-	return f(prompt)
-}
 
 type initRepositoryAccessPrompterFunc func(initRepositoryAccessPrompt) (initDraft, error)
 
-func (f initRepositoryAccessPrompterFunc) EditRepositoryAccess(prompt initRepositoryAccessPrompt) (initDraft, error) {
-	return f(prompt)
-}
-
 type initReviewerEntityPrompterFunc func(initReviewerEntityPrompt) (initDraft, error)
-
-func (f initReviewerEntityPrompterFunc) EditReviewerEntity(prompt initReviewerEntityPrompt) (initDraft, error) {
-	return f(prompt)
-}
 
 type initFinalizePrompterFunc func(initFinalizePrompt) (initFinalizeAction, error)
 
-func (f initFinalizePrompterFunc) ChooseFinalizeAction(prompt initFinalizePrompt) (initFinalizeAction, error) {
-	return f(prompt)
-}
-
 type initRetentionPrompterFunc func(initRetentionPrompt) (initRetentionEdit, error)
 
-func (f initRetentionPrompterFunc) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
-	return f(prompt)
-}
-
 type initKeyringBackendPrompterFunc func(initKeyringBackendPrompt) (initKeyringBackendEdit, error)
-
-func (f initKeyringBackendPrompterFunc) EditKeyringBackend(prompt initKeyringBackendPrompt) (initKeyringBackendEdit, error) {
-	return f(prompt)
-}
 
 func assertContentOrder(t *testing.T, content string, parts ...string) {
 	t.Helper()

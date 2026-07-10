@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
@@ -19,17 +18,13 @@ type bubbleTeaInitProfileV2Prompter struct {
 	stdin               io.Reader
 	stderr              io.Writer
 	inventoryRunner     initInventoryRunner
-	llmRuntimePrompter  initLLMRuntimePrompter
+	editLLMRuntime      func(initLLMRuntimePrompt) (initDraft, error)
 	profileEditorRunner initProfileV2EditorRunner
 }
 
 type initProfileV2EditorRunner func(initProfileV2Editor) (initProfileV2EditorResult, error)
 
 var initProfileV2Theme = initLinearTheme
-
-func newBubbleTeaInitProfileV2Prompter(opts *root.Options) initPrompter {
-	return bubbleTeaInitProfileV2Prompter{stdin: opts.Stdin, stderr: opts.Stderr}
-}
 
 func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, error) {
 	if initProfileV2ShouldCreateDirectly(ctx) {
@@ -113,21 +108,22 @@ func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, 
 		if !result.BootstrapLLMRuntime {
 			return initDraft{}, false, nil
 		}
-		llmRuntimePrompter := p.llmRuntimePrompter
-		if llmRuntimePrompter == nil {
-			llmRuntimePrompter = huhInitLLMRuntimePrompter{
+		editLLMRuntime := p.editLLMRuntime
+		if editLLMRuntime == nil {
+			llmRuntimePrompter := huhInitLLMRuntimePrompter{
 				stdin:           p.stdin,
 				stderr:          p.stderr,
 				checker:         defaultInitLLMRuntimeAvailabilityNote,
 				inventoryRunner: p.inventoryRunner,
 			}
+			editLLMRuntime = llmRuntimePrompter.EditLLMRuntime
 		}
 		runtimePromptCtx := editorCtx
 		runtimePromptCtx.LLMRuntimes = maps.Clone(editorCtx.LLMRuntimes)
 		if runtimePromptCtx.LLMRuntimes == nil {
 			runtimePromptCtx.LLMRuntimes = map[string]initLLMRuntimeDraft{}
 		}
-		runtimeDraft, err := llmRuntimePrompter.EditLLMRuntime(initLLMRuntimePrompt{Context: runtimePromptCtx})
+		runtimeDraft, err := editLLMRuntime(initLLMRuntimePrompt{Context: runtimePromptCtx})
 		if errors.Is(err, errInitNavigateBack) {
 			continue
 		}

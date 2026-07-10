@@ -67,36 +67,18 @@ type initOptions struct {
 	secretsDiscovery    string
 }
 
-type initPrompter interface {
-	Run(initPromptContext) (initDraft, error)
-}
-
-type initMenuPrompter interface {
-	ChooseAction(initMenuPrompt) (initMenuAction, error)
-}
-
-type initRetentionPrompter interface {
-	EditRetention(initRetentionPrompt) (initRetentionEdit, error)
-}
-
-type initKeyringBackendPrompter interface {
-	EditKeyringBackend(initKeyringBackendPrompt) (initKeyringBackendEdit, error)
-}
-
-type initLLMRuntimePrompter interface {
-	EditLLMRuntime(initLLMRuntimePrompt) (initDraft, error)
-}
-
-type initRepositoryAccessPrompter interface {
-	EditRepositoryAccess(initRepositoryAccessPrompt) (initDraft, error)
-}
-
-type initReviewerEntityPrompter interface {
-	EditReviewerEntity(initReviewerEntityPrompt) (initDraft, error)
-}
-
-type initFinalizePrompter interface {
-	ChooseFinalizeAction(initFinalizePrompt) (initFinalizeAction, error)
+type prompters struct {
+	runProfileV2           func(initPromptContext) (initDraft, error)
+	chooseMenuAction       func(initMenuPrompt) (initMenuAction, error)
+	editRetention          func(initRetentionPrompt) (initRetentionEdit, error)
+	editKeyringBackend     func(initKeyringBackendPrompt) (initKeyringBackendEdit, error)
+	editLLMRuntime         func(initLLMRuntimePrompt) (initDraft, error)
+	editRepositoryAccess   func(initRepositoryAccessPrompt) (initDraft, error)
+	editReviewerEntity     func(initReviewerEntityPrompt) (initDraft, error)
+	chooseFinalizeAction   func(initFinalizePrompt) (initFinalizeAction, error)
+	chooseCredentialAction func(initCredentialSecretPrompt) (initCredentialSecretAction, error)
+	chooseSecretSource     func(initSecretValuePrompt) (initSecretSource, error)
+	pasteSecret            func(initSecretValuePrompt) (string, error)
 }
 
 type initPromptContext struct {
@@ -272,15 +254,7 @@ type initReviewerEntityPrompt struct {
 }
 
 type initDeps struct {
-	profileV2Prompter  initPrompter
-	menuPrompter       initMenuPrompter
-	llmRuntimePrompter initLLMRuntimePrompter
-	repositoryPrompter initRepositoryAccessPrompter
-	reviewerPrompter   initReviewerEntityPrompter
-	finalizePrompter   initFinalizePrompter
-	retentionPrompter  initRetentionPrompter
-	keyringPrompter    initKeyringBackendPrompter
-	secretPrompter     initSecretPrompter
+	prompters          prompters
 	clipboardSupported func() bool
 	clipboardRead      func() (string, error)
 	configPath         func(*root.Options) (string, error)
@@ -506,12 +480,6 @@ type initCredentialDecisionKey struct {
 	Key     string
 }
 
-type initSecretPrompter interface {
-	ChooseCredentialAction(initCredentialSecretPrompt) (initCredentialSecretAction, error)
-	ChooseSecretSource(initSecretValuePrompt) (initSecretSource, error)
-	PasteSecret(initSecretValuePrompt) (string, error)
-}
-
 type initCredentialSecretAction string
 
 const (
@@ -550,13 +518,6 @@ type initSecretValuePrompt struct {
 
 func defaultInitDeps() initDeps {
 	return initDeps{
-		menuPrompter:       nil,
-		llmRuntimePrompter: nil,
-		repositoryPrompter: nil,
-		reviewerPrompter:   nil,
-		finalizePrompter:   nil,
-		retentionPrompter:  nil,
-		keyringPrompter:    nil,
 		clipboardSupported: func() bool { return !clipboard.Unsupported },
 		clipboardRead:      clipboard.ReadAll,
 		configPath:         cmdruntime.ConfigPath,
@@ -575,30 +536,6 @@ func defaultInitDeps() initDeps {
 func (deps initDeps) withDefaults() initDeps {
 	defaults := defaultInitDeps()
 	hasInjectedOpenStore := deps.openStore != nil
-	if deps.secretPrompter == nil {
-		deps.secretPrompter = defaults.secretPrompter
-	}
-	if deps.menuPrompter == nil {
-		deps.menuPrompter = defaults.menuPrompter
-	}
-	if deps.llmRuntimePrompter == nil {
-		deps.llmRuntimePrompter = defaults.llmRuntimePrompter
-	}
-	if deps.repositoryPrompter == nil {
-		deps.repositoryPrompter = defaults.repositoryPrompter
-	}
-	if deps.reviewerPrompter == nil {
-		deps.reviewerPrompter = defaults.reviewerPrompter
-	}
-	if deps.finalizePrompter == nil {
-		deps.finalizePrompter = defaults.finalizePrompter
-	}
-	if deps.retentionPrompter == nil {
-		deps.retentionPrompter = defaults.retentionPrompter
-	}
-	if deps.keyringPrompter == nil {
-		deps.keyringPrompter = defaults.keyringPrompter
-	}
 	if deps.clipboardSupported == nil {
 		deps.clipboardSupported = defaults.clipboardSupported
 	}
@@ -758,7 +695,7 @@ func runInteractiveInit(cmd *cobra.Command, opts *root.Options, flags initOption
 		if err != nil {
 			return err
 		}
-		if deps.finalizePrompter == nil {
+		if deps.prompters.chooseFinalizeAction == nil {
 			return applyInteractiveInitSessionPlan(opts, deps, plan)
 		}
 		action, err := chooseInteractiveInitFinalizeAction(opts, deps, plan)
@@ -812,32 +749,37 @@ type huhInitFinalizePrompter struct {
 	stderr io.Writer
 }
 
-func newHuhInitMenuPrompter(opts *root.Options) initMenuPrompter {
-	return huhInitMenuPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
-}
-
-func newHuhInitLLMRuntimePrompter(opts *root.Options) initLLMRuntimePrompter {
-	return huhInitLLMRuntimePrompter{
+func newHuhInitPrompters(opts *root.Options, mode initSecretsBackendDiscoveryMode) prompters {
+	profile := bubbleTeaInitProfileV2Prompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	menu := huhInitMenuPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	llmRuntime := huhInitLLMRuntimePrompter{
 		stdin:           opts.Stdin,
 		stderr:          opts.Stderr,
 		inventoryRunner: runInitInventory,
 		checker:         defaultInitLLMRuntimeAvailabilityNote,
 	}
-}
-
-func newHuhInitRepositoryAccessPrompter(opts *root.Options) initRepositoryAccessPrompter {
-	return huhInitRepositoryAccessPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
-}
-
-func newHuhInitReviewerEntityPrompter(opts *root.Options) initReviewerEntityPrompter {
-	return huhInitReviewerEntityPrompter{
+	repository := huhInitRepositoryAccessPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	reviewer := huhInitReviewerEntityPrompter{
 		stdin:  opts.Stdin,
 		stderr: opts.Stderr,
 	}
-}
-
-func newHuhInitFinalizePrompter(opts *root.Options) initFinalizePrompter {
-	return huhInitFinalizePrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	finalize := huhInitFinalizePrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	retention := bubbleTeaInitRetentionPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	keyring := huhInitKeyringBackendPrompter{stdin: opts.Stdin, stderr: opts.Stderr, discoveryMode: mode}
+	secret := huhInitSecretPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
+	return prompters{
+		runProfileV2:           profile.Run,
+		chooseMenuAction:       menu.ChooseAction,
+		editRetention:          retention.EditRetention,
+		editKeyringBackend:     keyring.EditKeyringBackend,
+		editLLMRuntime:         llmRuntime.EditLLMRuntime,
+		editRepositoryAccess:   repository.EditRepositoryAccess,
+		editReviewerEntity:     reviewer.EditReviewerEntity,
+		chooseFinalizeAction:   finalize.ChooseFinalizeAction,
+		chooseCredentialAction: secret.ChooseCredentialAction,
+		chooseSecretSource:     secret.ChooseSecretSource,
+		pasteSecret:            secret.PasteSecret,
+	}
 }
 
 type huhInitSecretPrompter struct {
@@ -873,14 +815,6 @@ const (
 	initReviewerModelTierTitle            = "Minimum reviewer model tier"
 	initReviewerModelTierDescription      = "Sets the minimum model tier for reviewer agents. Agents that require a higher tier still use their higher configured tier."
 )
-
-func newHuhInitSecretPrompter(opts *root.Options) initSecretPrompter {
-	return huhInitSecretPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
-}
-
-func newHuhInitKeyringBackendPrompter(opts *root.Options, mode initSecretsBackendDiscoveryMode) initKeyringBackendPrompter {
-	return huhInitKeyringBackendPrompter{stdin: opts.Stdin, stderr: opts.Stderr, discoveryMode: mode}
-}
 
 func buildInteractiveInitInventoryPromptContext(ctx initPromptContext) initPromptContext {
 	ctx.GitScopes, ctx.ProfileGitScopes = buildInitGitScopeInventory(ctx.ExistingConfig)
@@ -1013,13 +947,13 @@ func currentInteractiveInitPromptContextBase(session initSessionDraft) initPromp
 }
 
 func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
-	menuPrompter := deps.menuPrompter
-	if menuPrompter == nil {
-		menuPrompter = newHuhInitMenuPrompter(opts)
+	chooseMenuAction := deps.prompters.chooseMenuAction
+	if chooseMenuAction == nil {
+		chooseMenuAction = newHuhInitPrompters(opts, initSecretsBackendDiscoveryMode(flags.secretsDiscovery)).chooseMenuAction
 	}
 	for {
 		prompt := buildInteractiveInitMenuPrompt(session)
-		action, err := menuPrompter.ChooseAction(prompt)
+		action, err := chooseMenuAction(prompt)
 		if err != nil {
 			return initSessionDraft{}, err
 		}
@@ -1060,13 +994,13 @@ func runInteractiveInitMenuLoop(cmd *cobra.Command, opts *root.Options, flags in
 }
 
 func editInteractiveInitRepositoryAccess(_ *cobra.Command, opts *root.Options, _ initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
-	prompter := deps.repositoryPrompter
-	if prompter == nil {
-		prompter = newHuhInitRepositoryAccessPrompter(opts)
+	editRepositoryAccess := deps.prompters.editRepositoryAccess
+	if editRepositoryAccess == nil {
+		editRepositoryAccess = newHuhInitPrompters(opts, "").editRepositoryAccess
 	}
 	promptCtx := currentInteractiveInitRepositoryAccessPromptContext(opts, deps, session)
 	promptCtx.StandaloneRepositoryAccessMode = true
-	draft, err := prompter.EditRepositoryAccess(initRepositoryAccessPrompt{Context: promptCtx})
+	draft, err := editRepositoryAccess(initRepositoryAccessPrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
 		return session, nil
 	}
@@ -1146,13 +1080,13 @@ func stageStandaloneInteractiveInitRepositoryAccess(session initSessionDraft, dr
 }
 
 func loopInteractiveInitProfileV2(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, error) {
-	prompter := deps.profileV2Prompter
-	if prompter == nil {
-		prompter = newBubbleTeaInitProfileV2Prompter(opts)
+	runProfileV2 := deps.prompters.runProfileV2
+	if runProfileV2 == nil {
+		runProfileV2 = newHuhInitPrompters(opts, initSecretsBackendDiscoveryMode(flags.secretsDiscovery)).runProfileV2
 	}
 	for {
 		promptCtx := currentInteractiveInitInventoryPromptContext(session)
-		draft, err := prompter.Run(promptCtx)
+		draft, err := runProfileV2(promptCtx)
 		if errors.Is(err, errInitNavigateBack) {
 			return session, nil
 		}
@@ -1255,12 +1189,12 @@ func loopInteractiveInitLLMRuntime(cmd *cobra.Command, opts *root.Options, flags
 }
 
 func editInteractiveInitLLMRuntimeStep(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
-	prompter := deps.llmRuntimePrompter
-	if prompter == nil {
-		prompter = newHuhInitLLMRuntimePrompter(opts)
+	editLLMRuntime := deps.prompters.editLLMRuntime
+	if editLLMRuntime == nil {
+		editLLMRuntime = newHuhInitPrompters(opts, initSecretsBackendDiscoveryMode(flags.secretsDiscovery)).editLLMRuntime
 	}
 	promptCtx := currentInteractiveInitInventoryPromptContext(session)
-	draft, err := prompter.EditLLMRuntime(initLLMRuntimePrompt{Context: promptCtx})
+	draft, err := editLLMRuntime(initLLMRuntimePrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
 		return session, false, nil
 	}
@@ -1359,13 +1293,13 @@ func loopInteractiveInitReviewerEntity(cmd *cobra.Command, opts *root.Options, f
 }
 
 func editInteractiveInitReviewerEntityStep(_ *cobra.Command, opts *root.Options, flags initOptions, deps initDeps, session initSessionDraft) (initSessionDraft, bool, error) {
-	prompter := deps.reviewerPrompter
-	if prompter == nil {
-		prompter = newHuhInitReviewerEntityPrompter(opts)
+	editReviewerEntity := deps.prompters.editReviewerEntity
+	if editReviewerEntity == nil {
+		editReviewerEntity = newHuhInitPrompters(opts, initSecretsBackendDiscoveryMode(flags.secretsDiscovery)).editReviewerEntity
 	}
 	promptCtx := currentInteractiveInitReviewerEntityPromptContext(opts, deps, session)
 	promptCtx.StandaloneReviewerEntityMode = true
-	draft, err := prompter.EditReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
+	draft, err := editReviewerEntity(initReviewerEntityPrompt{Context: promptCtx})
 	if errors.Is(err, errInitNavigateBack) {
 		return session, false, nil
 	}
@@ -5367,11 +5301,11 @@ func parseInitRoutePRURL(raw string) (gitprovider.PRRef, error) {
 }
 
 func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cfg config.File) (config.File, error) {
-	prompter := deps.retentionPrompter
-	if prompter == nil {
-		prompter = newBubbleTeaInitRetentionPrompter(opts)
+	editRetention := deps.prompters.editRetention
+	if editRetention == nil {
+		editRetention = newHuhInitPrompters(opts, "").editRetention
 	}
-	edit, err := prompter.EditRetention(initRetentionPrompt{
+	edit, err := editRetention(initRetentionPrompt{
 		Retention: cfg.Data.Retention,
 	})
 	if err != nil {
@@ -5389,11 +5323,11 @@ func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cf
 }
 
 func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDeps, discoveryMode initSecretsBackendDiscoveryMode, backendFlagSet bool, cfg config.File) (config.File, error) {
-	prompter := deps.keyringPrompter
-	if prompter == nil {
-		prompter = newHuhInitKeyringBackendPrompter(opts, discoveryMode)
+	editKeyringBackend := deps.prompters.editKeyringBackend
+	if editKeyringBackend == nil {
+		editKeyringBackend = newHuhInitPrompters(opts, discoveryMode).editKeyringBackend
 	}
-	edit, err := prompter.EditKeyringBackend(initKeyringBackendPrompt{
+	edit, err := editKeyringBackend(initKeyringBackendPrompt{
 		Config:         cfg,
 		RuntimeBackend: opts.Backend,
 		BackendFlagSet: backendFlagSet,
@@ -5713,9 +5647,16 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 		return plan, nil
 	}
 
-	prompter := deps.secretPrompter
-	if prompter == nil {
-		prompter = newHuhInitSecretPrompter(opts)
+	prompter := deps.prompters
+	defaults := newHuhInitPrompters(opts, "")
+	if prompter.chooseCredentialAction == nil {
+		prompter.chooseCredentialAction = defaults.chooseCredentialAction
+	}
+	if prompter.chooseSecretSource == nil {
+		prompter.chooseSecretSource = defaults.chooseSecretSource
+	}
+	if prompter.pasteSecret == nil {
+		prompter.pasteSecret = defaults.pasteSecret
 	}
 	stores := map[string]initStore{}
 	openStore := func(entry initCredentialPlanEntry) (initStore, error) {
@@ -5772,7 +5713,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 		})
 	credentialChoices:
 		for {
-			action, err := prompter.ChooseCredentialAction(initCredentialSecretPrompt{
+			action, err := prompter.chooseCredentialAction(initCredentialSecretPrompt{
 				Entry:              entry,
 				Destination:        destination,
 				ClipboardSupported: deps.clipboardSupported(),
@@ -5805,7 +5746,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			targetHasRequired := credentials.RequiredKeysSatisfied(targetStatus)
 			targetHasAnyKeys := len(targetKeys) > 0
 			if action == initCredentialSecretActionSetNow && targetHasAnyKeys {
-				action, err = prompter.ChooseCredentialAction(initCredentialSecretPrompt{
+				action, err = prompter.chooseCredentialAction(initCredentialSecretPrompt{
 					Entry:              entry,
 					Destination:        destination,
 					TargetHasRequired:  targetHasRequired,
@@ -5845,7 +5786,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 			sourceChoices:
 				for {
 					targetHasKey := targetKeys[spec.Key]
-					source, err := prompter.ChooseSecretSource(initSecretValuePrompt{
+					source, err := prompter.chooseSecretSource(initSecretValuePrompt{
 						Entry:              entry,
 						Key:                spec.Key,
 						Destination:        destination,
@@ -5880,7 +5821,7 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 						}
 						addWrite(entryWrites, entry.Ref.Ref, spec.Key, value)
 					case initSecretSourcePaste:
-						value, err := prompter.PasteSecret(initSecretValuePrompt{
+						value, err := prompter.pasteSecret(initSecretValuePrompt{
 							Entry:              entry,
 							Key:                spec.Key,
 							Destination:        destination,
@@ -6328,11 +6269,11 @@ func statePreservesWithoutPlannedWrites(state initCredentialPlanState) bool {
 }
 
 func chooseInteractiveInitFinalizeAction(opts *root.Options, deps initDeps, plan initSessionPlan) (initFinalizeAction, error) {
-	prompter := deps.finalizePrompter
-	if prompter == nil {
-		prompter = newHuhInitFinalizePrompter(opts)
+	chooseFinalizeAction := deps.prompters.chooseFinalizeAction
+	if chooseFinalizeAction == nil {
+		chooseFinalizeAction = newHuhInitPrompters(opts, "").chooseFinalizeAction
 	}
-	return prompter.ChooseFinalizeAction(buildInteractiveInitFinalizePrompt(plan))
+	return chooseFinalizeAction(buildInteractiveInitFinalizePrompt(plan))
 }
 
 func buildInteractiveInitFinalizePrompt(plan initSessionPlan) initFinalizePrompt {

@@ -1,22 +1,18 @@
 package initcmd
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 const initSecretsBackendDiscoveryEnv = "CR_SECRET_BACKEND_DISCOVERY" // #nosec G101 -- environment variable name, not a credential.
 
-type initExecutableLookPath func(string) (string, error)
+type initExecutableLookPath = credentials.ExecutableLookPath
 
 type initSecretsBackendDiscoveryMode string
 
@@ -26,13 +22,13 @@ const (
 	initSecretsBackendDiscoveryModeOff  initSecretsBackendDiscoveryMode = "off"
 )
 
-type initSecretsProbeStatus string
+type initSecretsProbeStatus = credentials.ProbeStatus
 
 const (
-	initSecretsProbeAvailable   initSecretsProbeStatus = "available"
-	initSecretsProbeNotFound    initSecretsProbeStatus = "not found"
-	initSecretsProbeSkipped     initSecretsProbeStatus = "skipped"
-	initSecretsProbeUnavailable initSecretsProbeStatus = "unavailable"
+	initSecretsProbeAvailable   = credentials.ProbeAvailable
+	initSecretsProbeNotFound    = credentials.ProbeNotFound
+	initSecretsProbeSkipped     = credentials.ProbeSkipped
+	initSecretsProbeUnavailable = credentials.ProbeUnavailable
 )
 
 type initSecretsProbeResult struct {
@@ -131,45 +127,15 @@ func (p huhInitKeyringBackendPrompter) passPasswordStoreProbeResult(mode initSec
 }
 
 func (p huhInitKeyringBackendPrompter) lookPath(name string) (string, error) {
-	if p.executableLookPath != nil {
-		return p.executableLookPath(name)
-	}
-	return exec.LookPath(name)
+	return credentials.FindExecutable(name, p.executableLookPath)
 }
 
 func initSecretsProbeStatusForError(err error) initSecretsProbeStatus {
-	if err == nil {
-		return initSecretsProbeAvailable
-	}
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
-		return initSecretsProbeNotFound
-	}
-	return initSecretsProbeUnavailable
+	return credentials.ProbeStatusForError(err)
 }
 
 func initSecretsProbeDetailForError(err error, status initSecretsProbeStatus) string {
-	if status != initSecretsProbeUnavailable {
-		return ""
-	}
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timed out"
-	case errors.Is(err, os.ErrPermission):
-		return "permission denied"
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return "command failed"
-	}
-	var syntaxErr *json.SyntaxError
-	if errors.As(err, &syntaxErr) {
-		return "invalid JSON"
-	}
-	var typeErr *json.UnmarshalTypeError
-	if errors.As(err, &typeErr) {
-		return "invalid JSON"
-	}
-	return ""
+	return credentials.ProbeDetailForError(err, status)
 }
 
 func initSecretsPlural(count int, singular, plural string) string {

@@ -7,7 +7,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
@@ -21,10 +20,6 @@ const (
 	initRetentionFieldMaxAge initLinearFieldID = "retention_max_age"
 	initRetentionFieldAction initLinearFieldID = "retention_action"
 )
-
-func newBubbleTeaInitRetentionPrompter(opts *root.Options) initRetentionPrompter {
-	return bubbleTeaInitRetentionPrompter{stdin: opts.Stdin, stderr: opts.Stderr}
-}
 
 func (p bubbleTeaInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
 	editor := initRetentionEditor(prompt.Retention)
