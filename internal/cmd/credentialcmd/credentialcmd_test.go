@@ -5023,7 +5023,7 @@ func TestInitLLMRuntimeLinearEditorChangingSelectionResetsDeleteMode(t *testing.
 	if cmd != nil {
 		t.Fatal("delete shortcut returned quit command before choosing replacement")
 	}
-	if got := next.document.selectedValue(initLLMRuntimeFieldAction); got != initLLMRuntimeActionDelete {
+	if got := next.document.selectedValue(initLLMRuntimeFieldAction); got != initLinearResultActionDelete {
 		t.Fatalf("action after delete shortcut = %q, want delete", got)
 	}
 	next = focusInitLinearField(t, next, initLLMRuntimeFieldSelection)
@@ -5043,7 +5043,7 @@ func TestInitLLMRuntimeLinearEditorChangingSelectionResetsDeleteMode(t *testing.
 	}
 	actionIndex := next.document.fieldIndexByID(initLLMRuntimeFieldAction)
 	for _, option := range next.document[actionIndex].Options {
-		if option.Value == initLLMRuntimeActionDelete {
+		if option.Value == initLinearResultActionDelete {
 			t.Fatalf("delete action still available after runtime selection changed: %#v", option)
 		}
 	}
@@ -8736,8 +8736,8 @@ func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletion
 		values = append(values, option.Value)
 	}
 	wantSuffix := []string{
-		initSecretsManagementRestoreSelectionPrefix + "alpha",
-		initSecretsManagementRestoreSelectionPrefix + "beta",
+		initLinearRestoreSelection("secrets_management", "alpha"),
+		initLinearRestoreSelection("secrets_management", "beta"),
 	}
 	if len(values) < len(wantSuffix) || !reflect.DeepEqual(values[len(values)-len(wantSuffix):], wantSuffix) {
 		t.Fatalf("target option values = %#v, want pending deletes last in staging order %#v", values, wantSuffix)
@@ -8777,7 +8777,7 @@ func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredPro
 		t.Fatal("action field missing")
 	}
 	for _, option := range model.document[actionIndex].Options {
-		if option.Value == initSecretsManagementActionDelete {
+		if option.Value == initLinearResultActionDelete {
 			t.Fatalf("create-new target exposes delete action: %#v", model.document[actionIndex].Options)
 		}
 	}
@@ -11681,7 +11681,7 @@ func selectInitLinearFieldValue(t *testing.T, model initLinearEditorModel, id in
 	return model
 }
 
-func stageReviewerEntityEditorRunner(t *testing.T, edits map[initLinearFieldID]string, action string) initReviewerEntityEditorRunner {
+func stageReviewerEntityEditorRunner(t *testing.T, edits map[initLinearFieldID]string, action string) initEditorRunner {
 	t.Helper()
 	if action == "" {
 		action = initDetailActionEdit
@@ -11714,7 +11714,7 @@ func stageReviewerEntityEditorRunner(t *testing.T, edits map[initLinearFieldID]s
 	}
 }
 
-func stageLLMRuntimeEditorRunner(t *testing.T, selections map[initLinearFieldID]string, action string) initLLMRuntimeEditorRunner {
+func stageLLMRuntimeEditorRunner(t *testing.T, selections map[initLinearFieldID]string, action string) initEditorRunner {
 	t.Helper()
 	if action == "" {
 		action = initDetailActionEdit
@@ -12243,7 +12243,7 @@ func TestInitRepositoryAccessEditorMarksPendingRepositoryAccessRestorable(t *tes
 			},
 		},
 	}
-	selection := initRepositoryAccessRestoreSelectionPrefix + "work-git"
+	selection := initLinearRestoreSelection("repository_access", "work-git")
 	model := newInitLinearEditorModel(initRepositoryAccessLinearEditor(ctx, initDraft{}), 160, 60)
 	model = selectInitLinearFieldValue(t, model, initRepositoryAccessFieldSelection, selection)
 	selectionIndex := model.document.fieldIndexByID(initRepositoryAccessFieldSelection)

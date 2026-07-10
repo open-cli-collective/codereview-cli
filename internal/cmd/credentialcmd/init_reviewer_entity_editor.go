@@ -2,19 +2,15 @@ package credentialcmd
 
 import (
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
-
-type initReviewerEntityEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
 	initReviewerEntityFieldSelection           initLinearFieldID = "reviewer_entity_selection"
@@ -30,17 +26,10 @@ const (
 	initReviewerEntityFieldAction              initLinearFieldID = "reviewer_entity_action"
 )
 
-const (
-	initReviewerEntityActionDelete  = "delete"
-	initReviewerEntityActionRestore = "restore"
-)
-
-const initReviewerEntityRestoreSelectionPrefix = "__restore_reviewer_entity__:"
-
 func (p huhInitReviewerEntityPrompter) editReviewerEntityLinear(prompt initReviewerEntityPrompt) (initDraft, error) {
 	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	editor := initReviewerEntityLinearEditor(prompt.Context, seed)
-	model, err := p.runReviewerEntityEditor(editor)
+	model, err := runInitEditor(editor, p.stdin, p.stderr, p.editorRunner, "reviewer entity")
 	if err != nil {
 		return initDraft{}, err
 	}
@@ -55,13 +44,13 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityLinear(prompt initRevie
 			draft.ActionTarget = selection
 		}
 		return draft, nil
-	case initReviewerEntityActionDelete:
+	case initLinearResultActionDelete:
 		return initDraft{
 			Action:       initDraftActionDeleteReviewerEntity,
 			ActionTarget: selection,
 		}, nil
-	case initReviewerEntityActionRestore:
-		entityName, _ := initReviewerEntityRestoreSelectionName(selection)
+	case initLinearResultActionRestore:
+		entityName, _ := initLinearRestoreSelectionName("reviewer_entity", selection)
 		return initDraft{
 			Action:       initDraftActionUndoDeleteReviewerEntity,
 			ActionTarget: entityName,
@@ -76,7 +65,7 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFieldsLinear(ctx initPr
 	if err != nil {
 		return initDraft{}, false, err
 	}
-	model, err := p.runReviewerEntityEditor(editorState.editor(ctx))
+	model, err := runInitEditor(editorState.editor(ctx), p.stdin, p.stderr, p.editorRunner, "reviewer entity")
 	if err != nil {
 		return initDraft{}, false, err
 	}
@@ -90,22 +79,6 @@ func (p huhInitReviewerEntityPrompter) editReviewerEntityFieldsLinear(ctx initPr
 	default:
 		return initDraft{}, true, nil
 	}
-}
-
-func (p huhInitReviewerEntityPrompter) runReviewerEntityEditor(editor initLinearEditor) (initLinearEditorModel, error) {
-	if p.editorRunner != nil {
-		return p.editorRunner(editor, p.stdin, p.stderr)
-	}
-	program := tea.NewProgram(newInitLinearEditorModel(editor, 100, 28), tea.WithInput(p.stdin), tea.WithOutput(p.stderr))
-	finalModel, err := program.Run()
-	if err != nil {
-		return initLinearEditorModel{}, err
-	}
-	model, ok := finalModel.(initLinearEditorModel)
-	if !ok {
-		return initLinearEditorModel{}, fmt.Errorf("reviewer entity editor returned %T", finalModel)
-	}
-	return model, nil
 }
 
 type reviewerEntityEditorState struct {
@@ -155,28 +128,27 @@ func newReviewerEntityEditorState(entity initReviewerEntityDraft, seed initDraft
 	}, nil
 }
 
+func (s reviewerEntityEditorState) fieldSeeds() (string, string) {
+	label, _, _ := reviewerEntityEditorLabelSeed(initReviewerEntityDraft{
+		Kind:          s.kind,
+		CredentialRef: s.seed.ReviewerCredentialRef,
+		DisplayName:   s.seed.ReviewerDisplayName,
+	})
+	if s.explicitDisplayName != "" {
+		label = s.explicitDisplayName
+	}
+	if !s.preserveCurrentLocation {
+		label = ""
+	}
+	return label, initReviewerEntityDefaultSecretLocation(s, label)
+}
+
 func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEditor {
 	var document initLinearDocument
 	document.addSection("Reviewer entity", reviewerEntitySelectionDescription())
 	document.addSection("Reviewer entity type", reviewerEntityKindDetailDescription(s.kind))
 	if s.kind != initReviewerEntityKindUseGitIdentity {
-		labelInput, _, _ := reviewerEntityEditorLabelSeed(initReviewerEntityDraft{
-			Kind:          s.kind,
-			CredentialRef: s.seed.ReviewerCredentialRef,
-			DisplayName:   s.seed.ReviewerDisplayName,
-		})
-		if s.explicitDisplayName != "" {
-			labelInput = s.explicitDisplayName
-		}
-		if !s.preserveCurrentLocation {
-			labelInput = ""
-		}
-		reviewerSecretLocation := s.standardReviewerRef
-		if s.preserveCurrentLocation {
-			if currentRef := strings.TrimSpace(s.seed.ReviewerCredentialRef); currentRef != "" {
-				reviewerSecretLocation = currentRef
-			}
-		}
+		labelInput, reviewerSecretLocation := s.fieldSeeds()
 		document.addEditableInput(
 			initReviewerEntityFieldLabel,
 			"Entity label",
@@ -221,31 +193,20 @@ func (s reviewerEntityEditorState) editor(ctx initPromptContext) initLinearEdito
 	}, initDetailActionEdit)
 	return initLinearEditor{
 		Document: document,
-		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
-			if model.focused < 0 || model.focused >= len(model.document) {
-				return false, nil
-			}
-			if model.document[model.focused].ID != initReviewerEntityFieldAction {
-				return false, nil
-			}
+		OnEnter: initLinearActionEnterHandler(initReviewerEntityFieldAction, func(model *initLinearEditorModel, action string) (string, error) {
 			model.document[model.focused].Error = ""
-			switch model.document.selectedValue(initReviewerEntityFieldAction) {
+			switch action {
 			case initDetailActionBack:
-				model.resultAction = initDetailActionBack
-				return true, tea.Quit
+				return initDetailActionBack, nil
 			case initDetailActionEdit:
 				if _, err := s.draftFromDocument(ctx, model.document); err != nil {
-					model.document[model.focused].Error = err.Error()
-					model.relayout()
-					model.ensureFocusedVisible()
-					return true, nil
+					return "", err
 				}
-				model.resultAction = initDetailActionEdit
-				return true, tea.Quit
+				return initDetailActionEdit, nil
 			default:
-				return true, nil
+				return "", nil
 			}
-		},
+		}),
 		OnFieldChange: func(model *initLinearEditorModel, index int) {
 			if index < 0 || index >= len(model.document) || s.kind == initReviewerEntityKindUseGitIdentity {
 				return
@@ -363,37 +324,23 @@ func initReviewerEntityLinearEditor(ctx initPromptContext, seed initDraft) initL
 				initReviewerEntitySyncLinearFields(model, ctx, seed, false)
 			}
 		},
-		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
-			if model.focused < 0 || model.focused >= len(model.document) {
-				return false, nil
-			}
-			if model.document[model.focused].ID != initReviewerEntityFieldAction {
-				return false, nil
-			}
-			action := model.document.selectedValue(initReviewerEntityFieldAction)
+		OnEnter: initLinearActionEnterHandler(initReviewerEntityFieldAction, func(model *initLinearEditorModel, action string) (string, error) {
 			switch action {
 			case initDetailActionBack:
-				model.resultAction = initDetailActionBack
-				return true, tea.Quit
-			case initReviewerEntityActionDelete:
-				model.resultAction = initReviewerEntityActionDelete
-				return true, tea.Quit
-			case initReviewerEntityActionRestore:
-				model.resultAction = initReviewerEntityActionRestore
-				return true, tea.Quit
+				return initDetailActionBack, nil
+			case initLinearResultActionDelete:
+				return initLinearResultActionDelete, nil
+			case initLinearResultActionRestore:
+				return initLinearResultActionRestore, nil
 			case initDetailActionEdit:
 				if _, err := initReviewerEntityDraftFromDocument(ctx, seed, model.document); err != nil {
-					model.document[model.focused].Error = err.Error()
-					model.relayout()
-					model.ensureFocusedVisible()
-					return true, nil
+					return "", err
 				}
-				model.resultAction = initDetailActionEdit
-				return true, tea.Quit
+				return initDetailActionEdit, nil
 			default:
-				return true, nil
+				return "", nil
 			}
-		},
+		}),
 	}
 	model := newInitLinearEditorModel(editor, 100, 28)
 	_ = state
@@ -410,7 +357,7 @@ func initReviewerEntityLinearSelectionOptions(ctx initPromptContext) []huh.Optio
 	}
 	sort.Strings(pendingNames)
 	for _, name := range pendingNames {
-		options = append(options, huh.NewOption(reviewerEntityDeletePendingLabel(name), initReviewerEntityRestoreSelectionPrefix+name))
+		options = append(options, huh.NewOption(reviewerEntityDeletePendingLabel(name), initLinearRestoreSelection("reviewer_entity", name)))
 	}
 	return dedupeInitStringOptions(options)
 }
@@ -460,15 +407,8 @@ func initReviewerEntityDefaultSelection(ctx initPromptContext, seed initDraft, o
 	return normalizeInitStringSelectionValue(string(current.Kind), options)
 }
 
-func initReviewerEntityRestoreSelectionName(selection string) (string, bool) {
-	if !strings.HasPrefix(selection, initReviewerEntityRestoreSelectionPrefix) {
-		return "", false
-	}
-	return strings.TrimPrefix(selection, initReviewerEntityRestoreSelectionPrefix), true
-}
-
 func initReviewerEntityActionOptions(_ initPromptContext, selection string) []huh.Option[string] {
-	if _, ok := initReviewerEntityRestoreSelectionName(selection); ok {
+	if _, ok := initLinearRestoreSelectionName("reviewer_entity", selection); ok {
 		return []huh.Option[string]{
 			huh.NewOption("Back without staging", initDetailActionBack),
 		}
@@ -612,9 +552,13 @@ func initReviewerEntityCredentialFieldID(key string) initLinearFieldID {
 }
 
 func initReviewerCredentialStatusWithDocumentWrites(status initReviewerCredentialStatus, document initLinearDocument) initReviewerCredentialStatus {
+	return initCredentialStatusWithDocumentWrites(status, document, initReviewerEntityCredentialFieldID)
+}
+
+func initCredentialStatusWithDocumentWrites(status initReviewerCredentialStatus, document initLinearDocument, fieldIDForKey func(string) initLinearFieldID) initReviewerCredentialStatus {
 	status.Keys = append([]initReviewerCredentialKeyStatus(nil), status.Keys...)
 	for index, key := range status.Keys {
-		fieldID := initReviewerEntityCredentialFieldID(key.Key)
+		fieldID := fieldIDForKey(key.Key)
 		if fieldID == "" || document.fieldHidden(fieldID) {
 			continue
 		}
@@ -742,8 +686,11 @@ func initReviewerCredentialStatusListContainsUnavailable(statuses []initReviewer
 }
 
 func missingReviewerEntityInlineCredentialKeys(state reviewerEntityEditorState, status initReviewerCredentialStatus, document initLinearDocument) []string {
+	return missingInitCredentialKeys(status, reviewerEntityKeepsCurrentCredentialRef(state, document))
+}
+
+func missingInitCredentialKeys(status initReviewerCredentialStatus, keepsCurrentRef bool) []string {
 	var missing []string
-	keepsCurrentRef := reviewerEntityKeepsCurrentCredentialRef(state, document)
 	for _, key := range status.Keys {
 		if !key.Required {
 			continue
@@ -794,9 +741,13 @@ func applyReviewerEntityCredentialDraftFromDocument(editDraft *initDraft, ctx in
 }
 
 func reviewerEntityCredentialWritesFromDocument(status initReviewerCredentialStatus, document initLinearDocument) (map[string]string, bool) {
+	return initCredentialWritesFromDocument(status, document, initReviewerEntityCredentialFieldID)
+}
+
+func initCredentialWritesFromDocument(status initReviewerCredentialStatus, document initLinearDocument, fieldIDForKey func(string) initLinearFieldID) (map[string]string, bool) {
 	writes := map[string]string{}
 	for _, key := range status.Keys {
-		fieldID := initReviewerEntityCredentialFieldID(key.Key)
+		fieldID := fieldIDForKey(key.Key)
 		if fieldID == "" || document.fieldHidden(fieldID) {
 			continue
 		}
@@ -829,7 +780,7 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 		model.document[detailsIndex].Description = reviewerEntityKindDetailDescription(state.kind)
 	}
 	hideDetails := state.kind == initReviewerEntityKindUseGitIdentity
-	if _, restore := initReviewerEntityRestoreSelectionName(selection); restore {
+	if _, restore := initLinearRestoreSelectionName("reviewer_entity", selection); restore {
 		hideDetails = true
 		if detailsIndex >= 0 {
 			model.document[detailsIndex].Description = "This reviewer entity is staged for deletion. Restore it to make it available again."
@@ -847,25 +798,7 @@ func initReviewerEntitySyncLinearFields(model *initLinearEditorModel, ctx initPr
 		model.setFieldDescription(initReviewerEntityFieldSecretLocation, reviewerEntitySecretLocationDescription(state.kind))
 	}
 	if resetDetails && !hideDetails {
-		labelInput, _, _ := reviewerEntityEditorLabelSeed(initReviewerEntityDraft{
-			Kind:          state.kind,
-			CredentialRef: state.seed.ReviewerCredentialRef,
-			DisplayName:   state.seed.ReviewerDisplayName,
-		})
-		if state.explicitDisplayName != "" {
-			labelInput = state.explicitDisplayName
-		}
-		if !state.preserveCurrentLocation {
-			labelInput = ""
-		}
-		reviewerSecretLocation := state.standardReviewerRef
-		if state.preserveCurrentLocation {
-			if currentRef := strings.TrimSpace(state.seed.ReviewerCredentialRef); currentRef != "" {
-				reviewerSecretLocation = currentRef
-			}
-		} else {
-			reviewerSecretLocation = initReviewerEntityDefaultSecretLocation(state, labelInput)
-		}
+		labelInput, reviewerSecretLocation := state.fieldSeeds()
 		model.setFieldValue(initReviewerEntityFieldLabel, labelInput)
 		model.setFieldValue(initReviewerEntityFieldGitHubAppID, strings.TrimSpace(state.seed.ReviewerGitHubAppID))
 		model.selectFieldValue(initReviewerEntityFieldCredentialStore, initCredentialStoreDraftValue(state.seed.ReviewerCredentialStore))
@@ -918,21 +851,10 @@ func initReviewerEntityRefreshCredentialStatus(model *initLinearEditorModel, ctx
 }
 
 func initReviewerEntitySetSelectionOptions(model *initLinearEditorModel, ctx initPromptContext, selected string) {
-	index := model.document.fieldIndexByID(initReviewerEntityFieldSelection)
-	if index < 0 {
-		return
-	}
-	options := initLinearOptionsFromHuh(initReviewerEntityLinearSelectionOptions(ctx), selected)
-	for optionIndex := range options {
-		option := &options[optionIndex]
-		if _, configured := ctx.ReviewerEntities[option.Value]; configured {
-			option.Deletable = true
-		}
-		if _, restorable := initReviewerEntityRestoreSelectionName(option.Value); restorable {
-			option.Restorable = true
-		}
-	}
-	model.document[index].Options = options
+	initLinearSetSelectionOptions(model, initReviewerEntityFieldSelection, initReviewerEntityLinearSelectionOptions(ctx), selected,
+		func(value string) bool { _, ok := ctx.ReviewerEntities[value]; return ok },
+		func(value string) bool { _, ok := initLinearRestoreSelectionName("reviewer_entity", value); return ok },
+	)
 }
 
 func reviewerEntityEditorStateForSelection(ctx initPromptContext, seed initDraft, selection string) (reviewerEntityEditorState, error) {
@@ -941,7 +863,7 @@ func reviewerEntityEditorStateForSelection(ctx initPromptContext, seed initDraft
 		applyReviewerEntityInventorySelection(&candidate, selection, ctx.ReviewerEntities)
 		return newReviewerEntityEditorState(entity, candidate, true, ctx.StandaloneReviewerEntityMode)
 	}
-	if _, restore := initReviewerEntityRestoreSelectionName(selection); restore {
+	if _, restore := initLinearRestoreSelectionName("reviewer_entity", selection); restore {
 		return newReviewerEntityEditorState(initReviewerEntityDraft{Kind: initReviewerEntityKindUseGitIdentity}, seed, false, ctx.StandaloneReviewerEntityMode)
 	}
 	candidate := seed
@@ -988,29 +910,5 @@ func initReviewerEntityDraftFromDocument(ctx initPromptContext, seed initDraft, 
 	if err != nil {
 		return initDraft{}, err
 	}
-	editDraft := state.seed
-	applyReviewerEntitySelection(&editDraft, string(state.kind))
-	if state.kind == initReviewerEntityKindUseGitIdentity {
-		return editDraft, nil
-	}
-	labelInput := document.fieldValue(initReviewerEntityFieldLabel)
-	if err := validateOptionalDisplayName(labelInput); err != nil {
-		return initDraft{}, err
-	}
-	reviewerSecretLocation := document.fieldValue(initReviewerEntityFieldSecretLocation)
-	if err := validateOptionalCredentialRef(reviewerSecretLocation); err != nil {
-		return initDraft{}, err
-	}
-	editDraft.ReviewerCredentialStore = initCredentialStoreDraftValue(document.selectedValue(initReviewerEntityFieldCredentialStore))
-	appID, err := reviewerEntityGitHubAppIDFromDocument(state.kind, document)
-	if err != nil {
-		return initDraft{}, err
-	}
-	editDraft.ReviewerGitHubAppID = appID
-	if err := validateReviewerEntityInlineCredentials(ctx, seed, state, document); err != nil {
-		return initDraft{}, err
-	}
-	finalizeReviewerEntityEditorDraft(&editDraft, state.explicitDisplayName, state.fallbackLabelSeed, labelInput, reviewerSecretLocation, state.standardReviewerRef, state.preserveCurrentLocation)
-	applyReviewerEntityCredentialDraftFromDocument(&editDraft, ctx, seed, state, document)
-	return editDraft, nil
+	return state.draftFromDocument(ctx, document)
 }

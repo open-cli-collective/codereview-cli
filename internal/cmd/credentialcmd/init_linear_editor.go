@@ -2,6 +2,7 @@ package credentialcmd
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 
@@ -40,6 +41,7 @@ var initLinearTheme = struct {
 type initLinearEnterHandler func(*initLinearEditorModel) (bool, tea.Cmd)
 type initLinearChangeHandler func(*initLinearEditorModel, int)
 type initLinearDeleteHandler func(*initLinearEditorModel, int) (bool, tea.Cmd)
+type initEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
 	initLinearResultActionDelete  = "delete"
@@ -111,6 +113,70 @@ type initLinearLayout struct {
 type initLinearFieldBounds struct {
 	Start int
 	End   int
+}
+
+func runInitEditor(editor initLinearEditor, stdin io.Reader, stderr io.Writer, runner initEditorRunner, name string) (initLinearEditorModel, error) {
+	if runner != nil {
+		return runner(editor, stdin, stderr)
+	}
+	program := tea.NewProgram(newInitLinearEditorModel(editor, 100, 28), tea.WithInput(stdin), tea.WithOutput(stderr))
+	finalModel, err := program.Run()
+	if err != nil {
+		return initLinearEditorModel{}, err
+	}
+	model, ok := finalModel.(initLinearEditorModel)
+	if !ok {
+		return initLinearEditorModel{}, fmt.Errorf("%s editor returned %T", name, finalModel)
+	}
+	return model, nil
+}
+
+func initLinearActionEnterHandler(fieldID initLinearFieldID, handle func(*initLinearEditorModel, string) (string, error)) initLinearEnterHandler {
+	return func(model *initLinearEditorModel) (bool, tea.Cmd) {
+		if model.focused < 0 || model.focused >= len(model.document) {
+			return false, nil
+		}
+		if model.document[model.focused].ID != fieldID {
+			return false, nil
+		}
+		resultAction, err := handle(model, model.document.selectedValue(fieldID))
+		if err != nil {
+			model.document[model.focused].Error = err.Error()
+			model.relayout()
+			model.ensureFocusedVisible()
+			return true, nil
+		}
+		if resultAction != "" {
+			model.resultAction = resultAction
+			return true, tea.Quit
+		}
+		return true, nil
+	}
+}
+
+func initLinearRestoreSelection(family, name string) string {
+	return "__restore_" + family + "__:" + name
+}
+
+func initLinearRestoreSelectionName(family, selection string) (string, bool) {
+	prefix := initLinearRestoreSelection(family, "")
+	if !strings.HasPrefix(selection, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(selection, prefix), true
+}
+
+func initLinearSetSelectionOptions(model *initLinearEditorModel, fieldID initLinearFieldID, options []huh.Option[string], selected string, deletable, restorable func(string) bool) {
+	index := model.document.fieldIndexByID(fieldID)
+	if index < 0 {
+		return
+	}
+	linearOptions := initLinearOptionsFromHuh(options, selected)
+	for index := range linearOptions {
+		linearOptions[index].Deletable = deletable(linearOptions[index].Value)
+		linearOptions[index].Restorable = restorable(linearOptions[index].Value)
+	}
+	model.document[index].Options = linearOptions
 }
 
 func newInitLinearEditorModel(editor initLinearEditor, width, height int) initLinearEditorModel {

@@ -2,20 +2,16 @@ package credentialcmd
 
 import (
 	"fmt"
-	"io"
 	"os/exec"
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
-
-type initRepositoryAccessEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
 
 const (
 	initRepositoryAccessFieldSelection           initLinearFieldID = "repository_access_selection"
@@ -34,8 +30,6 @@ const (
 
 const initConfigureNewRepositoryAccessSelection = "__configure_new_repository_access__"
 
-const initRepositoryAccessRestoreSelectionPrefix = "__restore_repository_access__:"
-
 var initRepositoryAccessGitConfigValue = func(key string) string {
 	out, err := exec.Command("git", "config", "--get", key).Output() // #nosec G204 -- callers pass fixed git config keys only.
 	if err != nil {
@@ -47,7 +41,7 @@ var initRepositoryAccessGitConfigValue = func(key string) string {
 func (p huhInitRepositoryAccessPrompter) EditRepositoryAccess(prompt initRepositoryAccessPrompt) (initDraft, error) {
 	seed := seedInteractiveInitDraft(prompt.Context.RequestedProfileName, prompt.Context.ExistingProfileName, prompt.Context.ExistingProfile)
 	editor := initRepositoryAccessLinearEditor(prompt.Context, seed)
-	model, err := p.runRepositoryAccessEditor(editor)
+	model, err := runInitEditor(editor, p.stdin, p.stderr, p.editorRunner, "repository access")
 	if err != nil {
 		return initDraft{}, err
 	}
@@ -62,7 +56,7 @@ func (p huhInitRepositoryAccessPrompter) EditRepositoryAccess(prompt initReposit
 		}, nil
 	case initLinearResultActionRestore:
 		selection := model.document.selectedValue(initRepositoryAccessFieldSelection)
-		name, _ := initRepositoryAccessRestoreSelectionName(selection)
+		name, _ := initLinearRestoreSelectionName("repository_access", selection)
 		return initDraft{
 			Action:       initDraftActionUndoDeleteRepositoryAccess,
 			ActionTarget: name,
@@ -70,22 +64,6 @@ func (p huhInitRepositoryAccessPrompter) EditRepositoryAccess(prompt initReposit
 	default:
 		return initDraft{}, errInitNavigateBack
 	}
-}
-
-func (p huhInitRepositoryAccessPrompter) runRepositoryAccessEditor(editor initLinearEditor) (initLinearEditorModel, error) {
-	if p.editorRunner != nil {
-		return p.editorRunner(editor, p.stdin, p.stderr)
-	}
-	program := tea.NewProgram(newInitLinearEditorModel(editor, 100, 28), tea.WithInput(p.stdin), tea.WithOutput(p.stderr))
-	finalModel, err := program.Run()
-	if err != nil {
-		return initLinearEditorModel{}, err
-	}
-	model, ok := finalModel.(initLinearEditorModel)
-	if !ok {
-		return initLinearEditorModel{}, fmt.Errorf("repository access editor returned %T", finalModel)
-	}
-	return model, nil
 }
 
 func initRepositoryAccessLinearEditor(ctx initPromptContext, _ initDraft) initLinearEditor {
@@ -143,30 +121,19 @@ func initRepositoryAccessLinearEditor(ctx initPromptContext, _ initDraft) initLi
 				return
 			}
 		},
-		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
-			if model.focused < 0 || model.focused >= len(model.document) {
-				return false, nil
-			}
-			if model.document[model.focused].ID != initRepositoryAccessFieldAction {
-				return false, nil
-			}
-			switch model.document.selectedValue(initRepositoryAccessFieldAction) {
+		OnEnter: initLinearActionEnterHandler(initRepositoryAccessFieldAction, func(model *initLinearEditorModel, action string) (string, error) {
+			switch action {
 			case initDetailActionBack:
-				model.resultAction = initDetailActionBack
-				return true, tea.Quit
+				return initDetailActionBack, nil
 			case initDetailActionEdit:
 				if err := validateRepositoryAccessDocument(ctx, model.document); err != nil {
-					model.document[model.focused].Error = err.Error()
-					model.relayout()
-					model.ensureFocusedVisible()
-					return true, nil
+					return "", err
 				}
-				model.resultAction = initDetailActionEdit
-				return true, tea.Quit
+				return initDetailActionEdit, nil
 			default:
-				return true, nil
+				return "", nil
 			}
-		},
+		}),
 	}
 	model := newInitLinearEditorModel(editor, 100, 28)
 	initRepositoryAccessSyncFields(&model, ctx)
@@ -196,7 +163,7 @@ func initRepositoryAccessSelectionOptionsForContext(ctx initPromptContext) []huh
 	}
 	sort.Strings(pendingNames)
 	for _, name := range pendingNames {
-		options = append(options, huh.NewOption(repositoryAccessDeletePendingLabel(name), initRepositoryAccessRestoreSelectionPrefix+name))
+		options = append(options, huh.NewOption(repositoryAccessDeletePendingLabel(name), initLinearRestoreSelection("repository_access", name)))
 	}
 	return dedupeInitStringOptions(options)
 }
@@ -230,13 +197,6 @@ func initRepositoryAccessScopeForSelection(ctx initPromptContext, selection stri
 	}
 }
 
-func initRepositoryAccessRestoreSelectionName(selection string) (string, bool) {
-	if !strings.HasPrefix(selection, initRepositoryAccessRestoreSelectionPrefix) {
-		return "", false
-	}
-	return strings.TrimPrefix(selection, initRepositoryAccessRestoreSelectionPrefix), true
-}
-
 func repositoryAccessDeletePendingLabel(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -250,7 +210,7 @@ func initRepositoryAccessSyncFields(model *initLinearEditorModel, ctx initPrompt
 	initRepositoryAccessSetSelectionOptions(model, ctx, selection)
 	scope := initRepositoryAccessScopeForSelection(ctx, selection)
 	hideDetails := false
-	if _, restore := initRepositoryAccessRestoreSelectionName(selection); restore {
+	if _, restore := initLinearRestoreSelectionName("repository_access", selection); restore {
 		hideDetails = true
 	}
 	model.setFieldValue(initRepositoryAccessFieldName, scope.Name)
@@ -273,21 +233,13 @@ func initRepositoryAccessSyncFields(model *initLinearEditorModel, ctx initPrompt
 }
 
 func initRepositoryAccessSetSelectionOptions(model *initLinearEditorModel, ctx initPromptContext, selected string) {
-	index := model.document.fieldIndexByID(initRepositoryAccessFieldSelection)
-	if index < 0 {
-		return
-	}
-	options := initLinearOptionsFromHuh(initRepositoryAccessSelectionOptionsForContext(ctx), selected)
-	for optionIndex := range options {
-		option := &options[optionIndex]
-		if _, configured := ctx.ExistingConfig.RepositoryAccess[option.Value]; configured {
-			option.Deletable = true
-		}
-		if _, restorable := initRepositoryAccessRestoreSelectionName(option.Value); restorable {
-			option.Restorable = true
-		}
-	}
-	model.document[index].Options = options
+	initLinearSetSelectionOptions(model, initRepositoryAccessFieldSelection, initRepositoryAccessSelectionOptionsForContext(ctx), selected,
+		func(value string) bool { _, ok := ctx.ExistingConfig.RepositoryAccess[value]; return ok },
+		func(value string) bool {
+			_, ok := initLinearRestoreSelectionName("repository_access", value)
+			return ok
+		},
+	)
 }
 
 func initRepositoryAccessSetDetailsHidden(model *initLinearEditorModel, hidden bool) {
@@ -444,22 +396,7 @@ func baseRepositoryAccessCredentialStatusForDocument(ctx initPromptContext, docu
 }
 
 func repositoryAccessCredentialStatusWithDocumentWrites(status initReviewerCredentialStatus, document initLinearDocument) initReviewerCredentialStatus {
-	status.Keys = append([]initReviewerCredentialKeyStatus(nil), status.Keys...)
-	for index, key := range status.Keys {
-		fieldID := initRepositoryAccessCredentialFieldID(key.Key)
-		if fieldID == "" || document.fieldHidden(fieldID) {
-			continue
-		}
-		if strings.TrimSpace(credentials.TrimSecretIngress(document.fieldValue(fieldID))) == "" {
-			continue
-		}
-		if status.Keys[index].State == initReviewerCredentialKeyExisting {
-			status.Keys[index].State = initReviewerCredentialKeyReplacement
-			continue
-		}
-		status.Keys[index].State = initReviewerCredentialKeyStaged
-	}
-	return status
+	return initCredentialStatusWithDocumentWrites(status, document, initRepositoryAccessCredentialFieldID)
 }
 
 func initRepositoryAccessCredentialStatusDescription(status initReviewerCredentialStatus) string {
@@ -467,24 +404,7 @@ func initRepositoryAccessCredentialStatusDescription(status initReviewerCredenti
 }
 
 func missingRepositoryAccessInlineCredentialKeys(ctx initPromptContext, status initReviewerCredentialStatus, document initLinearDocument) []string {
-	var missing []string
-	keepsCurrentRef := repositoryAccessKeepsCurrentCredentialRef(ctx, document)
-	for _, key := range status.Keys {
-		if !key.Required {
-			continue
-		}
-		switch key.State {
-		case initReviewerCredentialKeyExisting, initReviewerCredentialKeyStaged, initReviewerCredentialKeyReplacement:
-			continue
-		case initReviewerCredentialKeyUnavailable:
-			if keepsCurrentRef {
-				continue
-			}
-		case initReviewerCredentialKeyMissing, initReviewerCredentialKeyDeferred, initReviewerCredentialKeySkippedOptional, initReviewerCredentialKeyOptional:
-		}
-		missing = append(missing, key.Key)
-	}
-	return missing
+	return missingInitCredentialKeys(status, repositoryAccessKeepsCurrentCredentialRef(ctx, document))
 }
 
 func repositoryAccessKeepsCurrentCredentialRef(ctx initPromptContext, document initLinearDocument) bool {
@@ -502,19 +422,7 @@ func repositoryAccessKeepsCurrentCredentialRef(ctx initPromptContext, document i
 }
 
 func repositoryAccessCredentialWritesFromDocument(status initReviewerCredentialStatus, document initLinearDocument) (map[string]string, bool) {
-	writes := map[string]string{}
-	for _, key := range status.Keys {
-		fieldID := initRepositoryAccessCredentialFieldID(key.Key)
-		if fieldID == "" || document.fieldHidden(fieldID) {
-			continue
-		}
-		value := credentials.TrimSecretIngress(document.fieldValue(fieldID))
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		writes[key.Key] = value
-	}
-	return writes, initCredentialWriteRequiresOverwrite(status, writes)
+	return initCredentialWritesFromDocument(status, document, initRepositoryAccessCredentialFieldID)
 }
 
 func initRepositoryAccessSyncGitHubAppField(model *initLinearEditorModel) {

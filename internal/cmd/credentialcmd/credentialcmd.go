@@ -900,20 +900,20 @@ type huhInitLLMRuntimePrompter struct {
 	stderr          io.Writer
 	checker         func(initLLMRuntimePreset) string
 	inventoryRunner initInventoryRunner
-	editorRunner    initLLMRuntimeEditorRunner
+	editorRunner    initEditorRunner
 }
 
 type huhInitRepositoryAccessPrompter struct {
 	stdin        io.Reader
 	stderr       io.Writer
-	editorRunner initRepositoryAccessEditorRunner
+	editorRunner initEditorRunner
 }
 
 type huhInitReviewerEntityPrompter struct {
 	stdin           io.Reader
 	stderr          io.Writer
 	inventoryRunner initInventoryRunner
-	editorRunner    initReviewerEntityEditorRunner
+	editorRunner    initEditorRunner
 }
 
 type huhInitFinalizePrompter struct {
@@ -957,7 +957,7 @@ type huhInitSecretPrompter struct {
 type huhInitKeyringBackendPrompter struct {
 	stdin                io.Reader
 	stderr               io.Writer
-	editorRunner         initSecretsManagementEditorRunner
+	editorRunner         initEditorRunner
 	onePasswordCmdRunner initOnePasswordCommandRunner
 	executableLookPath   initExecutableLookPath
 	discoveryMode        initSecretsBackendDiscoveryMode
@@ -2328,19 +2328,25 @@ func initReviewerEntityDraftFromSeedDraft(draft initDraft) initReviewerEntityDra
 		return initReviewerEntityDraft{Kind: initReviewerEntityKindUseGitIdentity}
 	}
 	entity := initReviewerEntityDraft{
+		Kind:            reviewerEntityKindForAuthMode(config.GitAuthMode(draft.ReviewerAuth)),
 		AuthMode:        config.GitAuthMode(draft.ReviewerAuth),
 		AppID:           firstNonEmpty(draft.ReviewerGitHubAppID, draft.ReviewerCredentialWrites[credentials.GitHubAppIDKey]),
 		CredentialStore: initCredentialStoreDraftValue(draft.ReviewerCredentialStore),
 		CredentialRef:   strings.TrimSpace(draft.ReviewerCredentialRef),
 		DisplayName:     normalizeOptionalDisplayName(draft.ReviewerDisplayName),
 	}
-	switch entity.AuthMode {
-	case config.GitAuthModeGitHubApp:
-		entity.Kind = initReviewerEntityKindGitHubApp
-	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
-		entity.Kind = initReviewerEntityKindPAT
-	}
 	return entity
+}
+
+func reviewerEntityKindForAuthMode(authMode config.GitAuthMode) initReviewerEntityKind {
+	switch authMode {
+	case config.GitAuthModeGitHubApp:
+		return initReviewerEntityKindGitHubApp
+	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
+		return initReviewerEntityKindPAT
+	default:
+		return ""
+	}
 }
 
 func initGitScopeOptions(scopes map[string]initGitScopeDraft) []huh.Option[string] {
@@ -4546,34 +4552,24 @@ func initReviewerEntityDraftFromConfig(profile config.Profile) initReviewerEntit
 		}
 	}
 	entity := initReviewerEntityDraft{
+		Kind:            reviewerEntityKindForAuthMode(profile.ReviewerCredentials.AuthMode),
 		AuthMode:        profile.ReviewerCredentials.AuthMode,
 		AppID:           initGitHubAppIDForAuth(profile.ReviewerCredentials.AuthMode, profile.ReviewerCredentials.GitHubApp),
 		CredentialStore: initCredentialStoreDraftValue(profile.ReviewerCredentials.Credential.Store),
 		CredentialRef:   strings.TrimSpace(firstNonEmpty(profile.ReviewerCredentials.Credential.Name, profile.ReviewerCredentials.CredentialRef)),
 		DisplayName:     normalizeOptionalDisplayName(profile.ReviewerCredentials.DisplayName),
 	}
-	switch profile.ReviewerCredentials.AuthMode {
-	case config.GitAuthModeGitHubApp:
-		entity.Kind = initReviewerEntityKindGitHubApp
-	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
-		entity.Kind = initReviewerEntityKindPAT
-	}
 	return entity
 }
 
 func initReviewerEntityDraftFromReviewerEntity(entity config.ReviewerEntity) initReviewerEntityDraft {
 	draft := initReviewerEntityDraft{
+		Kind:            reviewerEntityKindForAuthMode(entity.AuthMode),
 		AuthMode:        entity.AuthMode,
 		AppID:           initGitHubAppIDForAuth(entity.AuthMode, entity.GitHubApp),
 		CredentialStore: initCredentialStoreDraftValue(entity.Credential.Store),
 		CredentialRef:   strings.TrimSpace(firstNonEmpty(entity.Credential.Name, entity.CredentialRef)),
 		DisplayName:     normalizeOptionalDisplayName(entity.DisplayName),
-	}
-	switch entity.AuthMode {
-	case config.GitAuthModeGitHubApp:
-		draft.Kind = initReviewerEntityKindGitHubApp
-	case config.GitAuthModePAT, config.GitAuthModeOAuthDevice:
-		draft.Kind = initReviewerEntityKindPAT
 	}
 	return draft
 }
