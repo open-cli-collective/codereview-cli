@@ -79,9 +79,10 @@ type Store interface {
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
 
-// NamedSessionStore reads cross-run named LLM sessions.
+// NamedSessionStore persists cross-run LLM sessions.
 type NamedSessionStore interface {
 	GetNamedSession(context.Context, string) (ledger.NamedSession, error)
+	UpsertNamedSession(context.Context, ledger.NamedSession) error
 }
 
 // LLMTaskProgress records task-aware LLM pipeline breadcrumbs without owning
@@ -148,6 +149,7 @@ type Request struct {
 	ReviewBaseSHA               string
 	ReviewHeadSHA               string
 	Rerun                       bool
+	FreshSession                bool
 
 	FailOn              *review.Severity
 	AllowSelfReview     bool
@@ -614,6 +616,11 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	if !mode.live {
+		if result.NamedSessionCandidate != nil {
+			if err := opts.NamedSessions.UpsertNamedSession(ctx, *result.NamedSessionCandidate); err != nil {
+				return Result{}, err
+			}
+		}
 		if err := opts.Store.CompleteRun(ctx, run.RunID, mode.completeAs, opts.now()); err != nil {
 			return Result{}, err
 		}
@@ -1461,15 +1468,23 @@ func sanitizeTaskErrorForMarkdown(err error) string {
 }
 
 func prepareNamedSession(ctx context.Context, opts Options, req Request, live bool, model string, now time.Time) (namedSessionState, error) {
-	name := strings.TrimSpace(req.SessionName)
-	if name == "" {
-		return namedSessionState{}, nil
-	}
-	if !live {
-		return namedSessionState{}, fmt.Errorf("pipeline: named session %q requires live review", name)
+	explicitName := strings.TrimSpace(req.SessionName)
+	if explicitName != "" && !live {
+		return namedSessionState{}, fmt.Errorf("pipeline: named session %q requires live review", explicitName)
 	}
 	if opts.NamedSessions == nil {
-		return namedSessionState{}, fmt.Errorf("pipeline: named session store is required")
+		if explicitName != "" {
+			return namedSessionState{}, fmt.Errorf("pipeline: named session store is required")
+		}
+		return namedSessionState{}, nil
+	}
+	name := explicitName
+	if name == "" {
+		var err error
+		name, err = defaultSessionName(req)
+		if err != nil {
+			return namedSessionState{}, err
+		}
 	}
 
 	active := sessionreuse.Normalize(sessionreuse.Scope{
@@ -1490,6 +1505,9 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		supportsResume: opts.Adapter.SupportsResume(),
 		createdAt:      now,
 	}
+	if req.FreshSession {
+		return state, nil
+	}
 	stored, err := opts.NamedSessions.GetNamedSession(ctx, active.Name)
 	if errors.Is(err, ledger.ErrNotFound) {
 		stored = ledger.NamedSession{}
@@ -1506,7 +1524,11 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		})
 		check, err := sessionreuse.Check(storedScope, active)
 		if err != nil {
-			return namedSessionState{}, err
+			if explicitName != "" {
+				return namedSessionState{}, err
+			}
+			opts.emitWarning(fmt.Sprintf("%v; starting fresh", err))
+			return state, nil
 		}
 		if check.Warning != "" {
 			opts.emitWarning(check.Warning)
@@ -1526,6 +1548,18 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		opts.emitWarning(fmt.Sprintf("session %q adapter %q does not support resume; starting fresh", active.Name, opts.Adapter.Name()))
 	}
 	return state, nil
+}
+
+func defaultSessionName(req Request) (string, error) {
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		return "", err
+	}
+	scope, err := statepaths.ResumeScope(req.ProfileName, postingKey(req.PostingIdentity))
+	if err != nil {
+		return "", err
+	}
+	return "default:" + prKey + "__" + scope, nil
 }
 
 func requiresDurableSessionMarker(adapter string) bool {
