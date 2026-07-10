@@ -34,7 +34,7 @@ func ProgressStoreReader(command string, logger *progress.Logger, resolved Resol
 func (r progressReader) Get(profile, key string) (string, error) {
 	span := r.logger.Start(r.command, "read_secret_backend", secretTarget(r.backend, profile, key))
 	value, err := r.base.Get(profile, key)
-	span.End(err)
+	_ = span.End(err)
 	return value, err
 }
 
