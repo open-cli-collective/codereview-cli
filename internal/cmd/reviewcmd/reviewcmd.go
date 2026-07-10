@@ -137,23 +137,21 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	reviewerEffort := strings.TrimSpace(flags.reviewerEffort)
 	reviewBaseSHA := strings.TrimSpace(flags.reviewBaseSHA)
 	reviewHeadSHA := strings.TrimSpace(flags.reviewHeadSHA)
-	if selectionModelChanged && selectionModel == "" {
-		return exitcode.Usage(fmt.Errorf("--selection-model must be non-empty"))
+	if err := validateNonEmptyChangedFlags(cmd,
+		[2]string{"selection-model", flags.selectionModel},
+		[2]string{"selection-effort", flags.selectionEffort},
+	); err != nil {
+		return exitcode.Usage(err)
 	}
-	if selectionEffortChanged && selectionEffort == "" {
-		return exitcode.Usage(fmt.Errorf("--selection-effort must be non-empty"))
-	}
-	if selectionEffortChanged && !validModelEffort(selectionEffort) {
+	if selectionEffortChanged && !modelprefs.Effort(selectionEffort).Valid() {
 		return exitcode.Usage(fmt.Errorf("--selection-effort must be one of low, medium, high"))
 	}
-	if selectionPromptChanged && selectionPromptPath == "" {
-		return exitcode.Usage(fmt.Errorf("--selection-prompt must be non-empty"))
-	}
-	if reviewerModelChanged && reviewerModel == "" {
-		return exitcode.Usage(fmt.Errorf("--reviewer-model must be non-empty"))
-	}
-	if reviewerModelTierChanged && reviewerModelTier == "" {
-		return exitcode.Usage(fmt.Errorf("--reviewer-model-tier must be non-empty"))
+	if err := validateNonEmptyChangedFlags(cmd,
+		[2]string{"selection-prompt", flags.selectionPrompt},
+		[2]string{"reviewer-model", flags.reviewerModel},
+		[2]string{"reviewer-model-tier", flags.reviewerModelTier},
+	); err != nil {
+		return exitcode.Usage(err)
 	}
 	if reviewerModelChanged && reviewerModelTierChanged {
 		return exitcode.Usage(fmt.Errorf("--reviewer-model and --reviewer-model-tier cannot be used together"))
@@ -161,10 +159,10 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if reviewerModelTierChanged && !config.ModelTier(reviewerModelTier).Valid() {
 		return exitcode.Usage(fmt.Errorf("--reviewer-model-tier must be one of small, medium, large"))
 	}
-	if reviewerEffortChanged && reviewerEffort == "" {
-		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be non-empty"))
+	if err := validateNonEmptyChangedFlags(cmd, [2]string{"reviewer-effort", flags.reviewerEffort}); err != nil {
+		return exitcode.Usage(err)
 	}
-	if reviewerEffortChanged && !validModelEffort(reviewerEffort) {
+	if reviewerEffortChanged && !modelprefs.Effort(reviewerEffort).Valid() {
 		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be one of low, medium, high"))
 	}
 	stageOverrideChanged := selectionModelChanged || selectionEffortChanged || selectionPromptChanged || reviewerModelChanged || reviewerModelTierChanged || reviewerEffortChanged
@@ -330,8 +328,13 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	return nil
 }
 
-func validModelEffort(value string) bool {
-	return modelprefs.Effort(value).Valid()
+func validateNonEmptyChangedFlags(cmd *cobra.Command, flags ...[2]string) error {
+	for _, flag := range flags {
+		if cmd.Flags().Changed(flag[0]) && strings.TrimSpace(flag[1]) == "" {
+			return fmt.Errorf("--%s must be non-empty", flag[0])
+		}
+	}
+	return nil
 }
 
 func loadSelectionPromptOverride(rawPath string) (string, error) {
