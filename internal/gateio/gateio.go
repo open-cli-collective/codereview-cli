@@ -96,18 +96,10 @@ type Result struct {
 	Warnings     []string
 }
 
-type staleProbe struct {
-	lock Lock
-}
-
 type markerRecord struct {
 	marker marker.ActionMarker
 	when   time.Time
 	order  int
-}
-
-type staleRun struct {
-	run ledger.Run
 }
 
 type repairExecution struct {
@@ -140,26 +132,6 @@ type gateHostState struct {
 	threads  []gitprovider.InlineThread
 }
 
-type precheckedReviewState struct {
-	reviews []gitprovider.Review
-	loaded  bool
-}
-
-func (s *precheckedReviewState) set(reviews []gitprovider.Review) {
-	s.reviews = reviews
-	s.loaded = true
-}
-
-func (s *precheckedReviewState) take() ([]gitprovider.Review, bool) {
-	if !s.loaded {
-		return nil, false
-	}
-	reviews := s.reviews
-	s.reviews = nil
-	s.loaded = false
-	return reviews, true
-}
-
 const (
 	repairSubmitReviewActionID           = "repair-submit-review"
 	repairSubmitReviewBody               = "Completing previously posted codereview rollup."
@@ -187,22 +159,17 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{Status: StatusDryRunFresh, Decision: decision}, nil
 	}
 
-	var precheckedReviews precheckedReviewState
+	var precheckedReviews []gitprovider.Review
+	reviewsLoaded := false
 	if normalLiveFastPathEnabled(req.Flags) {
-		reviews, err := opts.Provider.ListReviews(ctx, req.PRRef)
+		reviews, earlyExit, err := fetchReviewsUnlessApproved(ctx, opts.Provider, req.PRRef, precheckedReviews, reviewsLoaded, req.PostingIdentity)
 		if err != nil {
 			return Result{}, err
 		}
-		if activeApprovalByPostingIdentity(reviews, req.PostingIdentity) {
-			return Result{
-				Status: StatusEarlyExit,
-				Decision: gate.Decision{
-					Kind:    gate.DecisionEarlyExit,
-					Message: "review already approved",
-				},
-			}, nil
+		if earlyExit != nil {
+			return *earlyExit, nil
 		}
-		precheckedReviews.set(reviews)
+		precheckedReviews, reviewsLoaded = reviews, true
 	}
 
 	lockPath, err := currentLockPath(opts.Layout, req)
@@ -226,22 +193,14 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 		var host *gateHostState
 		if normalLiveFastPathEnabled(req.Flags) {
-			reviews, ok := precheckedReviews.take()
-			if !ok {
-				var err error
-				reviews, err = opts.Provider.ListReviews(ctx, req.PRRef)
-				if err != nil {
-					return Result{}, err
-				}
-				if activeApprovalByPostingIdentity(reviews, req.PostingIdentity) {
-					return Result{
-						Status: StatusEarlyExit,
-						Decision: gate.Decision{
-							Kind:    gate.DecisionEarlyExit,
-							Message: "review already approved",
-						},
-					}, nil
-				}
+			reviews, earlyExit, err := fetchReviewsUnlessApproved(ctx, opts.Provider, req.PRRef, precheckedReviews, reviewsLoaded, req.PostingIdentity)
+			if err != nil {
+				return Result{}, err
+			}
+			reviewsLoaded = false
+			precheckedReviews = nil
+			if earlyExit != nil {
+				return *earlyExit, nil
 			}
 			loaded, err := readGateHostStateWithReviews(ctx, opts.Provider, req.PRRef, reviews)
 			if err != nil {
@@ -341,14 +300,14 @@ type gateState struct {
 	kernel             gate.Request
 	runByID            map[string]ledger.Run
 	partialRunMismatch bool
-	staleRuns          []staleRun
-	staleLocks         map[string]staleProbe
+	staleRuns          []ledger.Run
+	staleLocks         map[string]Lock
 }
 
 func (s gateState) releaseStaleLocks() {
-	for _, probe := range s.staleLocks {
-		if probe.lock != nil {
-			_ = probe.lock.Release()
+	for _, lock := range s.staleLocks {
+		if lock != nil {
+			_ = lock.Release()
 		}
 	}
 }
@@ -367,12 +326,12 @@ func buildLocalState(ctx context.Context, opts Options, req Request) (gateState,
 	state := gateState{
 		kernel:     gate.Request{Flags: req.Flags, PR: gate.PRSummary{State: gate.PRStateFresh}},
 		runByID:    make(map[string]ledger.Run, len(runs)),
-		staleLocks: make(map[string]staleProbe),
+		staleLocks: make(map[string]Lock),
 	}
 	for _, run := range runs {
 		state.runByID[run.RunID] = run
 		if run.BaseSHA != req.PR.Base.SHA {
-			state.staleRuns = append(state.staleRuns, staleRun{run: run})
+			state.staleRuns = append(state.staleRuns, run)
 			continue
 		}
 		summary, err := summarizeRun(ctx, opts.Store, run)
@@ -386,19 +345,19 @@ func buildLocalState(ctx context.Context, opts Options, req Request) (gateState,
 
 func attachExternalState(ctx context.Context, opts Options, req Request, state gateState, cached *gateHostState) (gateState, error) {
 	for _, stale := range state.staleRuns {
-		summary, err := summarizeRun(ctx, opts.Store, stale.run)
+		summary, err := summarizeRun(ctx, opts.Store, stale)
 		if err != nil {
 			state.releaseStaleLocks()
 			return gateState{}, err
 		}
-		candidate, probe, err := summarizeStaleCandidate(opts, req, stale.run, summary)
+		candidate, lock, err := summarizeStaleCandidate(opts, req, stale, summary)
 		if err != nil {
 			state.releaseStaleLocks()
 			return gateState{}, err
 		}
 		state.kernel.StaleBaseCandidates = append(state.kernel.StaleBaseCandidates, candidate)
-		if probe.lock != nil {
-			state.staleLocks[stale.run.RunID] = probe
+		if lock != nil {
+			state.staleLocks[stale.RunID] = lock
 		}
 	}
 
@@ -927,23 +886,43 @@ func summarizeRun(ctx context.Context, store Store, run ledger.Run) (gate.RunSum
 	return summary, nil
 }
 
-func summarizeStaleCandidate(opts Options, req Request, run ledger.Run, summary gate.RunSummary) (gate.StaleBaseCandidate, staleProbe, error) {
+func summarizeStaleCandidate(opts Options, req Request, run ledger.Run, summary gate.RunSummary) (gate.StaleBaseCandidate, Lock, error) {
 	lockPath, err := lockPathForRun(opts.Layout, req.PRRef, run)
 	if err != nil {
-		return gate.StaleBaseCandidate{}, staleProbe{}, err
+		return gate.StaleBaseCandidate{}, nil, err
 	}
 	lock, err := opts.acquire(lockPath)
 	if err == nil {
-		return gate.StaleBaseCandidate{Run: summary, LockState: gate.LockStateFree}, staleProbe{lock: lock}, nil
+		return gate.StaleBaseCandidate{Run: summary, LockState: gate.LockStateFree}, lock, nil
 	}
 	if !errors.Is(err, runlock.ErrHeld) {
-		return gate.StaleBaseCandidate{}, staleProbe{}, err
+		return gate.StaleBaseCandidate{}, nil, err
 	}
 	return gate.StaleBaseCandidate{
 		Run:            summary,
 		LockState:      gate.LockStateHeld,
 		HeartbeatStale: heartbeatStale(run, opts.now(), opts.StaleHeartbeatThreshold),
-	}, staleProbe{}, nil
+	}, nil, nil
+}
+
+func fetchReviewsUnlessApproved(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef, reviews []gitprovider.Review, loaded bool, posting gitprovider.Identity) ([]gitprovider.Review, *Result, error) {
+	if !loaded {
+		var err error
+		reviews, err = provider.ListReviews(ctx, ref)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if !activeApprovalByPostingIdentity(reviews, posting) {
+		return reviews, nil, nil
+	}
+	return nil, &Result{
+		Status: StatusEarlyExit,
+		Decision: gate.Decision{
+			Kind:    gate.DecisionEarlyExit,
+			Message: "review already approved",
+		},
+	}, nil
 }
 
 func readGateHostState(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef) (gateHostState, error) {
@@ -1276,8 +1255,8 @@ func lookupScopedPartialRun(ctx context.Context, opts Options, req Request, runI
 
 func abortStaleRuns(ctx context.Context, opts Options, state gateState, runIDs []string) error {
 	for _, runID := range runIDs {
-		probe, ok := state.staleLocks[runID]
-		if !ok || probe.lock == nil {
+		lock, ok := state.staleLocks[runID]
+		if !ok || lock == nil {
 			return fmt.Errorf("gateio: stale abort target %q was not locked", runID)
 		}
 		if err := opts.Store.CompleteRun(ctx, runID, ledger.OutcomeAborted, opts.now()); err != nil {

@@ -1028,7 +1028,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 			wantOutcome: ledger.OutcomeFailed,
 			wantExit:    exitAuth,
 			wantStatus:  ledger.PlannedActionFailedTerminal,
-			wantClass:   strPtr(failureClassStorageAuth),
+			wantClass:   strPtr(ledger.PlannedActionFailureClassAuth),
 		},
 		{
 			name:        "auth chain terminal exit auth",
@@ -1036,7 +1036,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 			wantOutcome: ledger.OutcomeFailed,
 			wantExit:    exitAuth,
 			wantStatus:  ledger.PlannedActionFailedTerminal,
-			wantClass:   strPtr(failureClassStorageAuth),
+			wantClass:   strPtr(ledger.PlannedActionFailureClassAuth),
 		},
 		{
 			name:        "untyped terminal exit failed",
@@ -1044,7 +1044,7 @@ func TestPostTypedProviderFailuresFinalizeByRequiredActionState(t *testing.T) {
 			wantOutcome: ledger.OutcomeFailed,
 			wantExit:    exitFailed,
 			wantStatus:  ledger.PlannedActionFailedTerminal,
-			wantClass:   strPtr(failureClassStorageTerminal),
+			wantClass:   strPtr(ledger.PlannedActionFailureClassTerminal),
 		},
 	}
 	for _, tt := range tests {
@@ -1077,7 +1077,7 @@ func TestPostPersistedAuthFailureClassDrivesRerunExitAuth(t *testing.T) {
 	action := plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup"})
 	action.Status = ledger.PlannedActionFailedTerminal
 	action.Error = strPtr("login expired")
-	action.FailureClass = strPtr(failureClassStorageAuth)
+	action.FailureClass = strPtr(ledger.PlannedActionFailureClassAuth)
 	insertAction(t, store, action)
 
 	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
@@ -1089,6 +1089,18 @@ func TestPostPersistedAuthFailureClassDrivesRerunExitAuth(t *testing.T) {
 	}
 	if len(provider.reads) != 0 || len(provider.writes) != 0 {
 		t.Fatalf("provider reads/writes = %#v/%#v, want none", provider.reads, provider.writes)
+	}
+}
+
+func TestSortActionsPreservesEqualKeyOrder(t *testing.T) {
+	actions := []ledger.PlannedAction{
+		{RunID: "first", ActionID: "same", Kind: ledger.PlannedActionRollupComment},
+		{RunID: "second", ActionID: "same", Kind: ledger.PlannedActionRollupComment},
+	}
+
+	sorted := sortActions(actions)
+	if sorted[0].RunID != "first" || sorted[1].RunID != "second" {
+		t.Fatalf("equal-key order = %q, %q; want first, second", sorted[0].RunID, sorted[1].RunID)
 	}
 }
 
@@ -1321,7 +1333,7 @@ func TestPostResolveMalformedPayloadFailsBeforeReconciliation(t *testing.T) {
 		t.Fatalf("provider writes = %#v, want none", provider.writes)
 	}
 	action := actionByID(t, store, run.RunID, "resolve-1")
-	if action.Status != ledger.PlannedActionFailedTerminal || action.Attempts != 0 || action.Error == nil || !sameStringPtr(action.FailureClass, strPtr(failureClassStorageTerminal)) {
+	if action.Status != ledger.PlannedActionFailedTerminal || action.Attempts != 0 || action.Error == nil || !sameStringPtr(action.FailureClass, strPtr(ledger.PlannedActionFailureClassTerminal)) {
 		t.Fatalf("resolve action = %#v, want failed terminal without attempts", action)
 	}
 }

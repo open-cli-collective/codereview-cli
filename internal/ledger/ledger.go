@@ -543,16 +543,6 @@ func allocateRunOnce(ctx context.Context, db *sql.DB, params AllocateRunParams) 
 		_ = tx.Rollback()
 	}()
 
-	if params.RunID != "" {
-		var exists int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM runs WHERE run_id = ?", params.RunID).Scan(&exists); err != nil {
-			return Run{}, fmt.Errorf("ledger: check run id: %w", err)
-		}
-		if exists > 0 {
-			return Run{}, fmt.Errorf("%w: %s", ErrRunExists, params.RunID)
-		}
-	}
-
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO prs (pr_key, pr_url, first_seen_at)
 VALUES (?, ?, ?)
@@ -806,11 +796,11 @@ func (s *Store) InsertFinding(ctx context.Context, finding Finding) error {
 	})
 }
 
-type findingInserter interface {
+type execer interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
-func insertFindingRow(ctx context.Context, db findingInserter, finding Finding) error {
+func insertFindingRow(ctx context.Context, db execer, finding Finding) error {
 	_, err := db.ExecContext(ctx, `
 INSERT INTO findings (
 	finding_id, run_id, session_row_id, severity, file_path, side, line, diff_position, anchoring, body
@@ -930,11 +920,7 @@ func (s *Store) InsertPlanningResult(ctx context.Context, findings []Finding, ac
 	})
 }
 
-type plannedActionInserter interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}
-
-func insertPlannedActionRow(ctx context.Context, db plannedActionInserter, action PlannedAction) error {
+func insertPlannedActionRow(ctx context.Context, db execer, action PlannedAction) error {
 	required := 0
 	if action.Required {
 		required = 1
@@ -1294,8 +1280,8 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 		run             Run
 		postMode        string
 		startedAt       string
-		completedAt     sql.NullString
-		outcome         sql.NullString
+		completedAt     sql.Null[string]
+		outcome         sql.Null[string]
 		blocking, major int
 		minor, nits     int
 	)
@@ -1316,14 +1302,14 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 		return Run{}, err
 	}
 	if completedAt.Valid {
-		parsed, err := parseTime(completedAt.String)
+		parsed, err := parseTime(completedAt.V)
 		if err != nil {
 			return Run{}, err
 		}
 		run.CompletedAt = &parsed
 	}
 	if outcome.Valid {
-		parsed, err := ParseOutcome(outcome.String)
+		parsed, err := ParseOutcome(outcome.V)
 		if err != nil {
 			return Run{}, err
 		}
@@ -1340,16 +1326,16 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var (
 		session     Session
 		role        string
-		agentID     sql.NullString
-		effort      sql.NullString
+		agentID     sql.Null[string]
+		effort      sql.Null[string]
 		startedAt   string
-		completedAt sql.NullString
-		durationMS  sql.NullInt64
-		tokensIn    sql.NullInt64
-		tokensOut   sql.NullInt64
-		cacheRead   sql.NullInt64
-		cacheCreate sql.NullInt64
-		costUSD     sql.NullFloat64
+		completedAt sql.Null[string]
+		durationMS  sql.Null[int64]
+		tokensIn    sql.Null[int64]
+		tokensOut   sql.Null[int64]
+		cacheRead   sql.Null[int64]
+		cacheCreate sql.Null[int64]
+		costUSD     sql.Null[float64]
 	)
 	if err := row.Scan(
 		&session.SessionRowID, &session.RunID, &session.ProviderSessionID, &role, &agentID, &session.Adapter,
@@ -1363,22 +1349,22 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 		return Session{}, err
 	}
 	session.Role = parsedRole
-	session.AgentID = stringPtrFromNull(agentID)
-	session.Effort = stringPtrFromNull(effort)
+	session.AgentID = ptrFromNull(agentID)
+	session.Effort = ptrFromNull(effort)
 	session.StartedAt, err = parseTime(startedAt)
 	if err != nil {
 		return Session{}, err
 	}
-	session.CompletedAt, err = timePtrFromNull(completedAt)
+	session.CompletedAt, err = parseOptionalTime(ptrFromNull(completedAt))
 	if err != nil {
 		return Session{}, err
 	}
-	session.DurationMS = int64PtrFromNull(durationMS)
-	session.TokensIn = int64PtrFromNull(tokensIn)
-	session.TokensOut = int64PtrFromNull(tokensOut)
-	session.CacheRead = int64PtrFromNull(cacheRead)
-	session.CacheCreate = int64PtrFromNull(cacheCreate)
-	session.CostUSD = float64PtrFromNull(costUSD)
+	session.DurationMS = ptrFromNull(durationMS)
+	session.TokensIn = ptrFromNull(tokensIn)
+	session.TokensOut = ptrFromNull(tokensOut)
+	session.CacheRead = ptrFromNull(cacheRead)
+	session.CacheCreate = ptrFromNull(cacheCreate)
+	session.CostUSD = ptrFromNull(costUSD)
 	return session, nil
 }
 
@@ -1387,9 +1373,9 @@ func scanFinding(row interface{ Scan(...any) error }) (Finding, error) {
 		finding      Finding
 		findingID    string
 		severity     string
-		side         sql.NullString
-		line         sql.NullInt64
-		diffPosition sql.NullInt64
+		side         sql.Null[string]
+		line         sql.Null[int64]
+		diffPosition sql.Null[int64]
 		anchoring    string
 	)
 	if err := row.Scan(
@@ -1405,14 +1391,14 @@ func scanFinding(row interface{ Scan(...any) error }) (Finding, error) {
 	}
 	finding.Severity = parsedSeverity
 	if side.Valid {
-		parsed, err := review.ParseDiffSide(side.String)
+		parsed, err := review.ParseDiffSide(side.V)
 		if err != nil {
 			return Finding{}, err
 		}
 		finding.Side = &parsed
 	}
-	finding.Line = int64PtrFromNull(line)
-	finding.DiffPosition = int64PtrFromNull(diffPosition)
+	finding.Line = ptrFromNull(line)
+	finding.DiffPosition = ptrFromNull(diffPosition)
 	parsedAnchoring, err := review.ParseAnchoring(anchoring)
 	if err != nil {
 		return Finding{}, err
@@ -1425,16 +1411,16 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 	var (
 		action       PlannedAction
 		kind         string
-		findingID    sql.NullString
-		threadID     sql.NullString
+		findingID    sql.Null[string]
+		threadID     sql.Null[string]
 		plannedAt    string
 		status       string
 		required     int
-		attemptedAt  sql.NullString
-		postedAt     sql.NullString
-		upstreamID   sql.NullString
-		errorText    sql.NullString
-		failureClass sql.NullString
+		attemptedAt  sql.Null[string]
+		postedAt     sql.Null[string]
+		upstreamID   sql.Null[string]
+		errorText    sql.Null[string]
+		failureClass sql.Null[string]
 	)
 	if err := row.Scan(
 		&action.ActionID, &action.RunID, &kind, &findingID, &threadID, &plannedAt, &action.PayloadJSON,
@@ -1452,28 +1438,28 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 		return PlannedAction{}, err
 	}
 	action.Status = parsedStatus
-	action.FindingID = stringPtrFromNull(findingID)
-	action.ThreadID = stringPtrFromNull(threadID)
+	action.FindingID = ptrFromNull(findingID)
+	action.ThreadID = ptrFromNull(threadID)
 	action.PlannedAt, err = parseTime(plannedAt)
 	if err != nil {
 		return PlannedAction{}, err
 	}
 	action.Required = required != 0
-	action.AttemptedAt, err = timePtrFromNull(attemptedAt)
+	action.AttemptedAt, err = parseOptionalTime(ptrFromNull(attemptedAt))
 	if err != nil {
 		return PlannedAction{}, err
 	}
-	action.PostedAt, err = timePtrFromNull(postedAt)
+	action.PostedAt, err = parseOptionalTime(ptrFromNull(postedAt))
 	if err != nil {
 		return PlannedAction{}, err
 	}
-	action.UpstreamID = stringPtrFromNull(upstreamID)
-	action.Error = stringPtrFromNull(errorText)
+	action.UpstreamID = ptrFromNull(upstreamID)
+	action.Error = ptrFromNull(errorText)
 	if failureClass.Valid {
-		if !validPlannedActionFailureClass(failureClass.String) {
-			return PlannedAction{}, invalidInput("failure_class", failureClass.String)
+		if !validPlannedActionFailureClass(failureClass.V) {
+			return PlannedAction{}, invalidInput("failure_class", failureClass.V)
 		}
-		value := failureClass.String
+		value := failureClass.V
 		action.FailureClass = &value
 	}
 	return action, nil
@@ -1522,36 +1508,22 @@ func parseTime(value string) (time.Time, error) {
 	return parsed, nil
 }
 
-func timePtrFromNull(value sql.NullString) (*time.Time, error) {
-	if !value.Valid {
+func parseOptionalTime(value *string) (*time.Time, error) {
+	if value == nil {
 		return nil, nil
 	}
-	parsed, err := parseTime(value.String)
+	parsed, err := parseTime(*value)
 	if err != nil {
 		return nil, err
 	}
 	return &parsed, nil
 }
 
-func stringPtrFromNull(value sql.NullString) *string {
+func ptrFromNull[T any](value sql.Null[T]) *T {
 	if !value.Valid {
 		return nil
 	}
-	return &value.String
-}
-
-func int64PtrFromNull(value sql.NullInt64) *int64 {
-	if !value.Valid {
-		return nil
-	}
-	return &value.Int64
-}
-
-func float64PtrFromNull(value sql.NullFloat64) *float64 {
-	if !value.Valid {
-		return nil
-	}
-	return &value.Float64
+	return &value.V
 }
 
 func normalizeStorageValue(value string) string {
