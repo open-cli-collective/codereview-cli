@@ -3,7 +3,6 @@ package reviewcmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,13 +20,11 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
-	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -311,7 +308,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	_ = execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
-	rendered, err := newReviewDryRun(result)
+	rendered, err := view.NewReviewDryRun(result)
 	if err != nil {
 		return renderSpan.End(err)
 	}
@@ -412,121 +409,6 @@ func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, f
 	return nil
 }
 
-func newReviewSummary(summary reviewplan.Summary) view.ReviewSummary {
-	// Arrays serialize as [], never null, so JSON consumers see one shape.
-	out := view.ReviewSummary{
-		Reviewers: []view.ReviewReviewerSummary{},
-		Threads: view.ReviewThreadCounts{
-			Considered: summary.Threads.Considered,
-			Summarized: summary.Threads.Summarized,
-			Resolved:   summary.Threads.Resolved,
-		},
-		Run: view.ReviewRunSummary{
-			ToolVersion:       summary.Run.ToolVersion,
-			Adapter:           summary.Run.Adapter,
-			Model:             summary.Run.Model,
-			PostingIdentity:   summary.Run.PostingIdentity,
-			SelectedReviewers: summary.Run.SelectedReviewers,
-			ReviewerCoverage:  []view.ReviewReviewerCoverageSummary{},
-			WallDurationMS:    summary.Run.WallDurationMS,
-			Workstreams:       []view.ReviewWorkstream{},
-		},
-		Totals: view.ReviewWorkstreamTotals{
-			TokensIn:          summary.Totals.TokensIn,
-			TokensOut:         summary.Totals.TokensOut,
-			CacheRead:         summary.Totals.CacheRead,
-			CacheCreate:       summary.Totals.CacheCreate,
-			CostUSD:           summary.Totals.CostUSD,
-			ComputeDurationMS: summary.Totals.ComputeDurationMS,
-		},
-	}
-	for _, reviewer := range summary.Reviewers {
-		out.Reviewers = append(out.Reviewers, view.ReviewReviewerSummary{Name: reviewer.Name, Findings: reviewer.Findings})
-	}
-	for _, coverage := range summary.Run.ReviewerCoverage {
-		out.Run.ReviewerCoverage = append(out.Run.ReviewerCoverage, view.ReviewReviewerCoverageSummary{
-			AgentID:        coverage.AgentID,
-			Status:         coverage.Status,
-			Scope:          coverage.Scope,
-			InspectedFiles: coverage.InspectedFiles,
-			SkippedFiles:   coverage.SkippedFiles,
-			Constraints:    coverage.Constraints,
-			Diagnostic:     coverage.Diagnostic,
-		})
-	}
-	for _, workstream := range summary.Run.Workstreams {
-		out.Run.Workstreams = append(out.Run.Workstreams, view.ReviewWorkstream{
-			Name:        workstream.Name,
-			Model:       workstream.Model,
-			TokensIn:    workstream.TokensIn,
-			TokensOut:   workstream.TokensOut,
-			CacheRead:   workstream.CacheRead,
-			CacheCreate: workstream.CacheCreate,
-			CostUSD:     workstream.CostUSD,
-			DurationMS:  workstream.DurationMS,
-		})
-	}
-	return out
-}
-
-func newReviewDryRun(result pipeline.Result) (view.ReviewDryRun, error) {
-	outcome := ledger.OutcomeDryRun.String()
-	if result.Run.Outcome != nil {
-		outcome = result.Run.Outcome.String()
-	}
-	rendered := view.ReviewDryRun{
-		Run: view.ReviewRun{
-			RunID:        result.Run.RunID,
-			PRURL:        result.PR.URL,
-			PRKey:        result.PRKey,
-			PostMode:     result.Run.PostMode.String(),
-			Outcome:      outcome,
-			ArtifactPath: result.Run.ArtifactPath,
-			BaseSHA:      result.ReviewBaseSHA,
-			HeadSHA:      result.ReviewHeadSHA,
-		},
-		RollupMarkdown:  result.Plan.RollupMarkdown,
-		Summary:         newReviewSummary(result.Plan.Summary),
-		FailOnTriggered: result.FailOnTriggered,
-		Artifacts: view.ReviewArtifacts{
-			Dir:            result.Artifacts.Dir,
-			DiffPatch:      result.Artifacts.DiffPatch,
-			SlicesDir:      result.Artifacts.SlicesDir,
-			FindingsJSON:   result.Artifacts.FindingsJSON,
-			RollupMarkdown: result.Artifacts.RollupMarkdown,
-			AgentLogsDir:   result.Artifacts.AgentLogsDir,
-		},
-	}
-	if result.QuotaSupported {
-		rendered.Quota = &view.ReviewQuota{
-			BlockRemainingPct:  result.Quota.BlockRemainingPct,
-			WeeklyRemainingPct: result.Quota.WeeklyRemainingPct,
-			Low:                result.QuotaLow,
-		}
-	}
-	if result.CurrentBaseSHA != "" && result.CurrentBaseSHA != result.ReviewBaseSHA {
-		rendered.Run.CurrentBaseSHA = result.CurrentBaseSHA
-	}
-	if result.CurrentHeadSHA != "" && result.CurrentHeadSHA != result.ReviewHeadSHA {
-		rendered.Run.CurrentHeadSHA = result.CurrentHeadSHA
-	}
-	for _, finding := range result.Plan.AnchoredFindings {
-		rendered.Findings = append(rendered.Findings, viewFinding(finding))
-	}
-	planned := map[string]ledger.PlannedAction{}
-	for _, action := range result.PlannedActions {
-		planned[action.ActionID] = action
-	}
-	for _, action := range result.Plan.Actions {
-		renderedAction, err := viewAction(action, planned[action.ActionID])
-		if err != nil {
-			return view.ReviewDryRun{}, err
-		}
-		rendered.Actions = append(rendered.Actions, renderedAction)
-	}
-	return rendered, nil
-}
-
 func newReviewLive(result reviewrun.Result) view.ReviewLive {
 	outcome := result.Outbox.Outcome.String()
 	if outcome == "" && result.Run.Outcome != nil {
@@ -587,52 +469,4 @@ func liveResultError(result reviewrun.Result) error {
 		return fmt.Errorf("live review completed with outcome %s", result.Outbox.Outcome)
 	}
 	return fmt.Errorf("live review did not complete")
-}
-
-func viewFinding(finding reviewplan.AnchoredFinding) view.ReviewFinding {
-	out := view.ReviewFinding{
-		ID:        finding.FindingID.String(),
-		Severity:  finding.Severity.String(),
-		FilePath:  finding.FilePath,
-		Anchoring: finding.Anchoring.String(),
-		Body:      finding.Body,
-	}
-	if finding.Side != nil {
-		out.Side = finding.Side.String()
-	}
-	if finding.Line != nil {
-		line := *finding.Line
-		out.Line = &line
-	}
-	return out
-}
-
-func viewAction(action reviewplan.Action, planned ledger.PlannedAction) (view.ReviewAction, error) {
-	status := action.Status
-	payload := json.RawMessage(`{}`)
-	if planned.ActionID != "" {
-		if parsed := json.RawMessage(planned.PayloadJSON); json.Valid(parsed) {
-			payload = parsed
-		} else {
-			return view.ReviewAction{}, fmt.Errorf("review: planned action %q payload is invalid JSON", planned.ActionID)
-		}
-		if planned.Status != "" {
-			status = reviewplan.ActionStatus(planned.Status.String())
-		}
-	}
-	out := view.ReviewAction{
-		ID:            action.ActionID,
-		Kind:          string(action.Kind),
-		Status:        string(status),
-		Required:      action.Required,
-		MarkerOmitted: action.Marker.BodyBearing,
-		Payload:       payload,
-	}
-	if action.FindingID.Assigned() {
-		out.FindingID = action.FindingID.String()
-	}
-	if strings.TrimSpace(action.ThreadID) != "" {
-		out.ThreadID = action.ThreadID
-	}
-	return out, nil
 }

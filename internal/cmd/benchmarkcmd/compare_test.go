@@ -35,12 +35,12 @@ func TestCompareCommandWritesArtifactsAndJSONWithoutConfig(t *testing.T) {
 	})
 
 	cmd, out := newCompareOnlyTestCommand(filepath.Join(t.TempDir(), "missing-config.yml"))
-	oldRunner := runReviewCommand
-	runReviewCommand = func(context.Context, string, []string) reviewCommandResult {
+	oldExecutor := benchmarkReviewExecutor
+	benchmarkReviewExecutor = subprocessExecutor{run: func(context.Context, string, []string) reviewCommandResult {
 		t.Fatal("compare must not invoke review command")
 		return reviewCommandResult{}
-	}
-	t.Cleanup(func() { runReviewCommand = oldRunner })
+	}}
+	t.Cleanup(func() { benchmarkReviewExecutor = oldExecutor })
 
 	if err := root.Execute(cmd, []string{"benchmark", "compare", resultsDir, "--json"}); err != nil {
 		t.Fatalf("Execute compare: %v", err)

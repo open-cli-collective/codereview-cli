@@ -4,6 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
+
+	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 )
 
 // ReviewDryRun is the presentation model for `cr review --dry-run`.
@@ -160,6 +165,170 @@ type ReviewArtifacts struct {
 	FindingsJSON   string `json:"findings_json"`
 	RollupMarkdown string `json:"rollup_markdown"`
 	AgentLogsDir   string `json:"agent_logs_dir"`
+}
+
+// NewReviewDryRun maps a pipeline result to the shared dry-run presentation model.
+func NewReviewDryRun(result pipeline.Result) (ReviewDryRun, error) {
+	outcome := ledger.OutcomeDryRun.String()
+	if result.Run.Outcome != nil {
+		outcome = result.Run.Outcome.String()
+	}
+	rendered := ReviewDryRun{
+		Run: ReviewRun{
+			RunID:        result.Run.RunID,
+			PRURL:        result.PR.URL,
+			PRKey:        result.PRKey,
+			PostMode:     result.Run.PostMode.String(),
+			Outcome:      outcome,
+			ArtifactPath: result.Run.ArtifactPath,
+			BaseSHA:      result.ReviewBaseSHA,
+			HeadSHA:      result.ReviewHeadSHA,
+		},
+		RollupMarkdown:  result.Plan.RollupMarkdown,
+		Summary:         newReviewSummary(result.Plan.Summary),
+		FailOnTriggered: result.FailOnTriggered,
+		Artifacts: ReviewArtifacts{
+			Dir:            result.Artifacts.Dir,
+			DiffPatch:      result.Artifacts.DiffPatch,
+			SlicesDir:      result.Artifacts.SlicesDir,
+			FindingsJSON:   result.Artifacts.FindingsJSON,
+			RollupMarkdown: result.Artifacts.RollupMarkdown,
+			AgentLogsDir:   result.Artifacts.AgentLogsDir,
+		},
+	}
+	if result.QuotaSupported {
+		rendered.Quota = &ReviewQuota{
+			BlockRemainingPct:  result.Quota.BlockRemainingPct,
+			WeeklyRemainingPct: result.Quota.WeeklyRemainingPct,
+			Low:                result.QuotaLow,
+		}
+	}
+	if result.CurrentBaseSHA != "" && result.CurrentBaseSHA != result.ReviewBaseSHA {
+		rendered.Run.CurrentBaseSHA = result.CurrentBaseSHA
+	}
+	if result.CurrentHeadSHA != "" && result.CurrentHeadSHA != result.ReviewHeadSHA {
+		rendered.Run.CurrentHeadSHA = result.CurrentHeadSHA
+	}
+	for _, finding := range result.Plan.AnchoredFindings {
+		rendered.Findings = append(rendered.Findings, newReviewFinding(finding))
+	}
+	planned := map[string]ledger.PlannedAction{}
+	for _, action := range result.PlannedActions {
+		planned[action.ActionID] = action
+	}
+	for _, action := range result.Plan.Actions {
+		renderedAction, err := newReviewAction(action, planned[action.ActionID])
+		if err != nil {
+			return ReviewDryRun{}, err
+		}
+		rendered.Actions = append(rendered.Actions, renderedAction)
+	}
+	return rendered, nil
+}
+
+func newReviewSummary(summary reviewplan.Summary) ReviewSummary {
+	// Arrays serialize as [], never null, so JSON consumers see one shape.
+	out := ReviewSummary{
+		Reviewers: []ReviewReviewerSummary{},
+		Threads: ReviewThreadCounts{
+			Considered: summary.Threads.Considered,
+			Summarized: summary.Threads.Summarized,
+			Resolved:   summary.Threads.Resolved,
+		},
+		Run: ReviewRunSummary{
+			ToolVersion:       summary.Run.ToolVersion,
+			Adapter:           summary.Run.Adapter,
+			Model:             summary.Run.Model,
+			PostingIdentity:   summary.Run.PostingIdentity,
+			SelectedReviewers: summary.Run.SelectedReviewers,
+			ReviewerCoverage:  []ReviewReviewerCoverageSummary{},
+			WallDurationMS:    summary.Run.WallDurationMS,
+			Workstreams:       []ReviewWorkstream{},
+		},
+		Totals: ReviewWorkstreamTotals{
+			TokensIn:          summary.Totals.TokensIn,
+			TokensOut:         summary.Totals.TokensOut,
+			CacheRead:         summary.Totals.CacheRead,
+			CacheCreate:       summary.Totals.CacheCreate,
+			CostUSD:           summary.Totals.CostUSD,
+			ComputeDurationMS: summary.Totals.ComputeDurationMS,
+		},
+	}
+	for _, reviewer := range summary.Reviewers {
+		out.Reviewers = append(out.Reviewers, ReviewReviewerSummary{Name: reviewer.Name, Findings: reviewer.Findings})
+	}
+	for _, coverage := range summary.Run.ReviewerCoverage {
+		out.Run.ReviewerCoverage = append(out.Run.ReviewerCoverage, ReviewReviewerCoverageSummary{
+			AgentID:        coverage.AgentID,
+			Status:         coverage.Status,
+			Scope:          coverage.Scope,
+			InspectedFiles: coverage.InspectedFiles,
+			SkippedFiles:   coverage.SkippedFiles,
+			Constraints:    coverage.Constraints,
+			Diagnostic:     coverage.Diagnostic,
+		})
+	}
+	for _, workstream := range summary.Run.Workstreams {
+		out.Run.Workstreams = append(out.Run.Workstreams, ReviewWorkstream{
+			Name:        workstream.Name,
+			Model:       workstream.Model,
+			TokensIn:    workstream.TokensIn,
+			TokensOut:   workstream.TokensOut,
+			CacheRead:   workstream.CacheRead,
+			CacheCreate: workstream.CacheCreate,
+			CostUSD:     workstream.CostUSD,
+			DurationMS:  workstream.DurationMS,
+		})
+	}
+	return out
+}
+
+func newReviewFinding(finding reviewplan.AnchoredFinding) ReviewFinding {
+	out := ReviewFinding{
+		ID:        finding.FindingID.String(),
+		Severity:  finding.Severity.String(),
+		FilePath:  finding.FilePath,
+		Anchoring: finding.Anchoring.String(),
+		Body:      finding.Body,
+	}
+	if finding.Side != nil {
+		out.Side = finding.Side.String()
+	}
+	if finding.Line != nil {
+		line := *finding.Line
+		out.Line = &line
+	}
+	return out
+}
+
+func newReviewAction(action reviewplan.Action, planned ledger.PlannedAction) (ReviewAction, error) {
+	status := action.Status
+	payload := json.RawMessage(`{}`)
+	if planned.ActionID != "" {
+		if parsed := json.RawMessage(planned.PayloadJSON); json.Valid(parsed) {
+			payload = parsed
+		} else {
+			return ReviewAction{}, fmt.Errorf("review: planned action %q payload is invalid JSON", planned.ActionID)
+		}
+		if planned.Status != "" {
+			status = reviewplan.ActionStatus(planned.Status.String())
+		}
+	}
+	out := ReviewAction{
+		ID:            action.ActionID,
+		Kind:          string(action.Kind),
+		Status:        string(status),
+		Required:      action.Required,
+		MarkerOmitted: action.Marker.BodyBearing,
+		Payload:       payload,
+	}
+	if action.FindingID.Assigned() {
+		out.FindingID = action.FindingID.String()
+	}
+	if strings.TrimSpace(action.ThreadID) != "" {
+		out.ThreadID = action.ThreadID
+	}
+	return out, nil
 }
 
 // RenderReviewDryRunText writes a human-readable dry-run summary.
