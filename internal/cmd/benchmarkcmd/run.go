@@ -257,9 +257,9 @@ func runBenchmarkSuite(ctx context.Context, opts *root.Options, flags runFlags, 
 	_ = resolveSpan.End(nil)
 	started := benchmarkNow().UTC()
 	resultsSpan := logger.Start("benchmark.run", "prepare_results", suite.Suite.ID)
-	resultsDir, err := resolveRunResultsDir(suite.Suite.ID, flags.resultsDir, started)
+	resultsDir, err := resolveResultsDir(flags.resultsDir, ".cr-bench", "results", suite.Suite.ID, started.UTC().Format(runTimestampLayout))
 	if err != nil {
-		return benchmarkSuiteSummary{}, resultsSpan.End(err)
+		return benchmarkSuiteSummary{}, resultsSpan.End(fmt.Errorf("benchmark: resolve run results dir: %w", err))
 	}
 	suiteHash, err := suiteFileSHA256(suite.Path)
 	if err != nil {
@@ -411,14 +411,12 @@ func runReviewCommandReal(ctx context.Context, crBin string, args []string) revi
 	err := cmd.Run()
 	exitCode := exitcode.Success
 	if err != nil {
+		exitCode = -1
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else if ctx.Err() != nil {
 			err = ctx.Err()
-			exitCode = -1
-		} else {
-			exitCode = -1
 		}
 	}
 	return reviewCommandResult{
@@ -449,7 +447,7 @@ func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchm
 		)
 	}
 	if candidate.Stages.Selection.Prompt != "" {
-		args = append(args, "--selection-prompt", resolveStagePath(suiteDir, candidate.Stages.Selection.Prompt))
+		args = append(args, "--selection-prompt", benchmark.ResolveSuitePath(suiteDir, candidate.Stages.Selection.Prompt))
 	}
 	if candidate.Stages.Reviewers.Model != "" {
 		args = append(args, "--reviewer-model", candidate.Stages.Reviewers.Model)
@@ -461,7 +459,7 @@ func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchm
 		args = append(args, "--reviewer-effort", candidate.Stages.Reviewers.Effort)
 	}
 	for _, dir := range candidate.Stages.Reviewers.AgentDirs {
-		args = append(args, "--agents-dir", resolveAgentDir(suiteDir, dir))
+		args = append(args, "--agents-dir", benchmark.ResolveSuitePath(suiteDir, dir))
 	}
 	if candidate.MaxAgents > 0 {
 		args = append(args, "--max-agents", fmt.Sprint(candidate.MaxAgents))
@@ -498,18 +496,6 @@ func resolveRunCRBin(configured string) (string, error) {
 		return "", fmt.Errorf("%w: cr binary %s is not executable: %w", benchmark.ErrInvalid, path, err)
 	}
 	return path, nil
-}
-
-func resolveRunResultsDir(suiteID, configured string, started time.Time) (string, error) {
-	path := strings.TrimSpace(configured)
-	if path == "" {
-		path = filepath.Join(".cr-bench", "results", suiteID, started.UTC().Format(runTimestampLayout))
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("benchmark: resolve run results dir: %w", err)
-	}
-	return abs, nil
 }
 
 func benchmarkRunID(matrixIndex, candidateIndex, caseIndex int, candidate benchmark.Candidate, benchCase benchmark.Case) string {
@@ -576,7 +562,7 @@ func summarizePromptFile(suiteDir, configured string) *benchmarkPromptFile {
 	if configured == "" {
 		return nil
 	}
-	resolved := resolveStagePath(suiteDir, configured)
+	resolved := benchmark.ResolveSuitePath(suiteDir, configured)
 	out := &benchmarkPromptFile{
 		Configured: configured,
 		Resolved:   resolved,
@@ -624,14 +610,6 @@ func summarizeAgentDirs(suiteDir string, dirs []string) []benchmarkAgentDir {
 		out = append(out, agentDir)
 	}
 	return out
-}
-
-func resolveStagePath(suiteDir, path string) string {
-	path = filepath.FromSlash(path)
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Join(suiteDir, path)
 }
 
 func summarizeCases(cases []benchmark.Case) []benchmarkCase {
@@ -714,29 +692,7 @@ func mergeUsage(summary *benchmarkSuiteSummary, usage benchmark.RunMetrics) {
 	if summary.Usage == nil {
 		summary.Usage = &benchmark.RunMetrics{}
 	}
-	summary.Usage.LLMCalls += usage.LLMCalls
-	summary.Usage.Turns += usage.Turns
-	summary.Usage.ToolCalls += usage.ToolCalls
-	summary.Usage.ToolResults += usage.ToolResults
-	summary.Usage.Tokens.Available = summary.Usage.Tokens.Available || usage.Tokens.Available
-	summary.Usage.Tokens.Input += usage.Tokens.Input
-	summary.Usage.Tokens.Output += usage.Tokens.Output
-	summary.Usage.Tokens.CacheRead += usage.Tokens.CacheRead
-	summary.Usage.Tokens.CacheWrite += usage.Tokens.CacheWrite
-	summary.Usage.Tokens.TotalTokens += usage.Tokens.TotalTokens
-	summary.Usage.Cost.Available = summary.Usage.Cost.Available || usage.Cost.Available
-	summary.Usage.Cost.Input += usage.Cost.Input
-	summary.Usage.Cost.Output += usage.Cost.Output
-	summary.Usage.Cost.CacheRead += usage.Cost.CacheRead
-	summary.Usage.Cost.CacheWrite += usage.Cost.CacheWrite
-	summary.Usage.Cost.Total += usage.Cost.Total
-}
-
-func resolveAgentDir(suiteDir, configured string) string {
-	if filepath.IsAbs(configured) {
-		return configured
-	}
-	return filepath.Join(suiteDir, configured)
+	summary.Usage.Add(usage)
 }
 
 func hashAgentDirMetadata(root string) (string, error) {
@@ -853,34 +809,23 @@ func writeArtifactFile(path string, data []byte) error {
 }
 
 func renderRunText(opts *root.Options, summary benchmarkSuiteSummary) error {
-	if _, err := fmt.Fprintf(opts.Stdout, "Benchmark suite: %s\n", summary.SuiteID); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Results dir: %s\n", summary.ResultsDir); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Runs: %d success=%d failure=%d\n", summary.RunCount, summary.SuccessCount, summary.FailureCount); err != nil {
-		return err
-	}
+	w := stickyWriter{w: opts.Stdout}
+	w.printf("Benchmark suite: %s\n", summary.SuiteID)
+	w.printf("Results dir: %s\n", summary.ResultsDir)
+	w.printf("Runs: %d success=%d failure=%d\n", summary.RunCount, summary.SuccessCount, summary.FailureCount)
 	for _, run := range summary.Runs {
-		if _, err := fmt.Fprintf(opts.Stdout, "- %s candidate=%s case=%s exit=%d findings=%d\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount); err != nil {
-			return err
+		detail := fmt.Sprintf("findings=%d", run.FindingCount)
+		if summaryMode(summary) == benchmarkModeSelection {
+			detail = "selected_reviewers=" + selectedAgentsCell(run.SelectedAgents)
 		}
+		w.printf("- %s candidate=%s case=%s exit=%d %s\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, detail)
 	}
-	if _, err := fmt.Fprintln(opts.Stdout, "Artifacts:"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  Manifest: %s\n", summary.Artifacts.Manifest); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  Summary: %s\n", summary.Artifacts.SuiteSummary); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  JSONL: %s\n", summary.Artifacts.SummaryJSONL); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(opts.Stdout, "  Report: %s\n", summary.Artifacts.Report)
-	return err
+	w.println("Artifacts:")
+	w.printf("  Manifest: %s\n", summary.Artifacts.Manifest)
+	w.printf("  Summary: %s\n", summary.Artifacts.SuiteSummary)
+	w.printf("  JSONL: %s\n", summary.Artifacts.SummaryJSONL)
+	w.printf("  Report: %s\n", summary.Artifacts.Report)
+	return w.err
 }
 
 func renderReportMarkdown(summary benchmarkSuiteSummary) string {
@@ -888,24 +833,28 @@ func renderReportMarkdown(summary benchmarkSuiteSummary) string {
 		return renderSelectionReportMarkdown(summary)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Benchmark Report: %s\n\n", summary.SuiteID)
-	fmt.Fprintf(&b, "- Results dir: `%s`\n", summary.ResultsDir)
-	fmt.Fprintf(&b, "- Runs: %d\n", summary.RunCount)
-	fmt.Fprintf(&b, "- Success: %d\n", summary.SuccessCount)
-	fmt.Fprintf(&b, "- Failure: %d\n", summary.FailureCount)
-	if summary.Usage != nil && summary.Usage.HasTokenUsage() {
-		fmt.Fprintf(&b, "- Tokens: %d total (%d input, %d output, %d cache read, %d cache write)\n", summary.Usage.Tokens.TotalTokens, summary.Usage.Tokens.Input, summary.Usage.Tokens.Output, summary.Usage.Tokens.CacheRead, summary.Usage.Tokens.CacheWrite)
-	}
-	if summary.Usage != nil && summary.Usage.HasCostUsage() {
-		fmt.Fprintf(&b, "- Cost: $%.6f\n", summary.Usage.Cost.Total)
-	}
-	b.WriteString("\n")
+	writeReportHeader(&b, "Benchmark Report", summary)
 	b.WriteString("| Run | Candidate | Case | Exit | Findings | Tokens | Cost |\n")
 	b.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: |\n")
 	for _, run := range summary.Runs {
 		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d | %s | %s |\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount, usageTokensCell(run.Usage), usageCostCell(run.Usage))
 	}
 	return b.String()
+}
+
+func writeReportHeader(b *strings.Builder, title string, summary benchmarkSuiteSummary) {
+	fmt.Fprintf(b, "# %s: %s\n\n", title, summary.SuiteID)
+	fmt.Fprintf(b, "- Results dir: `%s`\n", summary.ResultsDir)
+	fmt.Fprintf(b, "- Runs: %d\n", summary.RunCount)
+	fmt.Fprintf(b, "- Success: %d\n", summary.SuccessCount)
+	fmt.Fprintf(b, "- Failure: %d\n", summary.FailureCount)
+	if summary.Usage != nil && summary.Usage.HasTokenUsage() {
+		fmt.Fprintf(b, "- Tokens: %d total (%d input, %d output, %d cache read, %d cache write)\n", summary.Usage.Tokens.TotalTokens, summary.Usage.Tokens.Input, summary.Usage.Tokens.Output, summary.Usage.Tokens.CacheRead, summary.Usage.Tokens.CacheWrite)
+	}
+	if summary.Usage != nil && summary.Usage.HasCostUsage() {
+		fmt.Fprintf(b, "- Cost: $%.6f\n", summary.Usage.Cost.Total)
+	}
+	b.WriteString("\n")
 }
 
 func usageTokensCell(usage *benchmark.RunMetrics) string {

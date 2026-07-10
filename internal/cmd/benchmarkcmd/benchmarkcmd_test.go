@@ -966,9 +966,10 @@ func TestRunRejectsInvalidSelectionAndSuite(t *testing.T) {
 func TestRunDefaultResultsDirUsesTimestamp(t *testing.T) {
 	tmp := t.TempDir()
 	t.Chdir(tmp)
-	got, err := resolveRunResultsDir("suite1", "", time.Date(2026, 6, 3, 18, 45, 12, 999, time.UTC))
+	started := time.Date(2026, 6, 3, 18, 45, 12, 999, time.UTC)
+	got, err := resolveResultsDir("", ".cr-bench", "results", "suite1", started.UTC().Format(runTimestampLayout))
 	if err != nil {
-		t.Fatalf("resolveRunResultsDir: %v", err)
+		t.Fatalf("resolveResultsDir: %v", err)
 	}
 	want := filepath.Join(tmp, ".cr-bench", "results", "suite1", "2026-06-03T184512Z")
 	if got != want {
