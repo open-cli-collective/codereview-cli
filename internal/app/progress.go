@@ -1,4 +1,4 @@
-package reviewruntime
+package app
 
 import "github.com/open-cli-collective/codereview-cli/internal/progress"
 

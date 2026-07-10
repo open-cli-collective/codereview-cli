@@ -1,4 +1,4 @@
-package reviewruntime
+package app
 
 import (
 	"bytes"

@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/app"
 	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -31,18 +32,17 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/threadrespond"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
 func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	var gotRuntime reviewruntime.OpenRequest
+	var gotRuntime app.OpenRequest
 	var cleanupCalled bool
-	cmd, out := newTestCommand(t, testConfig(), func(_ context.Context, opts reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, out := newTestCommand(t, testConfig(), func(_ context.Context, opts app.OpenRequest) (app.Runtime, error) {
 		gotRuntime = opts
-		return reviewruntime.Runtime{
+		return app.Runtime{
 			Runner:          runner,
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 			Cleanup:         func() { cleanupCalled = true },
@@ -107,14 +107,14 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 		},
 	}
 	runner := &fakeRunner{result: result}
-	var gotRuntime reviewruntime.OpenRequest
+	var gotRuntime app.OpenRequest
 	var cleanupCalled bool
-	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), func(_ context.Context, opts reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), func(_ context.Context, opts app.OpenRequest) (app.Runtime, error) {
 		gotRuntime = opts
 		if opts.Profile.Git.CredentialRef != "codereview/home" {
 			t.Fatalf("runtime profile credential ref = %q, want repository-routed home profile", opts.Profile.Git.CredentialRef)
 		}
-		return reviewruntime.Runtime{
+		return app.Runtime{
 			Runner:          runner,
 			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 			Cleanup:         func() { cleanupCalled = true },
@@ -205,11 +205,11 @@ func TestReviewUsesRepositoryProfileRoute(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
 		if req.Profile.Git.CredentialRef != "codereview/work" {
 			t.Fatalf("runtime profile credential ref = %q, want work route", req.Profile.Git.CredentialRef)
 		}
-		return reviewruntime.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+		return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
 
 	if err := root.Execute(cmd, []string{"review", "https://github.com/rianjs/bar/pull/29", "--dry-run"}); err != nil {
@@ -243,9 +243,9 @@ func TestReviewRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
 			},
 		},
 	}
-	cmd, _ := newTestCommand(t, cfg, func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		t.Fatal("runtime factory should not be called for ambiguous repository routes")
-		return reviewruntime.Runtime{}, nil
+		return app.Runtime{}, nil
 	})
 
 	err := root.Execute(cmd, []string{"review", "https://github.com/rianjs/bar/pull/29", "--dry-run"})
@@ -271,11 +271,11 @@ func TestReviewExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
 		if req.Profile.Git.CredentialRef != "codereview/home" {
 			t.Fatalf("runtime profile credential ref = %q, want explicit home", req.Profile.Git.CredentialRef)
 		}
-		return reviewruntime.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+		return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
 
 	if err := root.Execute(cmd, []string{"--profile", "home", "review", "https://github.com/rianjs/bar/pull/29", "--dry-run"}); err != nil {
@@ -300,9 +300,9 @@ func TestReviewExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		t.Fatal("runtime factory should not be called for an empty explicit profile")
-		return reviewruntime.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+		return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
 
 	err := root.Execute(cmd, []string{"--profile", "", "review", "https://github.com/rianjs/bar/pull/29", "--dry-run"})
@@ -325,9 +325,9 @@ func TestReviewUnmatchedRepositoryRequiresProfileOrRoute(t *testing.T) {
 		},
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
-	cmd, _ := newTestCommand(t, cfg, func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		t.Fatal("runtime factory should not be called for an unmatched repository")
-		return reviewruntime.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+		return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
 
 	err := root.Execute(cmd, []string{"review", "https://github.com/example/missing/pull/29", "--dry-run"})
@@ -346,9 +346,9 @@ func TestReviewExplicitProfileHostMismatch(t *testing.T) {
 	work.Git.Host = "github.com"
 	work.Git.CredentialRef = "codereview/work"
 	cfg.Profiles["work"] = work
-	cmd, _ := newTestCommand(t, cfg, func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, cfg, func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		t.Fatal("runtime factory should not be called when route profile host mismatches")
-		return reviewruntime.Runtime{}, nil
+		return app.Runtime{}, nil
 	})
 
 	err := root.Execute(cmd, []string{"--profile", "home", "review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
@@ -364,9 +364,9 @@ func TestReviewExplicitProfileHostMismatch(t *testing.T) {
 }
 
 func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
-	cmd, out := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, out := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		t.Fatal("runtime factory should not be called for help")
-		return reviewruntime.Runtime{}, nil
+		return app.Runtime{}, nil
 	})
 
 	if err := root.Execute(cmd, []string{"review", "--help"}); err != nil {
@@ -546,9 +546,9 @@ func TestReviewRejectsInvalidReviewSHAOverrides(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var factoryCalled bool
-			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 				factoryCalled = true
-				return reviewruntime.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+				return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
 			})
 
 			args := append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...)
@@ -581,9 +581,9 @@ func TestReviewLiveRejectsStageOverridesBeforeRuntimeFactory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var factoryCalled bool
-			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 				factoryCalled = true
-				return reviewruntime.Runtime{Runner: &fakeRunner{liveResult: testLiveResult(false)}}, nil
+				return app.Runtime{Runner: &fakeRunner{liveResult: testLiveResult(false)}}, nil
 			})
 
 			args := append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...)
@@ -616,9 +616,9 @@ func TestReviewRejectsEmptyStageOverridesBeforeRuntimeFactory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var factoryCalled bool
-			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 				factoryCalled = true
-				return reviewruntime.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+				return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
 			})
 
 			args := append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...)
@@ -647,9 +647,9 @@ func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var factoryCalled bool
-			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 				factoryCalled = true
-				return reviewruntime.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+				return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
 			})
 
 			err := root.Execute(cmd, append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...))
@@ -668,9 +668,9 @@ func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
 
 func TestReviewRejectsInvalidReviewerModelTierBeforeRuntimeFactory(t *testing.T) {
 	var factoryCalled bool
-	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		factoryCalled = true
-		return reviewruntime.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+		return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
 	})
 
 	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--reviewer-model-tier", "flagship"})
@@ -687,9 +687,9 @@ func TestReviewRejectsInvalidReviewerModelTierBeforeRuntimeFactory(t *testing.T)
 
 func TestReviewRejectsReviewerModelAndReviewerModelTierTogether(t *testing.T) {
 	var factoryCalled bool
-	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		factoryCalled = true
-		return reviewruntime.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+		return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
 	})
 
 	err := root.Execute(cmd, []string{
@@ -736,9 +736,9 @@ func TestReviewRejectsInvalidSelectionPromptFileBeforeRuntimeFactory(t *testing.
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var factoryCalled bool
-			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 				factoryCalled = true
-				return reviewruntime.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+				return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
 			})
 			err := root.Execute(cmd, []string{
 				"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
@@ -762,9 +762,9 @@ func TestReviewRejectsEmptySelectionPromptFileBeforeRuntimeFactory(t *testing.T)
 	promptPath := filepath.Join(t.TempDir(), "selection.md")
 	writeReviewFile(t, promptPath, "  \n\t  ")
 	var factoryCalled bool
-	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		factoryCalled = true
-		return reviewruntime.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+		return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
 	})
 
 	err := root.Execute(cmd, []string{
@@ -830,10 +830,10 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 				Enforcement: tt.enforcement,
 			}
 			runner := &fakeRunner{result: testPipelineResult(false)}
-			var got reviewruntime.OpenRequest
-			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, opts reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
+			var got app.OpenRequest
+			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, opts app.OpenRequest) (app.Runtime, error) {
 				got = opts
-				return reviewruntime.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+				return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 			})
 
 			if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}); err != nil {
@@ -1288,8 +1288,8 @@ func (r *fakeRunner) Respond(_ context.Context, req threadrespond.Request) (thre
 }
 
 func fakeFactory(runner *fakeRunner) RuntimeFactory {
-	return func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
-		return reviewruntime.Runtime{Runner: runner, Responder: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+	return func(context.Context, app.OpenRequest) (app.Runtime, error) {
+		return app.Runtime{Runner: runner, Responder: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	}
 }
 
@@ -1524,8 +1524,8 @@ func writeReviewFile(t *testing.T, path, body string) {
 
 func TestFakeFactoryErrorIsReturned(t *testing.T) {
 	factoryErr := errors.New("factory failed")
-	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error) {
-		return reviewruntime.Runtime{}, factoryErr
+	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
+		return app.Runtime{}, factoryErr
 	})
 	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
 	if !errors.Is(err, factoryErr) {

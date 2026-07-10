@@ -1,6 +1,6 @@
-// Package reviewruntime assembles command-independent review runtime
+// Package app assembles command-independent review runtime
 // dependencies.
-package reviewruntime
+package app
 
 import (
 	"context"

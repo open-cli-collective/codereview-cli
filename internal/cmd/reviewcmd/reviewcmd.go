@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/open-cli-collective/codereview-cli/internal/app"
 	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
@@ -28,7 +29,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -50,7 +50,7 @@ comments ask for override approval.
 an existing run and does not check existing approvals or approval overrides.`
 
 // RuntimeFactory builds the concrete runtime used by review lifecycle commands.
-type RuntimeFactory func(context.Context, reviewruntime.OpenRequest) (reviewruntime.Runtime, error)
+type RuntimeFactory func(context.Context, app.OpenRequest) (app.Runtime, error)
 
 type commandFlags struct {
 	dryRun            bool
@@ -78,7 +78,7 @@ type commandFlags struct {
 
 // Register attaches the review command to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
-	RegisterWithFactory(rootCmd, opts, reviewruntime.Open)
+	RegisterWithFactory(rootCmd, opts, app.Open)
 }
 
 // RegisterWithFactory attaches the review command with an injected runtime factory.
@@ -249,7 +249,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	_ = profileSpan.End(nil)
 
-	runtimeReq := reviewruntime.OpenRequest{
+	runtimeReq := app.OpenRequest{
 		Config:                            cfg,
 		Profile:                           profile,
 		Backend:                           opts.Backend,
@@ -384,7 +384,7 @@ func commandName(cmd *cobra.Command) string {
 	return name
 }
 
-func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, flags commandFlags, runner reviewruntime.Runner, req pipeline.Request, failOn *review.Severity) error {
+func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, flags commandFlags, runner app.Runner, req pipeline.Request, failOn *review.Severity) error {
 	execSpan := logger.Start("review", "execute_live", "pr")
 	result, err := runner.Live(ctx, req, reviewrun.Flags{Rerun: flags.rerun, RetryPosts: flags.retryPosts})
 	if err != nil {

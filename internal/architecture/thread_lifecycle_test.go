@@ -17,8 +17,8 @@ func TestProviderWritesGoThroughPostingBoundary(t *testing.T) {
 		"internal/gitprovider",
 	}
 	allowedFiles := map[string]bool{
-		"internal/reviewruntime/provider_progress.go": true,
-		"internal/reviewruntime/runtime_provider.go":  true,
+		"internal/app/provider_progress.go": true,
+		"internal/app/runtime_provider.go":  true,
 	}
 	writeMethods := map[string]bool{
 		"PostInlineComment": true,
