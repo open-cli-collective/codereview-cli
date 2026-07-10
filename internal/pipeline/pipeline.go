@@ -19,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/dossier"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -446,13 +447,13 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}); err != nil {
 		return SelectionResult{}, err
 	}
-	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
+	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
 		SelectionEffortOverride: req.SelectionEffortOverride,
 		Artifacts:               prepared.artifacts,
 	}); err != nil {
-		return SelectionResult{}, err
+		return SelectionResult{}, pipelineTaskError(err)
 	}
 	if len(prepared.parsed.Patches) == 0 {
 		return result, nil
@@ -592,14 +593,14 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}); err != nil {
 		return Result{}, err
 	}
-	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
+	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
 		RunID:                   run.RunID,
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
 		SelectionEffortOverride: req.SelectionEffortOverride,
 		Artifacts:               prepared.artifacts,
 	}); err != nil {
-		return Result{}, err
+		return Result{}, pipelineTaskError(err)
 	}
 
 	findingSessions, blockingFailure, err := executePlanPhases(ctx, opts, req, mode, run, prepared, now, maxAgents, maxConcurrency, &result)
@@ -638,7 +639,7 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 		result.Plan = plan
 		return nil, false, nil
 	}
-	if repoGuidanceUnavailableReason(repoSources) != "" {
+	if dossier.RepoGuidanceUnavailableReason(repoSources) != "" {
 		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, nil, review.Rollup{}, nil, false, result.AgentDefsChanged, planRunInputs{
 			repoSources: repoSources,
 			startedAt:   now,
@@ -1022,11 +1023,11 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		reviewBaseSHA:    reviewPR.Base.SHA,
 		reviewHeadSHA:    reviewPR.Head.SHA,
 	}
-	if err := writeRawDossierArtifacts(artifacts, dossierInputs{
+	if err := dossier.WriteRaw(artifacts, dossier.Inputs{
 		CurrentPR:             pr,
 		ReviewPR:              reviewPR,
 		PinnedReview:          reviewCtx.pinnedReview,
-		ChangedFiles:          parsed.Patches,
+		ChangedFiles:          dossierChangedFiles(parsed.Patches),
 		Threads:               threads,
 		ThreadContext:         threadContext,
 		Reviews:               reviews,
@@ -1084,7 +1085,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
-	dependencyTaskIDs := []string{dossierSummaryTaskID}
+	dependencyTaskIDs := []string{dossier.SummaryTaskID}
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	selectionPrompt, err := buildSelectionPrompt(req.Catalog, promptInput, req.MaxAgents, req.SelectionPromptInstructions)
 	if err != nil {
@@ -1857,8 +1858,8 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		Rollup:                        rollup,
 		ThreadActions:                 threadActions,
 		ThreadResponses:               append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
-		RepoGuidanceUnavailable:       repoGuidanceUnavailableReason(runInputs.repoSources) != "",
-		RepoGuidanceUnavailableReason: repoGuidanceUnavailableReason(runInputs.repoSources),
+		RepoGuidanceUnavailable:       dossier.RepoGuidanceUnavailableReason(runInputs.repoSources) != "",
+		RepoGuidanceUnavailableReason: dossier.RepoGuidanceUnavailableReason(runInputs.repoSources),
 		EventOptions: reviewplan.EventOptions{
 			MajorEventRequestsChanges: req.MajorRequestChanges,
 			PostingIdentityIsPRAuthor: sameIdentity(pr.Author, req.PostingIdentity),
@@ -2134,6 +2135,34 @@ func (opts Options) resolveRepoRoot(ctx context.Context) (string, error) {
 
 func workbenchDeps(opts Options) workbench.Deps {
 	return workbench.Deps{GitCommand: opts.GitCommand, ResolveRepoRoot: opts.ResolveRepoRoot}
+}
+
+func dossierEnv(opts Options) dossier.Env {
+	return dossier.Env{
+		Adapter:         opts.Adapter,
+		Store:           opts.Store,
+		TaskProgress:    opts.TaskProgress,
+		Now:             opts.now,
+		NewSessionRowID: opts.newSessionRowID,
+		CheckPromptBudget: func(model, prompt string) error {
+			return opts.checkPromptBudget("dossier-summary", "", model, "", prompt)
+		},
+	}
+}
+
+func dossierChangedFiles(patches []FilePatch) []dossier.ChangedFile {
+	files := make([]dossier.ChangedFile, len(patches))
+	for i, patch := range patches {
+		files[i] = dossier.ChangedFile{
+			OldPath:   patch.OldPath,
+			Path:      patch.Path,
+			Patch:     patch.Patch,
+			Binary:    patch.Binary,
+			Deleted:   patch.Deleted,
+			HunkCount: len(patch.Hunks),
+		}
+	}
+	return files
 }
 
 func resolveInvocationRootForSafety(ctx context.Context, opts Options) (string, error) {

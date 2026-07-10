@@ -5290,15 +5290,6 @@ func discussionSummaryJSON(topLevel []string, threads []threadSummary) string {
 	return string(data)
 }
 
-func parseDiffPatchesForTest(t *testing.T, raw string) []FilePatch {
-	t.Helper()
-	parsed, err := parseUnifiedDiff(raw)
-	if err != nil {
-		t.Fatalf("parseUnifiedDiff: %v", err)
-	}
-	return parsed.Patches
-}
-
 func smallDiff(path string) string {
 	return strings.Join([]string{
 		"diff --git a/" + path + " b/" + path,

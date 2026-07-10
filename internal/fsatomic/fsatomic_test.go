@@ -75,7 +75,7 @@ func TestWriteJSONAndReadJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if got := string(data); got != `{"name":"review","count":2}` {
+	if got := string(data); got != "{\n  \"name\": \"review\",\n  \"count\": 2\n}\n" {
 		t.Fatalf("JSON = %q", got)
 	}
 	info, err := os.Stat(path)
