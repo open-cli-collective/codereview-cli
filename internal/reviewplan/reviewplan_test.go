@@ -618,6 +618,7 @@ func TestActionIDGeneratorFailures(t *testing.T) {
 
 func TestProductionImportBoundary(t *testing.T) {
 	allowed := map[string]bool{
+		"github.com/open-cli-collective/codereview-cli/internal/prref":  true,
 		"github.com/open-cli-collective/codereview-cli/internal/review": true,
 	}
 	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, walkErr error) error {
@@ -640,7 +641,7 @@ func TestProductionImportBoundary(t *testing.T) {
 			if allowed[path] || isStdlibImport(path) {
 				continue
 			}
-			return fmt.Errorf("%s imports %q; reviewplan production code may only import stdlib plus internal/review", name, path)
+			return fmt.Errorf("%s imports %q; reviewplan production code may only import stdlib plus internal/prref and internal/review", name, path)
 		}
 		return nil
 	})

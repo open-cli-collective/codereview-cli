@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -156,7 +157,7 @@ func prepareWorkbenchArtifacts(ctx context.Context, opts Options, req workbenchP
 		return err
 	}
 	if _, err := opts.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "checkout", "--detach", req.ReviewPR.Head.SHA); err != nil {
-		return fmt.Errorf("pipeline: checkout workbench head %s: %w", shortSHA(req.ReviewPR.Head.SHA), err)
+		return fmt.Errorf("pipeline: checkout workbench head %s: %w", prref.ShortSHA(req.ReviewPR.Head.SHA), err)
 	}
 	if err := verifyWorkbenchClean(ctx, opts, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head.SHA); err != nil {
 		return err
@@ -238,7 +239,7 @@ func ensureWorkbenchCommit(ctx context.Context, opts Options, repoDir string, br
 			return nil
 		}
 	}
-	return fmt.Errorf("pipeline: fetch commit %s for %s/%s from %q", shortSHA(branch.SHA), branch.Owner, branch.Repo, remoteURL)
+	return fmt.Errorf("pipeline: fetch commit %s for %s/%s from %q", prref.ShortSHA(branch.SHA), branch.Owner, branch.Repo, remoteURL)
 }
 
 func validateWorkbenchFetchRef(ref string) error {
@@ -280,7 +281,7 @@ func verifyWorkbenchClean(ctx context.Context, opts Options, repoDir string, hea
 		return fmt.Errorf("pipeline: verify workbench head: %w", err)
 	}
 	if got := strings.TrimSpace(string(head)); got != strings.TrimSpace(headSHA) {
-		return fmt.Errorf("pipeline: workbench head %s does not match expected %s", shortSHA(got), shortSHA(headSHA))
+		return fmt.Errorf("pipeline: workbench head %s does not match expected %s", prref.ShortSHA(got), prref.ShortSHA(headSHA))
 	}
 	status, err := opts.gitCommand(ctx, repoDir, "status", "--porcelain")
 	if err != nil {
@@ -370,7 +371,7 @@ func prepareReviewerWorkspace(ctx context.Context, opts Options, artifacts Artif
 	}
 	if _, err := opts.gitCommand(ctx, workspaceRepo, "checkout", "--detach", headSHA); err != nil {
 		_ = cleanup()
-		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: checkout reviewer workspace head %s: %w", shortSHA(headSHA), err)
+		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: checkout reviewer workspace head %s: %w", prref.ShortSHA(headSHA), err)
 	}
 	if err := verifyWorkbenchClean(ctx, opts, workspaceRepo, headSHA); err != nil {
 		_ = cleanup()
@@ -530,14 +531,6 @@ func deriveWorkbenchRemoteURL(originURL string, branch gitprovider.PRBranchRef) 
 		u.User = url.User(style.user)
 	}
 	return u.String(), nil
-}
-
-func shortSHA(sha string) string {
-	sha = strings.TrimSpace(sha)
-	if len(sha) > 12 {
-		return sha[:12]
-	}
-	return sha
 }
 
 func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map[string]reviewerRuntimeResolution) agentSourcesArtifact {

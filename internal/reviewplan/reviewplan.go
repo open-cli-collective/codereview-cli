@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
@@ -973,7 +974,7 @@ func writeThreadCountsLine(out *strings.Builder, counts ThreadCounts) {
 }
 
 func writeRunMetadata(out *strings.Builder, req Request) {
-	sha := shortSHA(req.HeadSHA)
+	sha := prref.ShortSHA(req.HeadSHA)
 	if sha != "" {
 		out.WriteString("**Reviewed commit:** `")
 		out.WriteString(sha)
@@ -1055,14 +1056,6 @@ func displaySeverity(severity review.Severity) string {
 		return ""
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
-}
-
-func shortSHA(sha string) string {
-	sha = strings.TrimSpace(sha)
-	if len(sha) <= 12 {
-		return sha
-	}
-	return sha[:12]
 }
 
 func sanitize(text string) string {
