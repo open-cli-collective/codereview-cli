@@ -21,9 +21,6 @@ const (
 	// ServiceName is the credential-ref service segment owned by cr.
 	ServiceName = "codereview"
 
-	// BackendSourceSecretsProfile is retained for old callers that still use
-	// the previous secrets-profile naming.
-	BackendSourceSecretsProfile credstore.Source = "secrets_profile"
 	// BackendSourceCredentialStore records that an explicit credential-store
 	// destination selected the active credential backend.
 	// #nosec G101 -- this is a backend source label, not a secret value.

@@ -977,22 +977,16 @@ func TestEvaluateStaleBaseLockAuthority(t *testing.T) {
 	tests := []struct {
 		name        string
 		holdOldLock bool
-		heartbeat   *time.Time
 		wantAborted bool
 		wantWarning string
 	}{
-		{name: "held fresh heartbeat", holdOldLock: true, heartbeat: timePtr(testNow.Add(-time.Minute))},
-		{name: "held stale heartbeat warns", holdOldLock: true, heartbeat: timePtr(testNow.Add(-time.Hour)), wantWarning: "stale-base run run-stale is locked and has a stale heartbeat"},
-		{name: "held nil heartbeat uses started at", holdOldLock: true, wantWarning: "stale-base run run-stale is locked and has a stale heartbeat"},
+		{name: "held stale run warns", holdOldLock: true, wantWarning: "stale-base run run-stale is locked and has a stale heartbeat"},
 		{name: "free lock aborts", wantAborted: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newFixture(t)
 			run := fixture.allocateRun(t, "run-stale", testOldBase, ledger.PostModeLive)
-			if tt.heartbeat != nil {
-				setHeartbeat(t, fixture.store, run.RunID, *tt.heartbeat)
-			}
 			if tt.holdOldLock {
 				fixture.locks.hold(t, fixture.lockPathForRun(t, run))
 			}
@@ -2209,13 +2203,6 @@ func releaseResultLock(t *testing.T, result Result) {
 		if err := result.Lock.Release(); err != nil {
 			t.Fatalf("Release result lock: %v", err)
 		}
-	}
-}
-
-func setHeartbeat(t *testing.T, store *ledger.Store, runID string, heartbeat time.Time) {
-	t.Helper()
-	if err := store.UpdateHeartbeat(context.Background(), runID, heartbeat); err != nil {
-		t.Fatalf("UpdateHeartbeat: %v", err)
 	}
 }
 

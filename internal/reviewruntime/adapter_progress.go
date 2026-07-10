@@ -65,7 +65,7 @@ func (a progressAdapter) Resume(ctx context.Context, sessionID string, req llm.R
 }
 
 func (a progressAdapter) start(ctx context.Context, op string, req llm.Request, resumeSessionID string) (llm.Stream, error) {
-	fields := llmProgressFields(a.provider, a.harness, req, resumeSessionID)
+	fields := llmProgressFields(a.provider, a.harness, req)
 	if req.ReviewerWorkspace != nil {
 		fields = append(fields, progress.Field{Key: "reviewer_workspace", Value: string(a.ReviewerWorkspaceMode())})
 	}
@@ -97,7 +97,7 @@ func (s progressStream) Wait(ctx context.Context) (llm.Response, error) {
 	return resp, err
 }
 
-func llmProgressFields(provider, harness string, req llm.Request, _ string) []progress.Field {
+func llmProgressFields(provider, harness string, req llm.Request) []progress.Field {
 	fields := []progress.Field{}
 	if provider = strings.TrimSpace(provider); provider != "" {
 		fields = append(fields, progress.Field{Key: "provider", Value: provider})

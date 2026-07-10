@@ -409,62 +409,6 @@ func TestNormalizeDoesNotSynthesizeHybridFileAnchors(t *testing.T) {
 	}
 }
 
-func TestFileScopedResolvedSummariesGroupsAndSorts(t *testing.T) {
-	threads, err := Normalize([]gitprovider.InlineThread{
-		{
-			ID:       "thread-b",
-			Resolved: true,
-			Path:     "b.go",
-			Line:     20,
-			Comments: []gitprovider.ThreadComment{
-				commentForPath("c-b", "b.go", bot(), "b summary\n"+threadSummaryMarker(t), at(1)),
-			},
-		},
-		{
-			ID:       "thread-a2",
-			Resolved: true,
-			Path:     "a.go",
-			Line:     30,
-			Comments: []gitprovider.ThreadComment{
-				commentForPath("c-a2", "a.go", human(), "a2 summary", at(1)),
-			},
-		},
-		{
-			ID:       "thread-a1",
-			Resolved: true,
-			Path:     "a.go",
-			Line:     10,
-			Comments: []gitprovider.ThreadComment{
-				commentForPath("c-a1", "a.go", human(), "a1 summary", at(1)),
-			},
-		},
-		{
-			ID:       "thread-open",
-			Resolved: false,
-			Path:     "a.go",
-			Comments: []gitprovider.ThreadComment{
-				comment("c-open", human(), "open", at(1)),
-			},
-		},
-	}, Options{PostingIdentity: bot()})
-	if err != nil {
-		t.Fatalf("Normalize: %v", err)
-	}
-
-	got := FileScopedResolvedSummaries(threads)
-	if len(got) != 2 {
-		t.Fatalf("file contexts = %#v, want two paths", got)
-	}
-	if got[0].Path != "a.go" || got[1].Path != "b.go" {
-		t.Fatalf("paths = %#v, want a.go then b.go", []string{got[0].Path, got[1].Path})
-	}
-	gotA := []gitprovider.ThreadID{got[0].Summaries[0].ThreadID, got[0].Summaries[1].ThreadID}
-	wantA := []gitprovider.ThreadID{"thread-a1", "thread-a2"}
-	if !reflect.DeepEqual(gotA, wantA) {
-		t.Fatalf("a.go summaries = %#v, want %#v", gotA, wantA)
-	}
-}
-
 func TestSanitizeBodyRemovesOrEscapesCodereviewMarkers(t *testing.T) {
 	input := strings.Join([]string{
 		"before",

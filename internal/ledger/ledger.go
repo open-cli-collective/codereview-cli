@@ -223,13 +223,6 @@ type writeRequest struct {
 	res chan error
 }
 
-// PR is the stable pull-request identity row.
-type PR struct {
-	PRKey       string
-	PRURL       string
-	FirstSeenAt time.Time
-}
-
 // Run is one cr review invocation recorded in the ledger.
 type Run struct {
 	RunID           string
@@ -241,7 +234,6 @@ type Run struct {
 	PostingIdentity string
 	PostMode        PostMode
 	StartedAt       time.Time
-	HeartbeatAt     *time.Time
 	CompletedAt     *time.Time
 	Outcome         *Outcome
 	ArtifactPath    string
@@ -600,11 +592,11 @@ WHERE pr_key = ? AND sha = ? AND base_sha = ? AND profile = ? AND posting_identi
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO runs (
 	run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
-	started_at, heartbeat_at, completed_at, outcome, artifact_path,
+	started_at, completed_at, outcome, artifact_path,
 	blocking_count, major_count, minor_count, nits_count
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.RunID, run.PRKey, run.SHA, run.BaseSHA, run.Attempt, run.Profile, run.PostingIdentity,
-		run.PostMode.String(), encodeTime(run.StartedAt), nil, nil, nil, run.ArtifactPath,
+		run.PostMode.String(), encodeTime(run.StartedAt), nil, nil, run.ArtifactPath,
 		run.BlockingCount, run.MajorCount, run.MinorCount, run.NitsCount,
 	); err != nil {
 		return Run{}, fmt.Errorf("ledger: insert run: %w", err)
@@ -614,32 +606,6 @@ INSERT INTO runs (
 		return Run{}, fmt.Errorf("ledger: commit allocate run: %w", err)
 	}
 	return run, nil
-}
-
-// GetPR returns a pull-request identity row by key.
-func (s *Store) GetPR(ctx context.Context, prKey string) (PR, error) {
-	if strings.TrimSpace(prKey) == "" {
-		return PR{}, invalidInput("pr_key", prKey)
-	}
-	if err := s.checkOpen(); err != nil {
-		return PR{}, err
-	}
-	var pr PR
-	var firstSeenAt string
-	err := s.db.QueryRowContext(ctx, "SELECT pr_key, pr_url, first_seen_at FROM prs WHERE pr_key = ?", prKey).
-		Scan(&pr.PRKey, &pr.PRURL, &firstSeenAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return PR{}, ErrNotFound
-	}
-	if err != nil {
-		return PR{}, fmt.Errorf("ledger: get pr: %w", err)
-	}
-	parsed, err := parseTime(firstSeenAt)
-	if err != nil {
-		return PR{}, err
-	}
-	pr.FirstSeenAt = parsed
-	return pr, nil
 }
 
 // GetRun returns a run by id.
@@ -652,7 +618,7 @@ func (s *Store) GetRun(ctx context.Context, runID string) (Run, error) {
 	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
-	started_at, heartbeat_at, completed_at, outcome, artifact_path,
+	started_at, completed_at, outcome, artifact_path,
 	blocking_count, major_count, minor_count, nits_count
 FROM runs WHERE run_id = ?`, runID)
 	run, err := scanRun(row)
@@ -675,7 +641,7 @@ func (s *Store) ListRunsForHeadScope(ctx context.Context, params ListRunsForHead
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
-	started_at, heartbeat_at, completed_at, outcome, artifact_path,
+	started_at, completed_at, outcome, artifact_path,
 	blocking_count, major_count, minor_count, nits_count
 FROM runs
 WHERE pr_key = ? AND sha = ? AND profile = ? AND posting_identity = ?
@@ -708,7 +674,7 @@ func (s *Store) ListRuns(ctx context.Context) ([]Run, error) {
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode,
-	started_at, heartbeat_at, completed_at, outcome, artifact_path,
+	started_at, completed_at, outcome, artifact_path,
 	blocking_count, major_count, minor_count, nits_count
 FROM runs
 ORDER BY started_at DESC, run_id`)
@@ -1075,35 +1041,6 @@ WHERE run_id = ?`,
 	})
 }
 
-// UpdateHeartbeat records the latest liveness timestamp for a run.
-func (s *Store) UpdateHeartbeat(ctx context.Context, runID string, heartbeatAt time.Time) error {
-	if strings.TrimSpace(runID) == "" {
-		return invalidInput("run_id", runID)
-	}
-	if heartbeatAt.IsZero() {
-		return invalidInput("heartbeat_at", "")
-	}
-	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
-		result, err := db.ExecContext(ctx, `
-UPDATE runs
-SET heartbeat_at = ?
-WHERE run_id = ?`,
-			encodeTime(heartbeatAt), runID,
-		)
-		if err != nil {
-			return fmt.Errorf("ledger: update heartbeat: %w", err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("ledger: update heartbeat rows affected: %w", err)
-		}
-		if affected == 0 {
-			return ErrNotFound
-		}
-		return nil
-	})
-}
-
 // UpsertNamedSession inserts or updates a named provider session row.
 func (s *Store) UpsertNamedSession(ctx context.Context, session NamedSession) error {
 	if err := validateNamedSession(session); err != nil {
@@ -1357,7 +1294,6 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 		run             Run
 		postMode        string
 		startedAt       string
-		heartbeatAt     sql.NullString
 		completedAt     sql.NullString
 		outcome         sql.NullString
 		blocking, major int
@@ -1365,7 +1301,7 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	)
 	if err := row.Scan(
 		&run.RunID, &run.PRKey, &run.SHA, &run.BaseSHA, &run.Attempt, &run.Profile, &run.PostingIdentity,
-		&postMode, &startedAt, &heartbeatAt, &completedAt, &outcome, &run.ArtifactPath,
+		&postMode, &startedAt, &completedAt, &outcome, &run.ArtifactPath,
 		&blocking, &major, &minor, &nits,
 	); err != nil {
 		return Run{}, err
@@ -1378,13 +1314,6 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 	run.StartedAt, err = parseTime(startedAt)
 	if err != nil {
 		return Run{}, err
-	}
-	if heartbeatAt.Valid {
-		parsed, err := parseTime(heartbeatAt.String)
-		if err != nil {
-			return Run{}, err
-		}
-		run.HeartbeatAt = &parsed
 	}
 	if completedAt.Valid {
 		parsed, err := parseTime(completedAt.String)
@@ -1674,7 +1603,6 @@ var schemaStatements = []string{
   posting_identity TEXT NOT NULL,
   post_mode      TEXT NOT NULL DEFAULT 'live',
   started_at     TEXT NOT NULL,
-  heartbeat_at   TEXT,
   completed_at   TEXT,
   outcome        TEXT,
   artifact_path  TEXT NOT NULL,

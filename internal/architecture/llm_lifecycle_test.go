@@ -17,8 +17,6 @@ func TestStructuredLLMCallsGoThroughLifecycle(t *testing.T) {
 		"internal/llmlifecycle",
 	}
 	directCalls := map[string]bool{
-		"RunStructured":                  true,
-		"RunStructuredWithSession":       true,
 		"RunStructuredWithSessionResume": true,
 	}
 

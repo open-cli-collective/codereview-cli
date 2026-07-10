@@ -57,16 +57,6 @@ type APIAdapter struct {
 	anthropicVersion string
 }
 
-// NewAnthropicAPIAdapter returns an Anthropic Messages API adapter.
-func NewAnthropicAPIAdapter(opts APIOptions) (*APIAdapter, error) {
-	return newAPIAdapter(apiAnthropic, opts)
-}
-
-// NewOpenAIAPIAdapter returns an OpenAI Responses API adapter.
-func NewOpenAIAPIAdapter(opts APIOptions) (*APIAdapter, error) {
-	return newAPIAdapter(apiOpenAI, opts)
-}
-
 // NewAPIAdapterFromConfig resolves an API-key LLM adapter from profile config.
 func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store credentials.Reader, opts APIOptions) (*APIAdapter, error) {
 	kind, err := apiKindFromConfig(llmConfig)

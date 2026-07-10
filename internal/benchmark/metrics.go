@@ -3,9 +3,7 @@ package benchmark
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -451,29 +449,4 @@ func float64ValueFromKeys(values map[string]any, keys ...string) float64 {
 		}
 	}
 	return 0
-}
-
-func writeJSONFile(path string, value any) error {
-	// #nosec G304 -- path is a benchmark-owned output artifact path resolved by the caller.
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return err
-	}
-	return nil
-}
-
-// WriteMetricsFile writes metrics as indented JSON.
-func WriteMetricsFile(path string, metrics RunMetrics) error {
-	return writeJSONFile(path, metrics)
-}
-
-// IsMissingMetricsSource reports whether the artifact log source is absent.
-func IsMissingMetricsSource(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, io.EOF)
 }

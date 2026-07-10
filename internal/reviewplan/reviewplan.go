@@ -4,7 +4,6 @@ package reviewplan
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -1081,34 +1080,4 @@ func sidePtr(side review.DiffSide) *review.DiffSide {
 
 func intPtr(value int) *int {
 	return &value
-}
-
-// SortActions returns actions in durable outbox order.
-func SortActions(actions []Action) []Action {
-	sorted := append([]Action(nil), actions...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		io, jo := actionOrder(sorted[i].Kind), actionOrder(sorted[j].Kind)
-		if io != jo {
-			return io < jo
-		}
-		return sorted[i].ActionID < sorted[j].ActionID
-	})
-	return sorted
-}
-
-func actionOrder(kind ActionKind) int {
-	switch kind {
-	case ActionKindThreadReply:
-		return 0
-	case ActionKindResolveThread:
-		return 1
-	case ActionKindInlineComment:
-		return 2
-	case ActionKindRollupComment:
-		return 3
-	case ActionKindSubmitReview:
-		return 4
-	default:
-		return 99
-	}
 }

@@ -1455,12 +1455,6 @@ func validateRepositoryProfiles(cfg File) error {
 	return nil
 }
 
-// ValidateKeyring is retained for in-memory compatibility during the staged
-// rewrite. keyring.backend is no longer part of the config schema.
-func ValidateKeyring(_ KeyringConfig) error {
-	return nil
-}
-
 // ValidateSecrets checks non-secret named credential store config.
 func ValidateSecrets(secrets SecretsConfig) error {
 	secrets = secrets.normalized()

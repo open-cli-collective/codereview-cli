@@ -56,9 +56,9 @@ func TestAnthropicAPIAdapterRequestAndResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter, err := NewAnthropicAPIAdapter(APIOptions{APIKey: "anthropic-key", BaseURL: server.URL}) // #nosec G101 -- test credential placeholder.
+	adapter, err := newAPIAdapter(apiAnthropic, APIOptions{APIKey: "anthropic-key", BaseURL: server.URL}) // #nosec G101 -- test credential placeholder.
 	if err != nil {
-		t.Fatalf("NewAnthropicAPIAdapter: %v", err)
+		t.Fatalf("newAPIAdapter: %v", err)
 	}
 	logPath := filepath.Join(t.TempDir(), "anthropic.jsonl")
 	stream, err := adapter.Start(context.Background(), Request{Model: "claude-sonnet-4-6", Prompt: "prompt", LogPath: logPath})
@@ -122,9 +122,9 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter, err := NewOpenAIAPIAdapter(APIOptions{APIKey: "openai-key", BaseURL: server.URL})
+	adapter, err := newAPIAdapter(apiOpenAI, APIOptions{APIKey: "openai-key", BaseURL: server.URL})
 	if err != nil {
-		t.Fatalf("NewOpenAIAPIAdapter: %v", err)
+		t.Fatalf("newAPIAdapter: %v", err)
 	}
 	logPath := filepath.Join(t.TempDir(), "openai.jsonl")
 	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.4", Effort: "high", Prompt: "prompt", LogPath: logPath})
@@ -309,7 +309,7 @@ func TestAPIAdapterFromConfigUsesCachingReaderAcrossRepeatedReads(t *testing.T) 
 }
 
 func TestAPIAdapterFailures(t *testing.T) {
-	if _, err := NewAnthropicAPIAdapter(APIOptions{APIKey: "key", MaxTokens: -1}); !errors.Is(err, ErrAPIAdapterConfig) {
+	if _, err := newAPIAdapter(apiAnthropic, APIOptions{APIKey: "key", MaxTokens: -1}); !errors.Is(err, ErrAPIAdapterConfig) {
 		t.Fatalf("negative max tokens error = %v, want ErrAPIAdapterConfig", err)
 	}
 
@@ -317,9 +317,9 @@ func TestAPIAdapterFailures(t *testing.T) {
 		var called bool
 		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 		defer server.Close()
-		adapter, err := NewAnthropicAPIAdapter(APIOptions{APIKey: "key", BaseURL: server.URL})
+		adapter, err := newAPIAdapter(apiAnthropic, APIOptions{APIKey: "key", BaseURL: server.URL})
 		if err != nil {
-			t.Fatalf("NewAnthropicAPIAdapter: %v", err)
+			t.Fatalf("newAPIAdapter: %v", err)
 		}
 		_, err = adapter.Start(context.Background(), Request{Prompt: "prompt"})
 		if !errors.Is(err, ErrAPIAdapterConfig) {
@@ -340,9 +340,9 @@ func TestAPIAdapterFailures(t *testing.T) {
 			http.Error(w, "secret body "+responseSecret+" "+apiKey, http.StatusUnauthorized)
 		}))
 		defer server.Close()
-		adapter, err := NewOpenAIAPIAdapter(APIOptions{APIKey: apiKey, BaseURL: server.URL})
+		adapter, err := newAPIAdapter(apiOpenAI, APIOptions{APIKey: apiKey, BaseURL: server.URL})
 		if err != nil {
-			t.Fatalf("NewOpenAIAPIAdapter: %v", err)
+			t.Fatalf("newAPIAdapter: %v", err)
 		}
 		logPath := filepath.Join(t.TempDir(), "error.jsonl")
 		stream, err := adapter.Start(context.Background(), Request{Model: "gpt", Prompt: "prompt", LogPath: logPath})
@@ -370,9 +370,9 @@ func TestAPIAdapterFailures(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"id":`)
 		}))
 		defer server.Close()
-		adapter, err := NewAnthropicAPIAdapter(APIOptions{APIKey: "key", BaseURL: server.URL})
+		adapter, err := newAPIAdapter(apiAnthropic, APIOptions{APIKey: "key", BaseURL: server.URL})
 		if err != nil {
-			t.Fatalf("NewAnthropicAPIAdapter: %v", err)
+			t.Fatalf("newAPIAdapter: %v", err)
 		}
 		stream, err := adapter.Start(context.Background(), Request{Model: "claude", Prompt: "prompt"})
 		if err != nil {
@@ -389,9 +389,9 @@ func TestAPIAdapterFailures(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"id":"resp"}`)
 		}))
 		defer server.Close()
-		adapter, err := NewOpenAIAPIAdapter(APIOptions{APIKey: "key", BaseURL: server.URL})
+		adapter, err := newAPIAdapter(apiOpenAI, APIOptions{APIKey: "key", BaseURL: server.URL})
 		if err != nil {
-			t.Fatalf("NewOpenAIAPIAdapter: %v", err)
+			t.Fatalf("newAPIAdapter: %v", err)
 		}
 		stream, err := adapter.Start(context.Background(), Request{Model: "gpt", Prompt: "prompt"})
 		if err != nil {
@@ -408,9 +408,9 @@ func TestAPIAdapterFailures(t *testing.T) {
 			_, _ = fmt.Fprint(w, `{"id":"resp_1","output_text":"{\"ok\":true}","usage":{}}`)
 		}))
 		defer server.Close()
-		adapter, err := NewOpenAIAPIAdapter(APIOptions{APIKey: "key", BaseURL: server.URL})
+		adapter, err := newAPIAdapter(apiOpenAI, APIOptions{APIKey: "key", BaseURL: server.URL})
 		if err != nil {
-			t.Fatalf("NewOpenAIAPIAdapter: %v", err)
+			t.Fatalf("newAPIAdapter: %v", err)
 		}
 		stream, err := adapter.Start(context.Background(), Request{
 			Model:   "gpt",
@@ -434,9 +434,9 @@ func TestAPIAdapterFailures(t *testing.T) {
 			<-r.Context().Done()
 		}))
 		defer server.Close()
-		adapter, err := NewAnthropicAPIAdapter(APIOptions{APIKey: "key", BaseURL: server.URL})
+		adapter, err := newAPIAdapter(apiAnthropic, APIOptions{APIKey: "key", BaseURL: server.URL})
 		if err != nil {
-			t.Fatalf("NewAnthropicAPIAdapter: %v", err)
+			t.Fatalf("newAPIAdapter: %v", err)
 		}
 		stream, err := adapter.Start(context.Background(), Request{Model: "claude", Prompt: "prompt"})
 		if err != nil {

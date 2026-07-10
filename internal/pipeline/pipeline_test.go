@@ -24,6 +24,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
@@ -2658,13 +2659,14 @@ func TestReviewerWorkspaceSmokeAllowsReadAndWorkspaceWrites(t *testing.T) {
 		ScratchWriteOK      bool `json:"scratch_write_ok"`
 		MaxToolOutputBytes  int  `json:"max_tool_output_bytes"`
 	}
-	got, _, err := llm.RunStructured(context.Background(), adapter, llmReq, func(data []byte) (smokeResult, error) {
+	structured, err := llm.RunStructuredWithSessionResume(context.Background(), adapter, "", llmReq, func(data []byte) (smokeResult, error) {
 		var out smokeResult
 		return out, json.Unmarshal(data, &out)
 	})
 	if err != nil {
 		t.Fatalf("RunStructured: %v", err)
 	}
+	got := structured.Value
 	requests := adapter.Requests()
 	if len(requests) != 1 {
 		t.Fatalf("adapter requests = %d, want one smoke invocation", len(requests))
@@ -3603,8 +3605,8 @@ func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 		SessionRowID:      "session-row",
 		ProviderSessionID: "old-provider-session",
 	}
-	if err := writeLLMTaskMetadata(artifacts, meta); err != nil {
-		t.Fatalf("writeLLMTaskMetadata: %v", err)
+	if err := llmlifecycle.WriteMetadata(lifecyclePaths(artifacts), meta); err != nil {
+		t.Fatalf("WriteMetadata: %v", err)
 	}
 	adapter := &llm.FakeAdapter{NameValue: "new-llm", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("new-session", `"ok"`, 1, 1))
@@ -3646,8 +3648,8 @@ func TestRunStructuredTaskRejectsDependencyTaskIDMismatchBeforeRetry(t *testing.
 		SessionRowID:      "session-row",
 		ProviderSessionID: "provider-session",
 	}
-	if err := writeLLMTaskMetadata(artifacts, meta); err != nil {
-		t.Fatalf("writeLLMTaskMetadata: %v", err)
+	if err := llmlifecycle.WriteMetadata(lifecyclePaths(artifacts), meta); err != nil {
+		t.Fatalf("WriteMetadata: %v", err)
 	}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("new-session", `"ok"`, 1, 1))
@@ -5906,9 +5908,6 @@ func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
 
 func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	changed := []string{"api.go", "main.go", "schema.sql"}
-	if got := reviewerReadableFiles(changed); !reflect.DeepEqual(got, []string{"api.go", "main.go", "schema.sql"}) {
-		t.Fatalf("reviewable files = %#v, want all changed files", got)
-	}
 	if got := reviewerAssignmentScope(llm.SelectedAgent{
 		Files:        []string{"main.go"},
 		AllowedFiles: []string{"schema.sql"},

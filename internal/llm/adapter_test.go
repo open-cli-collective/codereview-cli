@@ -27,7 +27,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			DurationMS:       20,
 		}})
 
-		got, response, err := RunStructured(context.Background(), adapter, Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
 			if string(data) != `"ok"` {
 				return "", errors.New("bad json")
 			}
@@ -36,6 +36,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
+		got, response := result.Value, result.Response
 		if got != "ok" ||
 			response.Usage.TokensIn == nil || *response.Usage.TokensIn != 3 ||
 			response.Usage.TokensOut == nil || *response.Usage.TokensOut != 5 ||
@@ -136,7 +137,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad1`)}})
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`bad2`)}})
-		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func([]byte) (string, error) {
+		_, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func([]byte) (string, error) {
 			return "", errors.New("invalid")
 		})
 		if err == nil {
@@ -164,7 +165,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			}]
 		}`)}})
 
-		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
 			return DecodeFindings(data, FindingsOptions{
 				KnownAgents:  map[string]bool{"agent-1": true},
 				ChangedFiles: map[string]bool{"main.go": true},
@@ -176,6 +177,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
+		got := result.Value
 		if len(got.Findings) != 1 || got.Findings[0].FilePath != "main.go" {
 			t.Fatalf("findings = %#v, want canonical main.go path", got.Findings)
 		}
@@ -199,7 +201,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 			}]
 		}`)}})
 
-		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
 			return DecodeFindings(data, FindingsOptions{
 				KnownAgents:  map[string]bool{"agent-1": true},
 				ChangedFiles: map[string]bool{"main.go": true},
@@ -211,6 +213,7 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
+		got := result.Value
 		if len(got.Findings) != 1 || got.Findings[0].FilePath != "main.go" {
 			t.Fatalf("findings = %#v, want canonical main.go path", got.Findings)
 		}
@@ -227,14 +230,14 @@ func TestFakeAdapterAndRunStructured(t *testing.T) {
 		startErr := errors.New("start failed")
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{StartErr: startErr})
-		if _, _, err := RunStructured(context.Background(), adapter, Request{}, func([]byte) (string, error) { return "unused", nil }); !errors.Is(err, startErr) {
+		if _, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{}, func([]byte) (string, error) { return "unused", nil }); !errors.Is(err, startErr) {
 			t.Fatalf("start error = %v, want %v", err, startErr)
 		}
 
 		waitErr := errors.New("wait failed")
 		adapter = &FakeAdapter{}
 		adapter.Queue(FakeResult{WaitErr: waitErr})
-		if _, _, err := RunStructured(context.Background(), adapter, Request{}, func([]byte) (string, error) { return "unused", nil }); !errors.Is(err, waitErr) {
+		if _, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{}, func([]byte) (string, error) { return "unused", nil }); !errors.Is(err, waitErr) {
 			t.Fatalf("wait error = %v, want %v", err, waitErr)
 		}
 	})
@@ -429,10 +432,11 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 			StructuredOutput: []byte(`Sure! Here it is: {"ok":true} Hope that helps.`),
 		}})
 
-		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, decodeProbe)
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
+		got := result.Value
 		if !got.OK {
 			t.Fatalf("value = %#v, want recovered object", got)
 		}
@@ -447,7 +451,7 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"a":1} and {"a":2}`)}})
 
 		decodeCalls := 0
-		_, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, func([]byte) (string, error) {
+		_, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func([]byte) (string, error) {
 			decodeCalls++
 			return "", errors.New("invalid")
 		})
@@ -467,10 +471,11 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`Here: {"ok":false}`)}})
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":true}`)}})
 
-		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, decodeProbe)
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
+		got := result.Value
 		if !got.OK {
 			t.Fatalf("value = %#v, want retry value", got)
 		}
@@ -488,10 +493,11 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`no json at all`)}})
 		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`Here you go: {"ok":true}`)}})
 
-		got, _, err := RunStructured(context.Background(), adapter, Request{Prompt: "prompt"}, decodeProbe)
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
 		if err != nil {
 			t.Fatalf("RunStructured: %v", err)
 		}
+		got := result.Value
 		if !got.OK {
 			t.Fatalf("value = %#v, want recovered object on retry", got)
 		}
@@ -568,7 +574,7 @@ func TestReviewerWorkspaceCapabilityHelpers(t *testing.T) {
 		t.Fatalf("RequireReviewerWorkspace supported: %v", err)
 	}
 
-	got, _, err := RunStructured(context.Background(), unsupported, Request{
+	result, err := RunStructuredWithSessionResume(context.Background(), unsupported, "", Request{
 		Prompt: "prompt",
 		ReviewerWorkspace: &ReviewerWorkspaceRequest{
 			RepoDir:            "/tmp/repo",
@@ -578,8 +584,8 @@ func TestReviewerWorkspaceCapabilityHelpers(t *testing.T) {
 	}, func(data []byte) (string, error) {
 		return string(data), nil
 	})
-	if got != "" {
-		t.Fatalf("RunStructured result = %q, want empty on capability failure", got)
+	if result.Value != "" {
+		t.Fatalf("RunStructured result = %q, want empty on capability failure", result.Value)
 	}
 	if !errors.Is(err, ErrReviewerWorkspaceUnsupported) || !strings.Contains(err.Error(), "fake-unsupported") {
 		t.Fatalf("RunStructured error = %v, want missing capability with adapter name", err)
@@ -589,7 +595,7 @@ func TestReviewerWorkspaceCapabilityHelpers(t *testing.T) {
 	}
 
 	bounded.Queue(FakeResult{Response: Response{StructuredOutput: []byte("ok")}})
-	got, _, err = RunStructured(context.Background(), bounded, Request{
+	result, err = RunStructuredWithSessionResume(context.Background(), bounded, "", Request{
 		Prompt: "prompt",
 		ReviewerWorkspace: &ReviewerWorkspaceRequest{
 			RepoDir:            "/tmp/repo",
@@ -602,8 +608,8 @@ func TestReviewerWorkspaceCapabilityHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunStructured reviewer workspace: %v", err)
 	}
-	if got != "ok" {
-		t.Fatalf("RunStructured bounded result = %q, want ok", got)
+	if result.Value != "ok" {
+		t.Fatalf("RunStructured bounded result = %q, want ok", result.Value)
 	}
 	if len(bounded.Requests()) != 1 {
 		t.Fatalf("bounded adapter starts = %d, want 1", len(bounded.Requests()))
@@ -619,7 +625,7 @@ func TestRunStructuredRetriesTransientError(t *testing.T) {
 	adapter.Queue(FakeResult{WaitErr: fmt.Errorf("%w: provider overloaded", ErrTransient)})
 	adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`"ok"`)}})
 
-	got, _, err := RunStructured(context.Background(), adapter, Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
+	result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
 		if string(data) != `"ok"` {
 			return "", errors.New("bad json")
 		}
@@ -628,8 +634,8 @@ func TestRunStructuredRetriesTransientError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunStructured after transient retry: %v", err)
 	}
-	if got != "ok" {
-		t.Fatalf("RunStructured = %q, want ok", got)
+	if result.Value != "ok" {
+		t.Fatalf("RunStructured = %q, want ok", result.Value)
 	}
 	if calls := len(adapter.Requests()); calls != 2 {
 		t.Fatalf("Start calls = %d, want 2 (one failure then a retry)", calls)
@@ -644,7 +650,7 @@ func TestRunStructuredDoesNotRetryNonTransientError(t *testing.T) {
 	adapter := &FakeAdapter{}
 	adapter.Queue(FakeResult{WaitErr: errors.New("invalid prompt")})
 
-	_, _, err := RunStructured(context.Background(), adapter, Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
+	_, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Model: "model", Prompt: "prompt"}, func(data []byte) (string, error) {
 		return string(data), nil
 	})
 	if err == nil {

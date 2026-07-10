@@ -387,12 +387,6 @@ func formatTokens(value *int) string {
 	}
 }
 
-// formatUSD renders a real (adapter-reported) dollar amount. Estimated costs go
-// through formatUSDEst, so there is a single rendering path.
-func formatUSD(value *float64) string {
-	return formatUSDEst(value, false)
-}
-
 // formatUSDEst renders a dollar amount, marking it as an estimate
 // ("~$X.XX (est.)") when the cost was derived from token prices rather than
 // reported by the adapter.
