@@ -531,6 +531,13 @@ func ValidateMetadata(meta Metadata, req Request, adapter string) error {
 
 // ReadMetadata reads task metadata when it exists.
 func ReadMetadata(paths Paths, taskID string) (Metadata, bool, error) {
+	return readMetadata(paths, taskID,
+		"llmlifecycle: read task %q metadata: %w",
+		"llmlifecycle: decode task %q metadata: %w",
+	)
+}
+
+func readMetadata(paths Paths, taskID, readError, decodeError string) (Metadata, bool, error) {
 	path, err := paths.Metadata(taskID)
 	if err != nil {
 		return Metadata{}, false, err
@@ -540,13 +547,35 @@ func ReadMetadata(paths Paths, taskID string) (Metadata, bool, error) {
 		return Metadata{}, false, nil
 	}
 	if err != nil {
-		return Metadata{}, false, fmt.Errorf("llmlifecycle: read task %q metadata: %w", taskID, err)
+		return Metadata{}, false, fmt.Errorf(readError, taskID, err)
 	}
 	var meta Metadata
 	if err := json.Unmarshal(data, &meta); err != nil {
-		return Metadata{}, false, fmt.Errorf("llmlifecycle: decode task %q metadata: %w", taskID, err)
+		return Metadata{}, false, fmt.Errorf(decodeError, taskID, err)
 	}
 	return meta, true, nil
+}
+
+// ResetIfInputFingerprintChanged removes stale task artifacts when inputs change.
+func ResetIfInputFingerprintChanged(paths Paths, taskID, fingerprint string) error {
+	meta, ok, err := readMetadata(paths, taskID,
+		"pipeline: read LLM task %q metadata: %w",
+		"pipeline: decode LLM task %q metadata: %w",
+	)
+	if err != nil || !ok {
+		return err
+	}
+	if strings.TrimSpace(meta.InputFingerprint) == strings.TrimSpace(fingerprint) {
+		return nil
+	}
+	taskDir, err := paths.TaskDir(taskID)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(taskDir); err != nil {
+		return fmt.Errorf("pipeline: reset LLM task %q after input change: %w", taskID, err)
+	}
+	return nil
 }
 
 // WriteSuccess writes accepted output and metadata for a succeeded task.
