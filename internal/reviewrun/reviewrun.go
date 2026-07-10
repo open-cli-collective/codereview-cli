@@ -426,14 +426,15 @@ func desiredOutcomeFromActions(actions []ledger.PlannedAction) (ledger.Outcome, 
 			if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
 				return "", fmt.Errorf("reviewrun: decode submit_review payload %q: %w", action.ActionID, err)
 			}
-			outcome, err := outcomeFromReviewEvent(payload.Event)
+			outcome, err := reviewplan.OutcomeFromReviewEvent(payload.Event)
 			if err != nil {
-				return "", err
+				return "", fmt.Errorf("reviewrun: unsupported submit_review event %q", payload.Event)
 			}
-			if haveSubmitOutcome && submitOutcome != outcome {
+			mapped := ledger.Outcome(outcome)
+			if haveSubmitOutcome && submitOutcome != mapped {
 				return "", fmt.Errorf("reviewrun: conflicting required submit_review outcomes")
 			}
-			submitOutcome = outcome
+			submitOutcome = mapped
 			haveSubmitOutcome = true
 		case ledger.PlannedActionRollupComment:
 			haveRequiredRollup = true
@@ -450,19 +451,6 @@ func desiredOutcomeFromActions(actions []ledger.PlannedAction) (ledger.Outcome, 
 		return ledger.OutcomeNothingToReview, nil
 	}
 	return "", fmt.Errorf("reviewrun: desired outcome cannot be derived from planned actions")
-}
-
-func outcomeFromReviewEvent(event review.ReviewEvent) (ledger.Outcome, error) {
-	switch event {
-	case review.ReviewEventApprove:
-		return ledger.OutcomeApproved, nil
-	case review.ReviewEventRequestChanges:
-		return ledger.OutcomeRequestChanges, nil
-	case review.ReviewEventComment:
-		return ledger.OutcomeComment, nil
-	default:
-		return "", fmt.Errorf("reviewrun: unsupported submit_review event %q", event)
-	}
 }
 
 func failOnFromStore(ctx context.Context, store Store, runID string, threshold *review.Severity) (bool, error) {

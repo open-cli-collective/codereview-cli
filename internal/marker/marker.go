@@ -51,11 +51,6 @@ func RenderSkip() string {
 	return skipMarker
 }
 
-// HasSkip reports whether body contains the canonical skip marker.
-func HasSkip(body string) bool {
-	return strings.Contains(body, skipMarker)
-}
-
 // RenderAction returns the canonical marker for a body-bearing action.
 func RenderAction(marker ActionMarker) (string, error) {
 	if err := validateAction(marker); err != nil {

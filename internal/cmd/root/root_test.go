@@ -78,7 +78,7 @@ func TestPersistentQuietFlagPopulatesOptions(t *testing.T) {
 }
 
 func TestCompletionCommandIsNotExposed(t *testing.T) {
-	cmd, _ := NewCommand()
+	cmd, _ := NewCommandWithOptions(nil)
 	err := Execute(cmd, []string{"completion"})
 	if err == nil {
 		t.Fatal("Execute(completion) error = nil, want usage error")
@@ -96,7 +96,7 @@ func TestOutputShapeFlagsDeferred(t *testing.T) {
 
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			cmd, _ := NewCommand()
+			cmd, _ := NewCommandWithOptions(nil)
 			err := Execute(cmd, args)
 			if err == nil {
 				t.Fatalf("Execute(%q) error = nil, want usage error", args)
@@ -109,7 +109,7 @@ func TestOutputShapeFlagsDeferred(t *testing.T) {
 }
 
 func TestDashVIsNotVersion(t *testing.T) {
-	cmd, _ := NewCommand()
+	cmd, _ := NewCommandWithOptions(nil)
 	err := Execute(cmd, []string{"-v"})
 	if err == nil {
 		t.Fatal("Execute(-v) error = nil, want usage error")
@@ -120,7 +120,7 @@ func TestDashVIsNotVersion(t *testing.T) {
 }
 
 func TestRegisterAll(t *testing.T) {
-	cmd, opts := NewCommand()
+	cmd, opts := NewCommandWithOptions(nil)
 	var calls []string
 	RegisterAll(cmd, opts,
 		func(parent *cobra.Command, got *Options) {
@@ -151,7 +151,7 @@ func TestExecuteMapsCobraUsageErrors(t *testing.T) {
 
 	for _, args := range tests {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			cmd, _ := NewCommand()
+			cmd, _ := NewCommandWithOptions(nil)
 			err := Execute(cmd, args)
 			if err == nil {
 				t.Fatalf("Execute(%q) error = nil, want error", args)
@@ -164,7 +164,7 @@ func TestExecuteMapsCobraUsageErrors(t *testing.T) {
 }
 
 func TestUnknownCommandPreflightUsesCobraFind(t *testing.T) {
-	cmd, _ := NewCommand()
+	cmd, _ := NewCommandWithOptions(nil)
 	_, _, err := cmd.Find([]string{"bogus"})
 	if err == nil {
 		t.Fatal("Find(bogus) error = nil, want cobra unknown-command error")
@@ -183,7 +183,7 @@ func TestUnknownCommandPreflightUsesCobraFind(t *testing.T) {
 }
 
 func TestExecuteLeavesGenericCommandErrorsAsFailure(t *testing.T) {
-	cmd, _ := NewCommand()
+	cmd, _ := NewCommandWithOptions(nil)
 	cmd.AddCommand(&cobra.Command{
 		Use: "boom",
 		RunE: func(*cobra.Command, []string) error {

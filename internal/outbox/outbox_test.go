@@ -455,7 +455,7 @@ func TestPostThreadSummaryReplyUsesSummaryMarker(t *testing.T) {
 		t.Fatalf("Post: %v", err)
 	}
 	body := provider.RecordedThreadReplies(ref)[0].Body
-	if marker.HasSkip(body) {
+	if strings.Contains(body, marker.RenderSkip()) {
 		t.Fatalf("thread-summary body contains skip marker: %q", body)
 	}
 	if actions := marker.FindActions(body); len(actions) != 0 {
@@ -1677,7 +1677,7 @@ func sameStringPtr(got *string, want *string) bool {
 
 func assertActionBody(t *testing.T, body string, run ledger.Run, actionID string, kind string, outcome string) {
 	t.Helper()
-	if !marker.HasSkip(body) {
+	if !strings.Contains(body, marker.RenderSkip()) {
 		t.Fatalf("body missing skip marker: %q", body)
 	}
 	actions := marker.FindActions(body)

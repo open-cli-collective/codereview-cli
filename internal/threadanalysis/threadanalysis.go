@@ -115,19 +115,6 @@ func ValidateCachedThread(opts Options, thread threadcontext.Thread) error {
 	return llmlifecycle.ValidateMetadata(meta, request, opts.Adapter.Name())
 }
 
-// AnalyzeThreads analyzes threads serially, preserving input order.
-func AnalyzeThreads(ctx context.Context, opts Options, threads []threadcontext.Thread) ([]Result, error) {
-	results := make([]Result, 0, len(threads))
-	for _, thread := range threads {
-		result, err := AnalyzeThread(ctx, opts, thread)
-		if err != nil {
-			return nil, fmt.Errorf("threadanalysis: analyze thread %s: %w", string(thread.ID), err)
-		}
-		results = append(results, result)
-	}
-	return results, nil
-}
-
 func lifecycleRequestForThread(opts Options, threadID string, thread threadcontext.Thread) (llmlifecycle.Request, error) {
 	input := analysisInputForThread(threadID, thread)
 	prompt, err := promptForInput(input)

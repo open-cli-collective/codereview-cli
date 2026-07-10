@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -640,7 +641,9 @@ func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledge
 	if statusDecision.Kind == gate.DecisionError {
 		return retryExecution{statusDecision: statusDecision}, nil
 	}
-	if err := resetRequiredFailedTerminalActionsForRetry(ctx, opts.Store, actions); err != nil {
+	if err := ledger.ResetFailedTerminalActions(ctx, opts.Store, actions, func(action ledger.PlannedAction) bool {
+		return action.Required
+	}); err != nil {
 		return retryExecution{}, err
 	}
 	postResult, err := outbox.Post(ctx, outbox.Options{
@@ -721,23 +724,6 @@ func insertApprovalOverrideSubmitReview(ctx context.Context, opts Options, runID
 	})
 }
 
-func resetRequiredFailedTerminalActionsForRetry(ctx context.Context, store Store, actions []ledger.PlannedAction) error {
-	for _, action := range actions {
-		if !action.Required || action.Status != ledger.PlannedActionFailedTerminal {
-			continue
-		}
-		action.Status = ledger.PlannedActionPending
-		action.PostedAt = nil
-		action.UpstreamID = nil
-		action.Error = nil
-		action.FailureClass = nil
-		if err := store.UpdatePlannedAction(ctx, action); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func hasRequiredRetryEligibleAction(actions []ledger.PlannedAction) bool {
 	for _, action := range actions {
 		if !action.Required {
@@ -769,14 +755,15 @@ func retryDesiredOutcome(actions []ledger.PlannedAction) (ledger.Outcome, gate.D
 			if err != nil {
 				return "", invalidInputDecision(err.Error())
 			}
-			outcome, err := outcomeFromReviewEvent(payload.Event)
+			outcome, err := reviewplan.OutcomeFromReviewEvent(payload.Event)
 			if err != nil {
-				return "", invalidInputDecision(err.Error())
+				return "", invalidInputDecision(fmt.Sprintf("gateio: unsupported submit_review event %q", payload.Event))
 			}
-			if haveSubmitOutcome && submitOutcome != outcome {
+			mapped := ledger.Outcome(outcome)
+			if haveSubmitOutcome && submitOutcome != mapped {
 				return "", invalidInputDecision("conflicting required submit_review outcomes")
 			}
-			submitOutcome = outcome
+			submitOutcome = mapped
 			haveSubmitOutcome = true
 		case ledger.PlannedActionRollupComment:
 			haveRequiredRollup = true
@@ -815,19 +802,6 @@ func repairOutcomeEvent(outcome gate.PROutcome) (ledger.Outcome, review.ReviewEv
 		return "", "", fmt.Errorf("gateio: unsupported repair outcome %q", outcome)
 	default:
 		return "", "", fmt.Errorf("gateio: unsupported repair outcome %q", outcome)
-	}
-}
-
-func outcomeFromReviewEvent(event review.ReviewEvent) (ledger.Outcome, error) {
-	switch event {
-	case review.ReviewEventApprove:
-		return ledger.OutcomeApproved, nil
-	case review.ReviewEventRequestChanges:
-		return ledger.OutcomeRequestChanges, nil
-	case review.ReviewEventComment:
-		return ledger.OutcomeComment, nil
-	default:
-		return "", fmt.Errorf("gateio: unsupported submit_review event %q", event)
 	}
 }
 

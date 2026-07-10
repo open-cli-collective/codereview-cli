@@ -482,7 +482,8 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	req.FailureStatus = StatusFailedIsolated
 	req.Progress = progress
 	_, err := RunStructured(ctx, req, decodeLifecyclePayload)
-	if !IsTaskStatus(err, StatusFailedIsolated) {
+	var taskErr *TaskError
+	if !errors.As(err, &taskErr) || taskErr.Status() != StatusFailedIsolated {
 		t.Fatalf("RunStructured invalid output error = %v, want isolated task error", err)
 	}
 
@@ -490,7 +491,8 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	progress.loads = nil
 	req.Adapter = cachedAdapter
 	_, err = RunStructured(ctx, req, decodeLifecyclePayload)
-	if !IsTaskStatus(err, StatusFailedIsolated) {
+	taskErr = nil
+	if !errors.As(err, &taskErr) || taskErr.Status() != StatusFailedIsolated {
 		t.Fatalf("RunStructured cached isolated error = %v, want cached isolated task error", err)
 	}
 	if len(cachedAdapter.Requests()) != 0 {
@@ -531,7 +533,8 @@ func TestRunStructuredLoadsSessionlessIsolatedFailureUsageFromMetadata(t *testin
 	}
 
 	_, err := RunStructured(ctx, req, decodeLifecyclePayload)
-	if !IsTaskStatus(err, StatusFailedIsolated) {
+	var taskErr *TaskError
+	if !errors.As(err, &taskErr) || taskErr.Status() != StatusFailedIsolated {
 		t.Fatalf("RunStructured cached isolated error = %v, want cached isolated task error", err)
 	}
 	if len(progress.loads) != 1 {

@@ -1874,8 +1874,10 @@ func TestResetRequiredFailedTerminalActions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPlannedActions: %v", err)
 	}
-	if err := resetRequiredFailedTerminalActionsForRetry(context.Background(), fixture.store, actions); err != nil {
-		t.Fatalf("resetRequiredFailedTerminalActionsForRetry: %v", err)
+	if err := ledger.ResetFailedTerminalActions(context.Background(), fixture.store, actions, func(action ledger.PlannedAction) bool {
+		return action.Required
+	}); err != nil {
+		t.Fatalf("ResetFailedTerminalActions: %v", err)
 	}
 
 	got := actionByID(t, fixture.store, run.RunID, "required-failed")

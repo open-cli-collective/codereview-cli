@@ -480,10 +480,7 @@ func (b *builder) buildReview() (Plan, error) {
 		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", event)
 	}
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
-	if len(b.req.RunSummary.ReviewerFailures) > 0 && event == review.ReviewEventApprove {
-		event = review.ReviewEventComment
-	}
-	if hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage) && event == review.ReviewEventApprove {
+	if event == review.ReviewEventApprove && (len(b.req.RunSummary.ReviewerFailures) > 0 || hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)) {
 		event = review.ReviewEventComment
 	}
 	outcome, err := OutcomeFromReviewEvent(event)
@@ -513,7 +510,7 @@ func (b *builder) buildReview() (Plan, error) {
 	actions = append(actions, commentActions...)
 
 	anchored := b.anchoredForOrdered(ordered)
-	summary := b.deriveSummary(b.renderedFindings(ordered))
+	summary := b.deriveSummary(ordered)
 	rollupBody := b.renderRollup(ordered, anchored, summary)
 	rollup, err := b.newAction(ActionKindRollupComment)
 	if err != nil {
@@ -543,11 +540,6 @@ func (b *builder) buildReview() (Plan, error) {
 		AnchoredFindings: b.anchoredInInputOrder(),
 		Summary:          summary,
 	}, nil
-}
-
-// renderedFindings filters ordered findings to those the rollup renders.
-func (b *builder) renderedFindings(ordered []review.Finding) []review.Finding {
-	return ordered
 }
 
 func (b *builder) orderedFindings() ([]review.Finding, error) {
@@ -869,9 +861,7 @@ func firstFallbackHunk(file DiffFile) (DiffHunk, bool) {
 
 func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFinding, summary Summary) string {
 	var out strings.Builder
-	out.WriteString("## Automated PR Review\n\n")
-	writeRunMetadata(&out, b.req)
-	out.WriteString("### Summary\n\n")
+	rollupHeader(&out, b.req)
 	if len(summary.Reviewers) > 0 {
 		writeReviewerTable(&out, summary.Reviewers)
 		b.writeReviewerSections(&out, anchored, summary.Reviewers)
@@ -897,7 +887,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		writeReviewerCoverageDiagnostics(&out, summary.Run.ReviewerCoverage)
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
 	}
-	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", summary.Threads.Considered, summary.Threads.Summarized, summary.Threads.Resolved)
+	writeThreadCountsLine(&out, summary.Threads)
 	if b.req.AgentDefinitionsChanged {
 		out.WriteString("\n---\n\n")
 		out.WriteString("> Note: This PR modifies reviewer definitions under `.codereview/agents/`. The review was conducted using base-branch versions; changes will affect future reviews after merge.\n")
@@ -954,26 +944,32 @@ func writeFindingBlock(out *strings.Builder, finding AnchoredFinding) {
 
 func (b *builder) renderNoDiffRollup() string {
 	var out strings.Builder
-	out.WriteString("## Automated PR Review\n\n")
-	writeRunMetadata(&out, b.req)
-	out.WriteString("### Summary\n\n")
+	rollupHeader(&out, b.req)
 	out.WriteString("Nothing to review for this diff.")
 	return strings.TrimSpace(out.String())
 }
 
 func (b *builder) renderRepoGuidanceUnavailableRollup(summary Summary) string {
 	var out strings.Builder
-	out.WriteString("## Automated PR Review\n\n")
-	writeRunMetadata(&out, b.req)
-	out.WriteString("### Summary\n\n")
+	rollupHeader(&out, b.req)
 	out.WriteString("Requesting changes because trusted repo-local review guidance could not be loaded from `.codereview/agents/` on the PR base branch.\n\n")
 	if reason := strings.TrimSpace(b.req.RepoGuidanceUnavailableReason); reason != "" {
 		out.WriteString(sanitize(reason))
 		out.WriteString("\n\n")
 	}
-	fmt.Fprintf(&out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", summary.Threads.Considered, summary.Threads.Summarized, summary.Threads.Resolved)
+	writeThreadCountsLine(&out, summary.Threads)
 	writeRunFooter(&out, summary.Run, summary.Totals)
 	return strings.TrimSpace(out.String())
+}
+
+func rollupHeader(out *strings.Builder, req Request) {
+	out.WriteString("## Automated PR Review\n\n")
+	writeRunMetadata(out, req)
+	out.WriteString("### Summary\n\n")
+}
+
+func writeThreadCountsLine(out *strings.Builder, counts ThreadCounts) {
+	fmt.Fprintf(out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", counts.Considered, counts.Summarized, counts.Resolved)
 }
 
 func writeRunMetadata(out *strings.Builder, req Request) {

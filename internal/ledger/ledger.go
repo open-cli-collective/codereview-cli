@@ -354,6 +354,29 @@ type PlannedAction struct {
 	FailureClass *string
 }
 
+// PlannedActionUpdater persists mutable planned-action state.
+type PlannedActionUpdater interface {
+	UpdatePlannedAction(context.Context, PlannedAction) error
+}
+
+// ResetFailedTerminalActions resets selected terminal failures for retry.
+func ResetFailedTerminalActions(ctx context.Context, store PlannedActionUpdater, actions []PlannedAction, keep func(PlannedAction) bool) error {
+	for _, action := range actions {
+		if action.Status != PlannedActionFailedTerminal || !keep(action) {
+			continue
+		}
+		action.Status = PlannedActionPending
+		action.PostedAt = nil
+		action.UpstreamID = nil
+		action.Error = nil
+		action.FailureClass = nil
+		if err := store.UpdatePlannedAction(ctx, action); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // NamedSession records cross-run provider session reuse metadata.
 type NamedSession struct {
 	Name              string

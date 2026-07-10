@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/byteness/percent"
 	"github.com/open-cli-collective/cli-common/statedir"
 	"github.com/open-cli-collective/cli-common/statedirtest"
 )
@@ -42,7 +43,7 @@ func TestEncodeDecode(t *testing.T) {
 					t.Fatalf("Encode(%q) = %q, want it to contain %q", tt.input, encoded, want)
 				}
 			}
-			if decoded := Decode(encoded); decoded != tt.input {
+			if decoded := percent.Decode(encoded); decoded != tt.input {
 				t.Fatalf("Decode(Encode(%q)) = %q, want original", tt.input, decoded)
 			}
 		})
