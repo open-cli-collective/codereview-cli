@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
-	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -199,7 +199,7 @@ func WriteMarker(artifactPath, kind, runID string) error {
 	if err != nil {
 		return err
 	}
-	return llmlifecycle.WriteFileAtomic(MarkerPath(artifactPath, kind), append(data, '\n'))
+	return fsatomic.WriteFileAtomic(MarkerPath(artifactPath, kind), append(data, '\n'), 0o600)
 }
 
 // MarkerMatches reports whether an artifact root carries a valid marker for

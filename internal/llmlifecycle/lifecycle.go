@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -560,7 +561,7 @@ func WriteSuccess(paths Paths, meta *Metadata, output []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := WriteFileAtomic(outputPath, append(append([]byte(nil), output...), '\n')); err != nil {
+	if err := fsatomic.WriteFileAtomic(outputPath, append(append([]byte(nil), output...), '\n'), 0o600); err != nil {
 		return err
 	}
 	meta.ValidatedOutputPath = outputPath
@@ -580,7 +581,7 @@ func WriteFailure(paths Paths, meta *Metadata, attempts []llm.StructuredValidati
 			if err != nil {
 				return err
 			}
-			if err := WriteFileAtomic(rawPath, append(append([]byte(nil), attempt.Response.StructuredOutput...), '\n')); err != nil {
+			if err := fsatomic.WriteFileAtomic(rawPath, append(append([]byte(nil), attempt.Response.StructuredOutput...), '\n'), 0o600); err != nil {
 				return err
 			}
 			attemptMeta.RawOutputPath = rawPath
@@ -600,19 +601,7 @@ func WriteMetadata(paths Paths, meta Metadata) error {
 	if err != nil {
 		return err
 	}
-	return WriteFileAtomic(path, append(data, '\n'))
-}
-
-// WriteFileAtomic writes one artifact file via rename.
-func WriteFileAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fsatomic.WriteFileAtomic(path, append(data, '\n'), 0o600)
 }
 
 // BaseMetadata builds metadata shared by success and failure paths.
