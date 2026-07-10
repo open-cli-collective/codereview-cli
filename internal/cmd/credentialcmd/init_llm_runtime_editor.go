@@ -102,13 +102,7 @@ func initLLMRuntimeDetailsEditor(seed initDraft, availabilityNote func(initLLMRu
 		huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
 		huh.NewOption("API key", string(config.LLMAuthAPIKey)),
 	}, seed.LLMAuth)
-	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", []huh.Option[string]{
-		huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
-		huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
-		huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
-		huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
-		huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
-	}, seed.LLMAdapter)
+	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", initLLMRuntimeAdapterOptions(), seed.LLMAdapter)
 	document.addEditableSelect(initLLMRuntimeFieldAction, "Runtime detail action", "", []huh.Option[string]{
 		huh.NewOption("Stage these runtime details", initDetailActionEdit),
 		huh.NewOption("Back without staging", initDetailActionBack),
@@ -154,13 +148,7 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 		huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
 		huh.NewOption("API key", string(config.LLMAuthAPIKey)),
 	}, seed.LLMAuth)
-	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", []huh.Option[string]{
-		huh.NewOption("Claude CLI", string(config.LLMAdapterClaudeCLI)),
-		huh.NewOption("Anthropic API", string(config.LLMAdapterAnthropicAPI)),
-		huh.NewOption("Codex CLI", string(config.LLMAdapterCodexCLI)),
-		huh.NewOption("OpenAI API", string(config.LLMAdapterOpenAIAPI)),
-		huh.NewOption("Pi RPC", string(config.LLMAdapterPiRPC)),
-	}, seed.LLMAdapter)
+	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", initLLMRuntimeAdapterOptions(), seed.LLMAdapter)
 	document.addEditableSelect(
 		initLLMRuntimeFieldCredentialStore,
 		"LLM credential store",
@@ -268,6 +256,15 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 	initLLMRuntimeSyncLinearFields(&model, ctx, seed, availabilityNote, true)
 	editor.Document = model.document
 	return editor
+}
+
+func initLLMRuntimeAdapterOptions() []huh.Option[string] {
+	specs := config.LLMRuntimeSpecs()
+	options := make([]huh.Option[string], 0, len(specs))
+	for _, spec := range specs {
+		options = append(options, huh.NewOption(spec.DisplayName, string(spec.Adapter)))
+	}
+	return options
 }
 
 func initLLMRuntimeDraftFromDocument(seed initDraft, document initLinearDocument) initDraft {

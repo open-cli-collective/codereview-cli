@@ -839,6 +839,29 @@ func TestNewAdapterCreatesSupportedCLIAdapters(t *testing.T) {
 	}
 }
 
+func TestAdapterConstructorsCoverLLMRuntimeSpecs(t *testing.T) {
+	want := make(map[config.LLMAdapter]struct{}, len(config.LLMRuntimeSpecs()))
+	for _, spec := range config.LLMRuntimeSpecs() {
+		if _, duplicate := want[spec.Adapter]; duplicate {
+			t.Fatalf("duplicate LLM runtime spec for adapter %q", spec.Adapter)
+		}
+		want[spec.Adapter] = struct{}{}
+	}
+	if len(adapterConstructors) != len(want) {
+		t.Fatalf("adapter constructors = %d, runtime spec adapters = %d", len(adapterConstructors), len(want))
+	}
+	for adapter := range want {
+		if adapterConstructors[adapter] == nil {
+			t.Errorf("adapter constructor missing for runtime spec %q", adapter)
+		}
+	}
+	for adapter := range adapterConstructors {
+		if _, ok := want[adapter]; !ok {
+			t.Errorf("adapter constructor %q has no runtime spec", adapter)
+		}
+	}
+}
+
 func testDependencies(t *testing.T, provider GitProviderFactory, identity PostingIdentityResolver, adapter AdapterFactory) Dependencies {
 	t.Helper()
 	if provider == nil {

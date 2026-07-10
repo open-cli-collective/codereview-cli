@@ -91,22 +91,24 @@ func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store credentials.Reade
 }
 
 func apiKindFromConfig(llmConfig config.LLMConfig) (apiKind, error) {
-	switch llmConfig.Adapter {
-	case config.LLMAdapterAnthropicAPI:
-		if llmConfig.Provider != config.LLMProviderAnthropic {
-			return "", fmt.Errorf("%w: anthropic_api requires provider anthropic", ErrAPIAdapterConfig)
+	var spec config.LLMRuntimeSpec
+	found := false
+	for _, candidate := range config.LLMRuntimeSpecs() {
+		if candidate.Adapter == llmConfig.Adapter {
+			spec, found = candidate, true
+			break
 		}
-		return apiAnthropic, nil
-	case config.LLMAdapterOpenAIAPI:
-		if llmConfig.Provider != config.LLMProviderOpenAI {
-			return "", fmt.Errorf("%w: openai_api requires provider openai", ErrAPIAdapterConfig)
-		}
-		return apiOpenAI, nil
-	case config.LLMAdapterClaudeCLI, config.LLMAdapterCodexCLI, config.LLMAdapterPiRPC:
-		return "", fmt.Errorf("%w: adapter %q is not an API adapter", ErrAPIAdapterConfig, llmConfig.Adapter)
-	default:
+	}
+	if !found {
 		return "", fmt.Errorf("%w: unsupported API adapter %q", ErrAPIAdapterConfig, llmConfig.Adapter)
 	}
+	if !spec.RequiresCredentialRef {
+		return "", fmt.Errorf("%w: adapter %q is not an API adapter", ErrAPIAdapterConfig, llmConfig.Adapter)
+	}
+	if llmConfig.Provider != spec.Provider {
+		return "", fmt.Errorf("%w: %s requires provider %s", ErrAPIAdapterConfig, llmConfig.Adapter, spec.Provider)
+	}
+	return apiKind(llmConfig.Adapter), nil
 }
 
 func newAPIAdapter(kind apiKind, opts APIOptions) (*APIAdapter, error) {

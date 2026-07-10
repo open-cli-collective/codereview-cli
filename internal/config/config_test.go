@@ -322,6 +322,18 @@ func TestValidateRejectsInvalidCodexCLICombinations(t *testing.T) {
 	}
 }
 
+func TestValidatePreservesClaudeCLIAPIKeyAuth(t *testing.T) {
+	cfg := validFile()
+	llm := cfg.LLMRuntimes["home-llm"]
+	llm.Auth = LLMAuthAPIKey
+	llm.CredentialRef = "codereview/claude-llm"
+	cfg.LLMRuntimes["home-llm"] = llm
+
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
 func TestModelMapValidationAndResolution(t *testing.T) {
 	cfg := validFile()
 	llm := cfg.LLMRuntimes["home-llm"]

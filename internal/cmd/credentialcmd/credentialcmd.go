@@ -549,6 +549,14 @@ const (
 	initLLMRuntimePresetCustom       initLLMRuntimePreset = "custom"
 )
 
+var initLLMRuntimePresetByAdapter = map[config.LLMAdapter]initLLMRuntimePreset{
+	config.LLMAdapterClaudeCLI:    initLLMRuntimePresetClaudeCLISubscription,
+	config.LLMAdapterAnthropicAPI: initLLMRuntimePresetAnthropicAPIKey,
+	config.LLMAdapterCodexCLI:     initLLMRuntimePresetCodexCLISubscription,
+	config.LLMAdapterOpenAIAPI:    initLLMRuntimePresetOpenAIAPIKey,
+	config.LLMAdapterPiRPC:        initLLMRuntimePresetPiLocal,
+}
+
 type initLLMRuntimeDraft struct {
 	Name              string
 	Preset            initLLMRuntimePreset
@@ -4732,17 +4740,9 @@ func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 		ModelMap:          copyModelMap(llm.ModelMap),
 		ReviewerModelTier: llm.ReviewerModelTier,
 	}
-	switch {
-	case runtime.Provider == config.LLMProviderAnthropic && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterClaudeCLI:
-		runtime.Preset = initLLMRuntimePresetClaudeCLISubscription
-	case runtime.Provider == config.LLMProviderOpenAI && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterCodexCLI:
-		runtime.Preset = initLLMRuntimePresetCodexCLISubscription
-	case runtime.Provider == config.LLMProviderPi && runtime.Auth == config.LLMAuthSubscription && runtime.Adapter == config.LLMAdapterPiRPC:
-		runtime.Preset = initLLMRuntimePresetPiLocal
-	case runtime.Provider == config.LLMProviderAnthropic && runtime.Auth == config.LLMAuthAPIKey && runtime.Adapter == config.LLMAdapterAnthropicAPI:
-		runtime.Preset = initLLMRuntimePresetAnthropicAPIKey
-	case runtime.Provider == config.LLMProviderOpenAI && runtime.Auth == config.LLMAuthAPIKey && runtime.Adapter == config.LLMAdapterOpenAIAPI:
-		runtime.Preset = initLLMRuntimePresetOpenAIAPIKey
+	if spec, ok := config.FindLLMRuntimeSpec(runtime.Provider, runtime.Auth, runtime.Adapter); ok &&
+		(spec.Auth == runtime.Auth || spec.Auth == "" && runtime.Auth == config.LLMAuthSubscription) {
+		runtime.Preset = initLLMRuntimePresetByAdapter[spec.Adapter]
 	}
 	if runtime.Auth == config.LLMAuthSubscription {
 		runtime.CredentialRef = ""
