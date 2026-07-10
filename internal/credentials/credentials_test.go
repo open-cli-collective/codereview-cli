@@ -686,9 +686,6 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 					OnePassword: &config.SecretsProfileOnePasswordConfig{
 						Timeout:         "7s",
 						VaultID:         "vault-123",
-						ItemTitlePrefix: "cr",
-						ItemTag:         "codereview",
-						ItemFieldTitle:  "credential",
 					},
 				},
 			},
@@ -709,9 +706,6 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 					OnePassword: &config.SecretsProfileOnePasswordConfig{
 						Timeout:         "7s",
 						VaultID:         "vault-123",
-						ItemTitlePrefix: "cr",
-						ItemTag:         "codereview",
-						ItemFieldTitle:  "credential",
 						ConnectHost:     "https://connect.example",
 						ConnectTokenEnv: "CUSTOM_CONNECT_TOKEN",
 					},
@@ -734,9 +728,6 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 					OnePassword: &config.SecretsProfileOnePasswordConfig{
 						Timeout:          "9s",
 						VaultID:          "Employee",
-						ItemTitlePrefix:  "cr",
-						ItemTag:          "codereview",
-						ItemFieldTitle:   "credential",
 						DesktopAccountID: "desktop-account",
 					},
 				},

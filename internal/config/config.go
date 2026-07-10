@@ -122,9 +122,6 @@ type SecretsStoreOnePasswordConfig struct {
 	ServiceTokenEnv string `yaml:"service_token_env,omitempty" json:"service_token_env,omitempty"`
 
 	// Ignored compatibility aliases while callers are rewritten.
-	ItemTitlePrefix  string `yaml:"-" json:"-"`
-	ItemTag          string `yaml:"-" json:"-"`
-	ItemFieldTitle   string `yaml:"-" json:"-"`
 	DesktopAccountID string `yaml:"-" json:"-"`
 }
 
@@ -1986,9 +1983,6 @@ func (c SecretsStoreOnePasswordConfig) normalized() SecretsStoreOnePasswordConfi
 	c.ConnectHost = strings.TrimSpace(c.ConnectHost)
 	c.ConnectTokenEnv = strings.TrimSpace(c.ConnectTokenEnv)
 	c.ServiceTokenEnv = strings.TrimSpace(c.ServiceTokenEnv)
-	c.ItemTitlePrefix = strings.TrimSpace(c.ItemTitlePrefix)
-	c.ItemTag = strings.TrimSpace(c.ItemTag)
-	c.ItemFieldTitle = strings.TrimSpace(c.ItemFieldTitle)
 	c.DesktopAccountID = strings.TrimSpace(c.DesktopAccountID)
 	if c.AccountID == "" {
 		c.AccountID = c.DesktopAccountID
