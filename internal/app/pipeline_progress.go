@@ -82,18 +82,7 @@ func pipelineTaskProgressResultFields(result pipeline.LLMTaskProgressResult) []p
 	if result.ValidationAttempts > 0 {
 		fields = append(fields, progress.Field{Key: "validation_attempts", Value: strconv.Itoa(result.ValidationAttempts)})
 	}
-	if result.Usage.TokensIn != nil {
-		fields = append(fields, progress.Field{Key: "tokens_in", Value: strconv.Itoa(*result.Usage.TokensIn)})
-	}
-	if result.Usage.TokensOut != nil {
-		fields = append(fields, progress.Field{Key: "tokens_out", Value: strconv.Itoa(*result.Usage.TokensOut)})
-	}
-	if result.Usage.CacheRead != nil {
-		fields = append(fields, progress.Field{Key: "cache_read", Value: strconv.Itoa(*result.Usage.CacheRead)})
-	}
-	if result.Usage.CacheCreate != nil {
-		fields = append(fields, progress.Field{Key: "cache_create", Value: strconv.Itoa(*result.Usage.CacheCreate)})
-	}
+	fields = append(fields, usageFields(result.Usage)...)
 	if result.Usage.CostUSD != nil {
 		fields = append(fields, progress.Field{Key: "cost_usd", Value: strconv.FormatFloat(*result.Usage.CostUSD, 'f', -1, 64)})
 	}

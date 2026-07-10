@@ -636,6 +636,23 @@ func TestReviewRejectsEmptyStageOverridesBeforeRuntimeFactory(t *testing.T) {
 	}
 }
 
+func TestReviewEmptyStageOverrideErrorPrecedence(t *testing.T) {
+	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
+		t.Fatal("runtime factory was called for empty stage overrides")
+		return app.Runtime{}, nil
+	})
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--selection-effort", "xhigh",
+		"--selection-prompt", " ",
+	})
+	if err == nil || err.Error() != "--selection-effort must be one of low, medium, high" {
+		t.Fatalf("Execute error = %v, want selection-effort precedence", err)
+	}
+}
+
 func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
 	tests := []struct {
 		name string

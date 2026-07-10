@@ -92,7 +92,7 @@ func (s progressStream) SessionID() string {
 
 func (s progressStream) Wait(ctx context.Context) (llm.Response, error) {
 	resp, err := s.stream.Wait(ctx)
-	fields := llmResponseFields(resp)
+	fields := usageFields(resp.Usage)
 	s.span.EndFields(err, fields...)
 	return resp, err
 }
@@ -117,19 +117,19 @@ func llmProgressFields(provider, harness string, req llm.Request) []progress.Fie
 	return fields
 }
 
-func llmResponseFields(resp llm.Response) []progress.Field {
+func usageFields(usage llm.Usage) []progress.Field {
 	fields := []progress.Field{}
-	if resp.Usage.TokensIn != nil {
-		fields = append(fields, progress.Field{Key: "tokens_in", Value: strconv.Itoa(*resp.Usage.TokensIn)})
+	if usage.TokensIn != nil {
+		fields = append(fields, progress.Field{Key: "tokens_in", Value: strconv.Itoa(*usage.TokensIn)})
 	}
-	if resp.Usage.TokensOut != nil {
-		fields = append(fields, progress.Field{Key: "tokens_out", Value: strconv.Itoa(*resp.Usage.TokensOut)})
+	if usage.TokensOut != nil {
+		fields = append(fields, progress.Field{Key: "tokens_out", Value: strconv.Itoa(*usage.TokensOut)})
 	}
-	if resp.Usage.CacheRead != nil {
-		fields = append(fields, progress.Field{Key: "cache_read", Value: strconv.Itoa(*resp.Usage.CacheRead)})
+	if usage.CacheRead != nil {
+		fields = append(fields, progress.Field{Key: "cache_read", Value: strconv.Itoa(*usage.CacheRead)})
 	}
-	if resp.Usage.CacheCreate != nil {
-		fields = append(fields, progress.Field{Key: "cache_create", Value: strconv.Itoa(*resp.Usage.CacheCreate)})
+	if usage.CacheCreate != nil {
+		fields = append(fields, progress.Field{Key: "cache_create", Value: strconv.Itoa(*usage.CacheCreate)})
 	}
 	return fields
 }
