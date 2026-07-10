@@ -2,21 +2,20 @@ package initcmd
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/huh"
+
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 )
 
 const initOnePasswordManualSelection = "__manual_1password__"
-const initOnePasswordDiscoveryCommandTimeout = 30 * time.Second
 
-type initOnePasswordCommandRunner func(context.Context, string, ...string) ([]byte, error)
+type initOnePasswordCommandRunner = credentials.OnePasswordCommandRunner
+type initOnePasswordDiscoveredAccount = credentials.OnePasswordDiscoveredAccount
+type initOnePasswordDiscoveredVault = credentials.OnePasswordDiscoveredVault
 
 type initOnePasswordDiscovery struct {
 	run     initOnePasswordCommandRunner
@@ -28,20 +27,6 @@ type initOnePasswordDesktopDiscovery struct {
 	Err      error
 }
 
-type initOnePasswordDiscoveredAccount struct {
-	ID        string
-	Name      string
-	URL       string
-	Shorthand string
-	Email     string
-	Vaults    []initOnePasswordDiscoveredVault
-}
-
-type initOnePasswordDiscoveredVault struct {
-	ID   string
-	Name string
-}
-
 type initOnePasswordDesktopSelection struct {
 	AccountID  string
 	AccountURL string
@@ -50,209 +35,36 @@ type initOnePasswordDesktopSelection struct {
 }
 
 func newInitOnePasswordDiscovery(run initOnePasswordCommandRunner) initOnePasswordDiscovery {
-	if run == nil {
-		run = runInitOnePasswordCommand
-	}
-	return initOnePasswordDiscovery{run: run, timeout: initOnePasswordDiscoveryCommandTimeout}
+	return initOnePasswordDiscovery{run: run, timeout: credentials.DefaultOnePasswordDiscoveryCommandTimeout}
 }
 
 func (p huhInitKeyringBackendPrompter) discoverOnePasswordDesktop() initOnePasswordDesktopDiscovery {
 	return newInitOnePasswordDiscovery(p.onePasswordCmdRunner).DiscoverDesktop(context.Background())
 }
 
-func runInitOnePasswordCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- this probe intentionally shells out to the configured 1Password CLI executable.
-	return cmd.Output()
-}
-
 func (d initOnePasswordDiscovery) DiscoverDesktop(ctx context.Context) initOnePasswordDesktopDiscovery {
-	if d.timeout <= 0 {
-		d.timeout = initOnePasswordDiscoveryCommandTimeout
-	}
-
-	accountOutput, err := d.runWithTimeout(ctx, "op", "account", "list", "--format=json")
-	if err != nil {
-		return initOnePasswordDesktopDiscovery{Err: err}
-	}
-	accounts, err := parseInitOnePasswordAccounts(accountOutput)
-	if err != nil {
-		return initOnePasswordDesktopDiscovery{Err: err}
-	}
-	for index := range accounts {
-		accountArg := accounts[index].CommandValue()
-		if accountArg == "" {
-			continue
-		}
-		vaultOutput, err := d.runWithTimeout(ctx, "op", "vault", "list", "--account", accountArg, "--format=json")
-		if err != nil {
-			if accounts[index].Vaults == nil {
-				accounts[index].Vaults = []initOnePasswordDiscoveredVault{}
-			}
-			continue
-		}
-		vaults, err := parseInitOnePasswordVaults(vaultOutput)
-		if err == nil {
-			accounts[index].Vaults = vaults
-		}
-	}
-	return initOnePasswordDesktopDiscovery{Accounts: accounts}
-}
-
-func (d initOnePasswordDiscovery) runWithTimeout(ctx context.Context, name string, args ...string) ([]byte, error) {
-	commandCtx, cancel := context.WithTimeout(ctx, d.timeout)
-	defer cancel()
-	return d.run(commandCtx, name, args...)
-}
-
-func parseInitOnePasswordAccounts(data []byte) ([]initOnePasswordDiscoveredAccount, error) {
-	var raw []map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
-	}
-	accounts := make([]initOnePasswordDiscoveredAccount, 0, len(raw))
-	for _, item := range raw {
-		account := initOnePasswordDiscoveredAccount{
-			ID:        initOnePasswordStringField(item, "account_uuid", "id", "uuid"),
-			Name:      initOnePasswordStringField(item, "account_name", "name"),
-			URL:       initOnePasswordStringField(item, "url", "account_url", "signin_address"),
-			Shorthand: initOnePasswordStringField(item, "shorthand"),
-			Email:     initOnePasswordStringField(item, "email"),
-		}
-		if account.CommandValue() == "" && account.DisplayName() == "" {
-			continue
-		}
-		accounts = append(accounts, account)
-	}
-	return accounts, nil
-}
-
-func parseInitOnePasswordVaults(data []byte) ([]initOnePasswordDiscoveredVault, error) {
-	var raw []map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
-	}
-	vaults := make([]initOnePasswordDiscoveredVault, 0, len(raw))
-	for _, item := range raw {
-		vault := initOnePasswordDiscoveredVault{
-			ID:   initOnePasswordStringField(item, "id", "uuid"),
-			Name: initOnePasswordStringField(item, "name"),
-		}
-		if vault.ID == "" && vault.Name == "" {
-			continue
-		}
-		vaults = append(vaults, vault)
-	}
-	sort.SliceStable(vaults, func(i, j int) bool {
-		return initOnePasswordVaultLess(vaults[i], vaults[j])
-	})
-	return vaults, nil
-}
-
-func initOnePasswordVaultLess(left, right initOnePasswordDiscoveredVault) bool {
-	leftRank := initOnePasswordVaultPriorityRank(left)
-	rightRank := initOnePasswordVaultPriorityRank(right)
-	if leftRank != rightRank {
-		return leftRank < rightRank
-	}
-	leftName := strings.ToLower(left.DisplayName())
-	rightName := strings.ToLower(right.DisplayName())
-	if leftName != rightName {
-		return leftName < rightName
-	}
-	return left.DisplayName() < right.DisplayName()
-}
-
-func initOnePasswordVaultPriorityRank(vault initOnePasswordDiscoveredVault) int {
-	switch strings.ToLower(strings.TrimSpace(vault.DisplayName())) {
-	case "employee":
-		return 0
-	case "private":
-		return 1
-	default:
-		return 2
-	}
-}
-
-func initOnePasswordStringField(item map[string]any, names ...string) string {
-	for _, name := range names {
-		value, ok := item[name]
-		if !ok {
-			continue
-		}
-		switch typed := value.(type) {
-		case string:
-			if trimmed := strings.TrimSpace(typed); trimmed != "" {
-				return trimmed
-			}
-		case fmt.Stringer:
-			if trimmed := strings.TrimSpace(typed.String()); trimmed != "" {
-				return trimmed
-			}
-		}
-	}
-	return ""
-}
-
-func (a initOnePasswordDiscoveredAccount) CommandValue() string {
-	for _, value := range []string{a.ID, a.URL, a.Shorthand, a.Email, a.Name} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func (a initOnePasswordDiscoveredAccount) DisplayName() string {
-	for _, value := range []string{a.URL, a.Name, a.Shorthand, a.Email, a.ID} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func (a initOnePasswordDiscoveredAccount) Label() string {
-	return a.DisplayName()
-}
-
-func (v initOnePasswordDiscoveredVault) DisplayName() string {
-	for _, value := range []string{v.Name, v.ID} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
+	result := credentials.NewOnePasswordDiscovery(d.run, d.timeout).DiscoverDesktop(ctx)
+	return initOnePasswordDesktopDiscovery{Accounts: result.Accounts, Err: result.Err}
 }
 
 func (d initOnePasswordDesktopDiscovery) HasVaultChoices() bool {
-	for _, account := range d.Accounts {
-		if len(account.Vaults) > 0 {
-			return true
-		}
-	}
-	return false
+	return d.domain().HasVaultChoices()
 }
 
 func (d initOnePasswordDesktopDiscovery) HasAccountChoices() bool {
-	return d.AccountChoiceCount() > 0
+	return d.domain().HasAccountChoices()
 }
 
 func (d initOnePasswordDesktopDiscovery) Counts() (int, int) {
-	vaults := 0
-	for _, account := range d.Accounts {
-		vaults += len(account.Vaults)
-	}
-	return len(d.Accounts), vaults
+	return d.domain().Counts()
 }
 
 func (d initOnePasswordDesktopDiscovery) AccountChoiceCount() int {
-	count := 0
-	for _, account := range d.Accounts {
-		if account.Label() != "" {
-			count++
-		}
-	}
-	return count
+	return d.domain().AccountChoiceCount()
+}
+
+func (d initOnePasswordDesktopDiscovery) domain() credentials.OnePasswordDesktopDiscovery {
+	return credentials.OnePasswordDesktopDiscovery{Accounts: d.Accounts, Err: d.Err}
 }
 
 func (d initOnePasswordDesktopDiscovery) AccountOptions() []huh.Option[string] {
