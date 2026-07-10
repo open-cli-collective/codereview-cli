@@ -5,19 +5,16 @@ import (
 	"io"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 )
 
-type initRetentionEditorRunner func(initLinearEditor, io.Reader, io.Writer) (initLinearEditorModel, error)
-
 type bubbleTeaInitRetentionPrompter struct {
 	stdin        io.Reader
 	stderr       io.Writer
-	editorRunner initRetentionEditorRunner
+	editorRunner initEditorRunner
 }
 
 const (
@@ -31,7 +28,7 @@ func newBubbleTeaInitRetentionPrompter(opts *root.Options) initRetentionPrompter
 
 func (p bubbleTeaInitRetentionPrompter) EditRetention(prompt initRetentionPrompt) (initRetentionEdit, error) {
 	editor := initRetentionEditor(prompt.Retention)
-	model, err := p.runEditor(editor)
+	model, err := runInitEditor(editor, p.stdin, p.stderr, p.editorRunner, "global settings")
 	if err != nil {
 		return initRetentionEdit{}, err
 	}
@@ -45,22 +42,6 @@ func (p bubbleTeaInitRetentionPrompter) EditRetention(prompt initRetentionPrompt
 	default:
 		return initRetentionEdit{}, errInitNavigateBack
 	}
-}
-
-func (p bubbleTeaInitRetentionPrompter) runEditor(editor initLinearEditor) (initLinearEditorModel, error) {
-	if p.editorRunner != nil {
-		return p.editorRunner(editor, p.stdin, p.stderr)
-	}
-	program := tea.NewProgram(newInitLinearEditorModel(editor, 100, 28), tea.WithInput(p.stdin), tea.WithOutput(p.stderr))
-	finalModel, err := program.Run()
-	if err != nil {
-		return initLinearEditorModel{}, err
-	}
-	model, ok := finalModel.(initLinearEditorModel)
-	if !ok {
-		return initLinearEditorModel{}, fmt.Errorf("global settings editor returned %T", finalModel)
-	}
-	return model, nil
 }
 
 func initRetentionEditor(retention config.RetentionConfig) initLinearEditor {
@@ -84,31 +65,20 @@ func initRetentionEditor(retention config.RetentionConfig) initLinearEditor {
 	}, initDetailActionEdit)
 	return initLinearEditor{
 		Document: document,
-		OnEnter: func(model *initLinearEditorModel) (bool, tea.Cmd) {
-			if model.focused < 0 || model.focused >= len(model.document) {
-				return false, nil
-			}
-			if model.document[model.focused].ID != initRetentionFieldAction {
-				return false, nil
-			}
+		OnEnter: initLinearActionEnterHandler(initRetentionFieldAction, func(model *initLinearEditorModel, action string) (string, error) {
 			model.document[model.focused].Error = ""
-			switch model.document.selectedValue(initRetentionFieldAction) {
+			switch action {
 			case initDetailActionBack:
-				model.resultAction = initDetailActionBack
-				return true, tea.Quit
+				return initDetailActionBack, nil
 			case initDetailActionEdit:
 				if _, err := initRetentionFromDocument(retention, model.document); err != nil {
-					model.document[model.focused].Error = err.Error()
-					model.relayout()
-					model.ensureFocusedVisible()
-					return true, nil
+					return "", err
 				}
-				model.resultAction = initDetailActionEdit
-				return true, tea.Quit
+				return initDetailActionEdit, nil
 			default:
-				return true, nil
+				return "", nil
 			}
-		},
+		}),
 	}
 }
 
