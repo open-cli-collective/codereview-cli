@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -102,93 +101,31 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		return nil, err
 	}
 
-	procCtx, cancel := context.WithCancel(ctx)
-	if a.timeout > 0 {
-		procCtx, cancel = context.WithTimeout(ctx, a.timeout)
-	}
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
-	// #nosec G204 -- the Pi RPC adapter intentionally launches a configured CLI binary after validating adapter-owned safety args.
-	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
-	cmd.Dir = scratch
-	procGroup, err := newProcessGroup(cmd)
-	if err != nil {
-		cancel()
-		_ = cleanup()
-		return nil, err
-	}
-	cmd.Cancel = func() error {
-		return procGroup.kill(cmd)
-	}
+	var env []string
 	if len(a.env) > 0 {
-		cmd.Env = append(os.Environ(), a.env...)
+		env = append(os.Environ(), a.env...)
 	}
-	stdin, err := cmd.StdinPipe()
+	process, err := launchProcess(ctx, a.command, execArgs, scratch, env, a.timeout, req.LogPath, cleanup, true)
 	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	logFile, err := openSubprocessLog(req.LogPath)
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		cancel()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	if err := procGroup.afterStart(cmd); err != nil {
-		cancel()
-		_ = procGroup.kill(cmd)
-		go func() { _, _ = io.Copy(io.Discard, stdout) }()
-		go func() { _, _ = io.Copy(io.Discard, stderr) }()
-		_ = cmd.Wait()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	if err := writePiRPCPrompt(stdin, req.Prompt); err != nil {
-		cancel()
-		_ = procGroup.kill(cmd)
-		go func() { _, _ = io.Copy(io.Discard, stdout) }()
-		go func() { _, _ = io.Copy(io.Discard, stderr) }()
-		_ = cmd.Wait()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
+	if err := writePiRPCPrompt(process.stdin, req.Prompt); err != nil {
+		process.abort(cleanup)
 		return nil, err
 	}
 
 	stream := &piRPCStream{
-		cancel:       cancel,
-		done:         make(chan struct{}),
-		stdin:        stdin,
-		logFile:      logFile,
-		cleanup:      cleanup,
-		processGroup: procGroup,
+		baseStream: baseStream{
+			cancel:       process.cancel,
+			done:         make(chan struct{}),
+			logFile:      process.logFile,
+			cleanup:      cleanup,
+			processGroup: process.processGroup,
+		},
+		stdin: process.stdin,
 	}
-	go stream.run(procCtx, cmd, stdout, stderr)
+	go stream.run(process.ctx, process.cmd, process.stdout, process.stderr)
 	return stream, nil
 }
 
@@ -262,40 +199,8 @@ func writePiRPCPrompt(stdin io.Writer, prompt string) error {
 }
 
 type piRPCStream struct {
-	mu        sync.Mutex
-	sessionID string
-	result    subprocessResult
-
-	cancel       context.CancelFunc
-	done         chan struct{}
-	stdin        io.Closer
-	logMu        sync.Mutex
-	logFile      *os.File
-	cleanup      func() error
-	processGroup *processGroup
-}
-
-func (s *piRPCStream) SessionID() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sessionID
-}
-
-func (s *piRPCStream) Wait(ctx context.Context) (Response, error) {
-	select {
-	case <-s.done:
-	case <-ctx.Done():
-		s.cancel()
-		<-s.done
-	}
-
-	s.mu.Lock()
-	result := s.result
-	if result.err == nil && ctx.Err() != nil {
-		result.err = ctx.Err()
-	}
-	s.mu.Unlock()
-	return result.response, result.err
+	baseStream
+	stdin io.Closer
 }
 
 func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
@@ -303,7 +208,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	go func() {
 		defer close(stderrDone)
 		if s.logFile != nil {
-			_, _ = io.Copy(piRPCLogWriter{stream: s}, stderr)
+			_, _ = io.Copy(&s.baseStream, stderr)
 			return
 		}
 		_, _ = io.Copy(io.Discard, stderr)
@@ -335,6 +240,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	case !scanResult.agentEnd:
 		result.err = errors.New("llm pi rpc: missing agent_end")
 	}
+	s.cancel()
 	if s.processGroup != nil {
 		_ = s.processGroup.close()
 	}
@@ -393,26 +299,6 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 		result.err = err
 	}
 	return result
-}
-
-type piRPCLogWriter struct {
-	stream *piRPCStream
-}
-
-func (w piRPCLogWriter) Write(p []byte) (int, error) {
-	w.stream.logMu.Lock()
-	defer w.stream.logMu.Unlock()
-	if w.stream.logFile == nil {
-		return len(p), nil
-	}
-	return w.stream.logFile.Write(p)
-}
-
-func (s *piRPCStream) writeLog(p []byte) {
-	if s.logFile == nil {
-		return
-	}
-	_, _ = piRPCLogWriter{stream: s}.Write(p)
 }
 
 func normalizePiRPCLogLine(line []byte) []byte {
@@ -475,23 +361,6 @@ func compactPiRPCPartialForLog(partialRaw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	return encoded
-}
-
-func (s *piRPCStream) closeLog() {
-	if s.logFile == nil {
-		return
-	}
-	s.logMu.Lock()
-	defer s.logMu.Unlock()
-	closeSubprocessLog(s.logFile)
-}
-
-func (s *piRPCStream) setSessionID(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sessionID == "" {
-		s.sessionID = id
-	}
 }
 
 type piRPCEvent struct {

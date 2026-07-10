@@ -18,6 +18,7 @@ import (
 func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	recordPath := filepath.Join(t.TempDir(), "record.json")
 	logPath := filepath.Join(t.TempDir(), "pi-rpc.jsonl")
+	ctx := &trackedAfterFuncContext{done: make(chan struct{})}
 	adapter := NewPiRPCAdapter(PiRPCOptions{
 		Command:           os.Args[0],
 		commandArgsPrefix: piRPCHelperPrefix(),
@@ -25,7 +26,7 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 		Timeout:           5 * time.Second,
 	})
 
-	stream, err := adapter.Start(context.Background(), Request{
+	stream, err := adapter.Start(ctx, Request{
 		Model:   "opencode-go/kimi-k2.6",
 		Effort:  "high",
 		Prompt:  "review this diff",
@@ -37,6 +38,9 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	response, err := stream.Wait(context.Background())
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
+	}
+	if ctx.active != 0 {
+		t.Fatalf("active parent context registrations = %d, want 0", ctx.active)
 	}
 	if stream.SessionID() != "session-1" {
 		t.Fatalf("SessionID = %q, want session-1", stream.SessionID())

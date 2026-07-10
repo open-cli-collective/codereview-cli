@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -201,44 +200,17 @@ func (a *APIAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	}
 	reqCtx, cancel := context.WithCancel(ctx)
 	stream := &apiStream{
-		cancel: cancel,
-		done:   make(chan struct{}),
+		baseStream: baseStream{
+			cancel: cancel,
+			done:   make(chan struct{}),
+		},
 	}
 	go stream.run(reqCtx, a, req)
 	return stream, nil
 }
 
 type apiStream struct {
-	mu        sync.Mutex
-	cancel    context.CancelFunc
-	done      chan struct{}
-	sessionID string
-	response  Response
-	err       error
-}
-
-func (s *apiStream) SessionID() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sessionID
-}
-
-func (s *apiStream) Wait(ctx context.Context) (Response, error) {
-	select {
-	case <-s.done:
-	case <-ctx.Done():
-		s.cancel()
-		<-s.done
-	}
-
-	s.mu.Lock()
-	response := s.response
-	err := s.err
-	if err == nil && ctx.Err() != nil {
-		err = ctx.Err()
-	}
-	s.mu.Unlock()
-	return response, err
+	baseStream
 }
 
 func (s *apiStream) run(ctx context.Context, adapter *APIAdapter, req Request) {
@@ -251,8 +223,7 @@ func (s *apiStream) run(ctx context.Context, adapter *APIAdapter, req Request) {
 	}
 	s.mu.Lock()
 	s.sessionID = sessionID
-	s.response = response
-	s.err = err
+	s.result = subprocessResult{response: response, err: err}
 	s.mu.Unlock()
 }
 

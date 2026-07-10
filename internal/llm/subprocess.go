@@ -143,6 +143,106 @@ func (a *SubprocessAdapter) Quota(context.Context) (Quota, bool, error) {
 	return Quota{}, false, nil
 }
 
+type launchedProcess struct {
+	ctx          context.Context
+	cancel       context.CancelFunc
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	stdout       io.ReadCloser
+	stderr       io.ReadCloser
+	logFile      *os.File
+	processGroup *processGroup
+}
+
+func launchProcess(ctx context.Context, command string, args []string, dir string, env []string, timeout time.Duration, logPath string, cleanup func() error, withStdin bool) (*launchedProcess, error) {
+	var procCtx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		procCtx, cancel = context.WithTimeout(ctx, timeout)
+	} else {
+		procCtx, cancel = context.WithCancel(ctx)
+	}
+	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
+	cmd := exec.CommandContext(procCtx, command, args...)
+	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = env
+	}
+	procGroup, err := newProcessGroup(cmd)
+	if err != nil {
+		cancel()
+		_ = cleanup()
+		return nil, err
+	}
+	cmd.Cancel = func() error { return procGroup.kill(cmd) }
+
+	var stdin io.WriteCloser
+	if withStdin {
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			cancel()
+			_ = procGroup.close()
+			_ = cleanup()
+			return nil, err
+		}
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	logFile, err := openSubprocessLog(logPath)
+	if err != nil {
+		cancel()
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		closeSubprocessLog(logFile)
+		_ = procGroup.close()
+		_ = cleanup()
+		return nil, err
+	}
+
+	process := &launchedProcess{
+		ctx:          procCtx,
+		cancel:       cancel,
+		cmd:          cmd,
+		stdin:        stdin,
+		stdout:       stdout,
+		stderr:       stderr,
+		logFile:      logFile,
+		processGroup: procGroup,
+	}
+	if err := procGroup.afterStart(cmd); err != nil {
+		process.abort(cleanup)
+		return nil, err
+	}
+	return process, nil
+}
+
+func (p *launchedProcess) abort(cleanup func() error) {
+	p.cancel()
+	_ = p.processGroup.kill(p.cmd)
+	go func() { _, _ = io.Copy(io.Discard, p.stdout) }()
+	go func() { _, _ = io.Copy(io.Discard, p.stderr) }()
+	_ = p.cmd.Wait()
+	closeSubprocessLog(p.logFile)
+	_ = p.processGroup.close()
+	_ = cleanup()
+}
+
 // Start launches the configured subprocess in a fresh scratch directory.
 func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	if a.kind == subprocessClaude {
@@ -177,79 +277,28 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 		return nil, err
 	}
 
-	procCtx, cancel := context.WithCancel(ctx)
-	if a.timeout > 0 {
-		procCtx, cancel = context.WithTimeout(ctx, a.timeout)
-	}
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
-	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
-	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
 	launchDir := scratch
 	if a.kind == subprocessCodex && resumeSessionID != "" && req.ReviewerWorkspace != nil {
 		launchDir = req.ReviewerWorkspace.RepoDir
 	}
-	cmd.Dir = launchDir
-	cmd.Stdin = nil
-	procGroup, err := newProcessGroup(cmd)
+	process, err := launchProcess(ctx, a.command, execArgs, launchDir, a.processEnv(req), a.timeout, req.LogPath, cleanup, false)
 	if err != nil {
-		cancel()
-		_ = cleanup()
-		return nil, err
-	}
-	cmd.Cancel = func() error {
-		return procGroup.kill(cmd)
-	}
-	cmd.Env = a.processEnv(req)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	logFile, err := openSubprocessLog(req.LogPath)
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		cancel()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	if err := procGroup.afterStart(cmd); err != nil {
-		cancel()
-		_ = procGroup.kill(cmd)
-		go func() { _, _ = io.Copy(io.Discard, stdout) }()
-		go func() { _, _ = io.Copy(io.Discard, stderr) }()
-		_ = cmd.Wait()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
 		return nil, err
 	}
 
 	stream := &subprocessStream{
-		cancel:       cancel,
-		done:         make(chan struct{}),
-		logFile:      logFile,
+		baseStream: baseStream{
+			cancel:       process.cancel,
+			done:         make(chan struct{}),
+			logFile:      process.logFile,
+			cleanup:      cleanup,
+			processGroup: process.processGroup,
+		},
 		logBytesLeft: reviewerWorkspaceLogBytes(req),
 		allowToolUse: req.ReviewerWorkspace != nil,
-		cleanup:      cleanup,
-		processGroup: procGroup,
 	}
-	go stream.run(procCtx, cmd, stdout, stderr)
+	go stream.run(process.ctx, process.cmd, process.stdout, process.stderr)
 	return stream, nil
 }
 
@@ -285,77 +334,27 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 		return nil, err
 	}
 
-	procCtx, cancel := context.WithCancel(ctx)
-	if a.timeout > 0 {
-		procCtx, cancel = context.WithTimeout(ctx, a.timeout)
-	}
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
-	// #nosec G204 -- subprocess adapters intentionally launch configured CLI binaries after validating adapter-owned safety args.
-	cmd := exec.CommandContext(procCtx, a.command, execArgs...)
 	launchDir := workDir
 	if req.ReviewerWorkspace != nil {
 		launchDir = req.ReviewerWorkspace.RepoDir
 	}
-	cmd.Dir = launchDir
-	procGroup, err := newProcessGroup(cmd)
+	process, err := launchProcess(ctx, a.command, execArgs, launchDir, a.processEnv(req), a.timeout, req.LogPath, cleanup, false)
 	if err != nil {
-		cancel()
-		_ = cleanup()
-		return nil, err
-	}
-	cmd.Cancel = func() error {
-		return procGroup.kill(cmd)
-	}
-	cmd.Env = a.processEnv(req)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	logFile, err := openSubprocessLog(req.LogPath)
-	if err != nil {
-		cancel()
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		cancel()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
-		return nil, err
-	}
-	if err := procGroup.afterStart(cmd); err != nil {
-		cancel()
-		_ = procGroup.kill(cmd)
-		go func() { _, _ = io.Copy(io.Discard, stdout) }()
-		go func() { _, _ = io.Copy(io.Discard, stderr) }()
-		_ = cmd.Wait()
-		closeSubprocessLog(logFile)
-		_ = procGroup.close()
-		_ = cleanup()
 		return nil, err
 	}
 
 	stream := &subprocessStream{
-		cancel:       cancel,
-		done:         make(chan struct{}),
-		logFile:      logFile,
+		baseStream: baseStream{
+			cancel:       process.cancel,
+			done:         make(chan struct{}),
+			logFile:      process.logFile,
+			cleanup:      cleanup,
+			processGroup: process.processGroup,
+		},
 		logBytesLeft: reviewerWorkspaceLogBytes(req),
-		cleanup:      cleanup,
-		processGroup: procGroup,
 	}
-	go stream.runClaudeBG(procCtx, a, cmd, stdout, stderr, scratch, workDir)
+	go stream.runClaudeBG(process.ctx, a, process.cmd, process.stdout, process.stderr, scratch, workDir)
 	return stream, nil
 }
 
@@ -648,7 +647,12 @@ func (a *SubprocessAdapter) invocationScratchDir(req Request) (string, func() er
 	return scratch, func() error { return os.RemoveAll(scratch) }, nil
 }
 
-type subprocessStream struct {
+type subprocessResult struct {
+	response Response
+	err      error
+}
+
+type baseStream struct {
 	mu        sync.Mutex
 	sessionID string
 	result    subprocessResult
@@ -657,25 +661,17 @@ type subprocessStream struct {
 	done         chan struct{}
 	logMu        sync.Mutex
 	logFile      *os.File
-	logBytesLeft int
-	logCapped    bool
-	allowToolUse bool
 	cleanup      func() error
 	processGroup *processGroup
 }
 
-type subprocessResult struct {
-	response Response
-	err      error
-}
-
-func (s *subprocessStream) SessionID() string {
+func (s *baseStream) SessionID() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sessionID
 }
 
-func (s *subprocessStream) Wait(ctx context.Context) (Response, error) {
+func (s *baseStream) Wait(ctx context.Context) (Response, error) {
 	select {
 	case <-s.done:
 	case <-ctx.Done():
@@ -690,6 +686,46 @@ func (s *subprocessStream) Wait(ctx context.Context) (Response, error) {
 	}
 	s.mu.Unlock()
 	return result.response, result.err
+}
+
+func (s *baseStream) Write(p []byte) (int, error) {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	if s.logFile == nil {
+		return len(p), nil
+	}
+	return s.logFile.Write(p)
+}
+
+func (s *baseStream) writeLog(p []byte) {
+	if s.logFile != nil {
+		_, _ = s.Write(p)
+	}
+}
+
+func (s *baseStream) closeLog() {
+	if s.logFile == nil {
+		return
+	}
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	closeSubprocessLog(s.logFile)
+}
+
+func (s *baseStream) setSessionID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessionID == "" {
+		s.sessionID = id
+	}
+}
+
+type subprocessStream struct {
+	baseStream
+
+	logBytesLeft int
+	logCapped    bool
+	allowToolUse bool
 }
 
 func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
@@ -902,23 +938,6 @@ func (s *subprocessStream) runCleanup() {
 	}
 	_ = s.cleanup()
 	s.cleanup = nil
-}
-
-func (s *subprocessStream) closeLog() {
-	if s.logFile == nil {
-		return
-	}
-	s.logMu.Lock()
-	defer s.logMu.Unlock()
-	closeSubprocessLog(s.logFile)
-}
-
-func (s *subprocessStream) setSessionID(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.sessionID == "" {
-		s.sessionID = id
-	}
 }
 
 func reviewerWorkspaceLogBytes(req Request) int {

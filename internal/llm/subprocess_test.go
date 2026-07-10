@@ -15,6 +15,47 @@ import (
 	"time"
 )
 
+type trackedAfterFuncContext struct {
+	done   chan struct{}
+	active int
+}
+
+func (c *trackedAfterFuncContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *trackedAfterFuncContext) Done() <-chan struct{}       { return c.done }
+func (c *trackedAfterFuncContext) Err() error                  { return nil }
+func (c *trackedAfterFuncContext) Value(any) any               { return nil }
+
+func (c *trackedAfterFuncContext) AfterFunc(func()) func() bool {
+	c.active++
+	stopped := false
+	return func() bool {
+		if stopped {
+			return false
+		}
+		stopped = true
+		c.active--
+		return true
+	}
+}
+
+func TestLaunchProcessReleasesTimeoutContextOnStartError(t *testing.T) {
+	ctx := &trackedAfterFuncContext{done: make(chan struct{})}
+	cleanups := 0
+	_, err := launchProcess(ctx, "cr-command-that-does-not-exist", nil, "", nil, time.Hour, "", func() error {
+		cleanups++
+		return nil
+	}, false)
+	if err == nil {
+		t.Fatal("launchProcess error = nil, want command start failure")
+	}
+	if ctx.active != 0 {
+		t.Fatalf("active parent context registrations = %d, want 0", ctx.active)
+	}
+	if cleanups != 1 {
+		t.Fatalf("cleanups = %d, want 1", cleanups)
+	}
+}
+
 func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	tempDir := t.TempDir()
 	recordPath := filepath.Join(tempDir, "records.jsonl")
