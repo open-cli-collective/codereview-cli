@@ -669,7 +669,7 @@ func TestAllowedKeyMemoryRoundTrip(t *testing.T) {
 	}
 }
 
-func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
+func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 	tests := []struct {
 		name        string
 		backendKind credstore.Backend
@@ -684,8 +684,8 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 				Backend: config.SecretsProfileBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOP),
 					OnePassword: &config.SecretsProfileOnePasswordConfig{
-						Timeout:         "7s",
-						VaultID:         "vault-123",
+						Timeout: "7s",
+						VaultID: "vault-123",
 					},
 				},
 			},
@@ -764,9 +764,9 @@ func TestStoreOptionsForResolvedProfile_OnePasswordBackend(t *testing.T) {
 				Backend: string(tt.backendKind),
 				Source:  config.EffectiveSecretsProfileSourceConfigured,
 			}
-			got, err := StoreOptionsForResolvedProfile("", false, cfg, resolved)
+			got, err := StoreOptionsForResolvedStore(false, cfg, resolved)
 			if err != nil {
-				t.Fatalf("StoreOptionsForResolvedProfile: %v", err)
+				t.Fatalf("StoreOptionsForResolvedStore: %v", err)
 			}
 			if got.Backend != tt.backendKind {
 				t.Fatalf("Backend = %q, want %q", got.Backend, tt.backendKind)

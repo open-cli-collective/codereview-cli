@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -171,13 +170,6 @@ func setHeaders(req *http.Request, token, accept string) {
 func mapTransportError(op gitprovider.Operation, err error) error {
 	if errors.Is(err, context.Canceled) {
 		return context.Canceled
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return gitprovider.WrapError(gitprovider.ErrRetryable, op, err)
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return gitprovider.WrapError(gitprovider.ErrRetryable, op, err)
 	}
 	return gitprovider.WrapError(gitprovider.ErrRetryable, op, err)
 }

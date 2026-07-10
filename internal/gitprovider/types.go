@@ -51,6 +51,15 @@ type Identity struct {
 	DisplayName string
 }
 
+// Same reports whether two identities have the same non-empty ID, falling
+// back to an exact, case-sensitive login match.
+func (i Identity) Same(other Identity) bool {
+	if strings.TrimSpace(i.ID) != "" && strings.TrimSpace(other.ID) != "" {
+		return i.ID == other.ID
+	}
+	return strings.TrimSpace(i.Login) != "" && i.Login == other.Login
+}
+
 // ReviewAuthority describes whether the resolved posting identity can create a
 // GitHub review that counts as APPROVE/REQUEST_CHANGES for a specific repo.
 type ReviewAuthority struct {

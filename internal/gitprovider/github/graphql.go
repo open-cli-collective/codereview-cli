@@ -29,16 +29,7 @@ func mapGraphQLErrors(op gitprovider.Operation, gqlErrors []graphQLError) error 
 		return nil
 	}
 	first := gqlErrors[0]
-	classification := strings.ToUpper(first.Type)
-	if classification == "" && first.Extensions != nil {
-		if value, ok := first.Extensions["type"].(string); ok {
-			classification = strings.ToUpper(value)
-		}
-		if value, ok := first.Extensions["code"].(string); ok && classification == "" {
-			classification = strings.ToUpper(value)
-		}
-	}
-	message := strings.ToUpper(first.Message)
+	classification, message := graphQLErrorClassification(first)
 	switch {
 	case strings.Contains(classification, "UNAUTHENTICATED"), strings.Contains(classification, "UNAUTHORIZED"), strings.Contains(message, "AUTHENTICATION"):
 		return gitprovider.WrapError(gitprovider.ErrAuth, op, graphQLErrorCause("authentication"))
@@ -53,6 +44,19 @@ func mapGraphQLErrors(op gitprovider.Operation, gqlErrors []graphQLError) error 
 	default:
 		return fmt.Errorf("%w: %w", ErrUnhandledGraphQL, graphQLErrorCause(""))
 	}
+}
+
+func graphQLErrorClassification(err graphQLError) (string, string) {
+	classification := strings.ToUpper(strings.TrimSpace(err.Type))
+	if classification == "" && err.Extensions != nil {
+		if value, ok := err.Extensions["type"].(string); ok {
+			classification = strings.ToUpper(strings.TrimSpace(value))
+		}
+		if value, ok := err.Extensions["code"].(string); ok && classification == "" {
+			classification = strings.ToUpper(strings.TrimSpace(value))
+		}
+	}
+	return classification, strings.ToUpper(strings.TrimSpace(err.Message))
 }
 
 func graphQLErrorCause(kind string) error {

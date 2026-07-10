@@ -2,6 +2,7 @@ package cmdruntime
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/cli-common/credstore"
@@ -23,6 +24,7 @@ func TestMapRunError(t *testing.T) {
 	}{
 		{name: "invalid config", err: config.ErrInvalid, want: exitcode.UsageError, is: config.ErrInvalid},
 		{name: "missing config", err: config.ErrNotConfigured, want: exitcode.AuthConfigError, is: config.ErrNotConfigured},
+		{name: "ambiguous repository profile", err: config.ErrRepositoryProfileAmbiguous, want: exitcode.AuthConfigError, is: config.ErrRepositoryProfileAmbiguous},
 		{name: "unsafe agent source", err: agents.ErrUnsafeSource, want: exitcode.UsageError, is: agents.ErrUnsafeSource},
 		{name: "provider auth", err: gitprovider.WrapError(gitprovider.ErrAuth, gitprovider.OperationWhoAmI, errors.New("bad token")), want: exitcode.AuthConfigError, is: gitprovider.ErrAuth},
 		{name: "provider retryable", err: gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationWhoAmI, errors.New("timeout")), want: exitcode.UpstreamError, is: gitprovider.ErrRetryable},
@@ -41,4 +43,13 @@ func TestMapRunError(t *testing.T) {
 			}
 		})
 	}
+
+	nonComparable := nonComparableError{"plain failure"}
+	if got := MapRunError(nonComparable); got.Error() != nonComparable.Error() || exitcode.FromError(got) != exitcode.Failure {
+		t.Fatalf("non-comparable error mapped to %v", got)
+	}
 }
+
+type nonComparableError []string
+
+func (e nonComparableError) Error() string { return strings.Join(e, ", ") }

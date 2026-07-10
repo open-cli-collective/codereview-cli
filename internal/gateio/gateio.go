@@ -958,7 +958,7 @@ func markerActionRecords(host gateHostState, posting gitprovider.Identity) []mar
 	records := make([]markerRecord, 0, len(host.comments)+len(host.reviews))
 	order := 0
 	for _, comment := range host.comments {
-		if !sameIdentity(comment.Author, posting) {
+		if !comment.Author.Same(posting) {
 			continue
 		}
 		for _, found := range marker.FindActions(comment.Body) {
@@ -967,7 +967,7 @@ func markerActionRecords(host gateHostState, posting gitprovider.Identity) []mar
 		}
 	}
 	for _, review := range host.reviews {
-		if !sameIdentity(review.Author, posting) {
+		if !review.Author.Same(posting) {
 			continue
 		}
 		for _, found := range marker.FindActions(review.Body) {
@@ -977,7 +977,7 @@ func markerActionRecords(host gateHostState, posting gitprovider.Identity) []mar
 	}
 	for _, thread := range host.threads {
 		for _, comment := range thread.Comments {
-			if !sameIdentity(comment.Author, posting) {
+			if !comment.Author.Same(posting) {
 				continue
 			}
 			for _, found := range marker.FindActions(comment.Body) {
@@ -998,7 +998,7 @@ func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) 
 	// identity. They can anchor override eligibility even though only action
 	// markers participate in PR completion-state classification.
 	consider := func(author gitprovider.Identity, body string, when time.Time) {
-		if !sameIdentity(author, posting) || when.IsZero() {
+		if !author.Same(posting) || when.IsZero() {
 			return
 		}
 		if len(marker.FindActions(body)) == 0 && len(marker.FindThreadSummaries(body)) == 0 {
@@ -1029,7 +1029,7 @@ func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitpr
 		found    bool
 	)
 	for _, review := range reviews {
-		if !sameIdentity(review.Author, posting) {
+		if !review.Author.Same(posting) {
 			continue
 		}
 		switch review.State {
@@ -1106,7 +1106,7 @@ func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request
 func approvalOverrideCandidates(host gateHostState, req Request, latestMarkerAt time.Time) []approvaloverride.Candidate {
 	var candidates []approvaloverride.Candidate
 	add := func(id, source string, author gitprovider.Identity, body, url string, createdAt, updatedAt time.Time) {
-		if !sameIdentity(author, req.PR.Author) {
+		if !author.Same(req.PR.Author) {
 			return
 		}
 		effectiveAt := effectiveCommentTime(createdAt, updatedAt)
@@ -1435,13 +1435,6 @@ func gateRunState(outcome *ledger.Outcome) (gate.RunState, error) {
 
 func heartbeatStale(run ledger.Run, now time.Time, threshold time.Duration) bool {
 	return now.Sub(run.StartedAt) > threshold
-}
-
-func sameIdentity(author gitprovider.Identity, target gitprovider.Identity) bool {
-	if strings.TrimSpace(author.ID) != "" && strings.TrimSpace(target.ID) != "" {
-		return author.ID == target.ID
-	}
-	return strings.TrimSpace(author.Login) != "" && author.Login == target.Login
 }
 
 func markerKey(found marker.ActionMarker) string {

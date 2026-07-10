@@ -117,14 +117,14 @@ type OrphanItem struct {
 
 // Show returns current data lifecycle stats.
 func Show(ctx context.Context, opts Options) (Stats, error) {
-	if err := validateOptions(opts, true); err != nil {
+	if err := validateOptions(opts); err != nil {
 		return Stats{}, err
 	}
 	runs, err := opts.Store.ListRuns(ctx)
 	if err != nil {
 		return Stats{}, err
 	}
-	orphanItems, err := findOrphans(opts.Layout, runs)
+	orphanItems, err := orphanItems(opts.Layout, runs)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -167,7 +167,7 @@ func Show(ctx context.Context, opts Options) (Stats, error) {
 
 // Prune deletes selected ledger rows first, then best-effort artifact dirs.
 func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, error) {
-	if err := validateOptions(opts, true); err != nil {
+	if err := validateOptions(opts); err != nil {
 		return PruneResult{}, err
 	}
 	if err := validatePruneOptions(prune); err != nil {
@@ -186,7 +186,7 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 	result := PruneResult{DryRun: prune.DryRun, SelectedRuns: runItems(selected)}
 	if prune.DryRun {
 		orphanSpan := startProgress(opts.Progress, "find_orphans", "data-root")
-		orphanItems, err := findOrphans(opts.Layout, runs)
+		orphanItems, err := orphanItems(opts.Layout, runs)
 		if err != nil {
 			orphanSpan.End(err)
 			return result, err
@@ -222,7 +222,7 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 	}
 	remainingSpan.End(nil)
 	orphanSpan := startProgress(opts.Progress, "remove_orphans", "data-root")
-	orphans, err := findOrphans(opts.Layout, remaining)
+	orphans, err := orphanItems(opts.Layout, remaining)
 	if err != nil {
 		orphanSpan.End(err)
 		return result, err
@@ -261,11 +261,11 @@ func Purge(layout statepaths.Layout, dryRun bool, yes bool, removeAll RemoveAllF
 	return result, nil
 }
 
-func validateOptions(opts Options, requireStore bool) error {
+func validateOptions(opts Options) error {
 	if strings.TrimSpace(opts.Layout.DataRoot) == "" {
 		return fmt.Errorf("datalifecycle: data root is required")
 	}
-	if requireStore && opts.Store == nil {
+	if opts.Store == nil {
 		return fmt.Errorf("datalifecycle: store is required")
 	}
 	return nil
@@ -368,10 +368,6 @@ func startProgress(reporter ProgressReporter, op, target string) ProgressSpan {
 		return noopProgressSpan{}
 	}
 	return span
-}
-
-func findOrphans(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, error) {
-	return orphanItems(layout, runs)
 }
 
 func orphanItems(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, error) {

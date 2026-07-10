@@ -302,7 +302,7 @@ func newRuntimeCredentialStores(cfg config.File, backend string, backendFlagChan
 }
 
 func (s *runtimeCredentialStores) Open(location config.CredentialLocation) (*credstore.Store, credentials.Reader, error) {
-	resolved, err := credentials.ResolveCredentialStoreForLocation(s.cfg, location)
+	resolved, err := credentials.ResolveCredentialStore(s.cfg, location.Store)
 	if err != nil {
 		return nil, nil, err
 	}

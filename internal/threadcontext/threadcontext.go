@@ -180,7 +180,7 @@ func SanitizeBody(body string) string {
 func normalizeComments(thread gitprovider.InlineThread, posting gitprovider.Identity, threadAnchor Anchor) []Comment {
 	comments := make([]Comment, 0, len(thread.Comments))
 	for i, raw := range thread.Comments {
-		authoredByPosting := sameIdentity(raw.Author, posting)
+		authoredByPosting := raw.Author.Same(posting) || githubBotLoginEquivalent(raw.Author.Login, posting.Login)
 		hasFindingMarker, hasThreadReplyMarker := false, false
 		if authoredByPosting {
 			for _, found := range marker.FindActions(raw.Body) {
@@ -333,16 +333,6 @@ func commentThreadID(commentID gitprovider.ThreadID, threadID gitprovider.Thread
 		return commentID
 	}
 	return threadID
-}
-
-func sameIdentity(author gitprovider.Identity, target gitprovider.Identity) bool {
-	if githubBotLoginEquivalent(author.Login, target.Login) {
-		return true
-	}
-	if strings.TrimSpace(author.ID) != "" && strings.TrimSpace(target.ID) != "" {
-		return author.ID == target.ID
-	}
-	return strings.TrimSpace(author.Login) != "" && author.Login == target.Login
 }
 
 func githubBotLoginEquivalent(left, right string) bool {
