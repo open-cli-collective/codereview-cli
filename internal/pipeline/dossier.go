@@ -226,8 +226,6 @@ const (
 	dossierSummaryExcerptRunes         = 480
 	dossierCachedSummaryProviderSource = "provider_resolved"
 	dossierCachedSummaryCRSource       = "cr_settled"
-	workbenchMetadataSchemaVersion     = 1
-	workbenchCheckoutModeArtifactClone = "artifact-clone"
 )
 
 var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
