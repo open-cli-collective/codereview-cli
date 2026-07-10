@@ -1227,6 +1227,7 @@ func TestInitPersistsExplicitBackendWhenExistingAPIKeySatisfiesConfig(t *testing
 	})
 	flags := defaultNonInteractiveInitOptionsForTest()
 	flags.llmAuth = string(config.LLMAuthAPIKey)
+	flags.llmAdapter = string(config.LLMAdapterAnthropicAPI)
 	out, errOut, err := runNonInteractiveInitWithFakeStore(t, path, "", strings.NewReader(""), flags, store)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -1253,6 +1254,7 @@ func TestInitAPIKeyAuthWithExistingKeyDoesNotPrintLLMFollowUpHint(t *testing.T) 
 	})
 	flags := defaultNonInteractiveInitOptionsForTest()
 	flags.llmAuth = string(config.LLMAuthAPIKey)
+	flags.llmAdapter = string(config.LLMAdapterAnthropicAPI)
 	out, errOut, err := runNonInteractiveInitWithFakeStore(t, path, "", strings.NewReader(""), flags, store)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -1299,6 +1301,7 @@ func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T
 	flags := defaultNonInteractiveInitOptionsForTest()
 	flags.replaceProfile = true
 	flags.llmAuth = string(config.LLMAuthAPIKey)
+	flags.llmAdapter = string(config.LLMAdapterAnthropicAPI)
 	_, _, err := runNonInteractiveInitWithFakeStore(t, path, "work", strings.NewReader(""), flags, store)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -1363,6 +1366,7 @@ func TestInitAPIKeyAuthRejectsMissingSecretWithoutWritingDanglingConfig(t *testi
 	path := filepath.Join(t.TempDir(), "config.yml")
 	flags := defaultNonInteractiveInitOptionsForTest()
 	flags.llmAuth = string(config.LLMAuthAPIKey)
+	flags.llmAdapter = string(config.LLMAdapterAnthropicAPI)
 	_, _, err := runNonInteractiveInitWithFakeStore(t, path, "", strings.NewReader(""), flags, newFakeInitStore(nil))
 	if got := exitcode.FromError(err); got != exitcode.UsageError {
 		t.Fatalf("exit code = %d, want %d; err=%v", got, exitcode.UsageError, err)
