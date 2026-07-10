@@ -258,10 +258,6 @@ func (d *initLinearDocument) addSectionField(id initLinearFieldID, title, descri
 	})
 }
 
-func (d *initLinearDocument) addInput(title, description, value string) {
-	d.addInputField(initLinearFieldInput, "", title, description, value, false, nil, initLinearFieldOptions{})
-}
-
 func (d *initLinearDocument) addEditableInput(id initLinearFieldID, title, description, value string, validate func(string) error, options ...initLinearFieldOptions) {
 	d.addInputField(initLinearFieldInput, id, title, description, value, true, validate, mergedInitLinearFieldOptions(options))
 }
