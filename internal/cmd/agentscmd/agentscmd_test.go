@@ -84,7 +84,7 @@ func TestAgentsListWithPRLoadsRepoBaseAndTrustNote(t *testing.T) {
 	if len(got.Agents) != 2 {
 		t.Fatalf("agents len = %d, want profile and repo agents: %#v", len(got.Agents), got.Agents)
 	}
-	if got.Repo == nil || got.Repo.Provenance != "repo@refs/heads/main:base-sh" {
+	if got.Repo == nil || got.Repo.Provenance != "repo@refs/heads/main:base-sha-123" {
 		t.Fatalf("repo = %#v, want base provenance", got.Repo)
 	}
 	if len(got.Sources) != 2 {
@@ -382,7 +382,7 @@ func TestAgentsShowJSONWithPR(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("Unmarshal: %v\n%s", err, out.String())
 	}
-	if got.Agent.ID != "repo:reviewer" || got.Agent.Provenance != "repo@refs/heads/main:base-sh" {
+	if got.Agent.ID != "repo:reviewer" || got.Agent.Provenance != "repo@refs/heads/main:base-sha-123" {
 		t.Fatalf("agent = %#v, want repo agent", got.Agent)
 	}
 	if got.Agent.Source.Kind != "repo" || got.Agent.Source.SHA == "" {

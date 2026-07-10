@@ -21,8 +21,8 @@ func TestRenderAgentsListTextIncludesProvenanceAndTrustNote(t *testing.T) {
 		"Agents:",
 		"  - harness:architecture",
 		"Description: Reviews architecture.",
-		"Provenance: repo@refs/heads/main:abc1234",
-		"Note: Repo-local agents loaded from base branch refs/heads/main at abc1234",
+		"Provenance: repo@refs/heads/main:abc123456789",
+		"Note: Repo-local agents loaded from base branch refs/heads/main at abc123456789",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text = %q, want %q", text, want)
@@ -44,7 +44,7 @@ func TestRenderAgentsListJSON(t *testing.T) {
 	if len(decoded.Agents) != 1 || decoded.Agents[0].ID != "harness:architecture" {
 		t.Fatalf("agents = %#v, want one harness agent", decoded.Agents)
 	}
-	if decoded.TrustNote == "" || decoded.Repo == nil || decoded.Repo.Provenance != "repo@refs/heads/main:abc1234" {
+	if decoded.TrustNote == "" || decoded.Repo == nil || decoded.Repo.Provenance != "repo@refs/heads/main:abc123456789" {
 		t.Fatalf("repo/trust = (%#v,%q), want repo note", decoded.Repo, decoded.TrustNote)
 	}
 }
@@ -100,7 +100,7 @@ func TestRenderAgentsShowTextIncludesPrompt(t *testing.T) {
 		"Applies when:",
 		"Prompt:",
 		"Read the diff carefully.",
-		"Note: Repo-local agents loaded from base branch refs/heads/main at abc1234",
+		"Note: Repo-local agents loaded from base branch refs/heads/main at abc123456789",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text = %q, want %q", text, want)
@@ -123,8 +123,8 @@ func TestRenderAgentsShowJSON(t *testing.T) {
 	if decoded.Agent.ID != "harness:architecture" || decoded.Agent.Prompt == "" {
 		t.Fatalf("agent = %#v, want detail with prompt", decoded.Agent)
 	}
-	if decoded.Agent.Provenance != "repo@refs/heads/main:abc1234" {
-		t.Fatalf("provenance = %q, want repo@refs/heads/main:abc1234", decoded.Agent.Provenance)
+	if decoded.Agent.Provenance != "repo@refs/heads/main:abc123456789" {
+		t.Fatalf("provenance = %q, want repo@refs/heads/main:abc123456789", decoded.Agent.Provenance)
 	}
 }
 
@@ -142,7 +142,7 @@ func testAgentsCatalog() agents.Catalog {
 			Prompt:      "Read the diff carefully.\n",
 			Provenance:  agents.Provenance{Kind: agents.SourceRepo, Ref: "refs/heads/main", SHA: "abc123456789"},
 		}},
-		Repo: &agents.RepoInfo{Ref: "refs/heads/main", SHA: "abc123456789", Provenance: "repo@refs/heads/main:abc1234"},
+		Repo: &agents.RepoInfo{Ref: "refs/heads/main", SHA: "abc123456789", Provenance: "repo@refs/heads/main:abc123456789"},
 	}
 }
 

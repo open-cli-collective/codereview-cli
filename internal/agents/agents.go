@@ -22,6 +22,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 )
 
 const (
@@ -97,7 +98,7 @@ func (p Provenance) String() string {
 		return "profile:" + p.Label
 	case SourceRepo:
 		if p.SHA != "" {
-			return "repo@" + p.Ref + ":" + shortSHA(p.SHA)
+			return "repo@" + p.Ref + ":" + prref.ShortSHA(p.SHA)
 		}
 		return "repo@" + p.Ref
 	case SourceFlag:
@@ -185,7 +186,7 @@ func (r RepoInfo) TrustNote() string {
 	if r.Ref == "" && r.SHA == "" {
 		return ""
 	}
-	return fmt.Sprintf("Repo-local agents loaded from base branch %s at %s; PR-head .codereview/agents changes do not affect this listing.", r.Ref, shortSHA(r.SHA))
+	return fmt.Sprintf("Repo-local agents loaded from base branch %s at %s; PR-head .codereview/agents changes do not affect this listing.", r.Ref, prref.ShortSHA(r.SHA))
 }
 
 // Catalog is the merged, precedence-resolved agent catalog.
@@ -955,12 +956,4 @@ func directEntryName(parent, entryPath string) (string, bool) {
 
 func sortTreeEntries(entries []gitprovider.TreeEntry) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
-}
-
-func shortSHA(sha string) string {
-	sha = strings.TrimSpace(sha)
-	if len(sha) <= 7 {
-		return sha
-	}
-	return sha[:7]
 }

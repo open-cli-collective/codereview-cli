@@ -407,7 +407,7 @@ func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
 	if shared.Description != "flag desc" || shared.Provenance.String() != "flag:1" {
 		t.Fatalf("shared winner = (%q,%q), want flag override", shared.Description, shared.Provenance.String())
 	}
-	wantOverridden := []string{"profile:" + filepath.Base(filepath.Clean(profileDir)), "repo@refs/heads/main:base-sh"}
+	wantOverridden := []string{"profile:" + filepath.Base(filepath.Clean(profileDir)), "repo@refs/heads/main:base-sha-123"}
 	if got := shared.Overridden; strings.Join(got, ",") != strings.Join(wantOverridden, ",") {
 		t.Fatalf("overridden provenance = %#v, want %#v", got, wantOverridden)
 	}
@@ -415,10 +415,10 @@ func TestLoadMergesSourcesByPrecedenceAndProvenance(t *testing.T) {
 	if !ok {
 		t.Fatal("repo:only missing")
 	}
-	if repoOnly.Provenance.String() != "repo@refs/heads/main:base-sh" {
-		t.Fatalf("repo provenance = %q, want repo@refs/heads/main:base-sh", repoOnly.Provenance.String())
+	if repoOnly.Provenance.String() != "repo@refs/heads/main:base-sha-123" {
+		t.Fatalf("repo provenance = %q, want repo@refs/heads/main:base-sha-123", repoOnly.Provenance.String())
 	}
-	if catalog.Repo == nil || catalog.Repo.Provenance != "repo@refs/heads/main:base-sh" || !strings.Contains(catalog.Repo.TrustNote(), "PR-head .codereview/agents changes do not affect") {
+	if catalog.Repo == nil || catalog.Repo.Provenance != "repo@refs/heads/main:base-sha-123" || !strings.Contains(catalog.Repo.TrustNote(), "PR-head .codereview/agents changes do not affect") {
 		t.Fatalf("repo info = %#v, want provenance and trust note", catalog.Repo)
 	}
 }

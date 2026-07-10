@@ -10,6 +10,15 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
+// ShortSHA returns the SHA trimmed of surrounding whitespace and truncated to 12 characters.
+func ShortSHA(sha string) string {
+	sha = strings.TrimSpace(sha)
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
 // ParseGitHubPullURL parses the v1 GitHub pull-request URL form.
 func ParseGitHubPullURL(raw string) (gitprovider.PRRef, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
