@@ -80,8 +80,6 @@ type Store interface {
 	AllocateRun(context.Context, ledger.AllocateRunParams) (ledger.Run, error)
 	InsertSession(context.Context, ledger.Session) error
 	GetSession(context.Context, string) (ledger.Session, error)
-	InsertFinding(context.Context, ledger.Finding) error
-	InsertPlannedAction(context.Context, ledger.PlannedAction) error
 	InsertPlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error
 	ListFindings(context.Context, string) ([]ledger.Finding, error)
 	ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error)
@@ -303,19 +301,7 @@ type SelectionResult struct {
 	ReviewHeadSHA    string
 }
 
-type sessionDraft struct {
-	rowID                     string
-	providerReportedSessionID string
-	providerSessionID         string
-	role                      ledger.SessionRole
-	agentID                   *string
-	adapter                   string
-	model                     string
-	effort                    string
-	startedAt                 time.Time
-	completedAt               time.Time
-	response                  llm.Response
-}
+type sessionDraft = llmlifecycle.SessionDraft
 
 type executionMode struct {
 	live         bool
@@ -342,6 +328,7 @@ type selectionSetupRequest struct {
 	ReviewHeadSHA    string
 	NoResolveThreads bool
 	ResolvedPR       *reviewPRContext
+	InvocationRoot   *string
 	ResolveArtifacts func(gitprovider.PR) (ArtifactPaths, error)
 }
 
@@ -453,6 +440,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: false,
+		InvocationRoot:   &invocationRoot,
 		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
 			return ArtifactPathsFromDir(req.ArtifactDir), nil
 		},
@@ -560,6 +548,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: req.NoResolveThreads,
 		ResolvedPR:       &reviewCtx,
+		InvocationRoot:   &invocationRoot,
 		ResolveArtifacts: func(reviewPR gitprovider.PR) (ArtifactPaths, error) {
 			if mode.live {
 				return ArtifactPathsFromDir(mode.run.ArtifactPath), nil
@@ -625,188 +614,14 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 
-	findingSession := map[review.FindingID]string{}
-	repoSources := append([]agents.SourceInfo(nil), prepared.catalog.Sources...)
-
-	if len(prepared.parsed.Patches) == 0 {
-		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
-			if !mode.live {
-				return Result{}, fmt.Errorf("pipeline: named session %q requires live review", sessionName)
-			}
-			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", sessionName))
-		}
-		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged, planRunInputs{repoSources: repoSources})
-		if err != nil {
-			return Result{}, err
-		}
-		result.Plan = plan
-	} else if repoGuidanceUnavailableReason(repoSources) != "" {
-		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, nil, review.Rollup{}, nil, false, result.AgentDefsChanged, planRunInputs{
-			repoSources: repoSources,
-			startedAt:   now,
-		})
-		if err != nil {
-			return Result{}, err
-		}
-		result.Plan = plan
-	} else {
-		runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
-		if err != nil {
-			return Result{}, err
-		}
-		model := runtimeConfig.model
-		namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, model, now)
-		if err != nil {
-			return Result{}, err
-		}
-
-		selection, selectionSession, selectionLedgerSession, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
-			RunID:                       run.RunID,
-			DurableSession:              namedSession.enabled && namedSession.supportsResume,
-			Profile:                     req.Profile,
-			SelectionModelOverride:      req.SelectionModelOverride,
-			SelectionEffortOverride:     req.SelectionEffortOverride,
-			SelectionPromptInstructions: req.SelectionPromptInstructions,
-			ReviewPR:                    prepared.reviewPR,
-			Catalog:                     prepared.catalog,
-			ParsedDiff:                  prepared.parsed,
-			Threads:                     prepared.threads,
-			ThreadContext:               prepared.threadContext,
-			Artifacts:                   prepared.artifacts,
-			ResumeSessionID:             namedSession.resumeID(),
-			MaxAgents:                   maxAgents,
-		})
-		if err != nil {
-			if errors.Is(err, errLLMTaskFailedBlocking) {
-				failureOutcome = ledger.OutcomeIncomplete
-			}
-			return Result{}, err
-		}
-		result.Selection = selection
-		result.Sessions = appendSessionIfPresent(result.Sessions, selectionLedgerSession)
-		namedSession.recordSessionID(selectionSession)
-
-		selectionTaskIDs := []string{orchestratorSelectionStage}
-		threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext)
-		if err != nil {
-			if errors.Is(err, errLLMTaskFailedBlocking) {
-				failureOutcome = ledger.OutcomeIncomplete
-			}
-			return Result{}, err
-		}
-		findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, reviewerFindingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency)
-		if err != nil {
-			if errors.Is(err, errLLMTaskFailedBlocking) {
-				failureOutcome = ledger.OutcomeIncomplete
-			}
-			return Result{}, err
-		}
-		result.Findings = findings
-		result.ReviewerFailures = reviewerFailures
-		reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles)
-		result.ReviewerCoverage = reviewerCoverage
-		result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
-		for id, rowID := range reviewerFindingSessions {
-			findingSession[id] = rowID
-		}
-
-		rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
-		if err != nil {
-			return Result{}, err
-		}
-		rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
-
-		rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings, reviewerFailures, reviewerCoverage)
-		if err != nil {
-			return Result{}, err
-		}
-		if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
-			return Result{}, err
-		}
-		rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
-		if err != nil {
-			return Result{}, err
-		}
-		reviewerDeps := reviewerTaskIDs(selection.SelectedAgents)
-		rollupDeps := append([]string(nil), selectionTaskIDs...)
-		rollupDeps = append(rollupDeps, reviewerDeps...)
-		rollup, rollupSession, rollupLedgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
-			runID:             run.RunID,
-			taskID:            orchestratorRollupStage,
-			phase:             "rollup",
-			dependencyTaskIDs: rollupDeps,
-			inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupDeps),
-			artifacts:         prepared.artifacts,
-			role:              ledger.SessionRoleOrchestrator,
-			model:             rollupModel,
-			effort:            rollupEffort,
-			logPath:           rollupLog,
-			prompt:            rollupPrompt,
-			resumeSessionID:   namedSession.resumeID(),
-		}, func(data []byte) (review.Rollup, error) {
-			return llm.DecodeRollup(data, llm.RollupOptions{
-				FindingSeverities:         findingSeverities(findings),
-				MajorEventRequestsChanges: req.MajorRequestChanges,
-			})
-		})
-		if err != nil {
-			if errors.Is(err, errLLMTaskFailedBlocking) {
-				failureOutcome = ledger.OutcomeIncomplete
-			}
-			return Result{}, err
-		}
-		result.Rollup = rollup
-		result.Sessions = appendSessionIfPresent(result.Sessions, rollupLedgerSession)
-		result.NamedSessionCandidate = namedSession.buildCandidate(rollupSession, opts.now())
-		if namedSession.enabled && result.NamedSessionCandidate == nil {
-			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
-		}
-
-		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
-			threadResponses:  threadResponses,
-			repoSources:      repoSources,
-			hasRun:           true,
-			selection:        selectionSession,
-			reviewers:        reviewerSessions,
-			rollup:           rollupSession,
-			selectedAgents:   selection.SelectedAgents,
-			findingSessions:  findingSession,
-			reviewerFailures: reviewerFailures,
-			reviewerCoverage: reviewerCoverage,
-			startedAt:        now,
-		})
-		if err != nil {
-			return Result{}, err
-		}
-		result.Plan = plan
-	}
-	ledgerFindings := make([]ledger.Finding, 0, len(result.Plan.AnchoredFindings))
-	for _, finding := range result.Plan.AnchoredFindings {
-		rowID, err := sessionRowIDForFinding(finding, findingSession)
-		if err != nil {
-			return Result{}, err
-		}
-		ledgerFindings = append(ledgerFindings, ledgerFinding(run.RunID, rowID, finding))
-	}
-	plannedActions := make([]ledger.PlannedAction, 0, len(result.Plan.Actions))
-	for _, action := range result.Plan.Actions {
-		planned, err := plannedactions.FromReviewPlan(run.RunID, action)
-		if err != nil {
-			return Result{}, err
-		}
-		plannedActions = append(plannedActions, planned)
-	}
-	_, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
+	findingSessions, blockingFailure, err := executePlanPhases(ctx, opts, req, mode, run, prepared, now, maxAgents, maxConcurrency, &result)
 	if err != nil {
+		if blockingFailure {
+			failureOutcome = ledger.OutcomeIncomplete
+		}
 		return Result{}, err
 	}
-	if hasPersistedPlanning {
-		plannedActions = existingActions
-	} else if err := opts.Store.InsertPlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
-		return Result{}, err
-	}
-	result.PlannedActions = plannedActions
-	if err := writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection)); err != nil {
+	if err := persistExecutionResult(ctx, opts, req, run, prepared, findingSessions, &result); err != nil {
 		return Result{}, err
 	}
 	if !mode.live {
@@ -817,6 +632,186 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	completed = true
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
+}
+
+func executePlanPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
+	repoSources := append([]agents.SourceInfo(nil), prepared.catalog.Sources...)
+	if len(prepared.parsed.Patches) == 0 {
+		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
+			if !mode.live {
+				return nil, false, fmt.Errorf("pipeline: named session %q requires live review", sessionName)
+			}
+			opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", sessionName))
+		}
+		plan, err := opts.buildPlan(req, prepared.pr, mode.planPostMode, result.EffectiveCaps, reviewplan.Diff{}, nil, review.Rollup{}, nil, true, result.AgentDefsChanged, planRunInputs{repoSources: repoSources})
+		if err != nil {
+			return nil, false, err
+		}
+		result.Plan = plan
+		return nil, false, nil
+	}
+	if repoGuidanceUnavailableReason(repoSources) != "" {
+		plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, nil, review.Rollup{}, nil, false, result.AgentDefsChanged, planRunInputs{
+			repoSources: repoSources,
+			startedAt:   now,
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		result.Plan = plan
+		return nil, false, nil
+	}
+	return executeLLMPhases(ctx, opts, req, mode, run, prepared, repoSources, now, maxAgents, maxConcurrency, result)
+}
+
+func executeLLMPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, repoSources []agents.SourceInfo, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
+	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
+	if err != nil {
+		return nil, false, err
+	}
+	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
+	if err != nil {
+		return nil, false, err
+	}
+
+	selection, selectionSession, selectionLedgerSession, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
+		RunID:                       run.RunID,
+		DurableSession:              namedSession.enabled && namedSession.supportsResume,
+		Profile:                     req.Profile,
+		SelectionModelOverride:      req.SelectionModelOverride,
+		SelectionEffortOverride:     req.SelectionEffortOverride,
+		SelectionPromptInstructions: req.SelectionPromptInstructions,
+		ReviewPR:                    prepared.reviewPR,
+		Catalog:                     prepared.catalog,
+		ParsedDiff:                  prepared.parsed,
+		Threads:                     prepared.threads,
+		ThreadContext:               prepared.threadContext,
+		Artifacts:                   prepared.artifacts,
+		ResumeSessionID:             namedSession.resumeID(),
+		MaxAgents:                   maxAgents,
+	})
+	if err != nil {
+		return executionPhaseFailure(err)
+	}
+	result.Selection = selection
+	result.Sessions = appendSessionIfPresent(result.Sessions, selectionLedgerSession)
+	namedSession.recordSessionID(selectionSession)
+
+	selectionTaskIDs := []string{orchestratorSelectionStage}
+	threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext)
+	if err != nil {
+		return executionPhaseFailure(err)
+	}
+	findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, findingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency)
+	if err != nil {
+		return executionPhaseFailure(err)
+	}
+	result.Findings = findings
+	result.ReviewerFailures = reviewerFailures
+	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles)
+	result.ReviewerCoverage = reviewerCoverage
+	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
+
+	rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
+	if err != nil {
+		return nil, false, err
+	}
+	rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
+	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings, reviewerFailures, reviewerCoverage)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
+		return nil, false, err
+	}
+	rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
+	if err != nil {
+		return nil, false, err
+	}
+	reviewerDeps := reviewerTaskIDs(selection.SelectedAgents)
+	rollupDeps := append([]string(nil), selectionTaskIDs...)
+	rollupDeps = append(rollupDeps, reviewerDeps...)
+	rollup, rollupSession, rollupLedgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
+		runID:             run.RunID,
+		taskID:            orchestratorRollupStage,
+		phase:             "rollup",
+		dependencyTaskIDs: rollupDeps,
+		inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupDeps),
+		artifacts:         prepared.artifacts,
+		role:              ledger.SessionRoleOrchestrator,
+		model:             rollupModel,
+		effort:            rollupEffort,
+		logPath:           rollupLog,
+		prompt:            rollupPrompt,
+		resumeSessionID:   namedSession.resumeID(),
+	}, func(data []byte) (review.Rollup, error) {
+		return llm.DecodeRollup(data, llm.RollupOptions{
+			FindingSeverities:         findingSeverities(findings),
+			MajorEventRequestsChanges: req.MajorRequestChanges,
+		})
+	})
+	if err != nil {
+		return executionPhaseFailure(err)
+	}
+	result.Rollup = rollup
+	result.Sessions = appendSessionIfPresent(result.Sessions, rollupLedgerSession)
+	result.NamedSessionCandidate = namedSession.buildCandidate(rollupSession, opts.now())
+	if namedSession.enabled && result.NamedSessionCandidate == nil {
+		opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
+	}
+
+	plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
+		threadResponses:  threadResponses,
+		repoSources:      repoSources,
+		hasRun:           true,
+		selection:        selectionSession,
+		reviewers:        reviewerSessions,
+		rollup:           rollupSession,
+		selectedAgents:   selection.SelectedAgents,
+		findingSessions:  findingSessions,
+		reviewerFailures: reviewerFailures,
+		reviewerCoverage: reviewerCoverage,
+		startedAt:        now,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	result.Plan = plan
+	return findingSessions, false, nil
+}
+
+func executionPhaseFailure(err error) (map[review.FindingID]string, bool, error) {
+	return nil, errors.Is(err, errLLMTaskFailedBlocking), err
+}
+
+func persistExecutionResult(ctx context.Context, opts Options, req Request, run ledger.Run, prepared preparedSelectionContext, findingSessions map[review.FindingID]string, result *Result) error {
+	ledgerFindings := make([]ledger.Finding, 0, len(result.Plan.AnchoredFindings))
+	for _, finding := range result.Plan.AnchoredFindings {
+		rowID, err := sessionRowIDForFinding(finding, findingSessions)
+		if err != nil {
+			return err
+		}
+		ledgerFindings = append(ledgerFindings, ledgerFinding(run.RunID, rowID, finding))
+	}
+	plannedActions := make([]ledger.PlannedAction, 0, len(result.Plan.Actions))
+	for _, action := range result.Plan.Actions {
+		planned, err := plannedactions.FromReviewPlan(run.RunID, action)
+		if err != nil {
+			return err
+		}
+		plannedActions = append(plannedActions, planned)
+	}
+	_, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
+	if err != nil {
+		return err
+	}
+	if hasPersistedPlanning {
+		plannedActions = existingActions
+	} else if err := opts.Store.InsertPlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
+		return err
+	}
+	result.PlannedActions = plannedActions
+	return writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection))
 }
 
 func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitprovider.PR) (ledger.Run, bool, error) {
@@ -916,14 +911,14 @@ func (c preparedSelectionContext) selectionResult() SelectionResult {
 
 func selectionSessionFromDraft(draft sessionDraft) SelectionSession {
 	return SelectionSession{
-		ProviderReportedSessionID: draft.providerReportedSessionID,
-		ProviderSessionID:         draft.providerSessionID,
-		Adapter:                   draft.adapter,
-		Model:                     draft.model,
-		Effort:                    draft.effort,
-		StartedAt:                 draft.startedAt,
-		CompletedAt:               draft.completedAt,
-		Response:                  draft.response,
+		ProviderReportedSessionID: draft.ProviderReportedSessionID,
+		ProviderSessionID:         draft.ProviderSessionID,
+		Adapter:                   draft.Adapter,
+		Model:                     draft.Model,
+		Effort:                    draft.Effort,
+		StartedAt:                 draft.StartedAt,
+		CompletedAt:               draft.CompletedAt,
+		Response:                  draft.Response,
 	}
 }
 
@@ -995,9 +990,14 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 			return preparedSelectionContext{}, err
 		}
 	}
-	invocationRoot, err := resolveInvocationRootForSafety(ctx, opts)
-	if err != nil {
-		return preparedSelectionContext{}, err
+	invocationRoot := ""
+	if req.InvocationRoot != nil {
+		invocationRoot = *req.InvocationRoot
+	} else {
+		invocationRoot, err = resolveInvocationRootForSafety(ctx, opts)
+		if err != nil {
+			return preparedSelectionContext{}, err
+		}
 	}
 	catalog, err := agents.Load(ctx, agents.LoadOptions{
 		ProfileDirs:               append([]string(nil), req.Profile.AgentSources...),
@@ -1116,36 +1116,18 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 			KnownThreads: knownThreadIDs,
 		})
 	}
-	if strings.TrimSpace(req.RunID) != "" {
-		selection, selectionSession, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
-			runID:             req.RunID,
-			taskID:            orchestratorSelectionStage,
-			phase:             "selection",
-			dependencyTaskIDs: dependencyTaskIDs,
-			inputFingerprint:  llmTaskFingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, fingerprintDeps),
-			artifacts:         req.Artifacts,
-			role:              ledger.SessionRoleOrchestrator,
-			model:             model,
-			effort:            effort,
-			logPath:           selectionLog,
-			prompt:            selectionPrompt,
-			baseRequest:       llm.Request{DurableSession: req.DurableSession},
-			resumeSessionID:   req.ResumeSessionID,
-		}, decode)
-		if err != nil {
-			return llm.Selection{}, selectionSession, ledgerSession, err
-		}
-		selection = opts.capSelectionAgents(selection, req.MaxAgents)
-		return selection, selectionSession, ledgerSession, nil
-	}
 	selectionFingerprint := llmTaskFingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, fingerprintDeps)
-	if err := resetLLMTaskIfInputFingerprintChanged(req.Artifacts, orchestratorSelectionStage, selectionFingerprint); err != nil {
-		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+	hasRun := strings.TrimSpace(req.RunID) != ""
+	if !hasRun {
+		if err := resetLLMTaskIfInputFingerprintChanged(req.Artifacts, orchestratorSelectionStage, selectionFingerprint); err != nil {
+			return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+		}
 	}
-	selection, selectionSession, _, err := runStructuredTask(ctx, opts, llmTaskSpec{
+	selection, selectionSession, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
+		runID:             req.RunID,
 		taskID:            orchestratorSelectionStage,
 		phase:             "selection",
-		allowNoRunCache:   true,
+		allowNoRunCache:   !hasRun,
 		dependencyTaskIDs: dependencyTaskIDs,
 		inputFingerprint:  selectionFingerprint,
 		artifacts:         req.Artifacts,
@@ -1157,11 +1139,14 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		baseRequest:       llm.Request{DurableSession: req.DurableSession},
 		resumeSessionID:   req.ResumeSessionID,
 	}, decode)
+	if !hasRun {
+		ledgerSession = ledger.Session{}
+	}
 	if err != nil {
-		return llm.Selection{}, selectionSession, ledger.Session{}, err
+		return llm.Selection{}, selectionSession, ledgerSession, err
 	}
 	selection = opts.capSelectionAgents(selection, req.MaxAgents)
-	return selection, selectionSession, ledger.Session{}, nil
+	return selection, selectionSession, ledgerSession, nil
 }
 
 func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread) ([]review.ThreadResponseAction, error) {
@@ -1314,7 +1299,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 			reviewerResults = append(reviewerResults, result)
 			for _, finding := range result.Findings {
 				allFindings = append(allFindings, finding)
-				findingSessions[finding.ID] = session.rowID
+				findingSessions[finding.ID] = session.RowID
 			}
 		}()
 	}
@@ -1433,22 +1418,6 @@ func lifecyclePaths(paths ArtifactPaths) llmlifecycle.Paths {
 	return llmlifecycle.Paths{LLMTasksDir: paths.LLMTasksDir}
 }
 
-func sessionDraftFromLifecycle(draft llmlifecycle.SessionDraft) sessionDraft {
-	return sessionDraft{
-		rowID:                     draft.RowID,
-		providerReportedSessionID: draft.ProviderReportedSessionID,
-		providerSessionID:         draft.ProviderSessionID,
-		role:                      draft.Role,
-		agentID:                   draft.AgentID,
-		adapter:                   draft.Adapter,
-		model:                     draft.Model,
-		effort:                    draft.Effort,
-		startedAt:                 draft.StartedAt,
-		completedAt:               draft.CompletedAt,
-		response:                  draft.Response,
-	}
-}
-
 func pipelineTaskError(err error) error {
 	var taskErr *llmlifecycle.TaskError
 	if !errors.As(err, &taskErr) {
@@ -1482,7 +1451,7 @@ func runStructuredTask[T any](ctx context.Context, opts Options, spec llmTaskSpe
 		Now:               opts.now,
 		NewSessionRowID:   opts.newSessionRowID,
 	}, decode)
-	draft := sessionDraftFromLifecycle(result.Draft)
+	draft := result.Draft
 	if err != nil {
 		return zero, draft, result.Session, pipelineTaskError(err)
 	}
@@ -1624,8 +1593,8 @@ func (s *namedSessionState) recordSessionID(draft sessionDraft) {
 	if s == nil || !s.enabled || !s.supportsResume {
 		return
 	}
-	if strings.TrimSpace(draft.providerReportedSessionID) != "" {
-		s.currentProviderSessionID = draft.providerReportedSessionID
+	if strings.TrimSpace(draft.ProviderReportedSessionID) != "" {
+		s.currentProviderSessionID = draft.ProviderReportedSessionID
 	}
 }
 
@@ -1633,7 +1602,7 @@ func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.T
 	if s == nil || !s.enabled {
 		return nil
 	}
-	providerSessionID := strings.TrimSpace(draft.providerReportedSessionID)
+	providerSessionID := strings.TrimSpace(draft.ProviderReportedSessionID)
 	if providerSessionID == "" {
 		return nil
 	}
@@ -1674,11 +1643,11 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	reviewerByAgent := map[string]sessionDraft{}
 	agentByRow := map[string]string{}
 	for _, draft := range inputs.reviewers {
-		if draft.agentID == nil {
+		if draft.AgentID == nil {
 			continue
 		}
-		reviewerByAgent[*draft.agentID] = draft
-		agentByRow[draft.rowID] = *draft.agentID
+		reviewerByAgent[*draft.AgentID] = draft
+		agentByRow[draft.RowID] = *draft.AgentID
 	}
 
 	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage(orchestratorSelectionStage, inputs.selection)}
@@ -1694,7 +1663,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
 		ToolVersion:       req.ToolVersion,
-		Adapter:           inputs.selection.adapter,
+		Adapter:           inputs.selection.Adapter,
 		Model:             sharedWorkstreamModel(workstreams),
 		PostingIdentity:   postingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,
@@ -1832,9 +1801,13 @@ func sortedIntersection(values, scope []string) []string {
 }
 
 func stringSet(values []string) map[string]bool {
+	return setBy(values, func(value string) string { return value })
+}
+
+func setBy[T any](values []T, key func(T) string) map[string]bool {
 	out := make(map[string]bool, len(values))
 	for _, value := range values {
-		out[value] = true
+		out[key(value)] = true
 	}
 	return out
 }
@@ -1890,10 +1863,10 @@ func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewer
 }
 
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
-	usage := draft.response.Usage
+	usage := draft.Response.Usage
 	workstream := reviewplan.WorkstreamUsage{
 		Name:        name,
-		Model:       draft.model,
+		Model:       draft.Model,
 		TokensIn:    usage.TokensIn,
 		TokensOut:   usage.TokensOut,
 		CacheRead:   usage.CacheRead,
@@ -1905,7 +1878,7 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 	// agent's unpriced model leaves cost unavailable rather than wrong.
 	if workstream.CostUSD == nil {
 		if est, ok := pricing.EstimateUSD(
-			draft.model, usage.TokensIn, usage.TokensOut, usage.CacheRead, usage.CacheCreate,
+			draft.Model, usage.TokensIn, usage.TokensOut, usage.CacheRead, usage.CacheCreate,
 		); ok {
 			workstream.CostUSD = &est
 			workstream.CostEstimated = true
@@ -1915,11 +1888,11 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 	// pipeline's own start/complete clock for the workstream, and render
 	// unavailable (not 0s) when neither source has data.
 	switch {
-	case draft.response.DurationMS > 0:
-		duration := draft.response.DurationMS
+	case draft.Response.DurationMS > 0:
+		duration := draft.Response.DurationMS
 		workstream.DurationMS = &duration
-	case !draft.startedAt.IsZero() && draft.completedAt.After(draft.startedAt):
-		duration := draft.completedAt.Sub(draft.startedAt).Milliseconds()
+	case !draft.StartedAt.IsZero() && draft.CompletedAt.After(draft.StartedAt):
+		duration := draft.CompletedAt.Sub(draft.StartedAt).Milliseconds()
 		workstream.DurationMS = &duration
 	}
 	return workstream
@@ -2160,52 +2133,79 @@ func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, ma
 	return string(body), nil
 }
 
-func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovider.InlineThread) (selectionPromptInput, []string, error) {
+type dossierPromptCore struct {
+	PRIntent     string
+	ChangeMap    string
+	RepoGuidance string
+	Discussion   string
+	Metadata     workbenchMetadataArtifact
+	Dependencies []string
+}
+
+func loadDossierPromptCore(paths ArtifactPaths) (dossierPromptCore, error) {
 	prIntentPath, err := paths.DossierFinalPath("pr-intent.md")
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 	changeMapPath, err := paths.DossierFinalPath("change-map.md")
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 	repoGuidancePath, err := paths.DossierFinalPath("repo-guidance.md")
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 	discussionPath, err := paths.DossierFinalPath("discussion.md")
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 	prIntent, err := selectionPromptContentFromPath(prIntentPath)
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 	changeMap, err := selectionPromptContentFromPath(changeMapPath)
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 	repoGuidance, err := selectionPromptContentFromPath(repoGuidancePath)
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 	discussion, err := selectionPromptContentFromPath(discussionPath)
 	if err != nil {
-		return selectionPromptInput{}, nil, err
+		return dossierPromptCore{}, err
 	}
 
 	indexBytes, err := os.ReadFile(paths.DossierIndexPath()) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
 	if err != nil {
-		return selectionPromptInput{}, nil, fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(paths.DossierIndexPath()), err)
+		return dossierPromptCore{}, fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(paths.DossierIndexPath()), err)
 	}
 	metaPath := paths.WorkbenchMetadataPath()
 	metaBytes, err := os.ReadFile(metaPath) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
 	if err != nil {
-		return selectionPromptInput{}, nil, fmt.Errorf("pipeline: read workbench metadata: %w", err)
+		return dossierPromptCore{}, fmt.Errorf("pipeline: read workbench metadata: %w", err)
 	}
 	var meta workbenchMetadataArtifact
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return selectionPromptInput{}, nil, fmt.Errorf("pipeline: decode workbench metadata: %w", err)
+		return dossierPromptCore{}, fmt.Errorf("pipeline: decode workbench metadata: %w", err)
+	}
+	return dossierPromptCore{
+		PRIntent:     prIntent,
+		ChangeMap:    changeMap,
+		RepoGuidance: repoGuidance,
+		Discussion:   discussion,
+		Metadata:     meta,
+		Dependencies: []string{
+			"dossier_index=" + sha256Hex(indexBytes),
+			"workbench_metadata=" + sha256Hex(metaBytes),
+		},
+	}, nil
+}
+
+func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovider.InlineThread) (selectionPromptInput, []string, error) {
+	core, err := loadDossierPromptCore(paths)
+	if err != nil {
+		return selectionPromptInput{}, nil, err
 	}
 	summaryPath, err := paths.DossierSummaryPath("discussion.json")
 	if err != nil {
@@ -2217,26 +2217,22 @@ func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovide
 	}
 
 	input := selectionPromptInput{
-		ChangedFiles: append([]string(nil), meta.FingerprintInputs.ChangedFiles...),
+		ChangedFiles: append([]string(nil), core.Metadata.FingerprintInputs.ChangedFiles...),
 		Dossier: selectionPromptDossier{
-			PRIntent:     prIntent,
-			ChangeMap:    changeMap,
-			RepoGuidance: repoGuidance,
-			Discussion:   discussion,
+			PRIntent:     core.PRIntent,
+			ChangeMap:    core.ChangeMap,
+			RepoGuidance: core.RepoGuidance,
+			Discussion:   core.Discussion,
 		},
 		Workbench: selectionPromptWorkbench{
-			CheckoutMode: meta.CheckoutMode,
-			PR:           meta.PR,
-			Base:         meta.Base,
-			Head:         meta.Head,
+			CheckoutMode: core.Metadata.CheckoutMode,
+			PR:           core.Metadata.PR,
+			Base:         core.Metadata.Base,
+			Head:         core.Metadata.Head,
 		},
 		Threads: selectionThreadPrompts(threads, summary),
 	}
-	deps := []string{
-		"dossier_index=" + sha256Hex(indexBytes),
-		"workbench_metadata=" + sha256Hex(metaBytes),
-	}
-	return input, deps, nil
+	return input, core.Dependencies, nil
 }
 
 func selectionPromptInputFromThreadContext(paths ArtifactPaths, threads []threadcontext.Thread) (selectionPromptInput, []string, error) {
@@ -2265,64 +2261,23 @@ func selectionPromptContentFromPath(path string) (string, error) {
 }
 
 func reviewerPromptInputFromArtifacts(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent) (reviewerPromptInput, []string, error) {
-	prIntentPath, err := paths.DossierFinalPath("pr-intent.md")
+	core, err := loadDossierPromptCore(paths)
 	if err != nil {
 		return reviewerPromptInput{}, nil, err
-	}
-	changeMapPath, err := paths.DossierFinalPath("change-map.md")
-	if err != nil {
-		return reviewerPromptInput{}, nil, err
-	}
-	repoGuidancePath, err := paths.DossierFinalPath("repo-guidance.md")
-	if err != nil {
-		return reviewerPromptInput{}, nil, err
-	}
-	discussionPath, err := paths.DossierFinalPath("discussion.md")
-	if err != nil {
-		return reviewerPromptInput{}, nil, err
-	}
-	prIntent, err := selectionPromptContentFromPath(prIntentPath)
-	if err != nil {
-		return reviewerPromptInput{}, nil, err
-	}
-	changeMap, err := selectionPromptContentFromPath(changeMapPath)
-	if err != nil {
-		return reviewerPromptInput{}, nil, err
-	}
-	repoGuidance, err := selectionPromptContentFromPath(repoGuidancePath)
-	if err != nil {
-		return reviewerPromptInput{}, nil, err
-	}
-	discussion, err := selectionPromptContentFromPath(discussionPath)
-	if err != nil {
-		return reviewerPromptInput{}, nil, err
-	}
-	indexBytes, err := os.ReadFile(paths.DossierIndexPath()) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
-	if err != nil {
-		return reviewerPromptInput{}, nil, fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(paths.DossierIndexPath()), err)
-	}
-	metaPath := paths.WorkbenchMetadataPath()
-	metaBytes, err := os.ReadFile(metaPath) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
-	if err != nil {
-		return reviewerPromptInput{}, nil, fmt.Errorf("pipeline: read workbench metadata: %w", err)
-	}
-	var meta workbenchMetadataArtifact
-	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return reviewerPromptInput{}, nil, fmt.Errorf("pipeline: decode workbench metadata: %w", err)
 	}
 	input := reviewerPromptInput{
 		PR: promptPRFromPR(pr),
 		Dossier: reviewerPromptDossier{
-			PRIntent:     prIntent,
-			ChangeMap:    changeMap,
-			RepoGuidance: repoGuidance,
-			Discussion:   discussion,
+			PRIntent:     core.PRIntent,
+			ChangeMap:    core.ChangeMap,
+			RepoGuidance: core.RepoGuidance,
+			Discussion:   core.Discussion,
 		},
 		Workbench: reviewerPromptWorkbench{
-			CheckoutMode: meta.CheckoutMode,
-			PR:           meta.PR,
-			Base:         meta.Base,
-			Head:         meta.Head,
+			CheckoutMode: core.Metadata.CheckoutMode,
+			PR:           core.Metadata.PR,
+			Base:         core.Metadata.Base,
+			Head:         core.Metadata.Head,
 		},
 		Assignment: reviewerPromptAssignment{
 			AgentID:      agent.ID,
@@ -2331,24 +2286,25 @@ func reviewerPromptInputFromArtifacts(paths ArtifactPaths, pr gitprovider.PR, se
 			AllowedFiles: append([]string(nil), selected.AllowedFiles...),
 		},
 	}
-	deps := []string{
-		"dossier_index=" + sha256Hex(indexBytes),
-		"workbench_metadata=" + sha256Hex(metaBytes),
+	return input, core.Dependencies, nil
+}
+
+func dossierInlineThreadSummaryIndexes(summary dossierDiscussionSummaryArtifact) (map[string]dossierInlineThreadSummaryArtifact, map[string]dossierInlineThreadSummaryArtifact) {
+	byAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+	byThreadID := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+	for _, thread := range summary.InlineThreads {
+		if strings.TrimSpace(thread.ThreadID) != "" {
+			byThreadID[strings.TrimSpace(thread.ThreadID)] = thread
+		} else {
+			key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
+			byAnchor[key] = thread
+		}
 	}
-	return input, deps, nil
+	return byAnchor, byThreadID
 }
 
 func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
-	summaryByAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
-	summaryByThreadID := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
-	for _, thread := range summary.InlineThreads {
-		if strings.TrimSpace(thread.ThreadID) != "" {
-			summaryByThreadID[strings.TrimSpace(thread.ThreadID)] = thread
-		} else {
-			key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
-			summaryByAnchor[key] = thread
-		}
-	}
+	summaryByAnchor, summaryByThreadID := dossierInlineThreadSummaryIndexes(summary)
 	out := make([]selectionThreadPrompt, 0, len(threads))
 	for _, thread := range threads {
 		promptThread := selectionThreadPrompt{
@@ -2374,16 +2330,7 @@ func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierD
 }
 
 func selectionThreadPromptsFromContext(threads []threadcontext.Thread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
-	summaryByAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
-	summaryByThreadID := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
-	for _, thread := range summary.InlineThreads {
-		if strings.TrimSpace(thread.ThreadID) != "" {
-			summaryByThreadID[strings.TrimSpace(thread.ThreadID)] = thread
-		} else {
-			key := dossierInlineThreadAnchorKey(thread.Path, thread.Side, thread.Line, thread.AnchorKind)
-			summaryByAnchor[key] = thread
-		}
-	}
+	summaryByAnchor, summaryByThreadID := dossierInlineThreadSummaryIndexes(summary)
 	out := make([]selectionThreadPrompt, 0, len(threads))
 	for _, thread := range threads {
 		promptThread := selectionThreadPrompt{
@@ -3054,28 +3001,24 @@ func prepareWorkbenchArtifacts(ctx context.Context, opts Options, req workbenchP
 
 	changedFiles := append([]string(nil), req.ChangedFiles...)
 	sort.Strings(changedFiles)
+	prIdentity := workbenchPRIdentity{
+		Host:   req.PRRef.Host,
+		Owner:  req.PRRef.Owner,
+		Repo:   req.PRRef.Repo,
+		Number: req.PRRef.Number,
+	}
 	meta := workbenchMetadataArtifact{
 		SchemaVersion:  workbenchMetadataSchemaVersion,
 		SourceRepoRoot: sourceRepoRoot,
 		CheckoutMode:   workbenchCheckoutModeArtifactClone,
-		PR: workbenchPRIdentity{
-			Host:   req.PRRef.Host,
-			Owner:  req.PRRef.Owner,
-			Repo:   req.PRRef.Repo,
-			Number: req.PRRef.Number,
-		},
-		Base:         workbenchBranchArtifactFromRef(req.ReviewPR.Base),
-		Head:         workbenchBranchArtifactFromRef(req.ReviewPR.Head),
-		RepoPath:     req.Artifacts.WorkbenchRepoDir,
-		ScratchPath:  req.Artifacts.WorkbenchScratch,
-		ChangedFiles: changedFiles,
+		PR:             prIdentity,
+		Base:           workbenchBranchArtifactFromRef(req.ReviewPR.Base),
+		Head:           workbenchBranchArtifactFromRef(req.ReviewPR.Head),
+		RepoPath:       req.Artifacts.WorkbenchRepoDir,
+		ScratchPath:    req.Artifacts.WorkbenchScratch,
+		ChangedFiles:   changedFiles,
 		FingerprintInputs: workbenchFingerprintInputs{
-			PR: workbenchPRIdentity{
-				Host:   req.PRRef.Host,
-				Owner:  req.PRRef.Owner,
-				Repo:   req.PRRef.Repo,
-				Number: req.PRRef.Number,
-			},
+			PR:             prIdentity,
 			BaseSHA:        req.ReviewPR.Base.SHA,
 			HeadSHA:        req.ReviewPR.Head.SHA,
 			CheckoutMode:   workbenchCheckoutModeArtifactClone,
@@ -3724,7 +3667,7 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 		}
 		uncachedThreads = append(uncachedThreads, thread)
 	}
-	for _, comment := range capTopLevelCommentsForSummary(filteredTopLevel) {
+	for _, comment := range capSlice(filteredTopLevel, dossierSummaryMaxTopLevel) {
 		body := singleLineExcerpt(comment.Body, dossierSummaryExcerptRunes)
 		if shouldExcludeDiscussionSummaryText(body) {
 			continue
@@ -3738,7 +3681,7 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 	if len(filteredTopLevel) > dossierSummaryMaxTopLevel {
 		input.TopLevelCommentsOmitted = len(filteredTopLevel) - dossierSummaryMaxTopLevel
 	}
-	for _, thread := range capInlineThreadsForSummary(uncachedThreads) {
+	for _, thread := range capSlice(uncachedThreads, dossierSummaryMaxInlineThreads) {
 		promptThread := dossierPromptInlineThread{
 			ThreadID:   thread.ID,
 			Path:       thread.Path,
@@ -3747,7 +3690,7 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 			AnchorKind: thread.AnchorKind,
 			Resolved:   thread.Resolved,
 		}
-		for _, comment := range capThreadCommentsForSummary(thread.Comments) {
+		for _, comment := range capSlice(thread.Comments, dossierSummaryMaxThreadComments) {
 			body := singleLineExcerpt(comment.Body, dossierSummaryExcerptRunes)
 			if shouldExcludeDiscussionSummaryText(body) {
 				continue
@@ -4027,25 +3970,11 @@ func shouldExcludeDiscussionSummaryText(text string) bool {
 	return false
 }
 
-func capTopLevelCommentsForSummary(comments []dossierTopLevelCommentArtifact) []dossierTopLevelCommentArtifact {
-	if len(comments) <= dossierSummaryMaxTopLevel {
-		return comments
+func capSlice[T any](values []T, maxLen int) []T {
+	if len(values) <= maxLen {
+		return values
 	}
-	return comments[:dossierSummaryMaxTopLevel]
-}
-
-func capInlineThreadsForSummary(threads []dossierInlineThreadArtifact) []dossierInlineThreadArtifact {
-	if len(threads) <= dossierSummaryMaxInlineThreads {
-		return threads
-	}
-	return threads[:dossierSummaryMaxInlineThreads]
-}
-
-func capThreadCommentsForSummary(comments []dossierThreadCommentArtifact) []dossierThreadCommentArtifact {
-	if len(comments) <= dossierSummaryMaxThreadComments {
-		return comments
-	}
-	return comments[:dossierSummaryMaxThreadComments]
+	return values[:maxLen]
 }
 
 func dossierChangedFiles(patches []FilePatch) []dossierChangedFileArtifact {
@@ -4106,29 +4035,49 @@ func dossierTopLevelComments(issueComments []gitprovider.IssueComment, reviews [
 	return out
 }
 
+func dossierThreadComment(url, author, body, commitSHA string, createdAt, updatedAt time.Time) dossierThreadCommentArtifact {
+	return dossierThreadCommentArtifact{
+		URL:       url,
+		Author:    author,
+		Body:      strings.TrimSpace(body),
+		CommitSHA: commitSHA,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}
+}
+
+func sortDossierThreadComments(comments []dossierThreadCommentArtifact) {
+	sort.SliceStable(comments, func(i, j int) bool {
+		if comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
+			if comments[i].URL == comments[j].URL {
+				return comments[i].Body < comments[j].Body
+			}
+			return comments[i].URL < comments[j].URL
+		}
+		return comments[i].CreatedAt.Before(comments[j].CreatedAt)
+	})
+}
+
+func sortDossierInlineThreads(threads []dossierInlineThreadArtifact) {
+	sort.SliceStable(threads, func(i, j int) bool {
+		if threads[i].Path == threads[j].Path {
+			if threads[i].Line == threads[j].Line {
+				return threads[i].ID < threads[j].ID
+			}
+			return threads[i].Line < threads[j].Line
+		}
+		return threads[i].Path < threads[j].Path
+	})
+}
+
 func dossierInlineThreads(threads []gitprovider.InlineThread) []dossierInlineThreadArtifact {
 	out := make([]dossierInlineThreadArtifact, 0, len(threads))
 	for _, thread := range threads {
 		comments := make([]dossierThreadCommentArtifact, 0, len(thread.Comments))
 		for _, comment := range thread.Comments {
-			comments = append(comments, dossierThreadCommentArtifact{
-				URL:       comment.URL,
-				Author:    comment.Author.Login,
-				Body:      strings.TrimSpace(comment.Body),
-				CommitSHA: comment.CommitSHA,
-				CreatedAt: comment.CreatedAt,
-				UpdatedAt: comment.UpdatedAt,
-			})
+			comments = append(comments, dossierThreadComment(comment.URL, comment.Author.Login, comment.Body, comment.CommitSHA, comment.CreatedAt, comment.UpdatedAt))
 		}
-		sort.SliceStable(comments, func(i, j int) bool {
-			if comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
-				if comments[i].URL == comments[j].URL {
-					return comments[i].Body < comments[j].Body
-				}
-				return comments[i].URL < comments[j].URL
-			}
-			return comments[i].CreatedAt.Before(comments[j].CreatedAt)
-		})
+		sortDossierThreadComments(comments)
 		out = append(out, dossierInlineThreadArtifact{
 			ID:         string(thread.ID),
 			Path:       thread.Path,
@@ -4140,15 +4089,7 @@ func dossierInlineThreads(threads []gitprovider.InlineThread) []dossierInlineThr
 			Comments:   comments,
 		})
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Path == out[j].Path {
-			if out[i].Line == out[j].Line {
-				return out[i].ID < out[j].ID
-			}
-			return out[i].Line < out[j].Line
-		}
-		return out[i].Path < out[j].Path
-	})
+	sortDossierInlineThreads(out)
 	return out
 }
 
@@ -4157,24 +4098,9 @@ func dossierInlineThreadsFromContext(threads []threadcontext.Thread) []dossierIn
 	for _, thread := range threads {
 		comments := make([]dossierThreadCommentArtifact, 0, len(thread.Comments))
 		for _, comment := range thread.Comments {
-			comments = append(comments, dossierThreadCommentArtifact{
-				URL:       comment.URL,
-				Author:    comment.Author.Login,
-				Body:      strings.TrimSpace(comment.Body),
-				CommitSHA: comment.Anchor.CommitSHA,
-				CreatedAt: comment.CreatedAt,
-				UpdatedAt: comment.UpdatedAt,
-			})
+			comments = append(comments, dossierThreadComment(comment.URL, comment.Author.Login, comment.Body, comment.Anchor.CommitSHA, comment.CreatedAt, comment.UpdatedAt))
 		}
-		sort.SliceStable(comments, func(i, j int) bool {
-			if comments[i].CreatedAt.Equal(comments[j].CreatedAt) {
-				if comments[i].URL == comments[j].URL {
-					return comments[i].Body < comments[j].Body
-				}
-				return comments[i].URL < comments[j].URL
-			}
-			return comments[i].CreatedAt.Before(comments[j].CreatedAt)
-		})
+		sortDossierThreadComments(comments)
 		artifact := dossierInlineThreadArtifact{
 			ID:         string(thread.ID),
 			Path:       thread.Anchor.Path,
@@ -4199,15 +4125,7 @@ func dossierInlineThreadsFromContext(threads []threadcontext.Thread) []dossierIn
 		}
 		out = append(out, artifact)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Path == out[j].Path {
-			if out[i].Line == out[j].Line {
-				return out[i].ID < out[j].ID
-			}
-			return out[i].Line < out[j].Line
-		}
-		return out[i].Path < out[j].Path
-	})
+	sortDossierInlineThreads(out)
 	return out
 }
 
@@ -4798,40 +4716,32 @@ func resolveInvocationRootForSafety(ctx context.Context, opts Options) (string, 
 }
 
 func knownAgents(catalog agents.Catalog) map[string]bool {
-	out := make(map[string]bool, len(catalog.Agents))
-	for _, agent := range catalog.Agents {
-		out[agent.ID] = true
-	}
-	return out
+	return setBy(catalog.Agents, func(agent agents.Agent) string { return agent.ID })
 }
 
 func changedFiles(patches []FilePatch) map[string]bool {
-	out := make(map[string]bool, len(patches))
+	paths := make([]string, 0, len(patches)*2)
 	for _, patch := range patches {
 		if patch.Path != "" {
-			out[patch.Path] = true
+			paths = append(paths, patch.Path)
 		}
 		if patch.OldPath != "" {
-			out[patch.OldPath] = true
+			paths = append(paths, patch.OldPath)
 		}
 	}
-	return out
+	return stringSet(paths)
 }
 
 func knownThreads(threads []gitprovider.InlineThread) map[string]bool {
-	out := make(map[string]bool, len(threads))
-	for _, thread := range threads {
-		out[string(thread.ID)] = true
-	}
-	return out
+	return threadIDSet(threads, func(thread gitprovider.InlineThread) gitprovider.ThreadID { return thread.ID })
 }
 
 func knownThreadContext(threads []threadcontext.Thread) map[string]bool {
-	out := make(map[string]bool, len(threads))
-	for _, thread := range threads {
-		out[string(thread.ID)] = true
-	}
-	return out
+	return threadIDSet(threads, func(thread threadcontext.Thread) gitprovider.ThreadID { return thread.ID })
+}
+
+func threadIDSet[T any](threads []T, id func(T) gitprovider.ThreadID) map[string]bool {
+	return setBy(threads, func(thread T) string { return string(id(thread)) })
 }
 
 func patchPaths(patches []FilePatch) []string {

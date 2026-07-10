@@ -5187,8 +5187,8 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 
 	// Known model, adapter reported no cost → estimate is filled and marked.
 	draft := sessionDraft{
-		model:    "claude-sonnet-4-6",
-		response: llm.Response{Usage: llm.Usage{TokensIn: &in, TokensOut: &out}},
+		Model:    "claude-sonnet-4-6",
+		Response: llm.Response{Usage: llm.Usage{TokensIn: &in, TokensOut: &out}},
 	}
 	w := workstreamUsage("policies:conventions", draft)
 	if w.CostUSD == nil || !w.CostEstimated {
@@ -5199,7 +5199,7 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 	}
 
 	// Unknown model (any agent's model) → no estimate, cost stays unavailable.
-	draft.model = "vendor/unknown-model"
+	draft.Model = "vendor/unknown-model"
 	w = workstreamUsage("x:y", draft)
 	if w.CostUSD != nil || w.CostEstimated {
 		t.Fatalf("unknown model should not be estimated; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
@@ -5207,8 +5207,8 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 
 	// Adapter reported a real cost → passes through, not marked estimated.
 	realCost := 9.99
-	draft.model = "claude-sonnet-4-6"
-	draft.response.Usage.CostUSD = &realCost
+	draft.Model = "claude-sonnet-4-6"
+	draft.Response.Usage.CostUSD = &realCost
 	w = workstreamUsage("z:w", draft)
 	if w.CostUSD == nil || *w.CostUSD != realCost || w.CostEstimated {
 		t.Fatalf("real cost should pass through unmarked; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
@@ -5219,9 +5219,9 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	agentID := "harness:alpha"
 	inputs := planRunInputs{
 		hasRun:    true,
-		selection: sessionDraft{adapter: "fake", model: "sonnet", response: llm.Response{DurationMS: 0}},
-		reviewers: []sessionDraft{{rowID: "row-1", agentID: &agentID, model: "sonnet", response: llm.Response{DurationMS: 25}}},
-		rollup:    sessionDraft{model: "sonnet", startedAt: fixedNow(), completedAt: fixedNow().Add(2 * time.Second)},
+		selection: sessionDraft{Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 0}},
+		reviewers: []sessionDraft{{RowID: "row-1", AgentID: &agentID, Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:    sessionDraft{Model: "sonnet", StartedAt: fixedNow(), CompletedAt: fixedNow().Add(2 * time.Second)},
 		selectedAgents: []llm.SelectedAgent{
 			{AgentID: agentID},
 			{AgentID: "harness:missing-draft"},
@@ -6559,13 +6559,6 @@ func (s staticStream) Wait(context.Context) (llm.Response, error) {
 type failingStore struct {
 	*ledger.Store
 	insertPlannedActionErr error
-}
-
-func (s *failingStore) InsertPlannedAction(ctx context.Context, action ledger.PlannedAction) error {
-	if s.insertPlannedActionErr != nil {
-		return s.insertPlannedActionErr
-	}
-	return s.Store.InsertPlannedAction(ctx, action)
 }
 
 func (s *failingStore) InsertPlanningResult(ctx context.Context, findings []ledger.Finding, actions []ledger.PlannedAction) error {
@@ -8183,14 +8176,6 @@ func (noopStore) InsertSession(context.Context, ledger.Session) error {
 
 func (noopStore) GetSession(context.Context, string) (ledger.Session, error) {
 	return ledger.Session{}, ledger.ErrNotFound
-}
-
-func (noopStore) InsertFinding(context.Context, ledger.Finding) error {
-	return nil
-}
-
-func (noopStore) InsertPlannedAction(context.Context, ledger.PlannedAction) error {
-	return nil
 }
 
 func (noopStore) InsertPlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error {
