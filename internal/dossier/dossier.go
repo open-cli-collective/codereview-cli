@@ -1,10 +1,12 @@
-package pipeline
+// Package dossier owns reviewer-facing dossier artifacts and discussion summarization.
+package dossier
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -19,16 +21,31 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
+	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
-type dossierInputs struct {
+// ChangedFile is the diff metadata needed to render a dossier change map.
+type ChangedFile struct {
+	OldPath   string
+	Path      string
+	Patch     string
+	Binary    bool
+	Deleted   bool
+	HunkCount int
+}
+
+// Inputs contains the source material written to raw dossier artifacts.
+type Inputs struct {
 	CurrentPR             gitprovider.PR
 	ReviewPR              gitprovider.PR
 	PinnedReview          bool
-	ChangedFiles          []FilePatch
+	ChangedFiles          []ChangedFile
 	Threads               []gitprovider.InlineThread
 	ThreadContext         []threadcontext.Thread
 	Reviews               []gitprovider.Review
@@ -116,25 +133,28 @@ type dossierDiscussionArtifact struct {
 	InlineThreads         []dossierInlineThreadArtifact    `json:"inline_threads,omitempty"`
 }
 
-type dossierDiscussionSummaryArtifact struct {
-	SchemaVersion         int                                  `json:"schema_version"`
-	SourceFingerprint     string                               `json:"source_fingerprint,omitempty"`
-	PinnedReview          bool                                 `json:"pinned_review"`
-	DiscussionOmittedNote string                               `json:"discussion_omitted_note,omitempty"`
-	TopLevelOmitted       int                                  `json:"top_level_comments_omitted,omitempty"`
-	InlineThreadsOmitted  int                                  `json:"inline_threads_omitted,omitempty"`
-	TopLevelComments      []dossierTopLevelCommentSummary      `json:"top_level_comments,omitempty"`
-	InlineThreads         []dossierInlineThreadSummaryArtifact `json:"inline_threads,omitempty"`
+// DiscussionSummary is the reviewer-facing summary of PR discussion.
+type DiscussionSummary struct {
+	SchemaVersion         int                      `json:"schema_version"`
+	SourceFingerprint     string                   `json:"source_fingerprint,omitempty"`
+	PinnedReview          bool                     `json:"pinned_review"`
+	DiscussionOmittedNote string                   `json:"discussion_omitted_note,omitempty"`
+	TopLevelOmitted       int                      `json:"top_level_comments_omitted,omitempty"`
+	InlineThreadsOmitted  int                      `json:"inline_threads_omitted,omitempty"`
+	TopLevelComments      []TopLevelCommentSummary `json:"top_level_comments,omitempty"`
+	InlineThreads         []InlineThreadSummary    `json:"inline_threads,omitempty"`
 }
 
-type dossierTopLevelCommentSummary struct {
+// TopLevelCommentSummary is one summarized issue comment or review body.
+type TopLevelCommentSummary struct {
 	Kind    string `json:"kind,omitempty"`
 	URL     string `json:"url,omitempty"`
 	Author  string `json:"author,omitempty"`
 	Summary string `json:"summary"`
 }
 
-type dossierInlineThreadSummaryArtifact struct {
+// InlineThreadSummary is one reviewer-facing inline-thread summary.
+type InlineThreadSummary struct {
 	ThreadID        string `json:"thread_id,omitempty"`
 	Path            string `json:"path,omitempty"`
 	Side            string `json:"side,omitempty"`
@@ -158,7 +178,7 @@ type dossierDiscussionPromptData struct {
 	SourceFingerprint     string
 	InlineThreadMap       map[string]dossierInlineThreadPromptData
 	InlineThreadIDMap     map[string]dossierInlineThreadPromptData
-	CachedInlineSummaries []dossierInlineThreadSummaryArtifact
+	CachedInlineSummaries []InlineThreadSummary
 }
 
 type dossierInlineThreadPromptData struct {
@@ -195,12 +215,23 @@ type dossierRawArtifacts struct {
 	Discussion   dossierDiscussionArtifact
 }
 
-type dossierPreparationRequest struct {
+// Env contains the runtime dependencies used by discussion summarization.
+type Env struct {
+	Adapter           llm.Adapter
+	Store             llmlifecycle.Store
+	TaskProgress      llmlifecycle.Progress
+	Now               func() time.Time
+	NewSessionRowID   func() string
+	CheckPromptBudget func(model, prompt string) error
+}
+
+// PreparationRequest identifies one dossier finalization pass.
+type PreparationRequest struct {
 	RunID                   string
 	Profile                 config.Profile
 	SelectionModelOverride  string
 	SelectionEffortOverride string
-	Artifacts               ArtifactPaths
+	Artifacts               runartifact.Paths
 }
 
 type dossierIndexArtifact struct {
@@ -228,6 +259,9 @@ const (
 	dossierCachedSummaryCRSource       = "cr_settled"
 )
 
+// SummaryTaskID identifies the durable dossier discussion-summary task.
+const SummaryTaskID = dossierSummaryTaskID
+
 var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bprovider[_ ]session[_ ]id\b`),
 	regexp.MustCompile(`\bsession[_ ]row[_ ]id\b`),
@@ -248,7 +282,8 @@ var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bcheck(s)? failed\b`),
 }
 
-func writeRawDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
+// WriteRaw writes the source dossier artifacts used by Prepare.
+func WriteRaw(paths runartifact.Paths, in Inputs) error {
 	rawDir := filepath.Join(paths.DossierDir, "raw")
 	summaryDir := filepath.Join(paths.DossierDir, "summary")
 	finalDir := filepath.Join(paths.DossierDir, "final")
@@ -305,19 +340,20 @@ func writeRawDossierArtifacts(paths ArtifactPaths, in dossierInputs) error {
 		if err != nil {
 			return err
 		}
-		if err := writeJSONFile(path, payload); err != nil {
+		if err := writeDossierJSON(path, payload); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func prepareDossierArtifacts(ctx context.Context, opts Options, req dossierPreparationRequest) error {
+// Prepare summarizes discussion and writes summary, final, and index artifacts.
+func Prepare(ctx context.Context, env Env, req PreparationRequest) error {
 	raw, err := readRawDossierArtifacts(req.Artifacts)
 	if err != nil {
 		return err
 	}
-	summary, err := summarizeDiscussionArtifacts(ctx, opts, req, raw.Discussion)
+	summary, err := summarizeDiscussionArtifacts(ctx, env, req, raw.Discussion)
 	if err != nil {
 		return err
 	}
@@ -331,10 +367,10 @@ func prepareDossierArtifacts(ctx context.Context, opts Options, req dossierPrepa
 	if err != nil {
 		return err
 	}
-	return writeJSONFile(req.Artifacts.DossierIndexPath(), index)
+	return writeDossierJSON(req.Artifacts.DossierIndexPath(), index)
 }
 
-func readRawDossierArtifacts(paths ArtifactPaths) (dossierRawArtifacts, error) {
+func readRawDossierArtifacts(paths runartifact.Paths) (dossierRawArtifacts, error) {
 	var out dossierRawArtifacts
 	if err := readJSONFile(mustDossierRawPath(paths, "pr-context.json"), &out.PRContext); err != nil {
 		return dossierRawArtifacts{}, err
@@ -351,9 +387,22 @@ func readRawDossierArtifacts(paths ArtifactPaths) (dossierRawArtifacts, error) {
 	return out, nil
 }
 
-func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossierPreparationRequest, discussion dossierDiscussionArtifact) (dossierDiscussionSummaryArtifact, error) {
+// ReadDiscussionSummary reads the structured discussion summary artifact.
+func ReadDiscussionSummary(paths runartifact.Paths) (DiscussionSummary, error) {
+	path, err := paths.DossierSummaryPath("discussion.json")
+	if err != nil {
+		return DiscussionSummary{}, err
+	}
+	var summary DiscussionSummary
+	if err := readJSONFile(path, &summary); err != nil {
+		return DiscussionSummary{}, err
+	}
+	return summary, nil
+}
+
+func summarizeDiscussionArtifacts(ctx context.Context, env Env, req PreparationRequest, discussion dossierDiscussionArtifact) (DiscussionSummary, error) {
 	if discussion.PinnedReview {
-		return dossierDiscussionSummaryArtifact{
+		return DiscussionSummary{
 			SchemaVersion:         dossierSummarySchemaVersion,
 			PinnedReview:          true,
 			DiscussionOmittedNote: strings.TrimSpace(discussion.DiscussionOmittedNote),
@@ -361,54 +410,63 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 	}
 	promptData, err := dossierDiscussionPromptInputFromDiscussion(discussion)
 	if err != nil {
-		return dossierDiscussionSummaryArtifact{}, err
+		return DiscussionSummary{}, err
 	}
 	if len(promptData.Input.TopLevelComments) == 0 && len(promptData.Input.InlineThreads) == 0 {
-		return dossierDiscussionSummaryArtifact{
+		return DiscussionSummary{
 			SchemaVersion:        dossierSummarySchemaVersion,
 			SourceFingerprint:    promptData.SourceFingerprint,
 			TopLevelOmitted:      promptData.Input.TopLevelCommentsOmitted,
 			InlineThreadsOmitted: promptData.Input.InlineThreadsOmitted,
-			InlineThreads:        append([]dossierInlineThreadSummaryArtifact(nil), promptData.CachedInlineSummaries...),
+			InlineThreads:        append([]InlineThreadSummary(nil), promptData.CachedInlineSummaries...),
 		}, nil
 	}
-	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
+	runtimeConfig, err := resolveRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
-		return dossierDiscussionSummaryArtifact{}, err
+		return DiscussionSummary{}, err
 	}
 	prompt, err := buildDossierDiscussionSummaryPrompt(promptData)
 	if err != nil {
-		return dossierDiscussionSummaryArtifact{}, err
+		return DiscussionSummary{}, err
 	}
-	inputFingerprint := llmlifecycle.Fingerprint(opts.Adapter.Name(), dossierSummaryTaskID, "dossier", runtimeConfig.model, runtimeConfig.effort, prompt, []string{"discussion=" + promptData.SourceFingerprint})
-	if err := llmlifecycle.ResetIfInputFingerprintChanged(lifecyclePaths(req.Artifacts), dossierSummaryTaskID, inputFingerprint); err != nil {
-		return dossierDiscussionSummaryArtifact{}, err
+	inputFingerprint := llmlifecycle.Fingerprint(env.Adapter.Name(), dossierSummaryTaskID, "dossier", runtimeConfig.model, runtimeConfig.effort, prompt, []string{"discussion=" + promptData.SourceFingerprint})
+	paths := llmlifecycle.Paths{LLMTasksDir: req.Artifacts.LLMTasksDir}
+	if err := llmlifecycle.ResetIfInputFingerprintChanged(paths, dossierSummaryTaskID, inputFingerprint); err != nil {
+		return DiscussionSummary{}, err
 	}
-	if err := opts.checkPromptBudget("dossier-summary", "", runtimeConfig.model, "", prompt); err != nil {
-		return dossierDiscussionSummaryArtifact{}, fmt.Errorf("pipeline: dossier discussion summary prompt budget: %w", err)
+	if env.CheckPromptBudget != nil {
+		if err := env.CheckPromptBudget(runtimeConfig.model, prompt); err != nil {
+			return DiscussionSummary{}, fmt.Errorf("pipeline: dossier discussion summary prompt budget: %w", err)
+		}
 	}
 	logPath, err := req.Artifacts.AgentLog(dossierSummaryTaskID)
 	if err != nil {
-		return dossierDiscussionSummaryArtifact{}, err
+		return DiscussionSummary{}, err
 	}
-	summary, _, _, err := runStructuredTask(ctx, opts, llmTaskSpec{
-		runID:            req.RunID,
-		taskID:           dossierSummaryTaskID,
-		phase:            "dossier",
-		allowNoRunCache:  strings.TrimSpace(req.RunID) == "",
-		inputFingerprint: inputFingerprint,
-		artifacts:        req.Artifacts,
-		role:             ledger.SessionRoleOrchestrator,
-		model:            runtimeConfig.model,
-		effort:           runtimeConfig.effort,
-		logPath:          logPath,
-		prompt:           prompt,
-	}, func(data []byte) (dossierDiscussionSummaryArtifact, error) {
+	result, err := llmlifecycle.RunStructured(ctx, llmlifecycle.Request{
+		Store:            env.Store,
+		Adapter:          env.Adapter,
+		RunID:            req.RunID,
+		TaskID:           dossierSummaryTaskID,
+		Phase:            "dossier",
+		AllowNoRunCache:  strings.TrimSpace(req.RunID) == "",
+		InputFingerprint: inputFingerprint,
+		Paths:            paths,
+		Role:             ledger.SessionRoleOrchestrator,
+		Model:            runtimeConfig.model,
+		Effort:           runtimeConfig.effort,
+		LogPath:          logPath,
+		Prompt:           prompt,
+		Progress:         env.TaskProgress,
+		Now:              env.Now,
+		NewSessionRowID:  env.NewSessionRowID,
+	}, func(data []byte) (DiscussionSummary, error) {
 		return decodeDossierDiscussionSummary(data, promptData)
 	})
 	if err != nil {
-		return dossierDiscussionSummaryArtifact{}, err
+		return DiscussionSummary{}, err
 	}
+	summary := result.Value
 	summary.SchemaVersion = dossierSummarySchemaVersion
 	if strings.TrimSpace(summary.SourceFingerprint) == "" {
 		summary.SourceFingerprint = promptData.SourceFingerprint
@@ -419,12 +477,32 @@ func summarizeDiscussionArtifacts(ctx context.Context, opts Options, req dossier
 	return summary, nil
 }
 
-func writeDossierSummaryArtifacts(paths ArtifactPaths, summary dossierDiscussionSummaryArtifact) error {
+type runtimeConfig struct {
+	model  string
+	effort string
+}
+
+func resolveRuntimeConfig(profile config.Profile, modelOverride, effortOverride string) (runtimeConfig, error) {
+	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+		Profile:        profile,
+		Stage:          stagemodel.StageSelection,
+		Tier:           config.ModelTierMedium,
+		ModelOverride:  modelOverride,
+		EffortOverride: effortOverride,
+		DefaultEffort:  string(modelprefs.EffortMedium),
+	})
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	return runtimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
+}
+
+func writeDossierSummaryArtifacts(paths runartifact.Paths, summary DiscussionSummary) error {
 	jsonPath, err := paths.DossierSummaryPath("discussion.json")
 	if err != nil {
 		return err
 	}
-	if err := writeJSONFile(jsonPath, summary); err != nil {
+	if err := writeDossierJSON(jsonPath, summary); err != nil {
 		return err
 	}
 	mdPath, err := paths.DossierSummaryPath("discussion.md")
@@ -437,7 +515,7 @@ func writeDossierSummaryArtifacts(paths ArtifactPaths, summary dossierDiscussion
 	return nil
 }
 
-func writeFinalDossierArtifacts(paths ArtifactPaths, raw dossierRawArtifacts, summary dossierDiscussionSummaryArtifact) error {
+func writeFinalDossierArtifacts(paths runartifact.Paths, raw dossierRawArtifacts, summary DiscussionSummary) error {
 	finalArtifacts := map[string]string{
 		"pr-intent.md":     renderDossierPRIntent(raw.PRContext),
 		"change-map.md":    renderDossierChangeMap(raw.ChangedFiles),
@@ -456,7 +534,7 @@ func writeFinalDossierArtifacts(paths ArtifactPaths, raw dossierRawArtifacts, su
 	return nil
 }
 
-func mustDossierRawPath(paths ArtifactPaths, name string) string {
+func mustDossierRawPath(paths runartifact.Paths, name string) string {
 	path, err := paths.DossierRawPath(name)
 	if err != nil {
 		panic(err)
@@ -510,7 +588,7 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 	input := dossierDiscussionPromptInput{}
 	inlineThreadMap := make(map[string]dossierInlineThreadPromptData, len(discussion.InlineThreads))
 	inlineThreadIDMap := make(map[string]dossierInlineThreadPromptData, len(discussion.InlineThreads))
-	cachedSummaries := make([]dossierInlineThreadSummaryArtifact, 0)
+	cachedSummaries := make([]InlineThreadSummary, 0)
 	uncachedThreads := make([]dossierInlineThreadArtifact, 0, len(discussion.InlineThreads))
 	for _, thread := range discussion.InlineThreads {
 		if cached, ok := cachedDossierInlineThreadSummary(thread); ok {
@@ -598,19 +676,19 @@ func dossierDiscussionPromptInputFromDiscussion(discussion dossierDiscussionArti
 	}, nil
 }
 
-func cachedDossierInlineThreadSummary(thread dossierInlineThreadArtifact) (dossierInlineThreadSummaryArtifact, bool) {
+func cachedDossierInlineThreadSummary(thread dossierInlineThreadArtifact) (InlineThreadSummary, bool) {
 	if thread.CachedSummary == nil {
-		return dossierInlineThreadSummaryArtifact{}, false
+		return InlineThreadSummary{}, false
 	}
 	body := strings.TrimSpace(thread.CachedSummary.Body)
 	if body == "" || shouldExcludeDiscussionSummaryText(body) {
-		return dossierInlineThreadSummaryArtifact{}, false
+		return InlineThreadSummary{}, false
 	}
 	threadID := strings.TrimSpace(thread.CachedSummary.ThreadID)
 	if threadID == "" {
 		threadID = strings.TrimSpace(thread.ID)
 	}
-	return dossierInlineThreadSummaryArtifact{
+	return InlineThreadSummary{
 		ThreadID:   threadID,
 		Path:       thread.Path,
 		Side:       thread.Side,
@@ -622,11 +700,11 @@ func cachedDossierInlineThreadSummary(thread dossierInlineThreadArtifact) (dossi
 	}, true
 }
 
-func mergeDossierInlineThreadSummaries(generated, cached []dossierInlineThreadSummaryArtifact) []dossierInlineThreadSummaryArtifact {
+func mergeDossierInlineThreadSummaries(generated, cached []InlineThreadSummary) []InlineThreadSummary {
 	if len(cached) == 0 {
 		return generated
 	}
-	out := append([]dossierInlineThreadSummaryArtifact(nil), generated...)
+	out := append([]InlineThreadSummary(nil), generated...)
 	indexByThreadID := make(map[string]int, len(out)+len(cached))
 	for i, summary := range out {
 		if strings.TrimSpace(summary.ThreadID) != "" {
@@ -656,13 +734,13 @@ func mergeDossierInlineThreadSummaries(generated, cached []dossierInlineThreadSu
 	return out
 }
 
-func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPromptData) (dossierDiscussionSummaryArtifact, error) {
-	var decoded dossierDiscussionSummaryArtifact
+func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPromptData) (DiscussionSummary, error) {
+	var decoded DiscussionSummary
 	if err := json.Unmarshal(data, &decoded); err != nil {
-		return dossierDiscussionSummaryArtifact{}, err
+		return DiscussionSummary{}, err
 	}
 	if decoded.SchemaVersion != 0 && decoded.SchemaVersion != dossierSummarySchemaVersion {
-		return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary schema_version = %d, want %d", decoded.SchemaVersion, dossierSummarySchemaVersion)
+		return DiscussionSummary{}, fmt.Errorf("discussion summary schema_version = %d, want %d", decoded.SchemaVersion, dossierSummarySchemaVersion)
 	}
 	decoded.SchemaVersion = dossierSummarySchemaVersion
 	decoded.SourceFingerprint = promptData.SourceFingerprint
@@ -671,10 +749,10 @@ func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPro
 		decoded.TopLevelComments[i].Author = strings.TrimSpace(decoded.TopLevelComments[i].Author)
 		decoded.TopLevelComments[i].Summary = strings.TrimSpace(decoded.TopLevelComments[i].Summary)
 		if decoded.TopLevelComments[i].Summary == "" {
-			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary top_level_comments[%d].summary is required", i)
+			return DiscussionSummary{}, fmt.Errorf("discussion summary top_level_comments[%d].summary is required", i)
 		}
 		if err := validateDiscussionSummaryText(decoded.TopLevelComments[i].Summary); err != nil {
-			return dossierDiscussionSummaryArtifact{}, err
+			return DiscussionSummary{}, err
 		}
 	}
 	for i := range decoded.InlineThreads {
@@ -685,22 +763,22 @@ func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPro
 		decoded.InlineThreads[i].Status = strings.TrimSpace(decoded.InlineThreads[i].Status)
 		decoded.InlineThreads[i].Summary = strings.TrimSpace(decoded.InlineThreads[i].Summary)
 		if decoded.InlineThreads[i].Path == "" {
-			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d].path is required", i)
+			return DiscussionSummary{}, fmt.Errorf("discussion summary inline_threads[%d].path is required", i)
 		}
 		if decoded.InlineThreads[i].Summary == "" {
-			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d].summary is required", i)
+			return DiscussionSummary{}, fmt.Errorf("discussion summary inline_threads[%d].summary is required", i)
 		}
 		switch decoded.InlineThreads[i].Status {
 		case "", "settled", "unresolved", "noted":
 		default:
-			return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d].status = %q, want settled|unresolved|noted", i, decoded.InlineThreads[i].Status)
+			return DiscussionSummary{}, fmt.Errorf("discussion summary inline_threads[%d].status = %q, want settled|unresolved|noted", i, decoded.InlineThreads[i].Status)
 		}
 		expected, ok := promptData.InlineThreadIDMap[decoded.InlineThreads[i].ThreadID]
 		if !ok {
 			anchorKey := dossierInlineThreadAnchorKey(decoded.InlineThreads[i].Path, decoded.InlineThreads[i].Side, decoded.InlineThreads[i].Line, decoded.InlineThreads[i].AnchorKind)
 			expected, ok = promptData.InlineThreadMap[anchorKey]
 			if !ok {
-				return dossierDiscussionSummaryArtifact{}, fmt.Errorf("discussion summary inline_threads[%d] anchor %q is not present in the source discussion", i, anchorKey)
+				return DiscussionSummary{}, fmt.Errorf("discussion summary inline_threads[%d] anchor %q is not present in the source discussion", i, anchorKey)
 			}
 		}
 		decoded.InlineThreads[i].ThreadID = expected.Thread.ID
@@ -711,7 +789,7 @@ func decodeDossierDiscussionSummary(data []byte, promptData dossierDiscussionPro
 		decoded.InlineThreads[i].Resolved = expected.Thread.Resolved
 		decoded.InlineThreads[i].CommentsOmitted = expected.CommentsOmitted
 		if err := validateDiscussionSummaryText(decoded.InlineThreads[i].Summary); err != nil {
-			return dossierDiscussionSummaryArtifact{}, err
+			return DiscussionSummary{}, err
 		}
 	}
 	return decoded, nil
@@ -721,7 +799,7 @@ func dossierInlineThreadAnchorKey(path, side string, line int, anchorKind string
 	return fmt.Sprintf("%s|%s|%d|%s", strings.TrimSpace(path), strings.TrimSpace(side), line, strings.TrimSpace(anchorKind))
 }
 
-func renderDossierDiscussionSummaryMarkdown(summary dossierDiscussionSummaryArtifact, title string) string {
+func renderDossierDiscussionSummaryMarkdown(summary DiscussionSummary, title string) string {
 	var out strings.Builder
 	out.WriteString(title)
 	out.WriteString("\n\n")
@@ -830,7 +908,7 @@ func capSlice[T any](values []T, maxLen int) []T {
 	return values[:maxLen]
 }
 
-func dossierChangedFiles(patches []FilePatch) []dossierChangedFileArtifact {
+func dossierChangedFiles(patches []ChangedFile) []dossierChangedFileArtifact {
 	out := make([]dossierChangedFileArtifact, 0, len(patches))
 	for _, patch := range patches {
 		additions, deletions := diffStats(patch.Patch)
@@ -842,7 +920,7 @@ func dossierChangedFiles(patches []FilePatch) []dossierChangedFileArtifact {
 			Deleted:   patch.Deleted,
 			Additions: additions,
 			Deletions: deletions,
-			HunkCount: len(patch.Hunks),
+			HunkCount: patch.HunkCount,
 		})
 	}
 	return out
@@ -1087,7 +1165,8 @@ func renderDossierRepoGuidance(repo dossierRepoContextArtifact) string {
 	return out.String()
 }
 
-func repoGuidanceUnavailableReason(sources []agents.SourceInfo) string {
+// RepoGuidanceUnavailableReason describes why trusted repo guidance was unavailable.
+func RepoGuidanceUnavailableReason(sources []agents.SourceInfo) string {
 	source, ok := repoGuidanceSource(sources)
 	if !ok {
 		return ""
@@ -1154,12 +1233,13 @@ func buildDossierIndex(dir string) (dossierIndexArtifact, error) {
 	return dossierIndexArtifact{HashAlgorithm: "sha256", Files: files}, nil
 }
 
-func writeJSONFile(path string, payload any) error {
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := fsatomic.WriteFileAtomic(path, append(data, '\n'), 0o600); err != nil {
+func writeDossierJSON(path string, payload any) error {
+	if err := fsatomic.WriteJSON(path, payload); err != nil {
+		var typeErr *json.UnsupportedTypeError
+		var valueErr *json.UnsupportedValueError
+		if errors.As(err, &typeErr) || errors.As(err, &valueErr) {
+			return err
+		}
 		return fmt.Errorf("pipeline: write dossier artifact %s: %w", filepath.Base(path), err)
 	}
 	return nil
@@ -1168,7 +1248,7 @@ func writeJSONFile(path string, payload any) error {
 func diffStats(patch string) (int, int) {
 	additions := 0
 	deletions := 0
-	for _, line := range splitLines(patch) {
+	for _, line := range strings.SplitAfter(patch, "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
 			continue
@@ -1181,7 +1261,7 @@ func diffStats(patch string) (int, int) {
 	return additions, deletions
 }
 
-func filePatchStatus(patch FilePatch) string {
+func filePatchStatus(patch ChangedFile) string {
 	switch {
 	case patch.Deleted:
 		return "deleted"

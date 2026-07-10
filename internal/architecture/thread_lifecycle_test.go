@@ -99,6 +99,9 @@ func TestPackagesStayOnLayeredSeams(t *testing.T) {
 		"internal/workbench": {
 			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
 		},
+		"internal/dossier": {
+			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
+		},
 	}
 
 	for dir, blocked := range blockedImports {

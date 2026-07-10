@@ -21,11 +21,11 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 
 // WriteJSON marshals v and writes it atomically with private permissions.
 func WriteJSON(path string, v any) error {
-	data, err := json.Marshal(v)
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	return WriteFileAtomic(path, data, 0o600)
+	return WriteFileAtomic(path, append(data, '\n'), 0o600)
 }
 
 // ReadJSON reads path and unmarshals its JSON contents into v.

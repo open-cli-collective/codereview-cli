@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,12 +11,15 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/dossier"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
+
+const dossierFinalExcerptRunes = 240
 
 func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
 	input, deps, err := reviewerPromptInputFromArtifacts(paths, pr, selected, agent)
@@ -269,12 +274,8 @@ func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovide
 	if err != nil {
 		return selectionPromptInput{}, nil, err
 	}
-	summaryPath, err := paths.DossierSummaryPath("discussion.json")
+	summary, err := dossier.ReadDiscussionSummary(paths)
 	if err != nil {
-		return selectionPromptInput{}, nil, err
-	}
-	var summary dossierDiscussionSummaryArtifact
-	if err := readJSONFile(summaryPath, &summary); err != nil {
 		return selectionPromptInput{}, nil, err
 	}
 
@@ -302,12 +303,8 @@ func selectionPromptInputFromThreadContext(paths ArtifactPaths, threads []thread
 	if err != nil {
 		return selectionPromptInput{}, nil, err
 	}
-	summaryPath, err := paths.DossierSummaryPath("discussion.json")
+	summary, err := dossier.ReadDiscussionSummary(paths)
 	if err != nil {
-		return selectionPromptInput{}, nil, err
-	}
-	var summary dossierDiscussionSummaryArtifact
-	if err := readJSONFile(summaryPath, &summary); err != nil {
 		return selectionPromptInput{}, nil, err
 	}
 	input.Threads = selectionThreadPromptsFromContext(threads, summary)
@@ -351,9 +348,9 @@ func reviewerPromptInputFromArtifacts(paths ArtifactPaths, pr gitprovider.PR, se
 	return input, core.Dependencies, nil
 }
 
-func dossierInlineThreadSummaryIndexes(summary dossierDiscussionSummaryArtifact) (map[string]dossierInlineThreadSummaryArtifact, map[string]dossierInlineThreadSummaryArtifact) {
-	byAnchor := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
-	byThreadID := make(map[string]dossierInlineThreadSummaryArtifact, len(summary.InlineThreads))
+func dossierInlineThreadSummaryIndexes(summary dossier.DiscussionSummary) (map[string]dossier.InlineThreadSummary, map[string]dossier.InlineThreadSummary) {
+	byAnchor := make(map[string]dossier.InlineThreadSummary, len(summary.InlineThreads))
+	byThreadID := make(map[string]dossier.InlineThreadSummary, len(summary.InlineThreads))
 	for _, thread := range summary.InlineThreads {
 		if strings.TrimSpace(thread.ThreadID) != "" {
 			byThreadID[strings.TrimSpace(thread.ThreadID)] = thread
@@ -365,7 +362,7 @@ func dossierInlineThreadSummaryIndexes(summary dossierDiscussionSummaryArtifact)
 	return byAnchor, byThreadID
 }
 
-func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
+func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossier.DiscussionSummary) []selectionThreadPrompt {
 	summaryByAnchor, summaryByThreadID := dossierInlineThreadSummaryIndexes(summary)
 	out := make([]selectionThreadPrompt, 0, len(threads))
 	for _, thread := range threads {
@@ -391,7 +388,7 @@ func selectionThreadPrompts(threads []gitprovider.InlineThread, summary dossierD
 	return out
 }
 
-func selectionThreadPromptsFromContext(threads []threadcontext.Thread, summary dossierDiscussionSummaryArtifact) []selectionThreadPrompt {
+func selectionThreadPromptsFromContext(threads []threadcontext.Thread, summary dossier.DiscussionSummary) []selectionThreadPrompt {
 	summaryByAnchor, summaryByThreadID := dossierInlineThreadSummaryIndexes(summary)
 	out := make([]selectionThreadPrompt, 0, len(threads))
 	for _, thread := range threads {
@@ -689,4 +686,25 @@ func firstNOrPlaceholder(values []string, placeholder string, count int) []strin
 		count = len(values)
 	}
 	return append([]string(nil), values[:count]...)
+}
+
+func dossierInlineThreadAnchorKey(path, side string, line int, anchorKind string) string {
+	return fmt.Sprintf("%s|%s|%d|%s", strings.TrimSpace(path), strings.TrimSpace(side), line, strings.TrimSpace(anchorKind))
+}
+
+func singleLineExcerpt(value string, maxRunes int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if value == "" {
+		return "(empty)"
+	}
+	runes := []rune(value)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "..."
+	}
+	return value
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

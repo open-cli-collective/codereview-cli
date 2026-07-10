@@ -1,4 +1,4 @@
-package pipeline
+package dossier
 
 import (
 	"context"
@@ -8,101 +8,304 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
-	"github.com/open-cli-collective/codereview-cli/internal/workbench"
 )
 
-func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
-	ctx := context.Background()
-	provider, req := dryRunHarness(t)
-	provider.issueComments = []gitprovider.IssueComment{{
-		ID:     "issue-1",
-		Body:   "Top-level concern",
-		Author: gitprovider.Identity{Login: "maintainer"},
-	}}
-	artifactDir := t.TempDir()
+const llmTaskStatusSucceeded = llmlifecycle.StatusSucceeded
 
-	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Compact concern"}, nil), 8, 2))
-	firstAdapter.Queue(fakeLLMResult("selection-session-1", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	firstProgress := &fakeTaskProgress{}
-	if _, err := selectionOnlyForTest(ctx, Options{
-		Provider:        provider,
-		Adapter:         firstAdapter,
-		TaskProgress:    firstProgress,
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-	}, selectionRequestFromReview(req, artifactDir)); err != nil {
-		t.Fatalf("SelectionOnly first run: %v", err)
-	}
-	if len(firstProgress.starts) != 2 ||
-		firstProgress.starts[0].TaskID != dossierSummaryTaskID || firstProgress.starts[0].Phase != "dossier" ||
-		firstProgress.starts[1].TaskID != orchestratorSelectionStage || firstProgress.starts[1].Phase != "selection" {
-		t.Fatalf("first progress starts = %#v, want dossier summary and selection execute", firstProgress.starts)
-	}
+type dossierInputs = Inputs
+type dossierPreparationRequest = PreparationRequest
+type dossierDiscussionSummaryArtifact = DiscussionSummary
 
-	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	secondProgress := &fakeTaskProgress{}
-	if _, err := selectionOnlyForTest(ctx, Options{
-		Provider:        provider,
-		Adapter:         secondAdapter,
-		TaskProgress:    secondProgress,
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-	}, selectionRequestFromReview(req, artifactDir)); err != nil {
-		t.Fatalf("SelectionOnly second run: %v", err)
-	}
-	if len(secondProgress.loads) != 2 ||
-		secondProgress.loads[0].event.TaskID != dossierSummaryTaskID || secondProgress.loads[0].event.Phase != "dossier" ||
-		secondProgress.loads[1].event.TaskID != orchestratorSelectionStage || secondProgress.loads[1].event.Phase != "selection" {
-		t.Fatalf("second progress loads = %#v, want cached dossier summary and selection loads", secondProgress.loads)
-	}
-	if secondProgress.loads[0].result.Usage.TokensIn == nil || *secondProgress.loads[0].result.Usage.TokensIn != 8 ||
-		secondProgress.loads[0].result.Usage.TokensOut == nil || *secondProgress.loads[0].result.Usage.TokensOut != 2 {
-		t.Fatalf("cached dossier summary usage = %#v, want metadata usage", secondProgress.loads[0].result.Usage)
-	}
-	if secondProgress.loads[1].result.Usage.TokensIn == nil || *secondProgress.loads[1].result.Usage.TokensIn != 10 ||
-		secondProgress.loads[1].result.Usage.TokensOut == nil || *secondProgress.loads[1].result.Usage.TokensOut != 2 {
-		t.Fatalf("cached selection usage = %#v, want metadata usage", secondProgress.loads[1].result.Usage)
-	}
-	if len(secondAdapter.Requests()) != 0 {
-		t.Fatalf("second adapter requests = %d, want cached dossier summary and selection loads", len(secondAdapter.Requests()))
-	}
+type ContextBudget struct {
+	MaxPromptBytes int
+}
 
-	provider.issueComments = []gitprovider.IssueComment{{
-		ID:     "issue-2",
-		Body:   "Changed concern should invalidate caller-owned cache",
-		Author: gitprovider.Identity{Login: "maintainer"},
-	}}
-	thirdAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	thirdAdapter.Queue(fakeLLMResult("dossier-summary-session-2", discussionSummaryJSON([]string{"Updated concern"}, nil), 8, 2))
-	thirdAdapter.Queue(fakeLLMResult("selection-session-3", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	thirdProgress := &fakeTaskProgress{}
-	if _, err := selectionOnlyForTest(ctx, Options{
-		Provider:        provider,
-		Adapter:         thirdAdapter,
-		TaskProgress:    thirdProgress,
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-	}, selectionRequestFromReview(req, artifactDir)); err != nil {
-		t.Fatalf("SelectionOnly third run: %v", err)
+type Options struct {
+	Adapter         llm.Adapter
+	Store           llmlifecycle.Store
+	TaskProgress    llmlifecycle.Progress
+	Now             func() time.Time
+	NewSessionRowID func() string
+	Budget          ContextBudget
+}
+
+var (
+	ArtifactPathsFromDir     = runartifact.FromDir
+	writeRawDossierArtifacts = WriteRaw
+)
+
+func prepareDossierArtifacts(ctx context.Context, opts Options, req PreparationRequest) error {
+	return Prepare(ctx, Env{
+		Adapter:         opts.Adapter,
+		Store:           opts.Store,
+		TaskProgress:    opts.TaskProgress,
+		Now:             opts.Now,
+		NewSessionRowID: opts.NewSessionRowID,
+		CheckPromptBudget: func(model, prompt string) error {
+			limit := opts.Budget.MaxPromptBytes
+			if limit == 0 {
+				limit = 512 * 1024
+			}
+			if limit < 0 || len(prompt) <= limit {
+				return nil
+			}
+			return fmt.Errorf("pipeline: context budget exceeded for dossier-summary model %s: %d bytes > %d", model, len(prompt), limit)
+		},
+	}, req)
+}
+
+func lifecyclePaths(paths runartifact.Paths) llmlifecycle.Paths {
+	return llmlifecycle.Paths{LLMTasksDir: paths.LLMTasksDir}
+}
+
+type testProvider struct {
+	pr   gitprovider.PR
+	diff gitprovider.UnifiedDiff
+}
+
+type testRequest struct {
+	Profile         config.Profile
+	PostingIdentity gitprovider.Identity
+}
+
+func dryRunHarness(t *testing.T) (*testProvider, testRequest) {
+	t.Helper()
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 29}
+	pr := gitprovider.PR{
+		Ref:    ref,
+		Title:  "CR-20 dry-run",
+		Body:   "Default PR body.",
+		URL:    "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		Author: gitprovider.Identity{Login: "author", ID: "author-id"},
+		Base:   gitprovider.PRBranchRef{Ref: "refs/heads/main", SHA: strings.Repeat("b", 40)},
+		Head:   gitprovider.PRBranchRef{Ref: "refs/heads/feature", SHA: strings.Repeat("a", 40)},
 	}
-	if len(thirdProgress.starts) != 2 ||
-		thirdProgress.starts[0].TaskID != dossierSummaryTaskID || thirdProgress.starts[0].Phase != "dossier" ||
-		thirdProgress.starts[1].TaskID != orchestratorSelectionStage || thirdProgress.starts[1].Phase != "selection" {
-		t.Fatalf("third progress starts = %#v, want dossier summary and selection rerun after caller-owned artifact change", thirdProgress.starts)
+	return &testProvider{pr: pr, diff: gitprovider.UnifiedDiff{Raw: smallDiff("main.go")}}, testRequest{
+		Profile: config.Profile{LLM: config.LLMConfig{
+			Provider: config.LLMProviderAnthropic,
+			Auth:     config.LLMAuthSubscription,
+			Adapter:  config.LLMAdapterClaudeCLI,
+		}},
+		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
 	}
-	if len(thirdAdapter.Requests()) != 2 {
-		t.Fatalf("third adapter requests = %d, want dossier summary rerun plus selection", len(thirdAdapter.Requests()))
+}
+
+func parseDiffPatchesForTest(t *testing.T, raw string) []ChangedFile {
+	t.Helper()
+	return []ChangedFile{{OldPath: "main.go", Path: "main.go", Patch: raw, HunkCount: 1}}
+}
+
+func smallDiff(path string) string {
+	return strings.Join([]string{
+		"diff --git a/" + path + " b/" + path,
+		"index 1111111..2222222 100644",
+		"--- a/" + path,
+		"+++ b/" + path,
+		"@@ -1,2 +1,2 @@",
+		" package main",
+		"-var changed = false",
+		"+var changed = true",
+		"",
+	}, "\n")
+}
+
+func openPipelineStore(t *testing.T) *ledger.Store {
+	t.Helper()
+	store, err := ledger.Open(context.Background(), filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("ledger.Open: %v", err)
+	}
+	return store
+}
+
+func closeStore(t *testing.T, store *ledger.Store) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Fatalf("store.Close: %v", err)
+	}
+}
+
+func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
+	t.Helper()
+	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
+		PRKey:           "github_open-cli_codereview-cli_29",
+		PRURL:           "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		RunID:           runID,
+		SHA:             strings.Repeat("a", 40),
+		BaseSHA:         strings.Repeat("b", 40),
+		Profile:         "home",
+		PostingIdentity: "review-bot",
+		PostMode:        mode,
+		StartedAt:       started,
+		ArtifactPath:    filepath.Join(layout.DataRoot, "runs", runID),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	return run
+}
+
+func fixedNow() time.Time {
+	return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+}
+
+func sequence(prefix string) func() string {
+	var counter int
+	return func() string {
+		counter++
+		return fmt.Sprintf("%s-%d", prefix, counter)
+	}
+}
+
+type fakeTaskProgress struct {
+	mu     sync.Mutex
+	starts []llmlifecycle.ProgressEvent
+	loads  []fakeTaskProgressLoad
+}
+
+type fakeTaskProgressSpan struct {
+	parent *fakeTaskProgress
+}
+
+type fakeTaskProgressLoad struct {
+	event  llmlifecycle.ProgressEvent
+	result llmlifecycle.ProgressResult
+}
+
+func (f *fakeTaskProgress) StartLLMTask(event llmlifecycle.ProgressEvent) llmlifecycle.ProgressSpan {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.starts = append(f.starts, event)
+	return fakeTaskProgressSpan{parent: f}
+}
+
+func (f *fakeTaskProgress) LoadLLMTask(event llmlifecycle.ProgressEvent, result llmlifecycle.ProgressResult) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loads = append(f.loads, fakeTaskProgressLoad{event: event, result: result})
+}
+
+func (s fakeTaskProgressSpan) End(error, llmlifecycle.ProgressResult) {}
+
+func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.FakeResult {
+	return llm.FakeResult{
+		SessionID: sessionID,
+		Response: llm.Response{
+			StructuredOutput: []byte(structured),
+			Usage:            llm.Usage{TokensIn: intPtr(tokensIn), TokensOut: intPtr(tokensOut)},
+			DurationMS:       123,
+		},
+	}
+}
+
+type threadSummary struct {
+	path       string
+	side       string
+	line       int
+	anchorKind string
+	resolved   bool
+	status     string
+	summary    string
+}
+
+func discussionSummaryJSON(topLevel []string, threads []threadSummary) string {
+	topLevelPayload := make([]map[string]any, 0, len(topLevel))
+	for _, summary := range topLevel {
+		topLevelPayload = append(topLevelPayload, map[string]any{"kind": "issue_comment", "author": "reviewer", "summary": summary})
+	}
+	threadPayload := make([]map[string]any, 0, len(threads))
+	for _, thread := range threads {
+		side := thread.side
+		if side == "" {
+			side = string(review.DiffSideRight)
+		}
+		anchorKind := thread.anchorKind
+		if anchorKind == "" {
+			anchorKind = string(review.AnchorKindLine)
+		}
+		threadPayload = append(threadPayload, map[string]any{
+			"path": thread.path, "side": side, "line": thread.line, "anchor_kind": anchorKind,
+			"resolved": thread.resolved, "status": thread.status, "summary": thread.summary,
+		})
+	}
+	data, err := json.Marshal(map[string]any{
+		"schema_version": dossierSummarySchemaVersion, "top_level_comments": topLevelPayload, "inline_threads": threadPayload,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func intPtr(value int) *int { return &value }
+
+func crSettledReviewThread(t *testing.T, id, path string, line int, bot, human gitprovider.Identity, summary string) gitprovider.InlineThread {
+	t.Helper()
+	action, err := marker.RenderAction(marker.ActionMarker{
+		RunID: "old-run", ActionID: "old-action", Kind: marker.ActionKindInlineComment,
+		SHA: strings.Repeat("a", 40), BaseSHA: strings.Repeat("b", 40),
+	})
+	if err != nil {
+		t.Fatalf("RenderAction: %v", err)
+	}
+	summaryMarker, err := marker.RenderThreadSummary(marker.ThreadSummaryMarker{RunID: "response-run", ActionID: "summary-" + id})
+	if err != nil {
+		t.Fatalf("RenderThreadSummary: %v", err)
+	}
+	threadID := gitprovider.ThreadID(id)
+	created := fixedNow()
+	comment := func(commentID, body string, author gitprovider.Identity, at time.Time) gitprovider.ThreadComment {
+		return gitprovider.ThreadComment{
+			ID: gitprovider.CommentID(commentID), ThreadID: threadID, Body: body, Author: author,
+			CommitSHA: strings.Repeat("a", 40), Path: path, Side: review.DiffSideRight, Line: line,
+			SubjectType: review.AnchorKindLine, CreatedAt: at, UpdatedAt: at,
+		}
+	}
+	return gitprovider.InlineThread{
+		ID: threadID, Path: path, Side: review.DiffSideRight, Line: line,
+		SubjectType: review.AnchorKindLine, CommitSHA: strings.Repeat("a", 40),
+		Comments: []gitprovider.ThreadComment{
+			comment(id+"-cr", action+"\nOriginal finding.", bot, created),
+			comment(id+"-human", "Human reply", human, created.Add(time.Minute)),
+			comment(id+"-summary", summaryMarker+"\n\n"+summary, bot, created.Add(2*time.Minute)),
+		},
+	}
+}
+
+func assertFileContains(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test reads artifacts under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("file %s = %q, want substring %q", path, data, want)
+	}
+}
+
+func assertFileOmits(t *testing.T, path, unwanted string) {
+	t.Helper()
+	data, err := os.ReadFile(path) // #nosec G304 -- test reads artifacts under t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", path, err)
+	}
+	if strings.Contains(string(data), unwanted) {
+		t.Fatalf("file %s = %q, want to omit %q", path, data, unwanted)
 	}
 }
 
@@ -987,178 +1190,5 @@ func TestDecodeDossierDiscussionSummaryThreadIDWinsOverMismatchedAnchor(t *testi
 	thread := got.InlineThreads[0]
 	if thread.ThreadID != "thread-1" || thread.Path != "main.go" || thread.Side != "RIGHT" || thread.Line != 2 || thread.AnchorKind != "line" || thread.Resolved {
 		t.Fatalf("decoded thread = %#v, want source thread fields selected by thread_id", thread)
-	}
-}
-
-func TestSelectionPromptDependenciesTrackDossierAndWorkbenchDigests(t *testing.T) {
-	ctx := context.Background()
-	provider, req := dryRunHarness(t)
-	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
-	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-
-	result, err := selectionOnlyForTest(ctx, Options{
-		Provider: provider,
-		Adapter:  adapter,
-		Now:      fixedNow,
-	}, selectionRequestFromReview(req, t.TempDir()))
-	if err != nil {
-		t.Fatalf("SelectionOnly: %v", err)
-	}
-
-	_, deps1, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads)
-	if err != nil {
-		t.Fatalf("selectionPromptInputFromArtifacts first: %v", err)
-	}
-	if len(deps1) != 2 {
-		t.Fatalf("deps len = %d, want dossier/workbench deps", len(deps1))
-	}
-
-	indexPath := result.Artifacts.DossierIndexPath()
-	if err := os.WriteFile(indexPath, []byte(`{"hash_algorithm":"sha256","files":[{"path":"final/pr-intent.md","sha256":"changed"}]}`+"\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s): %v", indexPath, err)
-	}
-	_, deps2, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads)
-	if err != nil {
-		t.Fatalf("selectionPromptInputFromArtifacts dossier change: %v", err)
-	}
-	if reflect.DeepEqual(deps1, deps2) {
-		t.Fatalf("deps after dossier index change = %#v, want changed from %#v", deps2, deps1)
-	}
-
-	metaPath := result.Artifacts.WorkbenchMetadataPath()
-	var meta workbenchMetadataArtifact
-	if err := readJSONFile(metaPath, &meta); err != nil {
-		t.Fatalf("read workbench metadata: %v", err)
-	}
-	meta.FingerprintInputs.ChangedFiles = append(meta.FingerprintInputs.ChangedFiles, "extra.go")
-	if err := writeJSONFile(metaPath, meta); err != nil {
-		t.Fatalf("write workbench metadata: %v", err)
-	}
-	_, deps3, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads)
-	if err != nil {
-		t.Fatalf("selectionPromptInputFromArtifacts workbench change: %v", err)
-	}
-	if reflect.DeepEqual(deps2, deps3) {
-		t.Fatalf("deps after workbench metadata change = %#v, want changed from %#v", deps3, deps2)
-	}
-}
-
-func TestSelectionTaskMetadataDependsOnDossierSummaryTask(t *testing.T) {
-	ctx := context.Background()
-	store := openPipelineStore(t)
-	defer closeStore(t, store)
-	provider, req := dryRunHarness(t)
-	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
-	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "body"), 10, 2))
-	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 10, 2))
-
-	result, err := dryRunForTest(ctx, Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:             fixedNow,
-		NewRunID:        func() string { return "run-selection-deps" },
-		NewSessionRowID: sequence("session"),
-		NewFindingID:    findingSequence("finding"),
-		NewActionID:     actionSequence(),
-		MaxConcurrency:  1,
-	}, req)
-	if err != nil {
-		t.Fatalf("DryRun: %v", err)
-	}
-	selectionMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(ArtifactPathsFromDir(result.Run.ArtifactPath)), orchestratorSelectionStage)
-	if err != nil || !ok {
-		t.Fatalf("read selection metadata: ok=%v err=%v", ok, err)
-	}
-	if !reflect.DeepEqual(selectionMeta.DependencyTaskIDs, []string{dossierSummaryTaskID}) {
-		t.Fatalf("selection dependency_task_ids = %#v, want dossier summary dependency", selectionMeta.DependencyTaskIDs)
-	}
-}
-
-func TestRunSelectionPhaseRejectsStaleSelectionMetadataWhenDossierDigestChanges(t *testing.T) {
-	ctx := context.Background()
-	store := openPipelineStore(t)
-	defer closeStore(t, store)
-	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
-	run := allocatePipelineRun(t, store, layout, "run-selection-stale-dossier", ledger.PostModeDryRun, fixedNow())
-	provider, req := dryRunHarness(t)
-	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
-	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	opts := Options{
-		Provider:        provider,
-		Adapter:         adapter,
-		Store:           store,
-		Layout:          layout,
-		Now:             fixedNow,
-		NewSessionRowID: sequence("session"),
-	}
-	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
-	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
-		PRRef:         req.PRRef,
-		Profile:       req.Profile,
-		AgentDirs:     req.AgentDirs,
-		ReviewBaseSHA: req.ReviewBaseSHA,
-		ReviewHeadSHA: req.ReviewHeadSHA,
-		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
-			return ArtifactPathsFromDir(run.ArtifactPath), nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("prepareSelectionContext: %v", err)
-	}
-	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
-		PRRef:        req.PRRef,
-		ReviewPR:     prepared.reviewPR,
-		ChangedFiles: prepared.changedFiles,
-		Artifacts:    prepared.artifacts,
-	}); err != nil {
-		t.Fatalf("workbench.Prepare: %v", err)
-	}
-	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
-		RunID:     run.RunID,
-		Profile:   req.Profile,
-		Artifacts: prepared.artifacts,
-	}); err != nil {
-		t.Fatalf("prepareDossierArtifacts: %v", err)
-	}
-	if _, _, _, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
-		RunID:      run.RunID,
-		Profile:    req.Profile,
-		ReviewPR:   prepared.reviewPR,
-		Catalog:    prepared.catalog,
-		ParsedDiff: prepared.parsed,
-		Threads:    prepared.threads,
-		Artifacts:  prepared.artifacts,
-		MaxAgents:  1,
-	}); err != nil {
-		t.Fatalf("runSelectionPhase first: %v", err)
-	}
-	indexPath := prepared.artifacts.DossierIndexPath()
-	if err := os.WriteFile(indexPath, []byte(`{"hash_algorithm":"sha256","files":[{"path":"final/pr-intent.md","sha256":"changed"}]}`+"\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%s): %v", indexPath, err)
-	}
-	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	secondOpts := opts
-	secondOpts.Adapter = secondAdapter
-	_, _, _, err = runSelectionPhase(ctx, secondOpts, selectionPhaseRequest{
-		RunID:      run.RunID,
-		Profile:    req.Profile,
-		ReviewPR:   prepared.reviewPR,
-		Catalog:    prepared.catalog,
-		ParsedDiff: prepared.parsed,
-		Threads:    prepared.threads,
-		Artifacts:  prepared.artifacts,
-		MaxAgents:  1,
-	})
-	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
-		t.Fatalf("runSelectionPhase stale dossier error = %v, want input fingerprint changed", err)
-	}
-	if len(secondAdapter.Requests()) != 0 || len(secondAdapter.Resumes()) != 0 {
-		t.Fatalf("adapter invoked despite stale selection metadata: starts=%#v resumes=%#v", secondAdapter.Requests(), secondAdapter.Resumes())
 	}
 }
