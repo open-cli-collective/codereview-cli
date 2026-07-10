@@ -522,7 +522,7 @@ type LLMRuntimeSpec struct {
 var llmRuntimeSpecs = []LLMRuntimeSpec{
 	{
 		Provider:      LLMProviderAnthropic,
-		Auth:          "", // Preserve the current permissive claude_cli auth behavior.
+		Auth:          LLMAuthSubscription,
 		Adapter:       LLMAdapterClaudeCLI,
 		SuggestedName: "claude-cli",
 		DisplayName:   "Claude CLI",

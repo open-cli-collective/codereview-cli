@@ -322,15 +322,20 @@ func TestValidateRejectsInvalidCodexCLICombinations(t *testing.T) {
 	}
 }
 
-func TestValidatePreservesClaudeCLIAPIKeyAuth(t *testing.T) {
+func TestValidateRejectsClaudeCLIAPIKeyAuth(t *testing.T) {
 	cfg := validFile()
 	llm := cfg.LLMRuntimes["home-llm"]
 	llm.Auth = LLMAuthAPIKey
 	llm.CredentialRef = "codereview/claude-llm"
 	cfg.LLMRuntimes["home-llm"] = llm
 
-	if err := Validate(cfg); err != nil {
-		t.Fatalf("Validate: %v", err)
+	err := Validate(cfg)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate error = %v, want ErrInvalid", err)
+	}
+	const want = "config: invalid: llm_runtimes.home-llm adapter claude_cli requires provider anthropic and auth subscription"
+	if err.Error() != want {
+		t.Fatalf("Validate error = %q, want %q", err, want)
 	}
 }
 
