@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -36,13 +35,13 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/threadanalysis"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
+	"github.com/open-cli-collective/codereview-cli/internal/workbench"
 )
 
 const (
-	defaultMaxAgents                        = 5
-	defaultMaxConcurrency                   = 5
-	defaultMaxPromptBytes                   = 512 * 1024
-	defaultReviewerWorkspaceToolOutputBytes = 32 * 1024
+	defaultMaxAgents      = 5
+	defaultMaxConcurrency = 5
+	defaultMaxPromptBytes = 512 * 1024
 )
 
 // ErrStructuredOutputInvalidAfterRetry marks a selector or rollup response that
@@ -439,7 +438,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}
 
 	result := prepared.selectionResult()
-	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
 		PRRef:        req.PRRef,
 		ReviewPR:     prepared.reviewPR,
 		ChangedFiles: prepared.changedFiles,
@@ -585,7 +584,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}
 	result.Run = run
 
-	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
 		PRRef:        req.PRRef,
 		ReviewPR:     prepared.reviewPR,
 		ChangedFiles: prepared.changedFiles,
@@ -1323,7 +1322,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
-	request, cleanupWorkspace, err := buildReviewerWorkspaceRequest(ctx, opts, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
+	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
@@ -2126,34 +2125,15 @@ func (opts Options) maxConcurrency(maxAgents int) int {
 	return opts.MaxConcurrency
 }
 
-func (opts Options) gitCommand(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	if opts.GitCommand != nil {
-		return opts.GitCommand(ctx, dir, args...)
-	}
-	cmdArgs := append([]string{}, args...)
-	cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- pipeline invokes git with fixed command names and structured arguments.
-	if strings.TrimSpace(dir) != "" {
-		cmd.Dir = dir
-	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
-		}
-		message := strings.TrimSpace(string(output))
-		if message == "" {
-			message = err.Error()
-		}
-		return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
-	}
-	return output, nil
-}
-
 func (opts Options) resolveRepoRoot(ctx context.Context) (string, error) {
 	if opts.ResolveRepoRoot != nil {
 		return opts.ResolveRepoRoot(ctx)
 	}
 	return reporoot.Resolve(ctx, "", opts.GitCommand)
+}
+
+func workbenchDeps(opts Options) workbench.Deps {
+	return workbench.Deps{GitCommand: opts.GitCommand, ResolveRepoRoot: opts.ResolveRepoRoot}
 }
 
 func resolveInvocationRootForSafety(ctx context.Context, opts Options) (string, error) {

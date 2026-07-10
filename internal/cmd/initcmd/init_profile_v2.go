@@ -1,4 +1,4 @@
-package credentialcmd
+package initcmd
 
 import (
 	"errors"

@@ -785,7 +785,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	workspace := requests[1].ReviewerWorkspace
 	if !strings.Contains(workspace.RepoDir, filepath.Join("workbench", "reviewers")) ||
 		!strings.HasPrefix(workspace.ScratchDir, result.Artifacts.WorkbenchScratch+string(filepath.Separator)) ||
-		workspace.MaxToolOutputBytes != defaultReviewerWorkspaceToolOutputBytes {
+		workspace.MaxToolOutputBytes != 32*1024 {
 		t.Fatalf("reviewer workspace request = %#v, want disposable repo, scratch, and default cap", workspace)
 	}
 	if provider.threadCalls != 0 {
@@ -4078,66 +4078,6 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 	}
 }
 
-type reviewerWorkspaceSmokeAdapter struct {
-	mu       sync.Mutex
-	requests []llm.Request
-}
-
-func (a *reviewerWorkspaceSmokeAdapter) Name() string { return "reviewer-workspace-smoke" }
-
-func (a *reviewerWorkspaceSmokeAdapter) SupportsResume() bool { return false }
-
-func (a *reviewerWorkspaceSmokeAdapter) ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode {
-	return llm.ReviewerWorkspaceWrite
-}
-
-func (a *reviewerWorkspaceSmokeAdapter) SupportsCacheAccounting() bool { return false }
-
-func (a *reviewerWorkspaceSmokeAdapter) SupportsCostReporting() bool { return false }
-
-func (a *reviewerWorkspaceSmokeAdapter) Quota(context.Context) (llm.Quota, bool, error) {
-	return llm.Quota{}, false, nil
-}
-
-func (a *reviewerWorkspaceSmokeAdapter) Resume(context.Context, string, llm.Request) (llm.Stream, error) {
-	return nil, errors.New("resume unsupported")
-}
-
-func (a *reviewerWorkspaceSmokeAdapter) Start(_ context.Context, req llm.Request) (llm.Stream, error) {
-	a.mu.Lock()
-	a.requests = append(a.requests, req)
-	a.mu.Unlock()
-	workspace := req.ReviewerWorkspace
-	if workspace == nil {
-		return nil, errors.New("missing reviewer workspace request")
-	}
-	mainBytes, err := os.ReadFile(filepath.Join(workspace.RepoDir, "main.go")) // #nosec G304 -- test adapter reads only caller-provided test workspace roots.
-	if err != nil {
-		return nil, err
-	}
-	_, otherReadErr := os.ReadFile(filepath.Join(workspace.RepoDir, "other.go"))                                   // #nosec G304 -- test adapter probes only caller-provided test workspace roots.
-	trackedWriteErr := os.WriteFile(filepath.Join(workspace.RepoDir, "main.go"), []byte("mutated"), 0o600)         // #nosec G304,G306 -- test adapter intentionally probes disposable workspace writes.
-	untrackedWriteErr := os.WriteFile(filepath.Join(workspace.RepoDir, "untracked.txt"), []byte("mutated"), 0o600) // #nosec G304,G306 -- test adapter intentionally probes disposable workspace writes.
-	scratchPath := filepath.Join(workspace.ScratchDir, "smoke-output.txt")
-	scratchWriteErr := os.WriteFile(scratchPath, []byte("scratch-ok"), 0o600) // #nosec G306 -- test adapter writes only to caller-owned scratch.
-	output := fmt.Sprintf(`{"read_ok":%t,"main_contains_changed":%t,"out_of_scope_readable":%t,"tracked_write_ok":%t,"untracked_write_ok":%t,"scratch_write_ok":%t,"max_tool_output_bytes":%d}`,
-		true,
-		strings.Contains(string(mainBytes), "var changed = true"),
-		otherReadErr == nil,
-		trackedWriteErr == nil,
-		untrackedWriteErr == nil,
-		scratchWriteErr == nil,
-		workspace.MaxToolOutputBytes,
-	)
-	return staticStream{sessionID: "workspace-smoke-session", output: output}, nil
-}
-
-func (a *reviewerWorkspaceSmokeAdapter) Requests() []llm.Request {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return append([]llm.Request(nil), a.requests...)
-}
-
 func (a *reviewerIsolationAdapter) Requests() []llm.Request {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -4312,13 +4252,6 @@ type workbenchGitFixture struct {
 	pr      gitprovider.PR
 }
 
-type forkWorkbenchFixture struct {
-	sourceRepoDir  string
-	baseRemotePath string
-	forkRemotePath string
-	pr             gitprovider.PR
-}
-
 func newWorkbenchGitFixture(t *testing.T) workbenchGitFixture {
 	t.Helper()
 	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 370}
@@ -4429,67 +4362,6 @@ func newPinnedReviewFixtureForRef(t *testing.T, ref gitprovider.PRRef) (workbenc
 			},
 		},
 	}, reviewBaseSHA, reviewHeadSHA
-}
-
-func newForkWorkbenchFixture(t *testing.T) forkWorkbenchFixture {
-	t.Helper()
-	baseSeedDir := t.TempDir()
-	gitCommandMustSucceed(t, baseSeedDir, "init", "-b", "main")
-	gitCommandMustSucceed(t, baseSeedDir, "config", "user.name", "Workbench Test")
-	gitCommandMustSucceed(t, baseSeedDir, "config", "user.email", "workbench@example.com")
-	if err := os.WriteFile(filepath.Join(baseSeedDir, "main.go"), []byte("package main\n\nvar changed = false\n"), 0o600); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
-	gitCommandMustSucceed(t, baseSeedDir, "add", "main.go")
-	gitCommandMustSucceed(t, baseSeedDir, "commit", "-m", "base")
-	baseSHA := strings.TrimSpace(gitCommandOutput(t, baseSeedDir, "rev-parse", "HEAD"))
-
-	baseRemotePath := filepath.Join(t.TempDir(), "base-remote.git")
-	gitCommandMustSucceed(t, "", "clone", "--bare", baseSeedDir, baseRemotePath)
-
-	sourceRepoDir := filepath.Join(t.TempDir(), "source")
-	gitCommandMustSucceed(t, "", "clone", baseRemotePath, sourceRepoDir)
-	gitCommandMustSucceed(t, sourceRepoDir, "remote", "set-url", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
-
-	forkRemotePath := filepath.Join(t.TempDir(), "fork-remote.git")
-	gitCommandMustSucceed(t, "", "clone", baseRemotePath, forkRemotePath)
-	gitCommandMustSucceed(t, forkRemotePath, "checkout", "-b", "feature")
-	gitCommandMustSucceed(t, forkRemotePath, "config", "user.name", "Fork Workbench Test")
-	gitCommandMustSucceed(t, forkRemotePath, "config", "user.email", "fork@example.com")
-	if err := os.WriteFile(filepath.Join(forkRemotePath, "main.go"), []byte("package main\n\nvar changed = true\n"), 0o600); err != nil {
-		t.Fatalf("update fork main.go: %v", err)
-	}
-	gitCommandMustSucceed(t, forkRemotePath, "commit", "-am", "fork head")
-	headSHA := strings.TrimSpace(gitCommandOutput(t, forkRemotePath, "rev-parse", "HEAD"))
-
-	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 371}
-	return forkWorkbenchFixture{
-		sourceRepoDir:  sourceRepoDir,
-		baseRemotePath: baseRemotePath,
-		forkRemotePath: forkRemotePath,
-		pr: gitprovider.PR{
-			Ref:   ref,
-			Title: "Fork workbench fixture",
-			URL:   prURL(ref),
-			State: gitprovider.PRStateOpen,
-			Base: gitprovider.PRBranchRef{
-				Host:  ref.Host,
-				Owner: ref.Owner,
-				Repo:  ref.Repo,
-				Name:  "main",
-				Ref:   "refs/heads/main",
-				SHA:   baseSHA,
-			},
-			Head: gitprovider.PRBranchRef{
-				Host:  ref.Host,
-				Owner: "fork-owner",
-				Repo:  "codereview-cli-fork",
-				Name:  "feature",
-				Ref:   "refs/heads/feature",
-				SHA:   headSHA,
-			},
-		},
-	}
 }
 
 func gitCommandMustSucceed(t *testing.T, dir string, args ...string) string {

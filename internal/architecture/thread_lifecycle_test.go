@@ -73,7 +73,7 @@ func TestProviderWritesGoThroughPostingBoundary(t *testing.T) {
 	}
 }
 
-func TestThreadLifecyclePackagesStayOnLayeredSeams(t *testing.T) {
+func TestPackagesStayOnLayeredSeams(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
 	blockedImports := map[string]map[string]bool{
 		"internal/threadcontext": {
@@ -94,6 +94,9 @@ func TestThreadLifecyclePackagesStayOnLayeredSeams(t *testing.T) {
 			"github.com/open-cli-collective/codereview-cli/internal/threadrespond": true,
 		},
 		"internal/threadrespond": {
+			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
+		},
+		"internal/workbench": {
 			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
 		},
 	}
@@ -127,7 +130,7 @@ func checkPackageImports(t *testing.T, repoRoot, dir string, blocked map[string]
 				continue
 			}
 			pos := fset.Position(spec.Pos())
-			t.Fatalf("%s imports %s; thread lifecycle packages must use the documented layered seams", pos, importPath)
+			t.Fatalf("%s imports %s; package must use the documented layered seams", pos, importPath)
 		}
 		return nil
 	})

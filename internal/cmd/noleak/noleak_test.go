@@ -30,6 +30,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/configcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/datacmd"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/initcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/mecmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -473,6 +474,7 @@ func (h *auditHarness) run(args []string) (string, string, error) {
 	})
 	configcmd.Register(cmd, opts)
 	credentialcmd.Register(cmd, opts)
+	initcmd.Register(cmd, opts)
 	datacmd.Register(cmd, opts)
 	sessionscmd.Register(cmd, opts)
 	mecmd.RegisterWithFactory(cmd, opts, h.identityFactory)

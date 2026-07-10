@@ -18,6 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
+	"github.com/open-cli-collective/codereview-cli/internal/workbench"
 )
 
 func TestSelectionOnlyReusesCachedDossierSummaryTask(t *testing.T) {
@@ -1110,13 +1111,13 @@ func TestRunSelectionPhaseRejectsStaleSelectionMetadataWhenDossierDigestChanges(
 	if err != nil {
 		t.Fatalf("prepareSelectionContext: %v", err)
 	}
-	if err := prepareWorkbenchArtifacts(ctx, opts, workbenchPreparationRequest{
+	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
 		PRRef:        req.PRRef,
 		ReviewPR:     prepared.reviewPR,
 		ChangedFiles: prepared.changedFiles,
 		Artifacts:    prepared.artifacts,
 	}); err != nil {
-		t.Fatalf("prepareWorkbenchArtifacts: %v", err)
+		t.Fatalf("workbench.Prepare: %v", err)
 	}
 	if err := prepareDossierArtifacts(ctx, opts, dossierPreparationRequest{
 		RunID:     run.RunID,
