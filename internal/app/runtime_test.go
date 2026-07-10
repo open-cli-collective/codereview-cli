@@ -473,7 +473,7 @@ func TestOpenSelectionPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T)
 	}
 }
 
-func TestOpenRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
+func TestOpenRejectsBackendOverrideForNamedSecretsStore(t *testing.T) {
 	cfg := testConfig()
 	cfg.Secrets = config.SecretsConfig{
 		Stores: map[string]config.SecretsStore{
@@ -499,7 +499,7 @@ func TestOpenRejectsBackendOverrideForNamedSecretsProfile(t *testing.T) {
 	}
 }
 
-func TestOpenSelectionUsesNamedSecretsProfileStoreWithoutBackendOverride(t *testing.T) {
+func TestOpenSelectionUsesNamedSecretsStoreWithoutBackendOverride(t *testing.T) {
 	statedirtest.Hermetic(t)
 	t.Setenv("CODEREVIEW_KEYRING_PASSPHRASE", "test-passphrase")
 	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{

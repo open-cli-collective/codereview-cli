@@ -163,7 +163,7 @@ func mapRunError(err error) error {
 	case errors.Is(err, config.ErrInvalid),
 		errors.Is(err, config.ErrNotConfigured),
 		errors.Is(err, config.ErrProfileNotFound),
-		errors.Is(err, config.ErrSecretsProfileNotFound),
+		errors.Is(err, config.ErrSecretsStoreNotFound),
 		errors.Is(err, config.ErrUnsupported):
 		return cmderr.Config(err)
 	case errors.Is(err, gitprovider.ErrAuth),
@@ -217,11 +217,11 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 	if newClient == nil {
 		newClient = githubprovider.NewFromGitConfig
 	}
-	resolvedSecretsProfile, err := credentials.ResolveSecretsProfileForRef(r.cfg, git.CredentialRef, profileName)
+	resolvedSecretsStore, err := credentials.ResolveSecretsStoreForRef(r.cfg, git.CredentialRef, profileName)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}
-	store, err := credentials.OpenResolvedStore(r.backend, r.backendFlagChanged, r.cfg, resolvedSecretsProfile)
+	store, err := credentials.OpenResolvedStore(r.backend, r.backendFlagChanged, r.cfg, resolvedSecretsStore)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}
@@ -239,7 +239,7 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 		}
 		return gitprovider.Identity{Login: cached}, nil
 	}
-	reader := credentials.ProgressStoreReader("me", r.logger, resolvedSecretsProfile, store)
+	reader := credentials.ProgressStoreReader("me", r.logger, resolvedSecretsStore, store)
 	client, credential, err := newClient(git, reader, options)
 	if err != nil {
 		return gitprovider.Identity{}, err

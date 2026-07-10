@@ -23,11 +23,11 @@ const (
 )
 
 type initReviewerCredentialStatus struct {
-	Ref            config.CredentialRef
-	SecretsProfile credentials.ResolvedSecretsProfile
-	Destination    string
-	Keys           []initReviewerCredentialKeyStatus
-	Unavailable    string
+	Ref          config.CredentialRef
+	SecretsStore credentials.ResolvedSecretsStore
+	Destination  string
+	Keys         []initReviewerCredentialKeyStatus
+	Unavailable  string
 }
 
 type initReviewerCredentialKeyStatus struct {
@@ -80,9 +80,9 @@ func interactiveInitCredentialStatusProbe(opts *root.Options, deps initDeps, ses
 			}, ref), true
 		}
 		entry := initCredentialPlanEntry{
-			Ref:            ref,
-			SecretsProfile: resolved,
-			KeySpecs:       append([]credentials.KeySpec(nil), specs...),
+			Ref:          ref,
+			SecretsStore: resolved,
+			KeySpecs:     append([]credentials.KeySpec(nil), specs...),
 		}
 		if !canOpenInitStoreForReviewerStatus(deps, entry) {
 			status := initReviewerCredentialStatusFromEntry(entry, nil, nil, nil, "credential backend status unavailable")
@@ -177,7 +177,7 @@ func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, s
 		}
 		existing := map[string]bool{}
 		unavailable := ""
-		storeKey := initCredentialStoreKey(entry.SecretsProfile)
+		storeKey := initCredentialStoreKey(entry.SecretsStore)
 		store := stores[storeKey]
 		if store == nil {
 			if !canOpenInitStoreForReviewerStatus(deps, entry) {
@@ -217,7 +217,7 @@ func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, s
 }
 
 func canOpenInitStoreForReviewerStatus(deps initDeps, entry initCredentialPlanEntry) bool {
-	if entry.SecretsProfile.IsNamed() {
+	if entry.SecretsStore.IsNamed() {
 		return deps.openResolvedStore != nil
 	}
 	return deps.openResolvedStore != nil || deps.openStore != nil
@@ -293,7 +293,7 @@ func appendSelectableReviewerCredentialPlanEntries(session initSessionDraft, pro
 	return entries
 }
 
-func appendReviewerCredentialPlanEntry(entries []initCredentialPlanEntry, seen map[string]struct{}, resolved credentials.ResolvedSecretsProfile, plannedWriteKeys map[string][]string, ref config.CredentialRef) []initCredentialPlanEntry {
+func appendReviewerCredentialPlanEntry(entries []initCredentialPlanEntry, seen map[string]struct{}, resolved credentials.ResolvedSecretsStore, plannedWriteKeys map[string][]string, ref config.CredentialRef) []initCredentialPlanEntry {
 	key := initCredentialEntryKey(ref)
 	if _, ok := seen[key]; ok {
 		return entries
@@ -304,7 +304,7 @@ func appendReviewerCredentialPlanEntry(entries []initCredentialPlanEntry, seen m
 	}
 	entry := initCredentialPlanEntry{
 		Ref:              ref,
-		SecretsProfile:   resolved,
+		SecretsStore:     resolved,
 		KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 		PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
 	}
@@ -317,10 +317,10 @@ func appendReviewerCredentialPlanEntry(entries []initCredentialPlanEntry, seen m
 
 func initReviewerCredentialStatusFromEntry(entry initCredentialPlanEntry, planned map[string]string, decisions map[initCredentialDecisionKey]initCredentialDecisionKind, existing map[string]bool, unavailable string) initReviewerCredentialStatus {
 	status := initReviewerCredentialStatus{
-		Ref:            entry.Ref,
-		SecretsProfile: entry.SecretsProfile,
-		Unavailable:    unavailable,
-		Keys:           make([]initReviewerCredentialKeyStatus, 0, len(entry.KeySpecs)),
+		Ref:          entry.Ref,
+		SecretsStore: entry.SecretsStore,
+		Unavailable:  unavailable,
+		Keys:         make([]initReviewerCredentialKeyStatus, 0, len(entry.KeySpecs)),
 	}
 	for _, spec := range entry.KeySpecs {
 		status.Keys = append(status.Keys, initReviewerCredentialKeyStatus{
@@ -406,7 +406,7 @@ func synthesizeReviewerCredentialStatus(ctx initPromptContext, ref config.Creden
 	storeID := initCredentialStoreDraftValue(ref.Store)
 	status.Ref.Store = storeID
 	if resolved, err := credentials.ResolveCredentialStore(ctx.ExistingConfig, storeID); err == nil {
-		status.SecretsProfile = resolved
+		status.SecretsStore = resolved
 	} else if ctx.ExistingProfile != nil {
 		status.Unavailable = "credential backend status unavailable"
 	}
@@ -428,8 +428,8 @@ func synthesizeReviewerCredentialStatus(ctx initPromptContext, ref config.Creden
 	}
 	status.Destination = initCredentialDestinationDescription(initCredentialDestinationContext{
 		Entry: initCredentialPlanEntry{
-			Ref:            ref,
-			SecretsProfile: status.SecretsProfile,
+			Ref:          ref,
+			SecretsStore: status.SecretsStore,
 		},
 		Config:         ctx.ExistingConfig,
 		BackendArg:     ctx.BackendArg,
@@ -542,8 +542,8 @@ func initReviewerCredentialDestinationDescription(status initReviewerCredentialS
 	if ref == "" {
 		ref = "(standard reviewer secret location)"
 	}
-	backend := strings.TrimSpace(status.SecretsProfile.Backend)
-	storeLabel := strings.TrimSpace(status.SecretsProfile.DisplayName())
+	backend := strings.TrimSpace(status.SecretsStore.Backend)
+	storeLabel := strings.TrimSpace(status.SecretsStore.DisplayName())
 	switch {
 	case storeLabel != "" && backend != "":
 		return fmt.Sprintf("%s via %s (%s)", ref, storeLabel, backend)

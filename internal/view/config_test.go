@@ -87,7 +87,7 @@ func TestRenderConfigTextCredentialStores(t *testing.T) {
 	show := NewConfigShow("work", workProfile(), dataConfig(), nil)
 	show.Backend = "memory"
 	show.BackendSource = "credential_store"
-	show.SecretsProfiles = []config.EffectiveSecretsProfile{
+	show.SecretsStores = []config.EffectiveSecretsStore{
 		{
 			ID:      config.LocalOSCredentialStoreID,
 			Label:   "macOS Login Keychain",
@@ -98,7 +98,7 @@ func TestRenderConfigTextCredentialStores(t *testing.T) {
 			ID:      "personal-keychain",
 			Label:   "Personal Keychain",
 			Backend: "keychain",
-			Source:  config.EffectiveSecretsProfileSourceConfigured,
+			Source:  config.EffectiveSecretsStoreSourceConfigured,
 		},
 	}
 
@@ -124,7 +124,7 @@ func TestRenderConfigTextCredentialStores(t *testing.T) {
 func TestRenderConfigTextSelectedCredentialStore(t *testing.T) {
 	var out bytes.Buffer
 	show := NewConfigShow("work", workProfile(), dataConfig(), nil)
-	show.ActiveSecretsProfile = &ConfigSecretsProfile{
+	show.ActiveSecretsStore = &ConfigSecretsStore{
 		ID:      "work-file",
 		Label:   "Work File Store",
 		Backend: "file",
@@ -372,17 +372,17 @@ func TestRenderConfigRoutesJSON(t *testing.T) {
 	}
 }
 
-func TestRenderConfigSecretsProfilesText(t *testing.T) {
+func TestRenderConfigSecretsStoresText(t *testing.T) {
 	var out bytes.Buffer
-	result := ConfigSecretsProfiles{
-		Profiles: []ConfigSecretsProfile{
+	result := ConfigSecretsStores{
+		Stores: []ConfigSecretsStore{
 			{ID: "local-os", Label: "macOS Login Keychain", Backend: "memory", Source: "built_in"},
 			{ID: "work", Label: "Work Keychain", Backend: "keychain", Source: "configured"},
 		},
 	}
 
-	if err := RenderConfigSecretsProfilesText(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfilesText: %v", err)
+	if err := RenderConfigSecretsStoresText(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsStoresText: %v", err)
 	}
 	want := "Credential stores:\n  - local-os: macOS Login Keychain (memory, built_in)\n  - work: Work Keychain (keychain, configured)\n"
 	if out.String() != want {
@@ -390,18 +390,18 @@ func TestRenderConfigSecretsProfilesText(t *testing.T) {
 	}
 }
 
-func TestRenderConfigSecretsProfilesJSON(t *testing.T) {
+func TestRenderConfigSecretsStoresJSON(t *testing.T) {
 	var out bytes.Buffer
-	result := ConfigSecretsProfiles{
-		Profiles: []ConfigSecretsProfile{
+	result := ConfigSecretsStores{
+		Stores: []ConfigSecretsStore{
 			{ID: "work", Label: "Work Keychain", Backend: "keychain", Source: "configured"},
 		},
 	}
 
-	if err := RenderConfigSecretsProfilesJSON(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfilesJSON: %v", err)
+	if err := RenderConfigSecretsStoresJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsStoresJSON: %v", err)
 	}
-	var decoded ConfigSecretsProfiles
+	var decoded ConfigSecretsStores
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
@@ -410,17 +410,17 @@ func TestRenderConfigSecretsProfilesJSON(t *testing.T) {
 	}
 }
 
-func TestRenderConfigSecretsProfileText(t *testing.T) {
+func TestRenderConfigSecretsStoreText(t *testing.T) {
 	var out bytes.Buffer
-	result := ConfigSecretsProfile{
+	result := ConfigSecretsStore{
 		ID:      "local-os",
 		Label:   "macOS Login Keychain",
 		Backend: "memory",
 		Source:  "built_in",
 	}
 
-	if err := RenderConfigSecretsProfileText(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfileText: %v", err)
+	if err := RenderConfigSecretsStoreText(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsStoreText: %v", err)
 	}
 	want := "Credential store: local-os\nDisplay name: macOS Login Keychain\nBackend: memory\nSource: built_in\n"
 	if out.String() != want {
@@ -428,13 +428,13 @@ func TestRenderConfigSecretsProfileText(t *testing.T) {
 	}
 }
 
-func TestRenderConfigSecretsProfileTextWithOnePasswordDetails(t *testing.T) {
+func TestRenderConfigSecretsStoreTextWithOnePasswordDetails(t *testing.T) {
 	var out bytes.Buffer
-	result := ConfigSecretsProfile{
+	result := ConfigSecretsStore{
 		ID:      "work-op",
 		Backend: "op",
-		BackendInfo: &ConfigSecretsProfileBackendDetails{
-			OnePassword: &ConfigSecretsProfileOnePassword{
+		BackendInfo: &ConfigSecretsStoreBackendDetails{
+			OnePassword: &ConfigSecretsStoreOnePassword{
 				Timeout: "5s",
 				VaultID: "vault-123",
 				// #nosec G101 -- this is an env-var name rendered for display, not a secret value.
@@ -444,8 +444,8 @@ func TestRenderConfigSecretsProfileTextWithOnePasswordDetails(t *testing.T) {
 		Source: "configured",
 	}
 
-	if err := RenderConfigSecretsProfileText(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfileText with 1Password: %v", err)
+	if err := RenderConfigSecretsStoreText(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsStoreText with 1Password: %v", err)
 	}
 	want := "" +
 		"Credential store: work-op\n" +
@@ -459,19 +459,19 @@ func TestRenderConfigSecretsProfileTextWithOnePasswordDetails(t *testing.T) {
 	}
 }
 
-func TestRenderConfigSecretsProfileJSON(t *testing.T) {
+func TestRenderConfigSecretsStoreJSON(t *testing.T) {
 	var out bytes.Buffer
-	result := ConfigSecretsProfile{
+	result := ConfigSecretsStore{
 		ID:      "work",
 		Label:   "Work Keychain",
 		Backend: "keychain",
 		Source:  "configured",
 	}
 
-	if err := RenderConfigSecretsProfileJSON(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfileJSON: %v", err)
+	if err := RenderConfigSecretsStoreJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsStoreJSON: %v", err)
 	}
-	var decoded ConfigSecretsProfile
+	var decoded ConfigSecretsStore
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
@@ -480,13 +480,13 @@ func TestRenderConfigSecretsProfileJSON(t *testing.T) {
 	}
 }
 
-func TestRenderConfigSecretsProfileJSONWithOnePasswordDetails(t *testing.T) {
+func TestRenderConfigSecretsStoreJSONWithOnePasswordDetails(t *testing.T) {
 	var out bytes.Buffer
-	result := ConfigSecretsProfile{
+	result := ConfigSecretsStore{
 		ID:      "work-op",
 		Backend: "op-desktop",
-		BackendInfo: &ConfigSecretsProfileBackendDetails{
-			OnePassword: &ConfigSecretsProfileOnePassword{
+		BackendInfo: &ConfigSecretsStoreBackendDetails{
+			OnePassword: &ConfigSecretsStoreOnePassword{
 				Timeout:           "5s",
 				VaultID:           "vault-123",
 				DesktopAccountEnv: "OP_DESKTOP_ACCOUNT_ID",
@@ -495,10 +495,10 @@ func TestRenderConfigSecretsProfileJSONWithOnePasswordDetails(t *testing.T) {
 		Source: "configured",
 	}
 
-	if err := RenderConfigSecretsProfileJSON(&out, result); err != nil {
-		t.Fatalf("RenderConfigSecretsProfileJSON with 1Password: %v", err)
+	if err := RenderConfigSecretsStoreJSON(&out, result); err != nil {
+		t.Fatalf("RenderConfigSecretsStoreJSON with 1Password: %v", err)
 	}
-	var decoded ConfigSecretsProfile
+	var decoded ConfigSecretsStore
 	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
 		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
 	}
@@ -686,7 +686,7 @@ func TestRenderConfigClearTextIncludesSelectedCredentialStore(t *testing.T) {
 	result := ConfigClear{
 		Backend:       "file",
 		BackendSource: "credential_store",
-		ActiveSecretsProfile: &ConfigSecretsProfile{
+		ActiveSecretsStore: &ConfigSecretsStore{
 			ID:      "work-file",
 			Label:   "Work File Store",
 			Backend: "file",

@@ -37,8 +37,6 @@ var (
 	ErrRepositoryProfileAmbiguous = errors.New("config: repository profile ambiguous")
 	// ErrSecretsStoreNotFound means the requested credential store is absent.
 	ErrSecretsStoreNotFound = errors.New("config: credential store not found")
-	// ErrSecretsProfileNotFound is the old name for ErrSecretsStoreNotFound.
-	ErrSecretsProfileNotFound = ErrSecretsStoreNotFound
 	// ErrInvalid means the config file is malformed or violates the schema.
 	ErrInvalid = errors.New("config: invalid")
 	// ErrUnsupported means the config uses a known v2-only option.
@@ -90,10 +88,6 @@ type KeyringConfig struct {
 // SecretsConfig carries named credential store configuration.
 type SecretsConfig struct {
 	Stores map[string]SecretsStore `yaml:"stores,omitempty" json:"stores,omitempty"`
-
-	// Deprecated compatibility alias. It is intentionally not part of the
-	// YAML/JSON schema.
-	Profiles map[string]SecretsProfile `yaml:"-" json:"-"`
 }
 
 // SecretsStore is one named configured credential store.
@@ -105,17 +99,11 @@ type SecretsStore struct {
 	Label string `yaml:"-" json:"-"`
 }
 
-// SecretsProfile is the old in-memory name for SecretsStore.
-type SecretsProfile = SecretsStore
-
 // SecretsStoreBackend carries one typed backend choice.
 type SecretsStoreBackend struct {
 	Kind        SecretsBackendKind             `yaml:"kind" json:"kind"`
 	OnePassword *SecretsStoreOnePasswordConfig `yaml:"onepassword,omitempty" json:"onepassword,omitempty"`
 }
-
-// SecretsProfileBackend is the old in-memory name for SecretsStoreBackend.
-type SecretsProfileBackend = SecretsStoreBackend
 
 // SecretsStoreOnePasswordConfig carries non-secret 1Password backend settings.
 type SecretsStoreOnePasswordConfig struct {
@@ -131,10 +119,6 @@ type SecretsStoreOnePasswordConfig struct {
 	// Ignored compatibility aliases while callers are rewritten.
 	DesktopAccountID string `yaml:"-" json:"-"`
 }
-
-// SecretsProfileOnePasswordConfig is the old in-memory name for
-// SecretsStoreOnePasswordConfig.
-type SecretsProfileOnePasswordConfig = SecretsStoreOnePasswordConfig
 
 // SecretsBackendKind is the durable non-secret backend selector for a named
 // credential store.
@@ -156,14 +140,7 @@ const (
 	EffectiveSecretsStoreSourceConfigured EffectiveSecretsStoreSource = "configured"
 )
 
-// EffectiveSecretsProfileSource is a compatibility alias retained during the staged rewrite.
-type EffectiveSecretsProfileSource = EffectiveSecretsStoreSource
-
 const (
-	// EffectiveSecretsProfileSourceConfigured is the compatibility name for a configured credential store.
-	EffectiveSecretsProfileSourceConfigured EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceConfigured
-	// EffectiveSecretsProfileSourceProjectedLegacy is the compatibility name for the built-in OS store.
-	EffectiveSecretsProfileSourceProjectedLegacy EffectiveSecretsProfileSource = EffectiveSecretsStoreSourceBuiltIn
 	// ProjectedOSCredentialStoreBackendKind is the presentation backend for the built-in OS store.
 	ProjectedOSCredentialStoreBackendKind = "auto"
 )
@@ -181,9 +158,6 @@ type EffectiveSecretsStore struct {
 	Label string `json:"label,omitempty"`
 }
 
-// EffectiveSecretsProfile is the old in-memory name for EffectiveSecretsStore.
-type EffectiveSecretsProfile = EffectiveSecretsStore
-
 // Profile is one named review profile.
 type Profile struct {
 	RepositoryAccess string          `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
@@ -193,8 +167,8 @@ type Profile struct {
 	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 
-	// SecretsProfile is retained as an ignored in-memory compatibility field.
-	SecretsProfile string `yaml:"-" json:"-"`
+	// SecretsStore is retained as an ignored in-memory compatibility field.
+	SecretsStore string `yaml:"-" json:"-"`
 	// ReviewerCredentials is the resolved effective reviewer credential block
 	// derived from ReviewerEntities for runtime callers. It is not config schema.
 	ReviewerCredentials *ReviewerCredentials `yaml:"-" json:"-"`
@@ -876,7 +850,6 @@ func Save(path string, cfg File) error {
 
 func fileHasNoExplicitContent(cfg File) bool {
 	return cfg.Secrets.Stores == nil &&
-		cfg.Secrets.Profiles == nil &&
 		cfg.RepositoryAccess == nil &&
 		cfg.LLMRuntimes == nil &&
 		cfg.ReviewerEntities == nil &&
@@ -1015,11 +988,6 @@ func EffectiveSecretsStores(cfg File) []EffectiveSecretsStore {
 		})
 	}
 	return out
-}
-
-// EffectiveSecretsProfiles is the old in-memory name for EffectiveSecretsStores.
-func EffectiveSecretsProfiles(cfg File) []EffectiveSecretsProfile {
-	return EffectiveSecretsStores(cfg)
 }
 
 // ResolveProfile returns the requested profile.
@@ -2004,17 +1972,11 @@ func (s SecretsConfig) normalized() SecretsConfig {
 	if s.Stores == nil {
 		s.Stores = map[string]SecretsStore{}
 	}
-	for id, profile := range s.Profiles {
-		if _, ok := s.Stores[id]; !ok {
-			s.Stores[id] = profile
-		}
-	}
 	stores := make(map[string]SecretsStore, len(s.Stores))
 	for id, store := range s.Stores {
 		stores[id] = store.normalized()
 	}
 	s.Stores = stores
-	s.Profiles = stores
 	return s
 }
 
@@ -2083,7 +2045,7 @@ func (c SecretsStoreOnePasswordConfig) normalized() SecretsStoreOnePasswordConfi
 }
 
 // IsOnePasswordSecretsBackend reports whether kind is one of cr's supported
-// 1Password-backed secrets-profile variants.
+// 1Password-backed credential-store variants.
 func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
 	switch kind {
 	case SecretsBackendKind(credstore.BackendOP), SecretsBackendKind(credstore.BackendOPConnect), SecretsBackendKind(credstore.BackendOPDesktop):
@@ -2094,7 +2056,7 @@ func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
 }
 
 func (p Profile) normalized() Profile {
-	p.SecretsProfile = strings.TrimSpace(p.SecretsProfile)
+	p.SecretsStore = strings.TrimSpace(p.SecretsStore)
 	p.RepositoryAccess = strings.TrimSpace(p.RepositoryAccess)
 	p.Git = p.Git.normalized()
 	p.Reviewer = p.Reviewer.normalized()

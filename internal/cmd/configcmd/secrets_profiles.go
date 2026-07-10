@@ -15,7 +15,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
-func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
+func newSecretsStoreCommand(opts *root.Options) *cobra.Command {
 	secretsCmd := &cobra.Command{
 		Use:   "credential-store",
 		Short: "Inspect configured credential stores",
@@ -35,9 +35,9 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result := view.ConfigSecretsProfiles{Profiles: configSecretsProfilesView(config.EffectiveSecretsProfiles(cfg))}
+			result := view.ConfigSecretsStores{Stores: configSecretsStoresView(config.EffectiveSecretsStores(cfg))}
 			return view.Render(opts.Stdout, listJSON, result, func(w io.Writer) error {
-				return view.RenderConfigSecretsProfilesText(w, result)
+				return view.RenderConfigSecretsStoresText(w, result)
 			})
 		},
 	}
@@ -53,13 +53,13 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profile, err := effectiveSecretsProfileByID(cfg, args[0])
+			profile, err := effectiveSecretsStoreByID(cfg, args[0])
 			if err != nil {
 				return cmderr.Config(err)
 			}
-			result := configSecretsProfileView(cfg, profile)
+			result := configSecretsStoreView(cfg, profile)
 			return view.Render(opts.Stdout, getJSON, result, func(w io.Writer) error {
-				return view.RenderConfigSecretsProfileText(w, result)
+				return view.RenderConfigSecretsStoreText(w, result)
 			})
 		},
 	}
@@ -69,24 +69,24 @@ func newSecretsProfileCommand(opts *root.Options) *cobra.Command {
 	return secretsCmd
 }
 
-func configSecretsProfilesView(profiles []config.EffectiveSecretsProfile) []view.ConfigSecretsProfile {
-	items := make([]view.ConfigSecretsProfile, 0, len(profiles))
+func configSecretsStoresView(profiles []config.EffectiveSecretsStore) []view.ConfigSecretsStore {
+	items := make([]view.ConfigSecretsStore, 0, len(profiles))
 	for _, profile := range profiles {
-		items = append(items, configSecretsProfileView(config.File{}, profile))
+		items = append(items, configSecretsStoreView(config.File{}, profile))
 	}
 	return items
 }
 
-func configSecretsProfileView(cfg config.File, profile config.EffectiveSecretsProfile) view.ConfigSecretsProfile {
-	result := view.ConfigSecretsProfile{
+func configSecretsStoreView(cfg config.File, profile config.EffectiveSecretsStore) view.ConfigSecretsStore {
+	result := view.ConfigSecretsStore{
 		ID:       profile.ID,
 		Label:    profile.Label,
 		Backend:  profile.Backend,
 		ReadOnly: profile.ReadOnly,
 		Source:   string(profile.Source),
 	}
-	if configured, ok := configuredOnePasswordSecretsProfile(cfg, profile); ok {
-		onePassword := &view.ConfigSecretsProfileOnePassword{
+	if configured, ok := configuredOnePasswordSecretsStore(cfg, profile); ok {
+		onePassword := &view.ConfigSecretsStoreOnePassword{
 			Timeout: configured.Backend.OnePassword.Timeout,
 			VaultID: configured.Backend.OnePassword.VaultID,
 		}
@@ -100,31 +100,31 @@ func configSecretsProfileView(cfg config.File, profile config.EffectiveSecretsPr
 			onePassword.DesktopAccountID = configured.Backend.OnePassword.DesktopAccountID
 			onePassword.DesktopAccountEnv = credstore.DefaultOnePasswordDesktopAccountEnv
 		}
-		result.BackendInfo = &view.ConfigSecretsProfileBackendDetails{OnePassword: onePassword}
+		result.BackendInfo = &view.ConfigSecretsStoreBackendDetails{OnePassword: onePassword}
 	}
 	return result
 }
 
-func configuredOnePasswordSecretsProfile(cfg config.File, profile config.EffectiveSecretsProfile) (config.SecretsProfile, bool) {
-	if profile.Source != config.EffectiveSecretsProfileSourceConfigured {
-		return config.SecretsProfile{}, false
+func configuredOnePasswordSecretsStore(cfg config.File, profile config.EffectiveSecretsStore) (config.SecretsStore, bool) {
+	if profile.Source != config.EffectiveSecretsStoreSourceConfigured {
+		return config.SecretsStore{}, false
 	}
-	configured, ok := cfg.Secrets.Profiles[profile.ID]
+	configured, ok := cfg.Secrets.Stores[profile.ID]
 	if !ok || configured.Backend.OnePassword == nil || !config.IsOnePasswordSecretsBackend(configured.Backend.Kind) {
-		return config.SecretsProfile{}, false
+		return config.SecretsStore{}, false
 	}
 	return configured, true
 }
 
-func effectiveSecretsProfileByID(cfg config.File, rawID string) (config.EffectiveSecretsProfile, error) {
+func effectiveSecretsStoreByID(cfg config.File, rawID string) (config.EffectiveSecretsStore, error) {
 	id := strings.TrimSpace(rawID)
 	if id == "" {
-		return config.EffectiveSecretsProfile{}, fmt.Errorf("%w: credential store id is required", config.ErrInvalid)
+		return config.EffectiveSecretsStore{}, fmt.Errorf("%w: credential store id is required", config.ErrInvalid)
 	}
-	for _, profile := range config.EffectiveSecretsProfiles(cfg) {
+	for _, profile := range config.EffectiveSecretsStores(cfg) {
 		if profile.ID == id {
 			return profile, nil
 		}
 	}
-	return config.EffectiveSecretsProfile{}, fmt.Errorf("%w: %s", config.ErrSecretsProfileNotFound, id)
+	return config.EffectiveSecretsStore{}, fmt.Errorf("%w: %s", config.ErrSecretsStoreNotFound, id)
 }

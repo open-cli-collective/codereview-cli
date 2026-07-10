@@ -26,7 +26,7 @@ func TestConfigErrorMapping(t *testing.T) {
 		t.Fatalf("exit code = %d, want %d", got, exitcode.AuthConfigError)
 	}
 
-	err = Config(config.ErrSecretsProfileNotFound)
+	err = Config(config.ErrSecretsStoreNotFound)
 	if got := exitcode.FromError(err); got != exitcode.AuthConfigError {
 		t.Fatalf("missing secrets profile exit code = %d, want %d", got, exitcode.AuthConfigError)
 	}
