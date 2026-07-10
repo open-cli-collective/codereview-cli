@@ -35,7 +35,13 @@ const reviewLong = `Run an automated pull-request review.
 Live review checks local and host state before starting the reviewer loop. By
 default, if the posting identity has already approved the PR, cr exits before
 any LLM classifier or reviewer work, even if newer commits made that approval
-stale. Use --rerun to bypass this and force a fresh live review.
+stale. Use --rerun to bypass these local gates and force a new live review.
+
+Provider session reuse is independent of local review gates. Reviews reuse a
+durable session scoped to the PR, profile, and posting identity by default,
+including after pushes and across dry-run/live invocations. --session selects
+a named live-review session instead; --fresh-session starts a fresh provider
+conversation for this invocation.
 
 If no existing approval is present and a prior codereview marker exists from
 the posting identity, cr can fast-path approval when the PR author posts an
@@ -44,7 +50,8 @@ filtered in Go; the small-tier classifier only decides whether the filtered
 comments ask for override approval.
 
 --retry-posts is recovery-only: it retries missing or failed required posts for
-an existing run and does not check existing approvals or approval overrides.`
+an existing run and does not check existing approvals, approval overrides, or
+run LLM planning.`
 
 // RuntimeFactory builds the concrete runtime used by review lifecycle commands.
 type RuntimeFactory func(context.Context, app.OpenRequest) (app.Runtime, error)
@@ -54,6 +61,7 @@ type commandFlags struct {
 	noPost            bool
 	rerun             bool
 	retryPosts        bool
+	freshSession      bool
 	agentsDirs        []string
 	failOn            string
 	sessionName       string
@@ -92,11 +100,12 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	}
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan review actions without posting")
 	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
-	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass approval/override, resume, and marker gates and run a fresh live review")
+	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass local approval/override, resume, and marker gates; reuse the LLM session")
 	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review or checking approval overrides")
+	cmd.Flags().BoolVar(&flags.freshSession, "fresh-session", false, "Start a fresh provider conversation without changing local review gates")
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
-	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Named LLM session to reuse for live reviews")
+	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Override the PR's default LLM session with a named live-review session")
 	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	cmd.Flags().StringVar(&flags.selectionModel, "selection-model", "", "Override selection model for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionEffort, "selection-effort", "", "Override selection effort for dry-run review")
@@ -189,6 +198,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if sessionName != "" && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("--session cannot be used with --retry-posts"))
+	}
+	if flags.freshSession && flags.retryPosts {
+		return exitcode.Usage(fmt.Errorf("--fresh-session cannot be used with --retry-posts"))
 	}
 	if flags.maxAgents < 0 {
 		return exitcode.Usage(fmt.Errorf("--max-agents must be non-negative"))
@@ -295,6 +307,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ReviewBaseSHA:               reviewBaseSHA,
 		ReviewHeadSHA:               reviewHeadSHA,
 		Rerun:                       flags.rerun,
+		FreshSession:                flags.freshSession,
 		ToolVersion:                 version.Version,
 	}
 	if !flags.dryRun {

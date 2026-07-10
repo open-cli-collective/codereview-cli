@@ -1,4 +1,4 @@
-// Package sessionreuse validates named LLM session reuse scope.
+// Package sessionreuse validates default and named LLM session reuse scope.
 package sessionreuse
 
 import (
@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Scope is the compatibility tuple for one named provider session.
+// Scope is the compatibility tuple for one provider session.
 type Scope struct {
 	Name     string
 	Profile  string

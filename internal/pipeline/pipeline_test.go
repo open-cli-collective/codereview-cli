@@ -2441,6 +2441,168 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 	}
 }
 
+func TestDefaultSessionNameUsesPRProfileAndPostingIdentityOnly(t *testing.T) {
+	_, req := dryRunHarness(t)
+	want := "default:github.com_open-cli-collective_codereview-cli_29__home__review-bot"
+
+	first, err := defaultSessionName(req)
+	if err != nil {
+		t.Fatalf("defaultSessionName: %v", err)
+	}
+	req.ReviewBaseSHA = strings.Repeat("a", 40)
+	req.ReviewHeadSHA = strings.Repeat("b", 40)
+	second, err := defaultSessionName(req)
+	if err != nil {
+		t.Fatalf("defaultSessionName with changed SHAs: %v", err)
+	}
+	if first != want || second != want {
+		t.Fatalf("default session names = %q / %q, want %q", first, second, want)
+	}
+}
+
+func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+	actionIDs := actionSequence()
+	dryAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	dryAdapter.Queue(fakeLLMResult("selection-dry", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	dryAdapter.Queue(fakeLLMResult("reviewer-dry", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	dryAdapter.Queue(fakeLLMResult("rollup-dry", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	dryResult, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         dryAdapter,
+		Store:           store,
+		NamedSessions:   store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-default-dry" },
+		NewSessionRowID: sequence("session-dry"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionIDs,
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if dryResult.NamedSessionCandidate == nil {
+		t.Fatal("dry-run candidate = nil")
+	}
+	stored, err := store.GetNamedSession(ctx, dryResult.NamedSessionCandidate.Name)
+	if err != nil {
+		t.Fatalf("GetNamedSession after dry-run: %v", err)
+	}
+	if stored.ProviderSessionID != "rollup-dry" {
+		t.Fatalf("stored provider session = %q, want rollup-dry", stored.ProviderSessionID)
+	}
+
+	req.Rerun = true
+	run := allocateLiveRun(t, store, provider, req, "run-default-live")
+	liveAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	liveAdapter.Queue(fakeLLMResult("selection-live", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	liveAdapter.Queue(fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	liveAdapter.Queue(fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6))
+
+	liveResult, err := liveForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         liveAdapter,
+		Store:           store,
+		NamedSessions:   store,
+		Layout:          layout,
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session-live"),
+		NewFindingID:    findingSequence("live-finding"),
+		NewActionID:     actionIDs,
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	resumes := liveAdapter.Resumes()
+	if len(resumes) != 2 || resumes[0].SessionID != "rollup-dry" || resumes[1].SessionID != "selection-live" {
+		t.Fatalf("live resumes = %#v, want persisted dry-run session then within-run selection", resumes)
+	}
+	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
+		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
+	}
+}
+
+func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	name, err := defaultSessionName(req)
+	if err != nil {
+		t.Fatalf("defaultSessionName: %v", err)
+	}
+	stored := namedSessionForRequest(req, "stored-session")
+	stored.Name = name
+	if err := store.UpsertNamedSession(ctx, stored); err != nil {
+		t.Fatalf("UpsertNamedSession: %v", err)
+	}
+	req.FreshSession = true
+	run := allocateLiveRun(t, store, provider, req, "run-default-fresh")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-fresh", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-fresh", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-fresh", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := liveForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		NamedSessions:   store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if resumes := adapter.Resumes(); len(resumes) != 1 || resumes[0].SessionID != "selection-fresh" {
+		t.Fatalf("resumes = %#v, want no stored-session resume", resumes)
+	}
+	if result.NamedSessionCandidate == nil || result.NamedSessionCandidate.Name != name || result.NamedSessionCandidate.ProviderSessionID != "rollup-fresh" {
+		t.Fatalf("candidate = %#v, want fresh replacement for %q", result.NamedSessionCandidate, name)
+	}
+	gotStored, err := store.GetNamedSession(ctx, name)
+	if err != nil {
+		t.Fatalf("GetNamedSession: %v", err)
+	}
+	if gotStored.ProviderSessionID != "stored-session" {
+		t.Fatalf("stored provider session = %q, want unchanged until caller commits candidate", gotStored.ProviderSessionID)
+	}
+}
+
+func TestFreshSessionSkipsStoredNamedSession(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	_, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	req.FreshSession = true
+	if err := store.UpsertNamedSession(ctx, namedSessionForRequest(req, "stored-session")); err != nil {
+		t.Fatalf("UpsertNamedSession: %v", err)
+	}
+	state, err := prepareNamedSession(ctx, Options{
+		Adapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
+		NamedSessions: store,
+	}, req, true, "claude-sonnet-4-6", fixedNow())
+	if err != nil {
+		t.Fatalf("prepareNamedSession: %v", err)
+	}
+	if state.active.Name != "daily" || state.resumeID() != "" {
+		t.Fatalf("fresh named state = %#v resume %q, want daily without stored resume", state, state.resumeID())
+	}
+}
+
 func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -2600,6 +2762,76 @@ func TestLiveNamedSessionScopeMismatchRefusesBeforeLLM(t *testing.T) {
 			}
 			if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
 				t.Fatalf("adapter was invoked: starts=%#v resumes=%#v", adapter.Requests(), adapter.Resumes())
+			}
+			gotStored, getErr := store.GetNamedSession(ctx, req.SessionName)
+			if getErr != nil {
+				t.Fatalf("GetNamedSession: %v", getErr)
+			}
+			if !reflect.DeepEqual(gotStored, stored) {
+				t.Fatalf("stored named session = %#v, want unchanged %#v", gotStored, stored)
+			}
+		})
+	}
+}
+
+func TestLiveDefaultSessionScopeMismatchStartsFresh(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ledger.NamedSession)
+		wantErr string
+	}{
+		{name: "profile", mutate: func(s *ledger.NamedSession) { s.Profile = "other" }, wantErr: "profile mismatch"},
+		{name: "provider", mutate: func(s *ledger.NamedSession) { s.Provider = "openai" }, wantErr: "provider mismatch"},
+		{name: "adapter", mutate: func(s *ledger.NamedSession) { s.Adapter = "other-adapter" }, wantErr: "adapter mismatch"},
+		{name: "model", mutate: func(s *ledger.NamedSession) { s.Model = "claude-opus-4-8" }, wantErr: "model mismatch"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			name, err := defaultSessionName(req)
+			if err != nil {
+				t.Fatalf("defaultSessionName: %v", err)
+			}
+			run := allocateLiveRun(t, store, provider, req, "run-live-default-mismatch-"+tt.name)
+			stored := namedSessionForRequest(req, "stored-session")
+			stored.Name = name
+			tt.mutate(&stored)
+			if err := store.UpsertNamedSession(ctx, stored); err != nil {
+				t.Fatalf("UpsertNamedSession: %v", err)
+			}
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+			adapter.Queue(fakeLLMResult("selection-new", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+			adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+			adapter.Queue(fakeLLMResult("rollup-new", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+			var warnings bytes.Buffer
+
+			result, err := liveForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				NamedSessions:   store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Warnings:        &warnings,
+				Now:             fixedNow,
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req, run)
+			if err != nil {
+				t.Fatalf("Live: %v", err)
+			}
+			if len(adapter.Resumes()) != 1 || adapter.Resumes()[0].SessionID != "selection-new" {
+				t.Fatalf("resumes = %#v, want only within-invocation rollup resume", adapter.Resumes())
+			}
+			if !strings.Contains(warnings.String(), tt.wantErr) || !strings.Contains(warnings.String(), "starting fresh") {
+				t.Fatalf("warnings = %q, want %q and fresh fallback", warnings.String(), tt.wantErr)
+			}
+			if result.NamedSessionCandidate == nil || result.NamedSessionCandidate.Name != name || result.NamedSessionCandidate.ProviderSessionID != "rollup-new" {
+				t.Fatalf("candidate = %#v, want fresh rollup session", result.NamedSessionCandidate)
 			}
 		})
 	}

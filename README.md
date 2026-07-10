@@ -14,7 +14,7 @@ Use `cr` when you want to:
 
 - preview review actions before posting anything;
 - run a live PR review with idempotent posting and resume behavior;
-- reuse named LLM sessions across related live reviews;
+- reuse PR-scoped LLM sessions by default or named sessions across related live reviews;
 - inspect trusted reviewer agents available to a repository;
 - manage local review run data and credentials from the terminal.
 
@@ -640,11 +640,17 @@ Run a live review and fail the command when a major or blocking finding exists:
 cr review --fail-on major https://github.com/OWNER/REPO/pull/123
 ```
 
-Force a fresh live review instead of using existing approval, override,
-resume, or marker gates:
+Force a fresh local live review instead of using existing approval, override,
+resume, or marker gates while continuing the PR's provider session:
 
 ```bash
 cr review --rerun https://github.com/OWNER/REPO/pull/123
+```
+
+Start both a fresh local review and a fresh provider conversation:
+
+```bash
+cr review --rerun --fresh-session https://github.com/OWNER/REPO/pull/123
 ```
 
 Retry missing or failed required posts without rerunning the LLM review:
@@ -662,7 +668,9 @@ low-value rerun:
 cr review https://github.com/OWNER/REPO/pull/123
 ```
 
-Reuse a named LLM session for a series of related live reviews:
+By default, dry-run and live reviews of the same PR, profile, and posting
+identity reuse one provider session across pushes. Override that scope with a
+named session for a series of related live reviews:
 
 ```bash
 cr review --session release-train https://github.com/OWNER/REPO/pull/123
@@ -996,8 +1004,9 @@ Modes:
 |------|-----------|
 | `--dry-run` | Plan review actions, write local artifacts, and print the plan without posting. |
 | `--no-post` | Alias for `--dry-run`. |
-| `--rerun` | Bypass existing approval, approval-override, resume, and marker gates and start a fresh live review. Mutually exclusive with `--retry-posts`. |
+| `--rerun` | Bypass existing local approval, approval-override, resume, and marker gates and start a new live review while retaining provider-session reuse. Mutually exclusive with `--retry-posts`. |
 | `--retry-posts` | Retry missing or failed required posts for an existing run without rerunning LLM planning or checking approval overrides. Mutually exclusive with `--rerun` and incompatible with `--session`. |
+| `--fresh-session` | Start a fresh provider conversation for this invocation without changing local review gates. Incompatible with `--retry-posts`, which does not run LLM planning. |
 
 Review selection and execution flags:
 
@@ -1014,7 +1023,7 @@ Review selection and execution flags:
 | `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
-| `--session <name>` | Reuse a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
+| `--session <name>` | Override the default PR/profile/posting-identity scope with a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 
 Policy and output flags:
 
@@ -1026,10 +1035,19 @@ Policy and output flags:
 | `--no-resolve-threads` | Do not plan thread-resolution actions. Also implied by profile `resolve_threads: never`. |
 | `--json` | Emit JSON. |
 
-Live review uses a gate before planning or posting. If the posting identity has
-already approved the PR, `cr review` exits immediately in Go code before any
-LLM classifier or reviewer loop runs; this is true even if newer commits made
-the approval stale. Use `--rerun` to force a fresh review anyway.
+Local run state and provider session state are independent. By default, each
+PR/profile/posting-identity tuple gets one durable provider session shared by
+dry-run and live reviews and retained when the PR head changes. `--session`
+selects an explicit named live-review session instead. `--fresh-session`
+skips provider resume for one invocation and replaces that scope's durable
+session after successful planning (and, for live review, successful posting).
+
+Live review uses a local gate before planning or posting. If the posting
+identity has already approved the PR, `cr review` exits immediately in Go code
+before any LLM classifier or reviewer loop runs; this is true even if newer
+commits made the approval stale. Use `--rerun` to force a new local review
+while still resuming the provider session, or combine it with
+`--fresh-session` to make both layers fresh.
 
 If there is no existing approval, `cr review` looks for an explicit PR-author
 approval override request newer than the latest codereview marker from the
@@ -1295,13 +1313,16 @@ text is escaped before posting.
 
 ### Session Reuse
 
-`--session <name>` stores and reuses the provider session for live orchestrator
-turns. A named session is scoped by name, profile, provider, adapter, model, and
-host. Profile/provider/adapter/model mismatches are errors. Host mismatches warn
-and continue. If the active adapter does not support resume, `cr` starts fresh
-and records the new provider session when available. `claude_cli` supports
-resume by launching a new Claude Code background job with the stored provider
-session.
+Default and named session metadata lives in `ledger.db`'s existing
+`named_sessions` table. The default key contains the PR identity, profile, and
+posting identity, but not head or base SHAs. Both session kinds validate name,
+profile, provider, adapter, model, and host before resume. A mismatch in the
+derived default scope warns and starts fresh. An explicit named-session scope
+mismatch aborts before invoking the LLM so the named context is not overwritten.
+A host mismatch warns and continues. If the active adapter does not support
+resume, `cr` starts fresh and records the new provider session when available.
+`claude_cli` supports resume by launching a new Claude Code background job with
+the stored provider session.
 
 ### Retention
 

@@ -74,6 +74,31 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	}
 }
 
+func TestRunRerunStartsFreshLocalRunAndPreservesProviderSessionChoice(t *testing.T) {
+	for _, freshSession := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fresh_session_%v", freshSession), func(t *testing.T) {
+			ctx := context.Background()
+			fixture := newFixture(t)
+			fixture.allocateRun(t, "old-run", testBaseSHA)
+			fixture.req.FreshSession = freshSession
+			planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+			opts := fixture.opts(planner)
+			opts.NewRunID = sequence("rerun")
+
+			result, err := Run(ctx, opts, Request{Pipeline: fixture.req, Flags: Flags{Rerun: true}})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Run.RunID != "rerun-1" || planner.calls != 1 || len(planner.requests) != 1 {
+				t.Fatalf("result/planner = %q/%d/%#v, want one fresh rerun", result.Run.RunID, planner.calls, planner.requests)
+			}
+			if planner.requests[0].FreshSession != freshSession {
+				t.Fatalf("planner FreshSession = %v, want %v", planner.requests[0].FreshSession, freshSession)
+			}
+		})
+	}
+}
+
 func TestRunRejectsUnsafeProfileAgentSourcesBeforeFreshAllocation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1075,6 +1100,7 @@ type fakePlanner struct {
 	includeResolve bool
 	calls          int
 	runs           []ledger.Run
+	requests       []pipeline.Request
 }
 
 type retentionProvider struct {
@@ -1089,9 +1115,10 @@ func (p *retentionProvider) GetPR(ctx context.Context, ref gitprovider.PRRef) (g
 	return p.Fake.GetPR(ctx, ref)
 }
 
-func (p *fakePlanner) Live(_ context.Context, _ pipeline.Request, run ledger.Run) (pipeline.Result, error) {
+func (p *fakePlanner) Live(_ context.Context, req pipeline.Request, run ledger.Run) (pipeline.Result, error) {
 	p.calls++
 	p.runs = append(p.runs, run)
+	p.requests = append(p.requests, req)
 	event := review.ReviewEventComment
 	if p.outcome == reviewplan.OutcomeRequestChanges {
 		event = review.ReviewEventRequestChanges

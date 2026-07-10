@@ -376,7 +376,9 @@ func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
 	text := out.String()
 	for _, want := range []string{
 		"already approved the PR",
-		"--rerun to bypass this",
+		"--rerun to bypass these local gates",
+		"Provider session reuse is independent",
+		"--fresh-session starts a fresh provider",
 		"approval override request newer than that marker",
 		"--retry-posts is recovery-only",
 	} {
@@ -893,6 +895,29 @@ func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	if !runner.liveFlags[0].Rerun || runner.liveFlags[0].RetryPosts {
 		t.Fatalf("live flags = %#v, want rerun only", runner.liveFlags[0])
 	}
+	if !runner.liveRequests[0].Rerun || runner.liveRequests[0].FreshSession {
+		t.Fatalf("pipeline request = %#v, want rerun with reusable provider session", runner.liveRequests[0])
+	}
+}
+
+func TestReviewFreshSessionPropagatesWithoutChangingRunMode(t *testing.T) {
+	liveRunner := &fakeRunner{liveResult: testLiveResult(false)}
+	liveCmd, _ := newTestCommand(t, testConfig(), fakeFactory(liveRunner))
+	if err := root.Execute(liveCmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--rerun", "--fresh-session", "--session", "daily"}); err != nil {
+		t.Fatalf("live Execute: %v", err)
+	}
+	if len(liveRunner.liveRequests) != 1 || !liveRunner.liveRequests[0].Rerun || !liveRunner.liveRequests[0].FreshSession || liveRunner.liveRequests[0].SessionName != "daily" {
+		t.Fatalf("live request = %#v, want rerun/fresh named session", liveRunner.liveRequests)
+	}
+
+	dryRunner := &fakeRunner{result: testPipelineResult(false)}
+	dryCmd, _ := newTestCommand(t, testConfig(), fakeFactory(dryRunner))
+	if err := root.Execute(dryCmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--fresh-session"}); err != nil {
+		t.Fatalf("dry-run Execute: %v", err)
+	}
+	if len(dryRunner.requests) != 1 || !dryRunner.requests[0].FreshSession || dryRunner.requests[0].Rerun {
+		t.Fatalf("dry-run request = %#v, want fresh provider session with ordinary local gates", dryRunner.requests)
+	}
 }
 
 func TestReviewLiveSessionPassesNamedSession(t *testing.T) {
@@ -940,6 +965,7 @@ func TestReviewRejectsInvalidInputs(t *testing.T) {
 		{name: "session dry run", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--session", "daily"}},
 		{name: "session no post", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--no-post", "--session", "daily"}},
 		{name: "session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--session", "daily"}},
+		{name: "fresh session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--fresh-session"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
