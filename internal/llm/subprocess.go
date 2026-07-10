@@ -282,7 +282,12 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 	if a.kind == subprocessCodex && resumeSessionID != "" && req.ReviewerWorkspace != nil {
 		launchDir = req.ReviewerWorkspace.RepoDir
 	}
-	process, err := launchProcess(ctx, a.command, execArgs, launchDir, a.processEnv(req), a.timeout, req.LogPath, cleanup, false)
+	env, err := a.processEnv(req, scratch)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	process, err := launchProcess(ctx, a.command, execArgs, launchDir, env, a.timeout, req.LogPath, cleanup, false)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +344,12 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 	if req.ReviewerWorkspace != nil {
 		launchDir = req.ReviewerWorkspace.RepoDir
 	}
-	process, err := launchProcess(ctx, a.command, execArgs, launchDir, a.processEnv(req), a.timeout, req.LogPath, cleanup, false)
+	env, err := a.processEnv(req, scratch)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	process, err := launchProcess(ctx, a.command, execArgs, launchDir, env, a.timeout, req.LogPath, cleanup, false)
 	if err != nil {
 		return nil, err
 	}
@@ -358,12 +368,59 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 	return stream, nil
 }
 
-func (a *SubprocessAdapter) processEnv(req Request) []string {
+func (a *SubprocessAdapter) processEnv(req Request, scratch string) ([]string, error) {
 	env := append(os.Environ(), a.env...)
-	if req.ReviewerWorkspace != nil {
-		env = append(env, req.ReviewerWorkspace.Env...)
+	if req.ReviewerWorkspace == nil {
+		return env, nil
 	}
-	return env
+	env = append(env, req.ReviewerWorkspace.Env...)
+	return reviewerInvocationEnv(env, scratch)
+}
+
+func reviewerInvocationEnv(env []string, scratch string) ([]string, error) {
+	tempDir := filepath.Join(scratch, "tmp")
+	cacheDir := filepath.Join(scratch, "cache")
+	goTmpDir := filepath.Join(tempDir, "go")
+	goCacheDir := filepath.Join(cacheDir, "go-build")
+	xdgCacheDir := filepath.Join(cacheDir, "xdg")
+	clangCacheDir := filepath.Join(cacheDir, "clang-module-cache")
+	for _, dir := range []string{tempDir, goTmpDir, goCacheDir, xdgCacheDir, clangCacheDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("llm subprocess: create reviewer toolchain dir: %w", err)
+		}
+	}
+
+	clangFlag := "-fmodules-cache-path=" + clangCacheDir
+	overrides := []string{
+		"TMPDIR=" + tempDir,
+		"TMP=" + tempDir,
+		"TEMP=" + tempDir,
+		"GOTMPDIR=" + goTmpDir,
+		"GOCACHE=" + goCacheDir,
+		"XDG_CACHE_HOME=" + xdgCacheDir,
+		"CGO_CFLAGS=" + appendCompilerFlag(envValue(env, "CGO_CFLAGS"), clangFlag),
+		"CGO_CXXFLAGS=" + appendCompilerFlag(envValue(env, "CGO_CXXFLAGS"), clangFlag),
+	}
+	keys := make(map[string]bool, len(overrides))
+	for _, entry := range overrides {
+		key, _, _ := strings.Cut(entry, "=")
+		keys[key] = true
+	}
+	filtered := env[:0]
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if !keys[key] {
+			filtered = append(filtered, entry)
+		}
+	}
+	return append(filtered, overrides...), nil
+}
+
+func appendCompilerFlag(existing, flag string) string {
+	if existing == "" {
+		return flag
+	}
+	return existing + " " + flag
 }
 
 // Resume starts a subprocess request from an existing provider session when the
@@ -628,14 +685,6 @@ func (a *SubprocessAdapter) invocationScratchDir(req Request) (string, func() er
 	}
 	if strings.TrimSpace(workspace.RepoDir) == "" {
 		return "", nil, fmt.Errorf("%w: reviewer workspace repo dir is required", ErrUnsafeSubprocessConfig)
-	}
-	for _, dir := range []string{workspace.ScratchDir, workspace.TempDir, workspace.CacheDir} {
-		if strings.TrimSpace(dir) == "" {
-			continue
-		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return "", nil, fmt.Errorf("llm subprocess: create reviewer workspace dir: %w", err)
-		}
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", nil, fmt.Errorf("llm subprocess: create reviewer workspace scratch root: %w", err)
