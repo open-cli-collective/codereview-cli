@@ -73,6 +73,16 @@ func (m RunMetrics) HasCostUsage() bool {
 	return m.Cost.Available
 }
 
+// Add accumulates aggregate usage and activity from other into m.
+func (m *RunMetrics) Add(other RunMetrics) {
+	m.LLMCalls += other.LLMCalls
+	m.Turns += other.Turns
+	m.ToolCalls += other.ToolCalls
+	m.ToolResults += other.ToolResults
+	m.Tokens.add(other.Tokens)
+	m.Cost.add(other.Cost)
+}
+
 // ExtractRunMetrics reads agent JSONL logs from a review artifact directory.
 func ExtractRunMetrics(artifactPath string) (RunMetrics, error) {
 	artifactPath = strings.TrimSpace(artifactPath)

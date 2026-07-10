@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -432,14 +433,7 @@ func buildSelectionComparison(summary benchmarkSuiteSummary, resultsDir string) 
 func appendUniqueWarnings(dst []string, warnings ...string) []string {
 	seen := make(map[string]struct{}, len(dst)+len(warnings))
 	unique := dst[:0]
-	for _, warning := range dst {
-		if _, ok := seen[warning]; ok {
-			continue
-		}
-		seen[warning] = struct{}{}
-		unique = append(unique, warning)
-	}
-	for _, warning := range warnings {
+	for _, warning := range slices.Concat(dst, warnings) {
 		if _, ok := seen[warning]; ok {
 			continue
 		}
@@ -644,22 +638,7 @@ func accumulateCandidateTotal(total *comparisonCandidateTotal, run comparisonRun
 		if total.Usage == nil {
 			total.Usage = &benchmark.RunMetrics{}
 		}
-		total.Usage.LLMCalls += run.Usage.LLMCalls
-		total.Usage.Turns += run.Usage.Turns
-		total.Usage.ToolCalls += run.Usage.ToolCalls
-		total.Usage.ToolResults += run.Usage.ToolResults
-		total.Usage.Tokens.Available = total.Usage.Tokens.Available || run.Usage.Tokens.Available
-		total.Usage.Tokens.Input += run.Usage.Tokens.Input
-		total.Usage.Tokens.Output += run.Usage.Tokens.Output
-		total.Usage.Tokens.CacheRead += run.Usage.Tokens.CacheRead
-		total.Usage.Tokens.CacheWrite += run.Usage.Tokens.CacheWrite
-		total.Usage.Tokens.TotalTokens += run.Usage.Tokens.TotalTokens
-		total.Usage.Cost.Available = total.Usage.Cost.Available || run.Usage.Cost.Available
-		total.Usage.Cost.Input += run.Usage.Cost.Input
-		total.Usage.Cost.Output += run.Usage.Cost.Output
-		total.Usage.Cost.CacheRead += run.Usage.Cost.CacheRead
-		total.Usage.Cost.CacheWrite += run.Usage.Cost.CacheWrite
-		total.Usage.Cost.Total += run.Usage.Cost.Total
+		total.Usage.Add(*run.Usage)
 	}
 }
 
@@ -713,26 +692,6 @@ func selectionFailureClassification(run benchmarkRun) string {
 	return failureSelectionError
 }
 
-func renderSelectionCompareText(opts *root.Options, comparison comparisonReport) error {
-	if _, err := fmt.Fprintf(opts.Stdout, "Selector benchmark comparison: %s\n", comparison.SuiteID); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Results dir: %s\n", comparison.ResultsDir); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Runs: %d\n", len(comparison.Runs)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(opts.Stdout, "Artifacts:"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  Comparison JSON: %s\n", comparison.Artifacts.ComparisonJSON); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(opts.Stdout, "  Comparison Markdown: %s\n", comparison.Artifacts.ComparisonMarkdown)
-	return err
-}
-
 func renderSelectionComparisonMarkdown(comparison comparisonReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Selector Benchmark Comparison: %s\n\n", comparison.SuiteID)
@@ -742,11 +701,11 @@ func renderSelectionComparisonMarkdown(comparison comparisonReport) string {
 	b.WriteString("| --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: | ---: |\n")
 	for _, run := range comparison.Runs {
 		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %d | %s | %s | %d | %d | %s | %s |\n",
-			markdownCell(run.CandidateID),
-			markdownCell(run.CaseID),
+			markdownCode(run.CandidateID),
+			markdownCode(run.CaseID),
 			run.Status,
 			run.ExitCode,
-			markdownCell(run.FailureClassification),
+			markdownCode(run.FailureClassification),
 			selectedAgentsMarkdownCell(run.SelectedAgents),
 			run.ThreadActionCount,
 			run.DurationMS,
@@ -772,7 +731,7 @@ func renderSelectionComparisonMarkdown(comparison comparisonReport) string {
 			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %d |\n",
 				markdownCode(run.CandidateID),
 				run.Status,
-				markdownCell(run.FailureClassification),
+				markdownCode(run.FailureClassification),
 				selectedAgentsMarkdownCell(run.SelectedAgents),
 				run.ThreadActionCount,
 			)
@@ -790,7 +749,7 @@ func renderSelectionComparisonMarkdown(comparison comparisonReport) string {
 	b.WriteString("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
 	for _, total := range comparison.CandidateTotals {
 		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %d | %s | %s |\n",
-			markdownCell(total.CandidateID),
+			markdownCode(total.CandidateID),
 			total.RunCount,
 			total.CompletedCount,
 			total.FailedCount,
@@ -814,26 +773,18 @@ func renderSelectionComparisonMarkdown(comparison comparisonReport) string {
 }
 
 func renderCompareText(opts *root.Options, comparison comparisonReport) error {
+	title := "Benchmark comparison"
 	if comparison.Mode == benchmarkModeSelection {
-		return renderSelectionCompareText(opts, comparison)
+		title = "Selector benchmark comparison"
 	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Benchmark comparison: %s\n", comparison.SuiteID); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Results dir: %s\n", comparison.ResultsDir); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Runs: %d\n", len(comparison.Runs)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(opts.Stdout, "Artifacts:"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  Comparison JSON: %s\n", comparison.Artifacts.ComparisonJSON); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(opts.Stdout, "  Comparison Markdown: %s\n", comparison.Artifacts.ComparisonMarkdown)
-	return err
+	w := stickyWriter{w: opts.Stdout}
+	w.printf("%s: %s\n", title, comparison.SuiteID)
+	w.printf("Results dir: %s\n", comparison.ResultsDir)
+	w.printf("Runs: %d\n", len(comparison.Runs))
+	w.println("Artifacts:")
+	w.printf("  Comparison JSON: %s\n", comparison.Artifacts.ComparisonJSON)
+	w.printf("  Comparison Markdown: %s\n", comparison.Artifacts.ComparisonMarkdown)
+	return w.err
 }
 
 func renderComparisonMarkdown(comparison comparisonReport) string {
@@ -862,8 +813,8 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 	b.WriteString(" ---: | ---: | ---: |\n")
 	for _, run := range comparison.Runs {
 		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %d | %s | %d |",
-			markdownCell(run.CandidateID),
-			markdownCell(run.CaseID),
+			markdownCode(run.CandidateID),
+			markdownCode(run.CaseID),
 			run.Status,
 			run.ExitCode,
 			run.FailureClassification,
@@ -964,7 +915,7 @@ func renderComparisonMarkdown(comparison comparisonReport) string {
 	b.WriteString(" ---: | ---: | ---: |\n")
 	for _, total := range comparison.CandidateTotals {
 		fmt.Fprintf(&b, "| `%s` | %d | %d | %d | %d | %d |",
-			markdownCell(total.CandidateID),
+			markdownCode(total.CandidateID),
 			total.RunCount,
 			total.CompletedCount,
 			total.FailedCount,
@@ -1058,10 +1009,6 @@ func markdownCode(value string) string {
 	value = strings.ReplaceAll(value, "\r", " ")
 	value = strings.ReplaceAll(value, "\n", " ")
 	return value
-}
-
-func markdownCell(value string) string {
-	return markdownCode(value)
 }
 
 func optionalLineCell(line *int) string {

@@ -80,6 +80,23 @@ type doctorCase struct {
 	PR string `json:"pr"`
 }
 
+type stickyWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (w *stickyWriter) printf(format string, args ...any) {
+	if w.err == nil {
+		_, w.err = fmt.Fprintf(w.w, format, args...)
+	}
+}
+
+func (w *stickyWriter) println(args ...any) {
+	if w.err == nil {
+		_, w.err = fmt.Fprintln(w.w, args...)
+	}
+}
+
 // Register attaches the benchmark command tree to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
 	cmd := &cobra.Command{
@@ -167,9 +184,9 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 	if err != nil {
 		return doctorReport{}, err
 	}
-	resultsDir, err := resolveResultsDir(suite.Suite.ID, flags.resultsDir)
+	resultsDir, err := resolveResultsDir(flags.resultsDir, ".cr-bench", "results", suite.Suite.ID)
 	if err != nil {
-		return doctorReport{}, err
+		return doctorReport{}, fmt.Errorf("benchmark: resolve results dir: %w", err)
 	}
 	crBin, warnings := resolveCRBin(flags.crBin)
 	report := doctorReport{
@@ -230,21 +247,12 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 }
 
 func renderDoctorText(opts *root.Options, report doctorReport) error {
-	if _, err := fmt.Fprintf(opts.Stdout, "Benchmark suite: %s\n", report.SuiteID); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Candidates: %d\n", len(report.Candidates)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Cases: %d\n", len(report.Cases)); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Results dir: %s\n", report.ResolvedResultsDir); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "cr binary: %s\n", report.CRBin); err != nil {
-		return err
-	}
+	w := stickyWriter{w: opts.Stdout}
+	w.printf("Benchmark suite: %s\n", report.SuiteID)
+	w.printf("Candidates: %d\n", len(report.Candidates))
+	w.printf("Cases: %d\n", len(report.Cases))
+	w.printf("Results dir: %s\n", report.ResolvedResultsDir)
+	w.printf("cr binary: %s\n", report.CRBin)
 	for _, candidate := range report.Candidates {
 		synthesisText := ""
 		if candidate.Stages.Synthesis != nil {
@@ -254,8 +262,7 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 		if candidate.Stages.Reviewers.ModelTier != "" {
 			reviewerModel = "tier:" + candidate.Stages.Reviewers.ModelTier
 		}
-		if _, err := fmt.Fprintf(
-			opts.Stdout,
+		w.printf(
 			"- candidate %s profile=%s available=%t selection=%s/%s reviewers=%s/%s reviewer_agent_dirs=%d%s\n",
 			candidate.ID,
 			candidate.Profile,
@@ -266,28 +273,20 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 			candidate.Stages.Reviewers.Effort,
 			len(candidate.Stages.Reviewers.AgentDirs),
 			synthesisText,
-		); err != nil {
-			return err
-		}
+		)
 	}
 	for _, benchCase := range report.Cases {
-		if _, err := fmt.Fprintf(opts.Stdout, "- case %s pr=%s\n", benchCase.ID, benchCase.PR); err != nil {
-			return err
-		}
+		w.printf("- case %s pr=%s\n", benchCase.ID, benchCase.PR)
 	}
 	if len(report.Warnings) == 0 {
-		_, err := fmt.Fprintln(opts.Stdout, "Warnings: 0")
-		return err
+		w.println("Warnings: 0")
+		return w.err
 	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Warnings: %d\n", len(report.Warnings)); err != nil {
-		return err
-	}
+	w.printf("Warnings: %d\n", len(report.Warnings))
 	for _, warning := range report.Warnings {
-		if _, err := fmt.Fprintf(opts.Stdout, "- %s\n", warning); err != nil {
-			return err
-		}
+		w.printf("- %s\n", warning)
 	}
-	return nil
+	return w.err
 }
 
 func summarizeDoctorOptionalStage(stage benchmark.SelectionStage) *doctorSelectionStage {
@@ -301,16 +300,12 @@ func summarizeDoctorOptionalStage(stage benchmark.SelectionStage) *doctorSelecti
 	}
 }
 
-func resolveResultsDir(suiteID, configured string) (string, error) {
+func resolveResultsDir(configured string, defaultElems ...string) (string, error) {
 	path := strings.TrimSpace(configured)
 	if path == "" {
-		path = filepath.Join(".cr-bench", "results", suiteID)
+		path = filepath.Join(defaultElems...)
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("benchmark: resolve results dir: %w", err)
-	}
-	return abs, nil
+	return filepath.Abs(path)
 }
 
 func resolveCRBin(configured string) (string, []string) {
@@ -357,10 +352,7 @@ func checkExecutable(path string) error {
 }
 
 func inspectAgentDir(suiteDir, configured string) doctorAgentDir {
-	resolved := configured
-	if !filepath.IsAbs(resolved) {
-		resolved = filepath.Join(suiteDir, configured)
-	}
+	resolved := benchmark.ResolveSuitePath(suiteDir, configured)
 	abs, err := filepath.Abs(resolved)
 	if err == nil {
 		resolved = abs

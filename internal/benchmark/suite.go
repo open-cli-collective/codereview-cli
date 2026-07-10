@@ -282,39 +282,32 @@ func Load(data []byte) (SuiteFile, error) {
 
 // Normalize trims user-facing scalar fields in a suite document.
 func Normalize(suite *SuiteFile) {
-	suite.Suite.ID = strings.TrimSpace(suite.Suite.ID)
-	suite.Suite.Name = strings.TrimSpace(suite.Suite.Name)
+	trimAll(&suite.Suite.ID, &suite.Suite.Name)
 	for i := range suite.Candidates {
 		c := &suite.Candidates[i]
-		c.ID = strings.TrimSpace(c.ID)
-		c.Profile = strings.TrimSpace(c.Profile)
-		c.Stages.Selection.Model = strings.TrimSpace(c.Stages.Selection.Model)
-		c.Stages.Selection.Effort = strings.TrimSpace(c.Stages.Selection.Effort)
-		c.Stages.Selection.Prompt = strings.TrimSpace(c.Stages.Selection.Prompt)
-		c.Stages.Synthesis.Model = strings.TrimSpace(c.Stages.Synthesis.Model)
-		c.Stages.Synthesis.Effort = strings.TrimSpace(c.Stages.Synthesis.Effort)
-		c.Stages.Synthesis.Prompt = strings.TrimSpace(c.Stages.Synthesis.Prompt)
-		c.Stages.Reviewers.Model = strings.TrimSpace(c.Stages.Reviewers.Model)
-		c.Stages.Reviewers.ModelTier = strings.TrimSpace(c.Stages.Reviewers.ModelTier)
-		c.Stages.Reviewers.Effort = strings.TrimSpace(c.Stages.Reviewers.Effort)
+		trimAll(
+			&c.ID, &c.Profile,
+			&c.Stages.Selection.Model, &c.Stages.Selection.Effort, &c.Stages.Selection.Prompt,
+			&c.Stages.Synthesis.Model, &c.Stages.Synthesis.Effort, &c.Stages.Synthesis.Prompt,
+			&c.Stages.Reviewers.Model, &c.Stages.Reviewers.ModelTier, &c.Stages.Reviewers.Effort,
+		)
 		for j := range c.Stages.Reviewers.AgentDirs {
-			c.Stages.Reviewers.AgentDirs[j] = strings.TrimSpace(c.Stages.Reviewers.AgentDirs[j])
+			trimAll(&c.Stages.Reviewers.AgentDirs[j])
 		}
 	}
 	for i := range suite.Cases {
 		c := &suite.Cases[i]
-		c.ID = strings.TrimSpace(c.ID)
-		c.PR = strings.TrimSpace(c.PR)
-		c.ReviewBaseSHA = strings.TrimSpace(c.ReviewBaseSHA)
-		c.ReviewHeadSHA = strings.TrimSpace(c.ReviewHeadSHA)
-		c.ExpectedBaseSHA = strings.TrimSpace(c.ExpectedBaseSHA)
-		c.ExpectedHeadSHA = strings.TrimSpace(c.ExpectedHeadSHA)
+		trimAll(&c.ID, &c.PR, &c.ReviewBaseSHA, &c.ReviewHeadSHA, &c.ExpectedBaseSHA, &c.ExpectedHeadSHA)
 		for j := range c.Anchors {
 			a := &c.Anchors[j]
-			a.ID = strings.TrimSpace(a.ID)
-			a.File = strings.TrimSpace(a.File)
-			a.Side = strings.TrimSpace(a.Side)
+			trimAll(&a.ID, &a.File, &a.Side)
 		}
+	}
+}
+
+func trimAll(fields ...*string) {
+	for _, field := range fields {
+		*field = strings.TrimSpace(*field)
 	}
 }
 
@@ -363,44 +356,38 @@ func ValidateForSelection(suite SuiteFile, cfg config.File) error {
 
 // Select returns suite-order candidates and cases after optional ID filtering.
 func Select(suite SuiteFile, candidateIDs, caseIDs []string) ([]Candidate, []Case, error) {
-	candidateSet, err := filterIDSet("candidate", candidateIDs)
+	selectedCandidates, err := filterByID("candidate", suite.Candidates, candidateIDs, func(candidate Candidate) string { return candidate.ID })
 	if err != nil {
 		return nil, nil, err
 	}
-	caseSet, err := filterIDSet("case", caseIDs)
+	selectedCases, err := filterByID("case", suite.Cases, caseIDs, func(benchCase Case) string { return benchCase.ID })
 	if err != nil {
 		return nil, nil, err
-	}
-	selectedCandidates := make([]Candidate, 0, len(suite.Candidates))
-	seenCandidates := map[string]bool{}
-	for _, candidate := range suite.Candidates {
-		if len(candidateSet) > 0 && !candidateSet[candidate.ID] {
-			continue
-		}
-		selectedCandidates = append(selectedCandidates, candidate)
-		seenCandidates[candidate.ID] = true
-	}
-	for id := range candidateSet {
-		if !seenCandidates[id] {
-			return nil, nil, fmt.Errorf("%w: unknown candidate %q", ErrInvalid, id)
-		}
-	}
-
-	selectedCases := make([]Case, 0, len(suite.Cases))
-	seenCases := map[string]bool{}
-	for _, benchCase := range suite.Cases {
-		if len(caseSet) > 0 && !caseSet[benchCase.ID] {
-			continue
-		}
-		selectedCases = append(selectedCases, benchCase)
-		seenCases[benchCase.ID] = true
-	}
-	for id := range caseSet {
-		if !seenCases[id] {
-			return nil, nil, fmt.Errorf("%w: unknown case %q", ErrInvalid, id)
-		}
 	}
 	return selectedCandidates, selectedCases, nil
+}
+
+func filterByID[T any](kind string, values []T, ids []string, idOf func(T) string) ([]T, error) {
+	filter, err := filterIDSet(kind, ids)
+	if err != nil {
+		return nil, err
+	}
+	selected := make([]T, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		id := idOf(value)
+		if len(filter) > 0 && !filter[id] {
+			continue
+		}
+		selected = append(selected, value)
+		seen[id] = true
+	}
+	for id := range filter {
+		if !seen[id] {
+			return nil, fmt.Errorf("%w: unknown %s %q", ErrInvalid, kind, id)
+		}
+	}
+	return selected, nil
 }
 
 func validateCandidates(candidates []Candidate, cfg config.File) error {
@@ -559,7 +546,8 @@ func validateRequiredSelectionRecipe(candidateID string, selection SelectionStag
 	return nil
 }
 
-func resolveSuiteRelativePath(baseDir, path string) string {
+// ResolveSuitePath resolves a slash-separated path relative to a benchmark suite directory.
+func ResolveSuitePath(baseDir, path string) string {
 	path = filepath.FromSlash(path)
 	if filepath.IsAbs(path) {
 		return path
@@ -568,7 +556,7 @@ func resolveSuiteRelativePath(baseDir, path string) string {
 }
 
 func validateSelectionPromptFile(candidateID, suiteDir, prompt string) error {
-	resolved := resolveSuiteRelativePath(suiteDir, prompt)
+	resolved := ResolveSuitePath(suiteDir, prompt)
 	info, err := os.Stat(resolved)
 	if err != nil {
 		return fmt.Errorf("%w: candidate %q stages.selection.prompt %q must reference a readable file relative to the suite", ErrInvalid, candidateID, prompt)
@@ -648,15 +636,20 @@ func validateAnchors(caseID string, anchors []Anchor) error {
 }
 
 func validateCandidateCaseHosts(candidates []Candidate, cases []Case, cfg config.File) error {
+	hosts := make([]string, len(cases))
+	parsed := make([]bool, len(cases))
 	for _, candidate := range candidates {
 		profile := cfg.Profiles[candidate.Profile]
-		for _, benchCase := range cases {
-			ref, err := prref.ParseGitHubPullURL(benchCase.PR)
-			if err != nil {
-				return fmt.Errorf("%w: case %q invalid PR URL: %w", ErrInvalid, benchCase.ID, err)
+		for i, benchCase := range cases {
+			if !parsed[i] {
+				ref, err := prref.ParseGitHubPullURL(benchCase.PR)
+				if err != nil {
+					return fmt.Errorf("%w: case %q invalid PR URL: %w", ErrInvalid, benchCase.ID, err)
+				}
+				hosts[i], parsed[i] = ref.Host, true
 			}
-			if !prref.SameHost(ref.Host, profile.Git.Host) {
-				return fmt.Errorf("%w: candidate %q profile host %q does not match case %q PR host %q", ErrInvalid, candidate.ID, profile.Git.Host, benchCase.ID, ref.Host)
+			if !prref.SameHost(hosts[i], profile.Git.Host) {
+				return fmt.Errorf("%w: candidate %q profile host %q does not match case %q PR host %q", ErrInvalid, candidate.ID, profile.Git.Host, benchCase.ID, hosts[i])
 			}
 		}
 	}

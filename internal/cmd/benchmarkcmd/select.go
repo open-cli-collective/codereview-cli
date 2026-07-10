@@ -75,7 +75,7 @@ func newSelectCommand(opts *root.Options) *cobra.Command {
 				return err
 			}
 			return view.Render(opts.Stdout, flags.jsonOutput, summary, func(io.Writer) error {
-				return renderSelectionText(opts, summary)
+				return renderRunText(opts, summary)
 			})
 		},
 	}
@@ -102,9 +102,9 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 	_ = selectSpan.End(nil)
 	started := benchmarkNow().UTC()
 	resultsSpan := logger.Start("benchmark.select", "prepare_results", suite.Suite.ID)
-	resultsDir, err := resolveSelectResultsDir(suite.Suite.ID, flags.resultsDir, started)
+	resultsDir, err := resolveResultsDir(flags.resultsDir, ".cr-bench", "results", suite.Suite.ID, "select", started.UTC().Format(runTimestampLayout))
 	if err != nil {
-		return benchmarkSuiteSummary{}, resultsSpan.End(err)
+		return benchmarkSuiteSummary{}, resultsSpan.End(fmt.Errorf("benchmark: resolve select results dir: %w", err))
 	}
 	suiteHash, err := suiteFileSHA256(suite.Path)
 	if err != nil {
@@ -150,11 +150,7 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 		if resolveErr == nil {
 			runtimes[key] = state
 		}
-		if state.err != nil {
-			_ = runtimeSpan.End(state.err)
-		} else {
-			_ = runtimeSpan.End(nil)
-		}
+		_ = runtimeSpan.End(state.err)
 		return state
 	}
 
@@ -257,36 +253,33 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		stderrBody       []byte
 		rawSelectionJSON []byte
 	)
+	fail := func(err error) (benchmarkRun, error) {
+		recordSelectionRunFailure(&runSummary, &stderrBody, err)
+		finalized, finalizeErr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
+		return finalized, runSpan.End(finalizeErr)
+	}
 	parseSpan := logger.Start("benchmark.select", "parse_pr", runID)
 	ref, err := prref.ParseGitHubPullURL(benchCase.PR)
 	if err != nil {
-		recordSelectionRunFailure(&runSummary, &stderrBody, err)
 		_ = parseSpan.End(err)
-		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, runSpan.End(ferr)
+		return fail(err)
 	}
 	_ = parseSpan.End(nil)
 
 	state := resolveRuntime(candidate.Profile, ref)
 	if state.err != nil {
-		recordSelectionRunFailure(&runSummary, &stderrBody, state.err)
-		finalized, err := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, runSpan.End(err)
+		return fail(state.err)
 	}
 	postingIdentity, err := benchmarkSelectionPostingIdentity(state.profile)
 	if err != nil {
-		recordSelectionRunFailure(&runSummary, &stderrBody, err)
-		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, runSpan.End(ferr)
+		return fail(err)
 	}
 
 	promptSpan := logger.Start("benchmark.select", "load_prompt", runID)
 	selectionPromptInstructions, err := loadSelectionPromptInstructions(suiteDir, candidate.Stages.Selection.Prompt)
 	if err != nil {
-		recordSelectionRunFailure(&runSummary, &stderrBody, err)
 		_ = promptSpan.End(err)
-		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, runSpan.End(ferr)
+		return fail(err)
 	}
 	_ = promptSpan.End(nil)
 
@@ -322,10 +315,8 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		runSummary.CurrentHeadSHA = selectionResult.CurrentHeadSHA
 	}
 	if err != nil {
-		recordSelectionRunFailure(&runSummary, &stderrBody, err)
 		_ = selectionSpan.End(err)
-		finalized, ferr := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
-		return finalized, runSpan.End(ferr)
+		return fail(err)
 	}
 	_ = selectionSpan.End(nil)
 
@@ -382,18 +373,6 @@ func recordSelectionRunFailure(runSummary *benchmarkRun, stderrBody *[]byte, err
 	*stderrBody = append(*stderrBody, []byte(err.Error()+"\n")...)
 }
 
-func resolveSelectResultsDir(suiteID, configured string, started time.Time) (string, error) {
-	path := strings.TrimSpace(configured)
-	if path == "" {
-		path = filepath.Join(".cr-bench", "results", suiteID, "select", started.UTC().Format(runTimestampLayout))
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("benchmark: resolve select results dir: %w", err)
-	}
-	return abs, nil
-}
-
 func selectionRunArtifacts(runDir string) (runArtifacts, error) {
 	selectionLog, err := pipeline.ArtifactPathsFromDir(runDir).AgentLog("orchestrator-selection")
 	if err != nil {
@@ -414,7 +393,7 @@ func loadSelectionPromptInstructions(suiteDir, configured string) (string, error
 	if configured == "" {
 		return "", nil
 	}
-	resolved := resolveStagePath(suiteDir, configured)
+	resolved := benchmark.ResolveSuitePath(suiteDir, configured)
 	data, err := os.ReadFile(resolved) // #nosec G304 -- validated benchmark prompt path is explicit suite input.
 	if err != nil {
 		return "", fmt.Errorf("benchmark: read selection prompt %q: %w", configured, err)
@@ -451,60 +430,18 @@ func classifySelectionFailure(err error) string {
 	return failureSelectionError
 }
 
-func renderSelectionText(opts *root.Options, summary benchmarkSuiteSummary) error {
-	if _, err := fmt.Fprintf(opts.Stdout, "Benchmark suite: %s\n", summary.SuiteID); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Results dir: %s\n", summary.ResultsDir); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "Runs: %d success=%d failure=%d\n", summary.RunCount, summary.SuccessCount, summary.FailureCount); err != nil {
-		return err
-	}
-	for _, run := range summary.Runs {
-		if _, err := fmt.Fprintf(opts.Stdout, "- %s candidate=%s case=%s exit=%d selected_reviewers=%s\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, selectedAgentsCell(run.SelectedAgents)); err != nil {
-			return err
-		}
-	}
-	if _, err := fmt.Fprintln(opts.Stdout, "Artifacts:"); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  Manifest: %s\n", summary.Artifacts.Manifest); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  Summary: %s\n", summary.Artifacts.SuiteSummary); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(opts.Stdout, "  JSONL: %s\n", summary.Artifacts.SummaryJSONL); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(opts.Stdout, "  Report: %s\n", summary.Artifacts.Report)
-	return err
-}
-
 func renderSelectionReportMarkdown(summary benchmarkSuiteSummary) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Selector Benchmark Report: %s\n\n", summary.SuiteID)
-	fmt.Fprintf(&b, "- Results dir: `%s`\n", summary.ResultsDir)
-	fmt.Fprintf(&b, "- Runs: %d\n", summary.RunCount)
-	fmt.Fprintf(&b, "- Success: %d\n", summary.SuccessCount)
-	fmt.Fprintf(&b, "- Failure: %d\n", summary.FailureCount)
-	if summary.Usage != nil && summary.Usage.HasTokenUsage() {
-		fmt.Fprintf(&b, "- Tokens: %d total (%d input, %d output, %d cache read, %d cache write)\n", summary.Usage.Tokens.TotalTokens, summary.Usage.Tokens.Input, summary.Usage.Tokens.Output, summary.Usage.Tokens.CacheRead, summary.Usage.Tokens.CacheWrite)
-	}
-	if summary.Usage != nil && summary.Usage.HasCostUsage() {
-		fmt.Fprintf(&b, "- Cost: $%.6f\n", summary.Usage.Cost.Total)
-	}
-	b.WriteString("\n")
+	writeReportHeader(&b, "Selector Benchmark Report", summary)
 	b.WriteString("| Run | Candidate | Case | Exit | Failure | Selected Reviewers | Thread Actions | Tokens | Cost |\n")
 	b.WriteString("| --- | --- | --- | ---: | --- | --- | ---: | ---: | ---: |\n")
 	for _, run := range summary.Runs {
 		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %s | %s | %d | %s | %s |\n",
 			run.RunID,
-			markdownCell(run.CandidateID),
-			markdownCell(run.CaseID),
+			markdownCode(run.CandidateID),
+			markdownCode(run.CaseID),
 			run.ExitCode,
-			markdownCell(run.FailureClassification),
+			markdownCode(run.FailureClassification),
 			selectedAgentsMarkdownCell(run.SelectedAgents),
 			run.ThreadActionCount,
 			usageTokensCell(run.Usage),
