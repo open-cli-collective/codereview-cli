@@ -109,6 +109,7 @@ type Request struct {
 	Effort  string
 	Prompt  string
 	LogPath string
+	Fast    bool
 
 	DurableSession              bool
 	ReviewerWorkspace           *ReviewerWorkspaceRequest

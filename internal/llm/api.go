@@ -44,6 +44,7 @@ type APIOptions struct {
 	BaseURL          string
 	MaxTokens        int
 	AnthropicVersion string
+	FastModeModels   []string
 }
 
 // APIAdapter calls a direct provider HTTP API as an LLM adapter.
@@ -54,6 +55,7 @@ type APIAdapter struct {
 	baseURL          *url.URL
 	maxTokens        int
 	anthropicVersion string
+	fastModeModels   []string
 }
 
 // NewAPIAdapterFromConfig resolves an API-key LLM adapter from profile config.
@@ -140,6 +142,7 @@ func newAPIAdapter(kind apiKind, opts APIOptions) (*APIAdapter, error) {
 		baseURL:          baseURL,
 		maxTokens:        maxTokens,
 		anthropicVersion: version,
+		fastModeModels:   append([]string(nil), opts.FastModeModels...),
 	}, nil
 }
 
@@ -198,6 +201,9 @@ func (a *APIAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, fmt.Errorf("%w: model is required", ErrAPIAdapterConfig)
 	}
+	if err := validateFastMode(a.Name(), a.fastModeModels, req); err != nil {
+		return nil, err
+	}
 	reqCtx, cancel := context.WithCancel(ctx)
 	stream := &apiStream{
 		baseStream: baseStream{
@@ -236,7 +242,7 @@ func (a *APIAdapter) execute(ctx context.Context, req Request) (string, Response
 	if err != nil {
 		return "", Response{}, err
 	}
-	a.applyHeaders(httpReq)
+	a.applyHeaders(httpReq, req)
 
 	httpResp, err := a.httpClient.Do(httpReq)
 	if err != nil {
@@ -289,6 +295,9 @@ func (a *APIAdapter) buildProviderRequest(req Request) (string, []byte, error) {
 			MaxTokens: a.maxTokens,
 			Messages:  []anthropicMessage{{Role: "user", Content: req.Prompt}},
 		}
+		if req.Fast {
+			payload.Speed = "fast"
+		}
 		body, err := json.Marshal(payload)
 		return a.url("v1/messages"), body, err
 	case apiOpenAI:
@@ -308,13 +317,16 @@ func (a *APIAdapter) buildProviderRequest(req Request) (string, []byte, error) {
 	}
 }
 
-func (a *APIAdapter) applyHeaders(req *http.Request) {
+func (a *APIAdapter) applyHeaders(req *http.Request, llmReq Request) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	switch a.kind {
 	case apiAnthropic:
 		req.Header.Set("x-api-key", a.apiKey)
 		req.Header.Set("anthropic-version", a.anthropicVersion)
+		if llmReq.Fast {
+			req.Header.Set("anthropic-beta", "fast-mode-2026-02-01")
+		}
 	case apiOpenAI:
 		req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	}
@@ -341,6 +353,7 @@ type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
 	Messages  []anthropicMessage `json:"messages"`
+	Speed     string             `json:"speed,omitempty"`
 }
 
 type anthropicMessage struct {

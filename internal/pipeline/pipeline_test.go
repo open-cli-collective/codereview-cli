@@ -208,6 +208,9 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 		if request.Model != "claude-sonnet-4-6" || request.Effort != "medium" {
 			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-4-6/medium from agent config", request.Model, request.Effort)
 		}
+		if request.Fast {
+			t.Fatalf("request = %#v, want fast omitted by default", request)
+		}
 	}
 	for _, session := range result.Sessions {
 		if session.Model != "claude-sonnet-4-6" || session.Effort == nil || *session.Effort != "medium" {
@@ -2232,6 +2235,93 @@ func TestDryRunReviewerModelOverrideBypassesAgentModelID(t *testing.T) {
 	}
 	if strings.Contains(string(data), "override-model") {
 		t.Fatalf("agent source artifact contains runtime override model: %s", data)
+	}
+}
+
+func TestDryRunFastAppliesOnlyToReviewerAndRecordsArtifact(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.ReviewerModelOverride = "claude-opus-4-8"
+	req.ReviewerFast = true
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-fast" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 3 || requests[0].Fast || !requests[1].Fast || requests[2].Fast {
+		t.Fatalf("requests = %#v, want fast only on reviewer", requests)
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:          "override",
+		ResolvedModel: "claude-opus-4-8",
+		Fast:          true,
+	})
+}
+
+func TestDryRunFastRejectsUnsupportedRuntimeBeforeLLM(t *testing.T) {
+	tests := []struct {
+		name string
+		llm  config.LLMConfig
+		want string
+	}{
+		{
+			name: "adapter",
+			llm:  config.LLMConfig{Provider: config.LLMProviderOpenAI, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterCodexCLI},
+			want: "pipeline: --fast is unsupported for runtime openai/subscription/codex_cli: adapter has no fast-mode mechanism",
+		},
+		{
+			name: "model",
+			llm:  config.LLMConfig{Provider: config.LLMProviderAnthropic, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterClaudeCLI},
+			want: `pipeline: --fast is unsupported for runtime anthropic/subscription/claude_cli: reviewer "harness:reviewer" resolves to model "claude-sonnet-4-6"; supported models: claude-opus-4-8, claude-opus-4-7`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			req.Profile.LLM = tt.llm
+			req.ReviewerFast = true
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+			_, err := dryRunForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewRunID:        func() string { return "run-fast-unsupported" },
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("DryRun error = %v, want %q", err, tt.want)
+			}
+			if len(adapter.Requests()) != 0 {
+				t.Fatalf("LLM requests = %#v, want none", adapter.Requests())
+			}
+		})
 	}
 }
 

@@ -605,27 +605,29 @@ func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvide
 	return provider.WhoAmI(ctx, credential)
 }
 
-var adapterConstructors = map[config.LLMAdapter]AdapterFactory{
-	config.LLMAdapterClaudeCLI: func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
-		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{}), nil
+type adapterConstructor func(config.LLMConfig, credentials.Reader, config.LLMRuntimeSpec) (llm.Adapter, error)
+
+var adapterConstructors = map[config.LLMAdapter]adapterConstructor{
+	config.LLMAdapterClaudeCLI: func(_ config.LLMConfig, _ credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
+		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{FastModeModels: spec.FastModeModels}), nil
 	},
-	config.LLMAdapterCodexCLI: func(llmConfig config.LLMConfig, _ credentials.Reader) (llm.Adapter, error) {
+	config.LLMAdapterCodexCLI: func(llmConfig config.LLMConfig, _ credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
 		if llmConfig.Provider != config.LLMProviderOpenAI || llmConfig.Auth != config.LLMAuthSubscription {
 			return nil, fmt.Errorf("%w: codex_cli requires provider openai with subscription auth", config.ErrUnsupported)
 		}
-		return llm.NewCodexCLIAdapter(llm.SubprocessOptions{AllowBestEffortNoTools: true}), nil
+		return llm.NewCodexCLIAdapter(llm.SubprocessOptions{AllowBestEffortNoTools: true, FastModeModels: spec.FastModeModels}), nil
 	},
-	config.LLMAdapterPiRPC: func(llmConfig config.LLMConfig, _ credentials.Reader) (llm.Adapter, error) {
+	config.LLMAdapterPiRPC: func(llmConfig config.LLMConfig, _ credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
 		if llmConfig.Provider != config.LLMProviderPi || llmConfig.Auth != config.LLMAuthSubscription {
 			return nil, fmt.Errorf("%w: pi_rpc requires provider pi with subscription auth", config.ErrUnsupported)
 		}
-		return llm.NewPiRPCAdapter(llm.PiRPCOptions{}), nil
+		return llm.NewPiRPCAdapter(llm.PiRPCOptions{FastModeModels: spec.FastModeModels}), nil
 	},
-	config.LLMAdapterAnthropicAPI: func(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
-		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
+	config.LLMAdapterAnthropicAPI: func(llmConfig config.LLMConfig, store credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
+		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{FastModeModels: spec.FastModeModels})
 	},
-	config.LLMAdapterOpenAIAPI: func(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapter, error) {
-		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{})
+	config.LLMAdapterOpenAIAPI: func(llmConfig config.LLMConfig, store credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
+		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{FastModeModels: spec.FastModeModels})
 	},
 }
 
@@ -634,7 +636,11 @@ func newAdapter(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapt
 	if !ok {
 		return nil, fmt.Errorf("%w: unsupported LLM adapter %q", config.ErrUnsupported, llmConfig.Adapter)
 	}
-	return constructor(llmConfig, store)
+	spec, ok := config.FindLLMRuntimeSpec(llmConfig.Provider, llmConfig.Auth, llmConfig.Adapter)
+	if !ok {
+		return nil, fmt.Errorf("%w: unsupported LLM runtime %s/%s/%s", config.ErrUnsupported, llmConfig.Provider, llmConfig.Auth, llmConfig.Adapter)
+	}
+	return constructor(llmConfig, store, spec)
 }
 
 var _ Runner = reviewRunner{}

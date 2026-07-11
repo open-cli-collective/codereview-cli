@@ -146,6 +146,7 @@ type Request struct {
 	ReviewerModelOverride       string
 	ReviewerModelTierOverride   string
 	ReviewerEffortOverride      string
+	ReviewerFast                bool
 	ReviewBaseSHA               string
 	ReviewHeadSHA               string
 	Rerun                       bool
@@ -315,6 +316,7 @@ type selectionSetupRequest struct {
 	Profile          config.Profile
 	PostingIdentity  gitprovider.Identity
 	AgentDirs        []string
+	ReviewRequest    Request
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
 	NoResolveThreads bool
@@ -535,6 +537,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		Profile:          req.Profile,
 		PostingIdentity:  req.PostingIdentity,
 		AgentDirs:        req.AgentDirs,
+		ReviewRequest:    req,
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: req.NoResolveThreads,
@@ -1006,6 +1009,9 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 	if err != nil {
 		return preparedSelectionContext{}, err
 	}
+	if err := validateReviewerFastMode(req.ReviewRequest, catalog); err != nil {
+		return preparedSelectionContext{}, err
+	}
 
 	out := preparedSelectionContext{
 		pr:               pr,
@@ -1334,6 +1340,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
+	if req.ReviewerFast {
+		request.Fast = true
+	}
 	defer func() {
 		if cleanupWorkspace != nil {
 			if cleanupErr := cleanupWorkspace(); cleanupErr != nil {
@@ -1342,6 +1351,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		}
 	}()
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
+	if req.ReviewerFast {
+		fingerprintDeps = append(fingerprintDeps, "fast=true")
+	}
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            taskID,
@@ -2360,6 +2372,30 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 		return llmRuntimeConfig{}, err
 	}
 	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, resolved.ResolvedModel, agent.Effort), nil
+}
+
+func validateReviewerFastMode(req Request, catalog agents.Catalog) error {
+	if !req.ReviewerFast {
+		return nil
+	}
+	spec, ok := config.FindLLMRuntimeSpec(req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
+	runtimeName := fmt.Sprintf("%s/%s/%s", req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
+	if !ok {
+		return fmt.Errorf("pipeline: --fast is unsupported for runtime %s: runtime is not registered", runtimeName)
+	}
+	if len(spec.FastModeModels) == 0 {
+		return fmt.Errorf("pipeline: --fast is unsupported for runtime %s: adapter has no fast-mode mechanism", runtimeName)
+	}
+	for _, agent := range catalog.Agents {
+		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
+		if err != nil {
+			return err
+		}
+		if !spec.SupportsFastMode(runtimeConfig.model) {
+			return fmt.Errorf("pipeline: --fast is unsupported for runtime %s: reviewer %q resolves to model %q; supported models: %s", runtimeName, agent.ID, runtimeConfig.model, strings.Join(spec.FastModeModels, ", "))
+		}
+	}
+	return nil
 }
 
 func resolveAgentModel(profile config.Profile, baselineOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {

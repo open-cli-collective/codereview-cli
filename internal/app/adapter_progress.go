@@ -111,6 +111,9 @@ func llmProgressFields(provider, harness string, req llm.Request) []progress.Fie
 	if effort := strings.TrimSpace(req.Effort); effort != "" {
 		fields = append(fields, progress.Field{Key: "effort", Value: effort})
 	}
+	if req.Fast {
+		fields = append(fields, progress.Field{Key: "fast", Value: "true"})
+	}
 	if logPath := strings.TrimSpace(req.LogPath); logPath != "" {
 		fields = append(fields, progress.Field{Key: "log_file", Value: filepath.Base(logPath)})
 	}

@@ -31,12 +31,18 @@ func TestAnthropicAPIAdapterRequestAndResponse(t *testing.T) {
 		if got := r.Header.Get("anthropic-version"); got != defaultAnthropicVersion {
 			t.Fatalf("anthropic-version = %q, want %s", got, defaultAnthropicVersion)
 		}
+		if got := r.Header.Get("anthropic-beta"); got != "" {
+			t.Fatalf("anthropic-beta = %q, want empty without fast request", got)
+		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("Decode body: %v", err)
 		}
 		if _, ok := body["tools"]; ok {
 			t.Fatalf("request body includes tools: %#v", body)
+		}
+		if _, ok := body["speed"]; ok {
+			t.Fatalf("request body includes speed without fast request: %#v", body)
 		}
 		if got := body["model"]; got != "claude-sonnet-4-6" {
 			t.Fatalf("model = %#v, want claude-sonnet-4-6", got)
@@ -91,6 +97,36 @@ func TestAnthropicAPIAdapterRequestAndResponse(t *testing.T) {
 		t.Fatalf("Usage = %#v, want nil cache create and cost", response.Usage)
 	}
 	assertLogContains(t, logPath, `"msg_1"`)
+}
+
+func TestAnthropicAPIAdapterFastRequest(t *testing.T) {
+	adapter, err := newAPIAdapter(apiAnthropic, APIOptions{
+		APIKey:         "anthropic-key",
+		FastModeModels: []string{"claude-opus-4-8"},
+	}) // #nosec G101 -- test credential placeholder.
+	if err != nil {
+		t.Fatalf("newAPIAdapter: %v", err)
+	}
+	req := Request{Model: "claude-opus-4-8", Prompt: "prompt", Fast: true}
+	_, body, err := adapter.buildProviderRequest(req)
+	if err != nil {
+		t.Fatalf("buildProviderRequest: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal request: %v", err)
+	}
+	if payload["speed"] != "fast" {
+		t.Fatalf("request body = %#v, want speed fast", payload)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	adapter.applyHeaders(httpReq, req)
+	if got := httpReq.Header.Get("anthropic-beta"); got != "fast-mode-2026-02-01" {
+		t.Fatalf("anthropic-beta = %q, want fast-mode-2026-02-01", got)
+	}
 }
 
 func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
