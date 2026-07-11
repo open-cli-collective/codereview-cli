@@ -16,6 +16,64 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
+var (
+	_ Provider = (*gitprovider.Fake)(nil)
+	_ Provider = (*minimalProvider)(nil)
+)
+
+type minimalProvider struct {
+	posted string
+}
+
+func (*minimalProvider) ListInlineThreads(context.Context, gitprovider.PRRef) ([]gitprovider.InlineThread, error) {
+	return nil, nil
+}
+
+func (*minimalProvider) ListReviews(context.Context, gitprovider.PRRef) ([]gitprovider.Review, error) {
+	return nil, nil
+}
+
+func (*minimalProvider) ListIssueComments(context.Context, gitprovider.PRRef) ([]gitprovider.IssueComment, error) {
+	return nil, nil
+}
+
+func (*minimalProvider) PostInlineComment(context.Context, gitprovider.PRRef, gitprovider.InlineComment) (gitprovider.CommentID, error) {
+	return "inline", nil
+}
+
+func (*minimalProvider) ReplyToThread(context.Context, gitprovider.PRRef, gitprovider.ThreadID, string) (gitprovider.CommentID, error) {
+	return "reply", nil
+}
+
+func (*minimalProvider) ResolveThread(context.Context, gitprovider.PRRef, gitprovider.ThreadID) error {
+	return nil
+}
+
+func (p *minimalProvider) PostIssueComment(_ context.Context, _ gitprovider.PRRef, body string) (gitprovider.CommentID, error) {
+	p.posted = body
+	return "issue", nil
+}
+
+func (*minimalProvider) SubmitReview(context.Context, gitprovider.PRRef, gitprovider.ReviewRequest) (gitprovider.ReviewID, error) {
+	return "review", nil
+}
+
+func (*minimalProvider) Capabilities() gitprovider.ProviderCaps { return gitprovider.ProviderCaps{} }
+
+func TestPostAcceptsProviderPortWithoutUnrelatedMethods(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := &minimalProvider{}
+	insertAction(t, store, plannedAction(run.RunID, "rollup-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup"}))
+
+	if _, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run)); err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if !strings.Contains(provider.posted, "rollup") {
+		t.Fatalf("posted body = %q, want rollup", provider.posted)
+	}
+}
+
 func TestPostEmbedsMarkersAndPostsInCanonicalOrder(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, ledger.PostModeLive)
