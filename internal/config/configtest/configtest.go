@@ -30,10 +30,9 @@ func File(opts ...Option) config.File {
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: "test-memory"},
-					CredentialRef: "codereview/home",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,

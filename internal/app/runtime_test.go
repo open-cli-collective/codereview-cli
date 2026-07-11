@@ -65,9 +65,8 @@ func TestOpenUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	cfg := testConfig()
 	profile := cfg.Profiles["home"]
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home-reviewer"},
-		CredentialRef: "codereview/home-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/home-reviewer"},
 	}
 	cfg.Profiles["home"] = profile
 
@@ -85,7 +84,7 @@ func TestOpenUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 		Dependencies: testDependencies(t,
 			func(git config.GitConfig, _ credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				providerCalls = append(providerCalls, git)
-				if git.CredentialRef == "codereview/home-reviewer" {
+				if git.Credential.Name == "codereview/home-reviewer" {
 					return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
 				}
 				return repoProvider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
@@ -108,8 +107,8 @@ func TestOpenUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 		defer runtime.Cleanup()
 	}
 	if len(providerCalls) != 2 ||
-		providerCalls[0].CredentialRef != "codereview/home" ||
-		providerCalls[1].CredentialRef != "codereview/home-reviewer" {
+		providerCalls[0].Credential.Name != "codereview/home" ||
+		providerCalls[1].Credential.Name != "codereview/home-reviewer" {
 		t.Fatalf("provider calls = %#v, want repository read then reviewer posting providers", providerCalls)
 	}
 	runner, ok := runtime.Runner.(reviewRunner)
@@ -414,11 +413,9 @@ func TestOpenSelectionPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T)
 				profile := cfg.Profiles["home"]
 				profile.Git.AuthMode = config.GitAuthModeGitHubApp
 				profile.Git.Credential = credential
-				profile.Git.CredentialRef = "codereview/cr-reviewer"
 				profile.ReviewerCredentials = &config.ReviewerCredentials{ // #nosec G101 -- test credential reference, not secret material.
-					AuthMode:      config.GitAuthModeGitHubApp,
-					Credential:    credential,
-					CredentialRef: "codereview/cr-reviewer",
+					AuthMode:   config.GitAuthModeGitHubApp,
+					Credential: credential,
 				}
 				profile.Reviewer = config.ProfileReviewer{
 					Kind:   config.ProfileReviewerKindEntity,
@@ -611,7 +608,6 @@ func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 	profile.LLM.Auth = config.LLMAuthAPIKey
 	profile.LLM.Adapter = config.LLMAdapterOpenAIAPI
 	profile.LLM.Credential = config.CredentialLocation{Store: "test-memory", Name: "codereview/home"}
-	profile.LLM.CredentialRef = "codereview/home"
 	cfg.Profiles["home"] = profile
 
 	var providerReader credentials.Reader
@@ -624,7 +620,7 @@ func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 		PRRef:   testPRRef(),
 		Dependencies: testDependencies(t,
 			func(git config.GitConfig, reader credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-				if git.CredentialRef == "codereview/home" && providerReader == nil {
+				if git.Credential.Name == "codereview/home" && providerReader == nil {
 					providerReader = reader
 				} else {
 					postingReader = reader
@@ -670,7 +666,7 @@ func TestOpenSelectionInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 	profile.LLM.Auth = config.LLMAuthAPIKey
 	profile.LLM.Adapter = config.LLMAdapterOpenAIAPI
 	profile.LLM.Credential = config.CredentialLocation{Store: "test-memory", Name: "codereview/home"}
-	profile.LLM.CredentialRef = "codereview/home"
+	profile.LLM.Credential.Name = "codereview/home"
 	cfg.Profiles["home"] = profile
 
 	var providerReader credentials.Reader
@@ -937,10 +933,9 @@ func testConfig() config.File {
 		configtest.WithoutRepositoryProfiles(),
 		configtest.HomeProfile(config.Profile{
 			Git: config.GitConfig{
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModePAT,
-				Credential:    config.CredentialLocation{Store: "test-memory"},
-				CredentialRef: "codereview/home",
+				Host:       "github.com",
+				AuthMode:   config.GitAuthModePAT,
+				Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
 			},
 			LLM: config.LLMConfig{
 				Provider: config.LLMProviderAnthropic,

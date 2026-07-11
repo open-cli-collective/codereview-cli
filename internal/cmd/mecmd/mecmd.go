@@ -217,7 +217,7 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 	if newClient == nil {
 		newClient = githubprovider.NewFromGitConfig
 	}
-	resolvedSecretsStore, err := credentials.ResolveSecretsStoreForRef(r.cfg, git.CredentialRef, profileName)
+	resolvedSecretsStore, err := credentials.ResolveSecretsStoreForRef(r.cfg, git.Credential.Name, profileName)
 	if err != nil {
 		return gitprovider.Identity{}, err
 	}

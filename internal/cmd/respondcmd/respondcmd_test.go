@@ -122,7 +122,7 @@ func TestRespondPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 func TestRespondRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
 		{

@@ -157,7 +157,7 @@ func TestMeProfileUsesReviewerCredentials(t *testing.T) {
 	if got := work.ReviewerCredentials.IdentityCache; got != "bot" {
 		t.Fatalf("reviewer identity cache = %q, want bot", got)
 	}
-	if len(resolver.calls) != 1 || resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
+	if len(resolver.calls) != 1 || resolver.calls[0].Credential.Name != "codereview/work-reviewer" {
 		t.Fatalf("resolver calls = %#v, want reviewer ref", resolver.calls)
 	}
 }
@@ -186,7 +186,7 @@ func TestMeReviewerCredentialsTakePrecedenceOverGitHubAppRepositoryAccess(t *tes
 	work := cfg.Profiles["work"]
 	work.Git.AuthMode = config.GitAuthModeGitHubApp
 	work.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-	work.Git.CredentialRef = "codereview/work-app"
+	work.Git.Credential.Name = "codereview/work-app"
 	work.Git.Credential.Name = "codereview/work-app"
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
@@ -627,7 +627,7 @@ profiles:
 	}
 	if len(resolver.calls) != 1 ||
 		resolver.calls[0].AuthMode != config.GitAuthModePAT ||
-		resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
+		resolver.calls[0].Credential.Name != "codereview/work-reviewer" {
 		t.Fatalf("resolver calls = %#v, want reviewer PAT config", resolver.calls)
 	}
 }
@@ -812,17 +812,17 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 		},
 	}
 	gitIdentity, err := resolver.ResolveIdentity(context.Background(), "work", config.GitConfig{
-		Host:          "github.com",
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work",
+		Host:       "github.com",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 	})
 	if err != nil {
 		t.Fatalf("ResolveIdentity git: %v", err)
 	}
 	reviewerIdentity, err := resolver.ResolveIdentity(context.Background(), "work", config.GitConfig{
-		Host:          "github.com",
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		Host:       "github.com",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	})
 	if err != nil {
 		t.Fatalf("ResolveIdentity reviewer: %v", err)
@@ -841,11 +841,10 @@ func TestOrgDeploymentPrestagedMultiRefCredentialsHealthChecks(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	work := cfg.Profiles["work"]
 	work.LLM = config.LLMConfig{
-		Provider:      config.LLMProviderAnthropic,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterAnthropicAPI,
-		Credential:    config.CredentialLocation{Store: testFileCredentialStoreID, Name: "codereview/work-llm"},
-		CredentialRef: "codereview/work-llm",
+		Provider:   config.LLMProviderAnthropic,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterAnthropicAPI,
+		Credential: config.CredentialLocation{Store: testFileCredentialStoreID, Name: "codereview/work-llm"},
 	}
 	work.AgentSources = []string{"~/.config/codereview/agents"}
 	work.ReviewPolicy = config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment}
@@ -962,10 +961,10 @@ type fakeResolver struct {
 
 func (f *fakeResolver) ResolveIdentity(_ context.Context, _ string, git config.GitConfig) (gitprovider.Identity, error) {
 	f.calls = append(f.calls, git)
-	if err := f.errs[git.CredentialRef]; err != nil {
+	if err := f.errs[git.Credential.Name]; err != nil {
 		return gitprovider.Identity{}, err
 	}
-	return f.identities[git.CredentialRef], nil
+	return f.identities[git.Credential.Name], nil
 }
 
 func newTestCommand(path string, resolver identity.Resolver) (*cobra.Command, *bytes.Buffer) {
@@ -1111,7 +1110,6 @@ func testConfig() config.File {
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModePAT,
 				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
-				CredentialRef: "codereview/home",
 				IdentityCache: "old-home",
 			},
 			LLM: config.LLMConfig{
@@ -1126,13 +1124,11 @@ func testConfig() config.File {
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModePAT,
 				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
-				CredentialRef: "codereview/work",
 				IdentityCache: "work-user-cache",
 			},
 			ReviewerCredentials: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModePAT,
 				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
-				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "old-bot",
 			},
 			LLM: config.LLMConfig{

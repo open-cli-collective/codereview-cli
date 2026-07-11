@@ -104,7 +104,7 @@ func TestAgentsListWithPRUsesRepositoryProfileRoute(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -115,8 +115,8 @@ func TestAgentsListWithPRUsesRepositoryProfileRoute(t *testing.T) {
 		},
 	}}
 	cmd, out := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
-		if profile.Git.CredentialRef != "codereview/work" {
-			t.Fatalf("provider profile credential ref = %q, want work route", profile.Git.CredentialRef)
+		if profile.Git.Credential.Name != "codereview/work" {
+			t.Fatalf("provider profile credential ref = %q, want work route", profile.Git.Credential.Name)
 		}
 		return fake, nil, nil
 	})
@@ -137,7 +137,7 @@ func TestAgentsListWithPRRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
 		{
@@ -175,7 +175,7 @@ func TestAgentsListExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -186,8 +186,8 @@ func TestAgentsListExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 		},
 	}}
 	cmd, _ := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
-		if profile.Git.CredentialRef != "codereview/home" {
-			t.Fatalf("provider profile credential ref = %q, want explicit home", profile.Git.CredentialRef)
+		if profile.Git.Credential.Name != "codereview/home" {
+			t.Fatalf("provider profile credential ref = %q, want explicit home", profile.Git.Credential.Name)
 		}
 		return fake, nil, nil
 	})
@@ -201,7 +201,7 @@ func TestAgentsShowWithPRUsesRepositoryProfileRoute(t *testing.T) {
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -212,8 +212,8 @@ func TestAgentsShowWithPRUsesRepositoryProfileRoute(t *testing.T) {
 		},
 	}}
 	cmd, out := newTestCommand(t, cfg, func(_ *cobra.Command, _ *root.Options, _ config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
-		if profile.Git.CredentialRef != "codereview/work" {
-			t.Fatalf("provider profile credential ref = %q, want work route", profile.Git.CredentialRef)
+		if profile.Git.Credential.Name != "codereview/work" {
+			t.Fatalf("provider profile credential ref = %q, want work route", profile.Git.Credential.Name)
 		}
 		return fake, nil, nil
 	})
@@ -234,7 +234,7 @@ func TestAgentsListExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) 
 	fake, ref := fakeProviderWithRepoAgent(t, "repo", "reviewer", "repo desc")
 	cfg := testConfig("")
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -264,7 +264,7 @@ func TestAgentsListExplicitProfileHostMismatch(t *testing.T) {
 	cfg.RepositoryProfiles = nil
 	work := home
 	work.Git.Host = "github.com"
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -452,9 +452,9 @@ func providerFactory(provider gitprovider.GitProvider) ProviderFactory {
 func testConfig(agentSource string) config.File {
 	profile := config.Profile{
 		Git: config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/home",
+			Host:       "github.com",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 		},
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,

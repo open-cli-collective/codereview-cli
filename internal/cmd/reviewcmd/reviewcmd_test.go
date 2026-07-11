@@ -113,8 +113,8 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	var cleanupCalled bool
 	cmd, out, errOut := newTestCommandWithStderr(t, testConfig(), func(_ context.Context, opts app.OpenRequest) (app.Runtime, error) {
 		gotRuntime = opts
-		if opts.Profile.Git.CredentialRef != "codereview/home" {
-			t.Fatalf("runtime profile credential ref = %q, want repository-routed home profile", opts.Profile.Git.CredentialRef)
+		if opts.Profile.Git.Credential.Name != "codereview/home" {
+			t.Fatalf("runtime profile credential ref = %q, want repository-routed home profile", opts.Profile.Git.Credential.Name)
 		}
 		return app.Runtime{
 			Runner:          runner,
@@ -196,7 +196,7 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 func TestReviewUsesRepositoryProfileRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -208,8 +208,8 @@ func TestReviewUsesRepositoryProfileRoute(t *testing.T) {
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
-		if req.Profile.Git.CredentialRef != "codereview/work" {
-			t.Fatalf("runtime profile credential ref = %q, want work route", req.Profile.Git.CredentialRef)
+		if req.Profile.Git.Credential.Name != "codereview/work" {
+			t.Fatalf("runtime profile credential ref = %q, want work route", req.Profile.Git.Credential.Name)
 		}
 		return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -225,7 +225,7 @@ func TestReviewUsesRepositoryProfileRoute(t *testing.T) {
 func TestReviewRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
 		{
@@ -262,7 +262,7 @@ func TestReviewRejectsAmbiguousRepositoryProfileRoute(t *testing.T) {
 func TestReviewExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -274,8 +274,8 @@ func TestReviewExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 	}}
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
-		if req.Profile.Git.CredentialRef != "codereview/home" {
-			t.Fatalf("runtime profile credential ref = %q, want explicit home", req.Profile.Git.CredentialRef)
+		if req.Profile.Git.Credential.Name != "codereview/home" {
+			t.Fatalf("runtime profile credential ref = %q, want explicit home", req.Profile.Git.Credential.Name)
 		}
 		return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
 	})
@@ -291,7 +291,7 @@ func TestReviewExplicitProfileBypassesRepositoryRoute(t *testing.T) {
 func TestReviewExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -316,7 +316,7 @@ func TestReviewExplicitEmptyProfileFailsBeforeRepositoryRoute(t *testing.T) {
 func TestReviewUnmatchedRepositoryRequiresProfileOrRoute(t *testing.T) {
 	cfg := testConfig()
 	work := cfg.Profiles["home"]
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cfg.RepositoryProfiles = []config.RepositoryProfile{{
 		Profile: "work",
@@ -346,7 +346,7 @@ func TestReviewExplicitProfileHostMismatch(t *testing.T) {
 	cfg.RepositoryProfiles = nil
 	work := home
 	work.Git.Host = "github.com"
-	work.Git.CredentialRef = "codereview/work"
+	work.Git.Credential.Name = "codereview/work"
 	cfg.Profiles["work"] = work
 	cmd, _ := newTestCommand(t, cfg, func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		t.Fatal("runtime factory should not be called when route profile host mismatches")

@@ -280,7 +280,6 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		Credential:    profile.ReviewerCredentials.Credential,
 		GitHubApp:     githubApp,
-		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}
 }

@@ -736,9 +736,9 @@ func TestRenderConfigClearTextIncludesCacheErrorWithoutPath(t *testing.T) {
 func homeProfile() config.Profile {
 	return config.Profile{
 		Git: config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/home",
+			Host:       "github.com",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 		},
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,
@@ -772,19 +772,19 @@ func workProfile() config.Profile {
 		Git: config.GitConfig{
 			Host:          "github.com",
 			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/work",
+			Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 			IdentityCache: "rianjs",
 		},
 		ReviewerCredentials: &config.ReviewerCredentials{
 			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/work-reviewer",
+			Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 			IdentityCache: "acme-review-bot",
 		},
 		LLM: config.LLMConfig{
-			Provider:      config.LLMProviderAnthropic,
-			Auth:          config.LLMAuthAPIKey,
-			Adapter:       config.LLMAdapterAnthropicAPI,
-			CredentialRef: "codereview/work-llm",
+			Provider:   config.LLMProviderAnthropic,
+			Auth:       config.LLMAuthAPIKey,
+			Adapter:    config.LLMAdapterAnthropicAPI,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 		},
 		AgentSources: []string{"~/dev/work-reviewers"},
 		ReviewPolicy: config.ReviewPolicy{

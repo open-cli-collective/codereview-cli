@@ -312,9 +312,6 @@ func ResolveCredentialStore(cfg config.File, storeID string) (ResolvedSecretsSto
 // ResolveSecretsStoreForProfile resolves the effective credential store for
 // one review profile.
 func ResolveSecretsStoreForProfile(cfg config.File, profile config.Profile) (ResolvedSecretsStore, error) {
-	if selection := strings.TrimSpace(profile.SecretsStore); selection != "" {
-		return ResolveCredentialStore(cfg, selection)
-	}
 	profile = config.Normalize(config.File{
 		Profiles: map[string]config.Profile{"profile": profile},
 	}).Profiles["profile"]
@@ -778,7 +775,7 @@ func ExpectedKeysForConfigRef(cfg config.File, ref string) ([]string, error) {
 
 func matchingCredentialRefs(profile config.Profile, ref string) []config.CredentialRef {
 	refs := []config.CredentialRef{}
-	gitCredential := normalizedCredentialLocation(profile.Git.Credential, profile.Git.CredentialRef)
+	gitCredential := profile.Git.Credential
 	if gitCredential.Name == ref {
 		refs = append(refs, config.CredentialRef{
 			Purpose: "git",
@@ -788,7 +785,7 @@ func matchingCredentialRefs(profile config.Profile, ref string) []config.Credent
 		})
 	}
 	if profile.ReviewerCredentials != nil {
-		reviewerCredential := normalizedCredentialLocation(profile.ReviewerCredentials.Credential, profile.ReviewerCredentials.CredentialRef)
+		reviewerCredential := profile.ReviewerCredentials.Credential
 		if reviewerCredential.Name == ref {
 			refs = append(refs, config.CredentialRef{
 				Purpose: "reviewer_credentials",
@@ -798,7 +795,7 @@ func matchingCredentialRefs(profile config.Profile, ref string) []config.Credent
 			})
 		}
 	}
-	llmCredential := normalizedCredentialLocation(profile.LLM.Credential, profile.LLM.CredentialRef)
+	llmCredential := profile.LLM.Credential
 	if profile.LLM.Auth == config.LLMAuthAPIKey && llmCredential.Name == ref {
 		refs = append(refs, config.CredentialRef{
 			Purpose:  "llm",
@@ -809,19 +806,6 @@ func matchingCredentialRefs(profile config.Profile, ref string) []config.Credent
 		})
 	}
 	return refs
-}
-
-func normalizedCredentialLocation(location config.CredentialLocation, legacyRef string) config.CredentialLocation {
-	location.Store = strings.TrimSpace(location.Store)
-	location.Name = strings.TrimSpace(location.Name)
-	legacyRef = strings.TrimSpace(legacyRef)
-	if legacyRef != "" {
-		if location.Store == "" {
-			location.Store = config.LocalOSCredentialStoreID
-		}
-		location.Name = legacyRef
-	}
-	return location
 }
 
 // ValidateAllowedKey fails when key is not in cr's write allowlist.

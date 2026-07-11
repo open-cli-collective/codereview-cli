@@ -153,7 +153,6 @@ type initDraft struct {
 	ReviewerCredentialWrites          map[string]string
 	ReviewerCredentialOverwrite       bool
 	ReviewerCredentialSatisfied       bool
-	SecretsStore                      string
 	LLMProvider                       string
 	LLMAuth                           string
 	LLMAdapter                        string
@@ -1359,8 +1358,8 @@ func stageStandaloneInteractiveInitReviewerEntity(session initSessionDraft, flag
 		previous = &existingCopy
 	}
 	if strings.TrimSpace(entity.CredentialRef) == "" {
-		if previous != nil && strings.TrimSpace(previous.CredentialRef) != "" {
-			entity.CredentialRef = strings.TrimSpace(previous.CredentialRef)
+		if previous != nil && strings.TrimSpace(previous.Credential.Name) != "" {
+			entity.CredentialRef = strings.TrimSpace(previous.Credential.Name)
 		} else {
 			ref, err := initCredentialRefFromSeed(name)
 			if err != nil {
@@ -2319,7 +2318,7 @@ func buildInitSecretsStoreInventory(cfg config.File) ([]config.EffectiveSecretsS
 	selectedByProfile := make(map[string]string, len(cfg.Profiles))
 	brokenByProfile := map[string]string{}
 	for name, profile := range cfg.Profiles {
-		selection := strings.TrimSpace(profile.SecretsStore)
+		selection := strings.TrimSpace(profile.Git.Credential.Store)
 		selectedByProfile[name] = selection
 		if selection == "" {
 			continue
@@ -2549,7 +2548,6 @@ func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
 		Auth:              config.LLMAuth(draft.LLMAuth),
 		Adapter:           config.LLMAdapter(draft.LLMAdapter),
 		Credential:        initCredentialLocationIfName(draft.LLMCredentialStore, draft.LLMCredentialRef),
-		CredentialRef:     strings.TrimSpace(draft.LLMCredentialRef),
 		ModelMap:          copyModelMap(draft.ModelMap),
 		ReviewerModelTier: config.ModelTier(strings.TrimSpace(draft.LLMReviewerModelTier)),
 	})
@@ -3108,17 +3106,16 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 			draft.GitHubAppID = strings.TrimSpace(existingProfile.Git.GitHubApp.AppID)
 		}
 		draft.GitCredentialStore = initCredentialStoreDraftValue(existingProfile.Git.Credential.Store)
-		draft.GitCredentialRef = firstNonEmpty(existingProfile.Git.Credential.Name, existingProfile.Git.CredentialRef)
+		draft.GitCredentialRef = existingProfile.Git.Credential.Name
 		draft.LLMProvider = string(existingProfile.LLM.Provider)
 		draft.LLMAuth = string(existingProfile.LLM.Auth)
 		draft.LLMAdapter = string(existingProfile.LLM.Adapter)
 		draft.LLMReviewerModelTier = string(existingProfile.LLM.ReviewerModelTier)
 		draft.LLMCredentialStore = initCredentialStoreDraftValue(existingProfile.LLM.Credential.Store)
-		draft.LLMCredentialRef = firstNonEmpty(existingProfile.LLM.Credential.Name, existingProfile.LLM.CredentialRef)
+		draft.LLMCredentialRef = existingProfile.LLM.Credential.Name
 		draft.ModelMap = copyModelMap(existingProfile.LLM.ModelMap)
 		draft.AgentSources = append([]string(nil), existingProfile.AgentSources...)
 		draft.ReviewPolicy = existingProfile.ReviewPolicy
-		draft.SecretsStore = strings.TrimSpace(existingProfile.SecretsStore)
 		if existingProfile.Reviewer.GitHubAppInstallation != nil {
 			installation := existingProfile.Reviewer.GitHubAppInstallation
 			draft.ReviewerGitHubAppInstallationMode = strings.TrimSpace(string(installation.Mode))
@@ -3131,7 +3128,7 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 				draft.ReviewerGitHubAppID = strings.TrimSpace(existingProfile.ReviewerCredentials.GitHubApp.AppID)
 			}
 			draft.ReviewerCredentialStore = initCredentialStoreDraftValue(existingProfile.ReviewerCredentials.Credential.Store)
-			draft.ReviewerCredentialRef = firstNonEmpty(existingProfile.ReviewerCredentials.Credential.Name, existingProfile.ReviewerCredentials.CredentialRef)
+			draft.ReviewerCredentialRef = existingProfile.ReviewerCredentials.Credential.Name
 			draft.ReviewerDisplayName = normalizeOptionalDisplayName(existingProfile.ReviewerCredentials.DisplayName)
 		}
 	}
@@ -3244,8 +3241,8 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	gitRef := flags.gitRef
 	if gitRef == "" {
-		if previousProfile != nil && previousProfile.Git.CredentialRef != "" {
-			gitRef = previousProfile.Git.CredentialRef
+		if previousProfile != nil && previousProfile.Git.Credential.Name != "" {
+			gitRef = previousProfile.Git.Credential.Name
 		} else {
 			gitRef = defaultGitRef
 		}
@@ -3278,8 +3275,8 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			return initPlan{}, exitcode.Usage(fmt.Errorf("reviewer token ingress requires --reviewer-auth-mode %s", config.GitAuthModePAT))
 		}
 		if reviewerRef == "" {
-			if previousProfile != nil && previousProfile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials.CredentialRef != "" {
-				reviewerRef = previousProfile.ReviewerCredentials.CredentialRef
+			if previousProfile != nil && previousProfile.ReviewerCredentials != nil && previousProfile.ReviewerCredentials.Credential.Name != "" {
+				reviewerRef = previousProfile.ReviewerCredentials.Credential.Name
 			} else {
 				reviewerRef, err = initCredentialRefFromSeed(profileName + "-reviewer")
 				if err != nil {
@@ -3296,8 +3293,8 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	llmRef := flags.llmRef
 	if flags.llmAuth == string(config.LLMAuthAPIKey) && llmRef == "" {
-		if previousProfile != nil && previousProfile.LLM.Auth == config.LLMAuthAPIKey && previousProfile.LLM.CredentialRef != "" {
-			llmRef = previousProfile.LLM.CredentialRef
+		if previousProfile != nil && previousProfile.LLM.Auth == config.LLMAuthAPIKey && previousProfile.LLM.Credential.Name != "" {
+			llmRef = previousProfile.LLM.Credential.Name
 		} else {
 			llmRef, err = initCredentialRefFromSeed(profileName + "-llm")
 			if err != nil {
@@ -3374,17 +3371,15 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	profile := config.Profile{
 		Git: config.GitConfig{
-			Host:          flags.gitHost,
-			AuthMode:      gitMode,
-			Credential:    initCredentialLocation(gitStore, gitRef),
-			GitHubApp:     initGitHubAppConfigForAuth(gitMode, gitGitHubAppID),
-			CredentialRef: gitRef,
+			Host:       flags.gitHost,
+			AuthMode:   gitMode,
+			Credential: initCredentialLocation(gitStore, gitRef),
+			GitHubApp:  initGitHubAppConfigForAuth(gitMode, gitGitHubAppID),
 		},
 		LLM: config.LLMConfig{
-			Provider:      config.LLMProvider(flags.llmProvider),
-			Auth:          config.LLMAuth(flags.llmAuth),
-			Adapter:       config.LLMAdapter(flags.llmAdapter),
-			CredentialRef: llmRef,
+			Provider: config.LLMProvider(flags.llmProvider),
+			Auth:     config.LLMAuth(flags.llmAuth),
+			Adapter:  config.LLMAdapter(flags.llmAdapter),
 		},
 		AgentSources: flags.agentSources,
 		ReviewPolicy: config.ReviewPolicy{
@@ -3403,10 +3398,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	if reviewerRequested && !flags.disableReviewer {
 		profile.ReviewerCredentials = &config.ReviewerCredentials{
-			AuthMode:      reviewerMode,
-			Credential:    initCredentialLocation(reviewerStore, reviewerRef),
-			GitHubApp:     initGitHubAppConfigForAuth(reviewerMode, reviewerGitHubAppID),
-			CredentialRef: reviewerRef,
+			AuthMode:   reviewerMode,
+			Credential: initCredentialLocation(reviewerStore, reviewerRef),
+			GitHubApp:  initGitHubAppConfigForAuth(reviewerMode, reviewerGitHubAppID),
 		}
 	}
 	if previousProfile != nil {
@@ -3735,7 +3729,7 @@ func standaloneRepositoryAccessPlanEntries(cfg config.File, plannedWriteKeys map
 		ref := config.CredentialRef{
 			Purpose: "git",
 			Store:   initCredentialStoreDraftValue(access.Git.Credential.Store),
-			Ref:     strings.TrimSpace(firstNonEmpty(access.Git.Credential.Name, access.Git.CredentialRef)),
+			Ref:     strings.TrimSpace(access.Git.Credential.Name),
 			Mode:    string(access.Git.AuthMode),
 		}
 		if ref.Store == "" || ref.Ref == "" {
@@ -4231,14 +4225,14 @@ func initLLMConfigForReplacement(profileName string, runtime initLLMRuntimeDraft
 	if llm.Auth != config.LLMAuthAPIKey {
 		return llm, nil
 	}
-	if strings.TrimSpace(llm.CredentialRef) != "" {
+	if strings.TrimSpace(llm.Credential.Name) != "" {
 		return llm, nil
 	}
 	ref, err := initCredentialRefFromSeed(profileName + "-llm")
 	if err != nil {
 		return config.LLMConfig{}, exitcode.Usage(err)
 	}
-	llm.CredentialRef = ref
+	llm.Credential = initCredentialLocation(llm.Credential.Store, ref)
 	return llm, nil
 }
 
@@ -4269,17 +4263,16 @@ func initGitScopeDraftFromConfig(git config.GitConfig) initGitScopeDraft {
 		AuthMode:        git.AuthMode,
 		GitHubAppID:     appID,
 		CredentialStore: initCredentialStoreDraftValue(git.Credential.Store),
-		CredentialRef:   strings.TrimSpace(firstNonEmpty(git.Credential.Name, git.CredentialRef)),
+		CredentialRef:   strings.TrimSpace(git.Credential.Name),
 	}
 }
 
 func (scope initGitScopeDraft) exportConfig(previous *config.GitConfig) config.GitConfig {
 	git := config.GitConfig{
-		Host:          strings.TrimSpace(scope.Host),
-		AuthMode:      scope.AuthMode,
-		Credential:    initCredentialLocation(scope.CredentialStore, scope.CredentialRef),
-		GitHubApp:     initGitHubAppConfigForAuth(scope.AuthMode, scope.GitHubAppID),
-		CredentialRef: strings.TrimSpace(scope.CredentialRef),
+		Host:       strings.TrimSpace(scope.Host),
+		AuthMode:   scope.AuthMode,
+		Credential: initCredentialLocation(scope.CredentialStore, scope.CredentialRef),
+		GitHubApp:  initGitHubAppConfigForAuth(scope.AuthMode, scope.GitHubAppID),
 	}
 	if previous != nil && scope.matchesConfig(*previous) {
 		git.Host = previous.Host
@@ -4313,7 +4306,7 @@ func (scope initGitScopeDraft) matchesConfig(previous config.GitConfig) bool {
 		previous.AuthMode == scope.AuthMode &&
 		initGitHubAppIDForAuth(previous.AuthMode, previous.GitHubApp) == strings.TrimSpace(scope.GitHubAppID) &&
 		initCredentialStoreDraftValue(previous.Credential.Store) == initCredentialStoreDraftValue(scope.CredentialStore) &&
-		strings.TrimSpace(firstNonEmpty(previous.Credential.Name, previous.CredentialRef)) == strings.TrimSpace(scope.CredentialRef)
+		strings.TrimSpace(previous.Credential.Name) == strings.TrimSpace(scope.CredentialRef)
 }
 
 func buildInitGitScopeInventory(cfg config.File) (map[string]initGitScopeDraft, map[string]string) {
@@ -4381,7 +4374,7 @@ func initReviewerEntityDraftFromConfig(profile config.Profile) initReviewerEntit
 		AuthMode:        profile.ReviewerCredentials.AuthMode,
 		AppID:           initGitHubAppIDForAuth(profile.ReviewerCredentials.AuthMode, profile.ReviewerCredentials.GitHubApp),
 		CredentialStore: initCredentialStoreDraftValue(profile.ReviewerCredentials.Credential.Store),
-		CredentialRef:   strings.TrimSpace(firstNonEmpty(profile.ReviewerCredentials.Credential.Name, profile.ReviewerCredentials.CredentialRef)),
+		CredentialRef:   strings.TrimSpace(profile.ReviewerCredentials.Credential.Name),
 		DisplayName:     normalizeOptionalDisplayName(profile.ReviewerCredentials.DisplayName),
 	}
 	return entity
@@ -4393,7 +4386,7 @@ func initReviewerEntityDraftFromReviewerEntity(entity config.ReviewerEntity) ini
 		AuthMode:        entity.AuthMode,
 		AppID:           initGitHubAppIDForAuth(entity.AuthMode, entity.GitHubApp),
 		CredentialStore: initCredentialStoreDraftValue(entity.Credential.Store),
-		CredentialRef:   strings.TrimSpace(firstNonEmpty(entity.Credential.Name, entity.CredentialRef)),
+		CredentialRef:   strings.TrimSpace(entity.Credential.Name),
 		DisplayName:     normalizeOptionalDisplayName(entity.DisplayName),
 	}
 	return draft
@@ -4404,11 +4397,10 @@ func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCred
 		return nil
 	}
 	reviewer := &config.ReviewerCredentials{
-		AuthMode:      entity.AuthMode,
-		Credential:    initCredentialLocation(entity.CredentialStore, entity.CredentialRef),
-		GitHubApp:     initGitHubAppConfigForAuth(entity.AuthMode, entity.AppID),
-		CredentialRef: strings.TrimSpace(entity.CredentialRef),
-		DisplayName:   normalizeOptionalDisplayName(entity.DisplayName),
+		AuthMode:    entity.AuthMode,
+		Credential:  initCredentialLocation(entity.CredentialStore, entity.CredentialRef),
+		GitHubApp:   initGitHubAppConfigForAuth(entity.AuthMode, entity.AppID),
+		DisplayName: normalizeOptionalDisplayName(entity.DisplayName),
 	}
 	if previous != nil && entity.matchesConfig(*previous) {
 		reviewer.IdentityCache = previous.IdentityCache
@@ -4418,12 +4410,11 @@ func (entity initReviewerEntityDraft) exportConfig(previous *config.ReviewerCred
 
 func (entity initReviewerEntityDraft) exportReviewerEntityConfig(previous *config.ReviewerEntity, host string) config.ReviewerEntity {
 	reviewer := config.ReviewerEntity{
-		Host:          strings.TrimSpace(host),
-		AuthMode:      entity.AuthMode,
-		Credential:    initCredentialLocation(entity.CredentialStore, entity.CredentialRef),
-		GitHubApp:     initGitHubAppConfigForAuth(entity.AuthMode, entity.AppID),
-		CredentialRef: strings.TrimSpace(entity.CredentialRef),
-		DisplayName:   normalizeOptionalDisplayName(entity.DisplayName),
+		Host:        strings.TrimSpace(host),
+		AuthMode:    entity.AuthMode,
+		Credential:  initCredentialLocation(entity.CredentialStore, entity.CredentialRef),
+		GitHubApp:   initGitHubAppConfigForAuth(entity.AuthMode, entity.AppID),
+		DisplayName: normalizeOptionalDisplayName(entity.DisplayName),
 	}
 	if previous != nil {
 		if reviewer.Host == "" {
@@ -4469,7 +4460,7 @@ func (entity initReviewerEntityDraft) matchesConfig(previous config.ReviewerCred
 		previous.AuthMode == entity.AuthMode &&
 		initGitHubAppIDForAuth(previous.AuthMode, previous.GitHubApp) == strings.TrimSpace(entity.AppID) &&
 		initCredentialStoreDraftValue(previous.Credential.Store) == initCredentialStoreDraftValue(entity.CredentialStore) &&
-		strings.TrimSpace(firstNonEmpty(previous.Credential.Name, previous.CredentialRef)) == strings.TrimSpace(entity.CredentialRef)
+		strings.TrimSpace(previous.Credential.Name) == strings.TrimSpace(entity.CredentialRef)
 }
 
 func (entity initReviewerEntityDraft) matchesReviewerEntityConfig(previous config.ReviewerEntity) bool {
@@ -4477,7 +4468,7 @@ func (entity initReviewerEntityDraft) matchesReviewerEntityConfig(previous confi
 		previous.AuthMode == entity.AuthMode &&
 		initGitHubAppIDForAuth(previous.AuthMode, previous.GitHubApp) == strings.TrimSpace(entity.AppID) &&
 		initCredentialStoreDraftValue(previous.Credential.Store) == initCredentialStoreDraftValue(entity.CredentialStore) &&
-		strings.TrimSpace(firstNonEmpty(previous.Credential.Name, previous.CredentialRef)) == strings.TrimSpace(entity.CredentialRef)
+		strings.TrimSpace(previous.Credential.Name) == strings.TrimSpace(entity.CredentialRef)
 }
 
 func initGitHubAppConfigForAuth(authMode config.GitAuthMode, appID string) *config.GitHubAppConfig {
@@ -4557,7 +4548,7 @@ func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 		Auth:              llm.Auth,
 		Adapter:           llm.Adapter,
 		CredentialStore:   initCredentialStoreDraftValue(llm.Credential.Store),
-		CredentialRef:     strings.TrimSpace(firstNonEmpty(llm.Credential.Name, llm.CredentialRef)),
+		CredentialRef:     strings.TrimSpace(llm.Credential.Name),
 		ModelMap:          copyModelMap(llm.ModelMap),
 		ReviewerModelTier: llm.ReviewerModelTier,
 	}
@@ -4581,7 +4572,6 @@ func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
 	}
 	if runtime.Auth == config.LLMAuthAPIKey {
 		llm.Credential = initCredentialLocation(runtime.CredentialStore, runtime.CredentialRef)
-		llm.CredentialRef = strings.TrimSpace(runtime.CredentialRef)
 	}
 	return llm
 }
@@ -4828,11 +4818,11 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	profile.Git.Host = strings.TrimSpace(draft.GitHost)
 	profile.Git.AuthMode = config.GitAuthMode(draft.GitAuth)
 	profile.Git.GitHubApp = initGitHubAppConfigForAuth(profile.Git.AuthMode, draft.GitHubAppID)
-	profile.Git.CredentialRef = strings.TrimSpace(draft.GitCredentialRef)
-	if profile.Git.CredentialRef == "" {
-		profile.Git.CredentialRef = defaultGitRef
+	gitRef := strings.TrimSpace(draft.GitCredentialRef)
+	if gitRef == "" {
+		gitRef = defaultGitRef
 	}
-	profile.Git.Credential = initCredentialLocation(draft.GitCredentialStore, profile.Git.CredentialRef)
+	profile.Git.Credential = initCredentialLocation(draft.GitCredentialStore, gitRef)
 	// Changing the selected Git scope means any cached resolved identity may belong to the wrong host/auth pair.
 	if previousProfile != nil && !initGitScopeDraftFromConfig(profile.Git).matchesConfig(previousProfile.Git) {
 		profile.Git.IdentityCache = ""
@@ -4848,11 +4838,10 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 			}
 		}
 		reviewer := config.ReviewerCredentials{
-			AuthMode:      config.GitAuthMode(draft.ReviewerAuth),
-			Credential:    initCredentialLocation(draft.ReviewerCredentialStore, reviewerRef),
-			GitHubApp:     initGitHubAppConfigForAuth(config.GitAuthMode(draft.ReviewerAuth), draft.ReviewerGitHubAppID),
-			CredentialRef: reviewerRef,
-			DisplayName:   normalizeOptionalDisplayName(draft.ReviewerDisplayName),
+			AuthMode:    config.GitAuthMode(draft.ReviewerAuth),
+			Credential:  initCredentialLocation(draft.ReviewerCredentialStore, reviewerRef),
+			GitHubApp:   initGitHubAppConfigForAuth(config.GitAuthMode(draft.ReviewerAuth), draft.ReviewerGitHubAppID),
+			DisplayName: normalizeOptionalDisplayName(draft.ReviewerDisplayName),
 		}
 		// Changing reviewer credentials can invalidate the cached reviewer identity even when the profile name stays the same.
 		if previousProfile != nil && previousProfile.ReviewerCredentials != nil && initReviewerEntityDraftFromConfig(config.Profile{ReviewerCredentials: &reviewer}).matchesConfig(*previousProfile.ReviewerCredentials) {
@@ -4876,10 +4865,8 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 				return config.Profile{}, exitcode.Usage(err)
 			}
 		}
-		profile.LLM.CredentialRef = llmRef
 		profile.LLM.Credential = initCredentialLocationIfName(draft.LLMCredentialStore, llmRef)
 	} else {
-		profile.LLM.CredentialRef = ""
 		profile.LLM.Credential = config.CredentialLocation{}
 	}
 	if draft.ModelMapSet {
@@ -4895,7 +4882,6 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	if draft.ReviewPolicySet {
 		profile.ReviewPolicy = draft.ReviewPolicy
 	}
-	profile.SecretsStore = strings.TrimSpace(draft.SecretsStore)
 	return profile, nil
 }
 
@@ -5063,13 +5049,12 @@ func reviewerEntityConfigFromProfile(profile config.Profile) config.ReviewerEnti
 	if reviewer == nil {
 		return config.ReviewerEntity{}
 	}
-	ref := strings.TrimSpace(firstNonEmpty(reviewer.Credential.Name, reviewer.CredentialRef))
+	ref := strings.TrimSpace(reviewer.Credential.Name)
 	return normalizeInitReviewerEntityConfig(config.ReviewerEntity{
 		Host:          profile.Git.Host,
 		AuthMode:      reviewer.AuthMode,
 		Credential:    initCredentialLocation(reviewer.Credential.Store, ref),
 		GitHubApp:     initGitHubAppConfigForAuth(reviewer.AuthMode, initGitHubAppIDForAuth(reviewer.AuthMode, reviewer.GitHubApp)),
-		CredentialRef: ref,
 		DisplayName:   normalizeOptionalDisplayName(reviewer.DisplayName),
 		IdentityCache: reviewer.IdentityCache,
 	})
@@ -5343,34 +5328,7 @@ func collectInteractiveInitKeyringBackendConfig(opts *root.Options, deps initDep
 }
 
 func validateInteractiveInitConfig(cfg config.File) error {
-	err := config.Validate(cfg)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, config.ErrSecretsStoreNotFound) {
-		return err
-	}
-	recovered := cloneInitConfigFile(cfg)
-	hadBrokenSecretsStore := false
-	for name, profile := range recovered.Profiles {
-		selection := strings.TrimSpace(profile.SecretsStore)
-		if selection == "" || selection == config.LocalOSCredentialStoreID {
-			continue
-		}
-		if _, ok := recovered.Secrets.Stores[selection]; ok {
-			continue
-		}
-		profile.SecretsStore = ""
-		recovered.Profiles[name] = profile
-		hadBrokenSecretsStore = true
-	}
-	if !hadBrokenSecretsStore {
-		return err
-	}
-	if recoveredErr := config.Validate(recovered); recoveredErr != nil {
-		return recoveredErr
-	}
-	return nil
+	return config.Validate(cfg)
 }
 
 func validateInteractiveInitGlobalConfig(cfg config.File) error {
@@ -6600,7 +6558,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 		if flags.overwrite {
 			return exitcode.Usage(fmt.Errorf("--overwrite with api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
-		parsed, err := credentials.ParseRef(plan.profile.LLM.CredentialRef)
+		parsed, err := credentials.ParseRef(plan.profile.LLM.Credential.Name)
 		if err != nil {
 			return exitcode.Usage(err)
 		}

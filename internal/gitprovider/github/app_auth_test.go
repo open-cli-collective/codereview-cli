@@ -347,10 +347,10 @@ func githubAppGitConfig(ref string) config.GitConfig {
 
 func githubAppGitConfigWithAppID(ref string, appID string) config.GitConfig {
 	return config.GitConfig{
-		Host:          "github.com",
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: appID},
-		CredentialRef: ref,
+		Host:       "github.com",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: appID},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 	}
 }
 

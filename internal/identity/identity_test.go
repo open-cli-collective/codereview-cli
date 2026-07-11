@@ -29,7 +29,7 @@ func TestRefreshUsesGitCredentialsAndUpdatesCache(t *testing.T) {
 	if len(results) != 1 || results[0].CredentialSource != SourceGit || !results[0].IdentityCacheUpdated {
 		t.Fatalf("results = %#v, want one git update", results)
 	}
-	if len(resolver.calls) != 1 || resolver.calls[0].CredentialRef != "codereview/home" {
+	if len(resolver.calls) != 1 || resolver.calls[0].Credential.Name != "codereview/home" {
 		t.Fatalf("resolver calls = %#v, want git ref", resolver.calls)
 	}
 }
@@ -57,7 +57,7 @@ func TestRefreshUsesReviewerCredentialsWhenPresent(t *testing.T) {
 	if len(results) != 1 || results[0].CredentialSource != SourceReviewer || results[0].PreviousIdentityCache != "old-bot" {
 		t.Fatalf("results = %#v, want reviewer result with old cache", results)
 	}
-	if len(resolver.calls) != 1 || resolver.calls[0].Host != "github.com" || resolver.calls[0].CredentialRef != "codereview/work-reviewer" {
+	if len(resolver.calls) != 1 || resolver.calls[0].Host != "github.com" || resolver.calls[0].Credential.Name != "codereview/work-reviewer" {
 		t.Fatalf("resolver calls = %#v, want reviewer ref on profile host", resolver.calls)
 	}
 }
@@ -85,9 +85,9 @@ func TestRefreshAllSortedAndAtomicOnFailure(t *testing.T) {
 		t.Fatalf("returned home cache = %q, want original", got)
 	}
 	if len(resolver.calls) != 3 ||
-		resolver.calls[0].CredentialRef != "codereview/home" ||
-		resolver.calls[1].CredentialRef != "codereview/work" ||
-		resolver.calls[2].CredentialRef != "codereview/work-reviewer" {
+		resolver.calls[0].Credential.Name != "codereview/home" ||
+		resolver.calls[1].Credential.Name != "codereview/work" ||
+		resolver.calls[2].Credential.Name != "codereview/work-reviewer" {
 		t.Fatalf("resolver calls = %#v, want sorted home then work git/reviewer", resolver.calls)
 	}
 }
@@ -99,12 +99,12 @@ func TestRefreshAllReviewerCredentialsRollbackOnFailure(t *testing.T) {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/reviewer-git",
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/reviewer-git"},
 					IdentityCache: "git-cache",
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/reviewer",
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/reviewer"},
 					IdentityCache: "old-bot",
 				},
 			},
@@ -112,7 +112,7 @@ func TestRefreshAllReviewerCredentialsRollbackOnFailure(t *testing.T) {
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/failing",
+					Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/failing"},
 					IdentityCache: "old-failing",
 				},
 			},
@@ -145,9 +145,9 @@ func TestRefreshAllReviewerCredentialsRollbackOnFailure(t *testing.T) {
 		t.Fatalf("input reviewer cache = %q, want original", got)
 	}
 	if len(resolver.calls) != 3 ||
-		resolver.calls[0].CredentialRef != "codereview/reviewer-git" ||
-		resolver.calls[1].CredentialRef != "codereview/reviewer" ||
-		resolver.calls[2].CredentialRef != "codereview/failing" {
+		resolver.calls[0].Credential.Name != "codereview/reviewer-git" ||
+		resolver.calls[1].Credential.Name != "codereview/reviewer" ||
+		resolver.calls[2].Credential.Name != "codereview/failing" {
 		t.Fatalf("resolver calls = %#v, want reviewer git/reviewer then failing", resolver.calls)
 	}
 }
@@ -230,10 +230,10 @@ type fakeResolver struct {
 
 func (f *fakeResolver) ResolveIdentity(_ context.Context, _ string, git config.GitConfig) (gitprovider.Identity, error) {
 	f.calls = append(f.calls, git)
-	if err := f.errs[git.CredentialRef]; err != nil {
+	if err := f.errs[git.Credential.Name]; err != nil {
 		return gitprovider.Identity{}, err
 	}
-	return f.identities[git.CredentialRef], nil
+	return f.identities[git.Credential.Name], nil
 }
 
 func testConfig() config.File {
@@ -244,7 +244,7 @@ func testConfig() config.File {
 			Git: config.GitConfig{
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/home",
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
 				IdentityCache: "old-home",
 			},
 			LLM: config.LLMConfig{
@@ -258,12 +258,12 @@ func testConfig() config.File {
 			Git: config.GitConfig{
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/work",
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
 				IdentityCache: "work-user-cache",
 			},
 			ReviewerCredentials: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/work-reviewer",
+				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
 				IdentityCache: "old-bot",
 			},
 			LLM: config.LLMConfig{

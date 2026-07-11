@@ -4022,7 +4022,7 @@ func TestDryRunMarksRunFailedAfterPostAllocationError(t *testing.T) {
 
 func TestDryRunRejectsSelfReviewWhenReviewerCredentialsMatchAuthor(t *testing.T) {
 	provider, req := dryRunHarness(t)
-	req.Profile.ReviewerCredentials = &config.ReviewerCredentials{AuthMode: config.GitAuthModePAT, CredentialRef: "codereview/reviewer"}
+	req.Profile.ReviewerCredentials = &config.ReviewerCredentials{AuthMode: config.GitAuthModePAT, Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/reviewer"}}
 	req.PostingIdentity = provider.pr.Author
 	adapter := &llm.FakeAdapter{QuotaErr: errors.New("quota should not be called")}
 
@@ -4937,9 +4937,9 @@ func namedSessionForRequest(req Request, providerSessionID string) ledger.NamedS
 func testProfile(agentSource string) config.Profile {
 	profile := config.Profile{
 		Git: config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/home",
+			Host:       "github.com",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 		},
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,

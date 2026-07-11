@@ -74,7 +74,7 @@ func NewFromGitConfig(git config.GitConfig, store credentials.Reader, opts Optio
 	if store == nil {
 		return nil, gitprovider.Credential{}, fmt.Errorf("%w: token store is required", gitprovider.ErrAuth)
 	}
-	parsed, err := credentials.ParseRef(git.CredentialRef)
+	parsed, err := credentials.ParseRef(git.Credential.Name)
 	if err != nil {
 		return nil, gitprovider.Credential{}, err
 	}
@@ -83,7 +83,7 @@ func NewFromGitConfig(git config.GitConfig, store credentials.Reader, opts Optio
 	case config.GitAuthModePAT:
 		key, err := credentials.KeyForPurpose(config.CredentialRef{
 			Purpose: "git",
-			Ref:     git.CredentialRef,
+			Ref:     git.Credential.Name,
 			Mode:    string(git.AuthMode),
 		})
 		if err != nil {
