@@ -163,7 +163,7 @@ func buildInteractiveInitReviewerCredentialStatuses(opts *root.Options, deps ini
 
 func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, session initSessionDraft, entries []initCredentialPlanEntry, writes map[string]map[string]string, purpose string) []initReviewerCredentialStatus {
 	statuses := make([]initReviewerCredentialStatus, 0, len(entries))
-	stores := map[string]initStore{}
+	stores := map[credentials.StoreIdentity]initStore{}
 	defer func() {
 		for _, store := range stores {
 			if store != nil {
@@ -177,7 +177,7 @@ func buildInteractiveInitCredentialStatuses(opts *root.Options, deps initDeps, s
 		}
 		existing := map[string]bool{}
 		unavailable := ""
-		storeKey := initCredentialStoreKey(entry.SecretsStore)
+		storeKey := entry.SecretsStore.Identity()
 		store := stores[storeKey]
 		if store == nil {
 			if !canOpenInitStoreForReviewerStatus(deps, entry) {
@@ -228,7 +228,7 @@ func interactiveInitReviewerCredentialPlanEntries(session initSessionDraft, plan
 	if currentProfile, ok := session.cfg.Profiles[session.workspace.profileName]; ok {
 		profile = currentProfile
 	}
-	entries, err := planInitCredentialsWithConfig(session.cfg, session.workspace.previousProfile, profile, plannedWriteKeys)
+	entries, err := credentials.PlanWithConfig(session.cfg, session.workspace.previousProfile, profile, plannedWriteKeys)
 	if err != nil || !hasInitReviewerCredentialPlanEntry(entries) {
 		entries = append([]initCredentialPlanEntry(nil), session.workspace.credentialPlan...)
 	}
@@ -308,8 +308,8 @@ func appendReviewerCredentialPlanEntry(entries []initCredentialPlanEntry, seen m
 		KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 		PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
 	}
-	entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
-	entry.State = classifyInitCredentialPlanEntry(entry)
+	entry.MissingRequiredKeys = credentials.MissingRequiredPlannedKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+	entry.State = credentials.ClassifyPlanEntry(entry)
 	entries = append(entries, entry)
 	seen[key] = struct{}{}
 	return entries

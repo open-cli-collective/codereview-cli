@@ -441,28 +441,19 @@ type initStore interface {
 	Close() error
 }
 
-type initCredentialPlanState string
+type initCredentialPlanState = credentials.PlanState
 
 const (
-	initCredentialPlanStateKeepExisting initCredentialPlanState = "keep_existing"
-	initCredentialPlanStateDefer        initCredentialPlanState = "defer"
-	// #nosec G101 -- init planner state label, not secret material.
-	initCredentialPlanStateOverwriteRef    initCredentialPlanState = "overwrite_ref"
-	initCredentialPlanStateWrite           initCredentialPlanState = "write"
-	initCredentialPlanStateClearRef        initCredentialPlanState = "clear_ref"
-	initCredentialPlanStateMissingRequired initCredentialPlanState = "missing_required"
-	initCreateProfileSentinel                                      = "__create__"
+	initCredentialPlanStateKeepExisting    = credentials.PlanStateKeepExisting
+	initCredentialPlanStateDefer           = credentials.PlanStateDefer
+	initCredentialPlanStateOverwriteRef    = credentials.PlanStateOverwriteRef
+	initCredentialPlanStateWrite           = credentials.PlanStateWrite
+	initCredentialPlanStateClearRef        = credentials.PlanStateClearRef
+	initCredentialPlanStateMissingRequired = credentials.PlanStateMissingRequired
+	initCreateProfileSentinel              = "__create__"
 )
 
-type initCredentialPlanEntry struct {
-	Ref                 config.CredentialRef
-	PreviousRef         *config.CredentialRef
-	SecretsStore        credentials.ResolvedSecretsStore
-	KeySpecs            []credentials.KeySpec
-	PlannedWriteKeys    []string
-	MissingRequiredKeys []string
-	State               initCredentialPlanState
-}
+type initCredentialPlanEntry = credentials.PlanEntry
 
 type initCredentialDecisionKind string
 
@@ -472,7 +463,7 @@ const (
 )
 
 type initCredentialDecisionKey struct {
-	Store   string
+	Store   credentials.StoreIdentity
 	Purpose string
 	Mode    string
 	Ref     string
@@ -1326,7 +1317,7 @@ func editInteractiveInitReviewerEntityStep(_ *cobra.Command, opts *root.Options,
 	session = mergeReviewerCredentialDraftWrites(session, draft)
 	if session.workspace != nil {
 		workspace := *session.workspace
-		credentialPlan, err := planInitCredentialsWithConfig(session.cfg, workspace.previousProfile, session.workspace.profile, projectInitPlannedWriteKeys(session.writes))
+		credentialPlan, err := credentials.PlanWithConfig(session.cfg, workspace.previousProfile, session.workspace.profile, projectInitPlannedWriteKeys(session.writes))
 		if err != nil {
 			return initSessionDraft{}, false, cmderr.Config(err)
 		}
@@ -3455,7 +3446,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		addWrite(writes, llmRef, llmKey, llmSecret)
 	}
 	plannedWriteKeys := projectInitPlannedWriteKeys(writes)
-	credentialPlan, err := planInitCredentialsWithConfig(cfg, previousProfile, profile, plannedWriteKeys)
+	credentialPlan, err := credentials.PlanWithConfig(cfg, previousProfile, profile, plannedWriteKeys)
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
@@ -3533,7 +3524,7 @@ func buildInteractiveInitWorkspace(cmd *cobra.Command, opts *root.Options, flags
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
 
-	credentialPlan, err := planInitCredentialsWithConfig(working, previousProfile, profile, nil)
+	credentialPlan, err := credentials.PlanWithConfig(working, previousProfile, profile, nil)
 	if err != nil {
 		return initWorkspaceDraft{}, cmderr.Config(err)
 	}
@@ -3631,7 +3622,7 @@ func buildInteractiveInitSessionPlan(opts *root.Options, session initSessionDraf
 			activeRefs[ref.Ref] = true
 		}
 		previousProfile := touchedInteractiveInitPreviousProfile(session, profileName)
-		entries, err := planInitCredentialsWithConfig(session.cfg, previousProfile, profile, plannedWriteKeys)
+		entries, err := credentials.PlanWithConfig(session.cfg, previousProfile, profile, plannedWriteKeys)
 		if err != nil {
 			return initSessionPlan{}, cmderr.Config(err)
 		}
@@ -3749,8 +3740,8 @@ func standaloneRepositoryAccessPlanEntries(cfg config.File, plannedWriteKeys map
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
 		}
-		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
-		entry.State = classifyInitCredentialPlanEntry(entry)
+		entry.MissingRequiredKeys = credentials.MissingRequiredPlannedKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+		entry.State = credentials.ClassifyPlanEntry(entry)
 		entries = append(entries, entry)
 	}
 	return entries
@@ -3826,8 +3817,8 @@ func standaloneReviewerEntityPlanEntries(cfg config.File, plannedWriteKeys map[s
 			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
 			PlannedWriteKeys: append([]string(nil), plannedWriteKeys[ref.Ref]...),
 		}
-		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
-		entry.State = classifyInitCredentialPlanEntry(entry)
+		entry.MissingRequiredKeys = credentials.MissingRequiredPlannedKeys(entry.KeySpecs, entry.PlannedWriteKeys)
+		entry.State = credentials.ClassifyPlanEntry(entry)
 		entries = append(entries, entry)
 	}
 	return entries
@@ -5352,13 +5343,9 @@ func sameInitCredentialStore(a, b credentials.ResolvedSecretsStore) bool {
 	return a.Equal(b)
 }
 
-func initCredentialStoreKey(resolved credentials.ResolvedSecretsStore) string {
-	return fmt.Sprintf("%s|%s|%s", resolved.ID, resolved.Source, resolved.Backend)
-}
-
 func initCredentialDecisionMapKey(entry initCredentialPlanEntry, key string) initCredentialDecisionKey {
 	return initCredentialDecisionKey{
-		Store:   initCredentialStoreKey(entry.SecretsStore),
+		Store:   entry.SecretsStore.Identity(),
 		Purpose: entry.Ref.Purpose,
 		Mode:    entry.Ref.Mode,
 		Ref:     entry.Ref.Ref,
@@ -5397,177 +5384,7 @@ func initCredentialEntryDeferredByDecision(decisions map[initCredentialDecisionK
 	return true
 }
 
-type initWriteGroup struct {
-	Resolved      credentials.ResolvedSecretsStore
-	Writes        map[string]map[string]string
-	OverwriteRefs map[string]bool
-}
-
-type initReviewerCredentialCleanupGroup struct {
-	Resolved credentials.ResolvedSecretsStore
-	Entries  map[string][]initCredentialPlanEntry
-}
-
-func groupInitWritesByStore(entries []initCredentialPlanEntry, writes map[string]map[string]string, overwriteRefs map[string]bool) ([]initWriteGroup, error) {
-	if len(entries) == 0 {
-		// An empty credential plan means init is using the legacy OS store path,
-		// represented by the zero-value unresolved selection.
-		return []initWriteGroup{{
-			Writes:        writes,
-			OverwriteRefs: overwriteRefs,
-		}}, nil
-	}
-	groups := map[string]*initWriteGroup{}
-	for _, entry := range entries {
-		bundle := writes[entry.Ref.Ref]
-		if len(bundle) == 0 {
-			continue
-		}
-		key := initCredentialStoreKey(entry.SecretsStore)
-		group := groups[key]
-		if group == nil {
-			group = &initWriteGroup{
-				Resolved:      entry.SecretsStore,
-				Writes:        map[string]map[string]string{},
-				OverwriteRefs: map[string]bool{},
-			}
-			groups[key] = group
-		}
-		group.Writes[entry.Ref.Ref] = bundle
-		if overwriteRefs[entry.Ref.Ref] {
-			group.OverwriteRefs[entry.Ref.Ref] = true
-		}
-	}
-	keys := make([]string, 0, len(groups))
-	for key := range groups {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make([]initWriteGroup, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, *groups[key])
-	}
-	return out, nil
-}
-
-func groupStaleReviewerCredentialCleanupsByStore(cfg config.File, entries []initCredentialPlanEntry) ([]initReviewerCredentialCleanupGroup, error) {
-	activeByStoreRef, resolvedByStore, err := activeReviewerCredentialEntriesByStoreRef(cfg, entries)
-	if err != nil {
-		return nil, err
-	}
-	cleanupRefsByStore := map[string]map[string]struct{}{}
-	for _, entry := range entries {
-		if !initCredentialEntryUsesActiveReviewerRef(entry) {
-			continue
-		}
-		storeKey := initCredentialStoreKey(entry.SecretsStore)
-		if initCredentialEntryChangesReviewerModeInPlace(entry) {
-			if cleanupRefsByStore[storeKey] == nil {
-				cleanupRefsByStore[storeKey] = map[string]struct{}{}
-			}
-			cleanupRefsByStore[storeKey][entry.Ref.Ref] = struct{}{}
-		}
-	}
-
-	storeKeys := make([]string, 0, len(cleanupRefsByStore))
-	for storeKey := range cleanupRefsByStore {
-		storeKeys = append(storeKeys, storeKey)
-	}
-	sort.Strings(storeKeys)
-	groups := make([]initReviewerCredentialCleanupGroup, 0, len(storeKeys))
-	for _, storeKey := range storeKeys {
-		group := initReviewerCredentialCleanupGroup{
-			Resolved: resolvedByStore[storeKey],
-			Entries:  map[string][]initCredentialPlanEntry{},
-		}
-		refs := make([]string, 0, len(cleanupRefsByStore[storeKey]))
-		for ref := range cleanupRefsByStore[storeKey] {
-			refs = append(refs, ref)
-		}
-		sort.Strings(refs)
-		for _, ref := range refs {
-			activeEntries := activeByStoreRef[storeKey][ref]
-			if len(activeEntries) == 0 {
-				continue
-			}
-			group.Entries[ref] = activeEntries
-		}
-		if len(group.Entries) > 0 {
-			groups = append(groups, group)
-		}
-	}
-	return groups, nil
-}
-
-func activeReviewerCredentialEntriesByStoreRef(cfg config.File, fallback []initCredentialPlanEntry) (map[string]map[string][]initCredentialPlanEntry, map[string]credentials.ResolvedSecretsStore, error) {
-	activeByStoreRef := map[string]map[string][]initCredentialPlanEntry{}
-	resolvedByStore := map[string]credentials.ResolvedSecretsStore{}
-	if len(cfg.Profiles) == 0 {
-		for _, entry := range fallback {
-			if !initCredentialEntryUsesActiveReviewerRef(entry) {
-				continue
-			}
-			addActiveReviewerCredentialEntry(activeByStoreRef, resolvedByStore, entry)
-		}
-		return activeByStoreRef, resolvedByStore, nil
-	}
-	profileNames := make([]string, 0, len(cfg.Profiles))
-	for profileName := range cfg.Profiles {
-		profileNames = append(profileNames, profileName)
-	}
-	sort.Strings(profileNames)
-	for _, profileName := range profileNames {
-		profile := cfg.Profiles[profileName]
-		refs, err := config.CredentialRefs(profile)
-		if err != nil {
-			return nil, nil, err
-		}
-		for _, ref := range refs {
-			if ref.Purpose != "reviewer_credentials" || strings.TrimSpace(ref.Ref) == "" {
-				continue
-			}
-			resolved, err := credentials.ResolveCredentialStore(cfg, ref.Store)
-			if err != nil {
-				return nil, nil, err
-			}
-			specs, err := credentials.KeySpecsForPurpose(ref)
-			if err != nil {
-				return nil, nil, err
-			}
-			addActiveReviewerCredentialEntry(activeByStoreRef, resolvedByStore, initCredentialPlanEntry{
-				Ref:          ref,
-				SecretsStore: resolved,
-				KeySpecs:     append([]credentials.KeySpec(nil), specs...),
-				State:        initCredentialPlanStateKeepExisting,
-			})
-		}
-	}
-	return activeByStoreRef, resolvedByStore, nil
-}
-
-func addActiveReviewerCredentialEntry(activeByStoreRef map[string]map[string][]initCredentialPlanEntry, resolvedByStore map[string]credentials.ResolvedSecretsStore, entry initCredentialPlanEntry) {
-	storeKey := initCredentialStoreKey(entry.SecretsStore)
-	resolvedByStore[storeKey] = entry.SecretsStore
-	if activeByStoreRef[storeKey] == nil {
-		activeByStoreRef[storeKey] = map[string][]initCredentialPlanEntry{}
-	}
-	activeByStoreRef[storeKey][entry.Ref.Ref] = append(activeByStoreRef[storeKey][entry.Ref.Ref], entry)
-}
-
-func initCredentialEntryUsesActiveReviewerRef(entry initCredentialPlanEntry) bool {
-	return entry.State != initCredentialPlanStateClearRef &&
-		entry.Ref.Purpose == "reviewer_credentials" &&
-		strings.TrimSpace(entry.Ref.Ref) != ""
-}
-
-func initCredentialEntryChangesReviewerModeInPlace(entry initCredentialPlanEntry) bool {
-	if !initCredentialEntryUsesActiveReviewerRef(entry) || entry.PreviousRef == nil {
-		return false
-	}
-	return entry.PreviousRef.Purpose == entry.Ref.Purpose &&
-		entry.PreviousRef.Ref == entry.Ref.Ref &&
-		entry.PreviousRef.Mode != entry.Ref.Mode
-}
+type initReviewerCredentialCleanupGroup = credentials.ReviewerCredentialCleanupGroup
 
 func openInitStoreForEntry(deps initDeps, opts *root.Options, flagSet bool, cfg config.File, entry initCredentialPlanEntry) (initStore, error) {
 	backend := ""
@@ -5610,9 +5427,9 @@ func collectInteractiveInitSecrets(_ *cobra.Command, opts *root.Options, deps in
 	if prompter.pasteSecret == nil {
 		prompter.pasteSecret = defaults.pasteSecret
 	}
-	stores := map[string]initStore{}
+	stores := map[credentials.StoreIdentity]initStore{}
 	openStore := func(entry initCredentialPlanEntry) (initStore, error) {
-		key := initCredentialStoreKey(entry.SecretsStore)
+		key := entry.SecretsStore.Identity()
 		if store := stores[key]; store != nil {
 			return store, nil
 		}
@@ -5882,7 +5699,7 @@ func loadInteractiveCredentialPlanStateWithResolver(entries []initCredentialPlan
 	if !needsStore {
 		return entries, nil
 	}
-	stores := map[string]initStore{}
+	stores := map[credentials.StoreIdentity]initStore{}
 	defer func() {
 		for _, store := range stores {
 			if store != nil {
@@ -5900,7 +5717,7 @@ func loadInteractiveCredentialPlanStateWithResolver(entries []initCredentialPlan
 			normalized = append(normalized, entry)
 			continue
 		}
-		key := initCredentialStoreKey(entry.SecretsStore)
+		key := entry.SecretsStore.Identity()
 		store := stores[key]
 		if store == nil {
 			var err error
@@ -6202,8 +6019,8 @@ func refreshInteractiveCredentialPlan(entries []initCredentialPlanEntry, planned
 			refreshed = append(refreshed, next)
 			continue
 		}
-		next.MissingRequiredKeys = missingRequiredInitCredentialKeys(next.KeySpecs, next.PlannedWriteKeys)
-		next.State = classifyInitCredentialPlanEntry(next)
+		next.MissingRequiredKeys = credentials.MissingRequiredPlannedKeys(next.KeySpecs, next.PlannedWriteKeys)
+		next.State = credentials.ClassifyPlanEntry(next)
 		refreshed = append(refreshed, next)
 	}
 	return refreshed
@@ -6320,7 +6137,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 	}
 	touchedCredentialRefs := map[string]struct{}{}
 	if len(plan.writes) > 0 {
-		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
+		groups, err := credentials.GroupWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
 		if err != nil {
 			return cmderr.Config(err)
 		}
@@ -6346,7 +6163,7 @@ func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan ini
 			_ = store.Close()
 		}
 	}
-	cleanupGroups, err := groupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
+	cleanupGroups, err := credentials.GroupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
 	if err != nil {
 		return cmderr.Config(err)
 	}
@@ -6516,7 +6333,7 @@ func applyStaleReviewerCredentialCleanups(opts *root.Options, deps initDeps, bac
 func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
 	var store initStore
 	var primaryResolved credentials.ResolvedSecretsStore
-	cleanupGroups, err := groupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
+	cleanupGroups, err := credentials.GroupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
 	if err != nil {
 		return cmderr.Config(err)
 	}
@@ -6576,7 +6393,7 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 	}
 	touchedCredentialRefs := map[string]struct{}{}
 	if len(plan.writes) > 0 {
-		groups, err := groupInitWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
+		groups, err := credentials.GroupWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
 		if err != nil {
 			return cmderr.Config(err)
 		}
@@ -6688,132 +6505,6 @@ func projectInitPlannedWriteKeys(writes map[string]map[string]string) map[string
 		projected[ref] = append([]string(nil), keys...)
 	}
 	return projected
-}
-
-func planInitCredentials(previousProfile *config.Profile, desiredProfile config.Profile, plannedWriteKeys map[string][]string) ([]initCredentialPlanEntry, error) {
-	return planInitCredentialsWithConfig(config.File{}, previousProfile, desiredProfile, plannedWriteKeys)
-}
-
-func planInitCredentialsWithConfig(cfg config.File, previousProfile *config.Profile, desiredProfile config.Profile, plannedWriteKeys map[string][]string) ([]initCredentialPlanEntry, error) {
-	desiredRefs, err := config.CredentialRefs(desiredProfile)
-	if err != nil {
-		return nil, err
-	}
-	var previousRefs []config.CredentialRef
-	if previousProfile != nil {
-		previousRefs, err = config.CredentialRefs(*previousProfile)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	previousByPurpose := make(map[string]config.CredentialRef, len(previousRefs))
-	for _, ref := range previousRefs {
-		previousByPurpose[ref.Purpose] = ref
-	}
-
-	entries := make([]initCredentialPlanEntry, 0, len(desiredRefs)+len(previousRefs))
-	for _, ref := range desiredRefs {
-		resolvedStore, err := credentials.ResolveCredentialStore(cfg, ref.Store)
-		if err != nil {
-			return nil, err
-		}
-		specs, err := credentials.KeySpecsForPurpose(ref)
-		if err != nil {
-			return nil, err
-		}
-		writeKeys := append([]string(nil), plannedWriteKeys[ref.Ref]...)
-		if err := validateInitPlannedWriteKeys(ref, specs, writeKeys); err != nil {
-			return nil, err
-		}
-		entry := initCredentialPlanEntry{
-			Ref:              ref,
-			SecretsStore:     resolvedStore,
-			KeySpecs:         append([]credentials.KeySpec(nil), specs...),
-			PlannedWriteKeys: writeKeys,
-		}
-		if previousRef, ok := previousByPurpose[ref.Purpose]; ok {
-			previousCopy := previousRef
-			entry.PreviousRef = &previousCopy
-			delete(previousByPurpose, ref.Purpose)
-		}
-		entry.MissingRequiredKeys = missingRequiredInitCredentialKeys(entry.KeySpecs, entry.PlannedWriteKeys)
-		entry.State = classifyInitCredentialPlanEntry(entry)
-		entries = append(entries, entry)
-	}
-	for _, ref := range previousRefs {
-		if _, ok := previousByPurpose[ref.Purpose]; !ok {
-			continue
-		}
-		resolvedStore, err := credentials.ResolveCredentialStore(cfg, ref.Store)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, initCredentialPlanEntry{
-			Ref:          ref,
-			SecretsStore: resolvedStore,
-			State:        initCredentialPlanStateClearRef,
-		})
-	}
-	return entries, nil
-}
-
-func validateInitPlannedWriteKeys(ref config.CredentialRef, specs []credentials.KeySpec, plannedWriteKeys []string) error {
-	if len(plannedWriteKeys) == 0 {
-		return nil
-	}
-	allowed := make(map[string]struct{}, len(specs))
-	for _, spec := range specs {
-		allowed[spec.Key] = struct{}{}
-	}
-	for _, key := range plannedWriteKeys {
-		if _, ok := allowed[key]; ok {
-			continue
-		}
-		return fmt.Errorf("init credential planner: unexpected planned write key %q for %s credential name %q", key, ref.Purpose, ref.Ref)
-	}
-	return nil
-}
-
-func missingRequiredInitCredentialKeys(specs []credentials.KeySpec, plannedWriteKeys []string) []string {
-	if len(plannedWriteKeys) == 0 {
-		return nil
-	}
-	present := make(map[string]struct{}, len(plannedWriteKeys))
-	for _, key := range plannedWriteKeys {
-		present[key] = struct{}{}
-	}
-	var missing []string
-	for _, spec := range specs {
-		if !spec.Required {
-			continue
-		}
-		if _, ok := present[spec.Key]; ok {
-			continue
-		}
-		missing = append(missing, spec.Key)
-	}
-	return missing
-}
-
-func classifyInitCredentialPlanEntry(entry initCredentialPlanEntry) initCredentialPlanState {
-	if len(entry.MissingRequiredKeys) > 0 {
-		return initCredentialPlanStateMissingRequired
-	}
-	if len(entry.PlannedWriteKeys) > 0 {
-		return initCredentialPlanStateWrite
-	}
-	if entry.PreviousRef == nil {
-		return initCredentialPlanStateDefer
-	}
-	if entry.PreviousRef.Purpose == entry.Ref.Purpose &&
-		entry.PreviousRef.Store == entry.Ref.Store &&
-		entry.PreviousRef.Ref == entry.Ref.Ref &&
-		entry.PreviousRef.Mode == entry.Ref.Mode &&
-		entry.PreviousRef.Provider == entry.Ref.Provider {
-		return initCredentialPlanStateKeepExisting
-	}
-	return initCredentialPlanStateOverwriteRef
 }
 
 func shouldWriteInitCredentialHint(entry initCredentialPlanEntry, includeLLM bool) bool {
@@ -6972,7 +6663,7 @@ func deleteStaleReviewerCredentialKeys(store initStore, entries []initCredential
 			return false, nil
 		}
 	}
-	staleKeys := staleReviewerCredentialKeys(entries)
+	staleKeys := credentials.StaleReviewerCredentialKeys(entries)
 	if len(staleKeys) == 0 {
 		return false, nil
 	}
@@ -6999,28 +6690,6 @@ func deleteStaleReviewerCredentialKeys(store initStore, entries []initCredential
 		deleted = true
 	}
 	return deleted, nil
-}
-
-func staleReviewerCredentialKeys(entries []initCredentialPlanEntry) []string {
-	current := map[string]struct{}{}
-	for _, entry := range entries {
-		for _, spec := range entry.KeySpecs {
-			current[spec.Key] = struct{}{}
-		}
-	}
-	candidates := []string{
-		credentials.GitTokenKey,
-		credentials.GitHubAppIDKey,
-		credentials.GitHubAppPrivateKeyKey,
-		credentials.GitHubAppInstallationIDKey,
-	}
-	var stale []string
-	for _, key := range candidates {
-		if _, ok := current[key]; !ok {
-			stale = append(stale, key)
-		}
-	}
-	return stale
 }
 
 func sortedRefs(writes map[string]map[string]string) []string {
