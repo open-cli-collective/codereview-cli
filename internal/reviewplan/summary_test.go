@@ -387,7 +387,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
-	t.Run("rollup marker placement unchanged with run summary", func(t *testing.T) {
+	t.Run("submit marker placement unchanged with run summary", func(t *testing.T) {
 		for _, mode := range []PostMode{PostModeLive, PostModeDryRun} {
 			req := summaryRequest()
 			req.PostMode = mode
@@ -395,15 +395,15 @@ func TestRollupSummaryRendering(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Build %s: %v", mode, err)
 			}
-			var rollupMarker *MarkerPlacement
+			var submitMarker *MarkerPlacement
 			for i := range plan.Actions {
-				if plan.Actions[i].Kind == ActionKindRollupComment {
-					rollupMarker = &plan.Actions[i].Marker
+				if plan.Actions[i].Kind == ActionKindSubmitReview {
+					submitMarker = &plan.Actions[i].Marker
 				}
 			}
-			if rollupMarker == nil || !rollupMarker.BodyBearing || !rollupMarker.Skip ||
-				rollupMarker.ActionKind != ActionKindRollupComment || rollupMarker.Outcome != OutcomeRequestChanges {
-				t.Fatalf("%s rollup marker = %#v", mode, rollupMarker)
+			if submitMarker == nil || !submitMarker.BodyBearing || !submitMarker.Skip ||
+				submitMarker.ActionKind != ActionKindSubmitReview || submitMarker.Outcome != "" {
+				t.Fatalf("%s submit marker = %#v", mode, submitMarker)
 			}
 		}
 	})

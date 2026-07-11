@@ -79,7 +79,6 @@ func TestBuildOrdersActionsAndMarkerMetadata(t *testing.T) {
 		ActionKindThreadReply,
 		ActionKindResolveThread,
 		ActionKindInlineComment,
-		ActionKindRollupComment,
 		ActionKindSubmitReview,
 	}
 	if !reflect.DeepEqual(gotKinds, wantKinds) {
@@ -91,11 +90,11 @@ func TestBuildOrdersActionsAndMarkerMetadata(t *testing.T) {
 	if plan.Actions[1].Marker.BodyBearing {
 		t.Fatalf("resolve marker = %#v, want non-body-bearing", plan.Actions[1].Marker)
 	}
-	if got := plan.Actions[3].Marker; !got.BodyBearing || !got.Skip || got.Outcome != OutcomeRequestChanges {
-		t.Fatalf("rollup marker = %#v", got)
-	}
-	if got := plan.Actions[4].Marker; !got.BodyBearing || !got.Skip || got.ActionKind != ActionKindSubmitReview || got.Outcome != "" {
+	if got := plan.Actions[3].Marker; !got.BodyBearing || !got.Skip || got.ActionKind != ActionKindSubmitReview || got.Outcome != "" {
 		t.Fatalf("submit marker = %#v", got)
+	}
+	if got := plan.Actions[3].SubmitReview.Body; got != plan.RollupMarkdown {
+		t.Fatalf("submit body = %q, want rollup markdown", got)
 	}
 }
 
@@ -497,12 +496,15 @@ func TestBuildForcesRequestChangesWhenRepoGuidanceUnavailable(t *testing.T) {
 	if plan.Outcome != OutcomeRequestChanges {
 		t.Fatalf("outcome = %q, want request_changes", plan.Outcome)
 	}
-	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindRollupComment, ActionKindSubmitReview}) {
-		t.Fatalf("action kinds = %#v, want rollup + submit only", got)
+	if got := actionKinds(plan.Actions); !reflect.DeepEqual(got, []ActionKind{ActionKindSubmitReview}) {
+		t.Fatalf("action kinds = %#v, want submit only", got)
 	}
 	submit := actionsOfKind(plan.Actions, ActionKindSubmitReview)[0]
 	if submit.SubmitReview.Event != review.ReviewEventRequestChanges {
 		t.Fatalf("submit event = %q, want request_changes", submit.SubmitReview.Event)
+	}
+	if submit.SubmitReview.Body != plan.RollupMarkdown {
+		t.Fatalf("submit body = %q, want rollup markdown", submit.SubmitReview.Body)
 	}
 	if strings.Contains(plan.RollupMarkdown, "will be ignored") {
 		t.Fatalf("rollup = %q, want no thread-action content", plan.RollupMarkdown)
