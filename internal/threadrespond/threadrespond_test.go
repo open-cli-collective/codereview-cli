@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/threadanalysis"
 )
@@ -613,6 +614,41 @@ func TestRunDoesNotResumeIncompleteUnmarkedRun(t *testing.T) {
 	}
 	if storedUnmarked.Outcome != nil {
 		t.Fatalf("unmarked run outcome = %v, want untouched incomplete", storedUnmarked.Outcome)
+	}
+}
+
+func TestFindIncompleteRunMatchesLegacyDisplayNameKey(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	identity := fixture.bot
+	identity.DisplayName = "Legacy Reviewer"
+	prKey, err := statepaths.PRKey(fixture.ref.Host, fixture.ref.Owner, fixture.ref.Repo, fixture.ref.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := fixture.store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           fixture.pr.URL,
+		RunID:           "legacy-display-name",
+		SHA:             fixture.pr.Head.SHA,
+		BaseSHA:         fixture.pr.Base.SHA,
+		Profile:         "default",
+		PostingIdentity: identity.DisplayName,
+		PostMode:        ledger.PostModeDryRun,
+		StartedAt:       fixedNow(),
+		ArtifactPath:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	if err := runartifact.WriteMarker(run.ArtifactPath, runartifact.KindThreadResponse, run.RunID); err != nil {
+		t.Fatalf("WriteMarker: %v", err)
+	}
+	req := Request{PRRef: fixture.ref, ProfileName: "default", PostingIdentity: identity}
+
+	got, ok, err := findIncompleteRun(ctx, fixture.store, req, prKey, fixture.pr, ledger.PostModeDryRun)
+	if err != nil || !ok || got.RunID != run.RunID {
+		t.Fatalf("findIncompleteRun = (%q, %v, %v), want legacy run", got.RunID, ok, err)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -212,7 +213,7 @@ func evaluateGate(ctx context.Context, opts Options, req Request, pr gitprovider
 	var lastErr error
 	for attempt := 0; attempt < freshRunIDAttempts; attempt++ {
 		runID := opts.newRunID()
-		artifacts, err := pipeline.ArtifactPathsForRun(opts.Layout, req.Pipeline.PRRef, pr, req.Pipeline.ProfileName, postingKey(req.Pipeline.PostingIdentity), runID)
+		artifacts, err := pipeline.ArtifactPathsForRun(opts.Layout, req.Pipeline.PRRef, pr, req.Pipeline.ProfileName, runlifecycle.PostingKey(req.Pipeline.PostingIdentity), runID)
 		if err != nil {
 			return gateio.Result{}, err
 		}
@@ -232,7 +233,7 @@ func evaluateGate(ctx context.Context, opts Options, req Request, pr gitprovider
 			PRKey:                           prKey,
 			Profile:                         req.Pipeline.ProfileName,
 			PostingIdentity:                 req.Pipeline.PostingIdentity,
-			PostingIdentityKey:              postingKey(req.Pipeline.PostingIdentity),
+			PostingIdentityKey:              runlifecycle.PostingKey(req.Pipeline.PostingIdentity),
 			ResolveThreadPermissionAdvisory: reviewPostingUsesGitHubApp(req.Pipeline.Profile),
 			FreshRunID:                      runID,
 			Flags: gate.Flags{
@@ -384,13 +385,14 @@ func abortIfMoved(ctx context.Context, opts Options, req Request, run ledger.Run
 	if err != nil {
 		return false, "", err
 	}
-	if pr.Head.SHA == run.SHA && pr.Base.SHA == run.BaseSHA {
+	premises := runlifecycle.ComparePremises(run, pr.Head.SHA, pr.Base.SHA)
+	if !premises.Moved {
 		return false, "", nil
 	}
 	if err := opts.Store.CompleteRun(ctx, run.RunID, ledger.OutcomeAborted, opts.now()); err != nil {
 		return false, "", err
 	}
-	return true, fmt.Sprintf("review premises moved: head %s -> %s, base %s -> %s", run.SHA, pr.Head.SHA, run.BaseSHA, pr.Base.SHA), nil
+	return true, fmt.Sprintf("review premises moved: head %s -> %s, base %s -> %s", premises.StoredHeadSHA, premises.CurrentHeadSHA, premises.StoredBaseSHA, premises.CurrentBaseSHA), nil
 }
 
 func desiredOutcomeFromPlan(outcome reviewplan.Outcome) (ledger.Outcome, error) {
@@ -568,7 +570,7 @@ func validateRequest(req Request) error {
 	if strings.TrimSpace(req.Pipeline.ProfileName) == "" {
 		return fmt.Errorf("reviewrun: profile is required")
 	}
-	if strings.TrimSpace(postingKey(req.Pipeline.PostingIdentity)) == "" {
+	if strings.TrimSpace(runlifecycle.PostingKey(req.Pipeline.PostingIdentity)) == "" {
 		return fmt.Errorf("reviewrun: posting identity is required")
 	}
 	return nil
@@ -595,14 +597,4 @@ func (opts Options) newRunID() string {
 		}
 	}
 	return uuid.NewString()
-}
-
-func postingKey(identity gitprovider.Identity) string {
-	if strings.TrimSpace(identity.Login) != "" {
-		return identity.Login
-	}
-	if strings.TrimSpace(identity.ID) != "" {
-		return identity.ID
-	}
-	return identity.DisplayName
 }

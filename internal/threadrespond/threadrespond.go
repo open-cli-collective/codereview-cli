@@ -23,6 +23,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
+	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -404,13 +405,14 @@ func abortIfMoved(ctx context.Context, opts Options, req Request, run ledger.Run
 	if err != nil {
 		return false, "", err
 	}
-	if pr.Head.SHA == run.SHA && pr.Base.SHA == run.BaseSHA {
+	premises := runlifecycle.ComparePremises(run, pr.Head.SHA, pr.Base.SHA)
+	if !premises.Moved {
 		return false, "", nil
 	}
 	if err := opts.Store.CompleteRun(ctx, run.RunID, ledger.OutcomeAborted, opts.now()); err != nil {
 		return false, "", err
 	}
-	return true, fmt.Sprintf("threadrespond premises moved: head %s -> %s, base %s -> %s", run.SHA, pr.Head.SHA, run.BaseSHA, pr.Base.SHA), nil
+	return true, fmt.Sprintf("threadrespond premises moved: head %s -> %s, base %s -> %s", premises.StoredHeadSHA, premises.CurrentHeadSHA, premises.StoredBaseSHA, premises.CurrentBaseSHA), nil
 }
 
 func buildThreadAnalysisOptions(opts Options, req Request, run ledger.Run, artifacts runartifact.Paths) (threadanalysis.Options, error) {
@@ -510,7 +512,7 @@ func allocateOrResumeRun(ctx context.Context, opts Options, req Request, pr gitp
 	var lastErr error
 	for attempt := 0; attempt < freshRunIDAttempts; attempt++ {
 		runID := opts.newRunID()
-		artifacts, err := runartifact.ForRun(opts.Layout, req.PRRef, pr, req.ProfileName, postingKey(req.PostingIdentity), runID)
+		artifacts, err := runartifact.ForRun(opts.Layout, req.PRRef, pr, req.ProfileName, runlifecycle.PostingKey(req.PostingIdentity), runID)
 		if err != nil {
 			return ledger.Run{}, artifacts, err
 		}
@@ -534,31 +536,25 @@ func findIncompleteRun(ctx context.Context, store Store, req Request, prKey stri
 		PRKey:           prKey,
 		SHA:             pr.Head.SHA,
 		Profile:         req.ProfileName,
-		PostingIdentity: postingKey(req.PostingIdentity),
+		PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity),
 	})
 	if err != nil {
 		return ledger.Run{}, false, err
 	}
-	var best ledger.Run
-	found := false
-	for _, run := range runs {
-		if run.BaseSHA != pr.Base.SHA || run.PostMode != mode {
-			continue
+	// Legacy read only: older runs could store DisplayName as their key.
+	if legacy := strings.TrimSpace(req.PostingIdentity.DisplayName); legacy != "" && legacy != runlifecycle.PostingKey(req.PostingIdentity) {
+		legacyRuns, err := store.ListRunsForHeadScope(ctx, ledger.ListRunsForHeadScopeParams{
+			PRKey:           prKey,
+			SHA:             pr.Head.SHA,
+			Profile:         req.ProfileName,
+			PostingIdentity: legacy,
+		})
+		if err != nil {
+			return ledger.Run{}, false, err
 		}
-		if run.Outcome != nil && *run.Outcome != ledger.OutcomeIncomplete {
-			continue
-		}
-		if strings.TrimSpace(run.ArtifactPath) == "" {
-			continue
-		}
-		if !runartifact.MarkerMatches(run.ArtifactPath, runartifact.KindThreadResponse, run.RunID) {
-			continue
-		}
-		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
-			best = run
-			found = true
-		}
+		runs = append(runs, legacyRuns...)
 	}
+	best, found := runlifecycle.NewestCompatibleIncompleteRun(runs, pr.Base.SHA, mode, runartifact.KindThreadResponse, runartifact.MarkerMatches)
 	return best, found, nil
 }
 
@@ -570,7 +566,7 @@ func allocateRun(ctx context.Context, opts Options, req Request, pr gitprovider.
 		SHA:             pr.Head.SHA,
 		BaseSHA:         pr.Base.SHA,
 		Profile:         req.ProfileName,
-		PostingIdentity: postingKey(req.PostingIdentity),
+		PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity),
 		PostMode:        mode,
 		StartedAt:       opts.now(),
 		ArtifactPath:    artifactPath,
@@ -638,14 +634,15 @@ func validateRetryRun(req Request, pr gitprovider.PR, prKey string, run ledger.R
 	if run.Profile != req.ProfileName {
 		return fmt.Errorf("threadrespond: retry run profile mismatch")
 	}
-	if run.PostingIdentity != postingKey(req.PostingIdentity) {
+	if run.PostingIdentity != runlifecycle.PostingKey(req.PostingIdentity) {
 		return fmt.Errorf("threadrespond: retry run posting identity mismatch")
 	}
 	if run.PostMode != ledger.PostModeLive {
 		return fmt.Errorf("threadrespond: retry run must be live")
 	}
-	if run.SHA != pr.Head.SHA || run.BaseSHA != pr.Base.SHA {
-		return fmt.Errorf("threadrespond: retry run premises moved: head %s -> %s, base %s -> %s", run.SHA, pr.Head.SHA, run.BaseSHA, pr.Base.SHA)
+	premises := runlifecycle.ComparePremises(run, pr.Head.SHA, pr.Base.SHA)
+	if premises.Moved {
+		return fmt.Errorf("threadrespond: retry run premises moved: head %s -> %s, base %s -> %s", premises.StoredHeadSHA, premises.CurrentHeadSHA, premises.StoredBaseSHA, premises.CurrentBaseSHA)
 	}
 	return nil
 }
@@ -690,7 +687,7 @@ func lockPath(layout statepaths.Layout, req Request, pr gitprovider.PR) (string,
 		HeadSHA:         pr.Head.SHA,
 		BaseSHA:         pr.Base.SHA,
 		Profile:         req.ProfileName,
-		PostingIdentity: postingKey(req.PostingIdentity),
+		PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity),
 	})
 }
 
@@ -738,7 +735,7 @@ func validateRequest(req Request) error {
 	if strings.TrimSpace(req.ProfileName) == "" {
 		return fmt.Errorf("threadrespond: profile is required")
 	}
-	if strings.TrimSpace(postingKey(req.PostingIdentity)) == "" {
+	if strings.TrimSpace(runlifecycle.PostingKey(req.PostingIdentity)) == "" {
 		return fmt.Errorf("threadrespond: posting identity is required")
 	}
 	return nil
@@ -781,11 +778,4 @@ func (opts Options) acquire(path string) (Lock, error) {
 		return opts.Acquire(path)
 	}
 	return runlock.Acquire(path)
-}
-
-func postingKey(identity gitprovider.Identity) string {
-	if strings.TrimSpace(identity.Login) != "" {
-		return identity.Login
-	}
-	return identity.ID
 }
