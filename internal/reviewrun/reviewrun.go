@@ -54,7 +54,7 @@ type Planner interface {
 // Options contains live review dependencies.
 type Options struct {
 	Store                   Store
-	Provider                gitprovider.GitProvider
+	Provider                outbox.LiveProvider
 	Planner                 Planner
 	Limiter                 outbox.Limiter
 	Layout                  statepaths.Layout

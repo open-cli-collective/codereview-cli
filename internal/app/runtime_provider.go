@@ -4,7 +4,10 @@ import (
 	"context"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 )
+
+var _ outbox.LiveProvider = runtimeProvider{}
 
 // runtimeProvider keeps repository reads on the profile git credential while
 // reviewer-authenticated writes and authority checks flow through the posting
