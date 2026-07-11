@@ -114,7 +114,7 @@ func initOnePasswordDestinationDetails(backend config.SecretsStoreBackend) []str
 	if value := strings.TrimSpace(onePassword.ConnectTokenEnv); value != "" {
 		lines = append(lines, "1Password Connect token env var: "+value)
 	}
-	if value := strings.TrimSpace(onePassword.DesktopAccountID); value != "" {
+	if value := strings.TrimSpace(onePassword.AccountID); value != "" {
 		lines = append(lines, "1Password desktop account id: "+value)
 	}
 	return lines

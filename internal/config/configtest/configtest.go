@@ -13,7 +13,6 @@ type Option func(*config.File)
 // File returns the common command-test configuration with opts applied.
 func File(opts ...Option) config.File {
 	cfg := config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
 		Secrets: config.SecretsConfig{Stores: map[string]config.SecretsStore{
 			"test-memory": {
 				DisplayName: "Test Memory Store",
@@ -49,11 +48,6 @@ func File(opts ...Option) config.File {
 		opt(&cfg)
 	}
 	return cfg
-}
-
-// WithoutKeyring clears the legacy keyring fixture.
-func WithoutKeyring() Option {
-	return func(cfg *config.File) { cfg.Keyring = config.KeyringConfig{} }
 }
 
 // WithoutSecrets clears configured secret stores.

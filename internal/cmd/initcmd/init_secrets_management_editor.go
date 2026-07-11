@@ -71,8 +71,8 @@ func (p huhInitKeyringBackendPrompter) editKeyringBackendLinear(prompt initKeyri
 				continue
 			}
 			patch := configedit.SecretsStorePatch{Backend: &pending.Profile.Backend}
-			if strings.TrimSpace(pending.Profile.Label) != "" {
-				label := pending.Profile.Label
+			if strings.TrimSpace(pending.Profile.DisplayName) != "" {
+				label := pending.Profile.DisplayName
 				patch.Label = &label
 			}
 			nextCfg, _, _, err := configedit.SetSecretsStore(working, id, patch)
@@ -332,9 +332,6 @@ func initSecretsManagementSyncLinearFields(model *initLinearEditorModel, cfg con
 		model.setFieldValue(initSecretsManagementFieldTimeout, onePassword.Timeout)
 		model.setFieldValue(initSecretsManagementFieldDesktopAccountURL, onePassword.AccountURL)
 		accountID := onePassword.AccountID
-		if accountID == "" {
-			accountID = onePassword.DesktopAccountID
-		}
 		model.setFieldValue(initSecretsManagementFieldDesktopAccountID, accountID)
 		accountSelection := desktopDiscovery.AccountSelectionFor(accountID, onePassword.AccountURL)
 		vaultSelection := desktopDiscovery.VaultSelectionFor(accountSelection, onePassword.VaultID, onePassword.VaultName)
@@ -502,10 +499,10 @@ func initSecretsManagementProfileSectionDescription(document initLinearDocument,
 
 func initSecretsStorePendingDeleteTitle(id string, profile config.SecretsStore) string {
 	return initSecretsStoreInventoryTitle(config.EffectiveSecretsStore{
-		ID:      id,
-		Label:   profile.DisplayName,
-		Backend: string(profile.Backend.Kind),
-		Source:  config.EffectiveSecretsStoreSourceConfigured,
+		ID:          id,
+		DisplayName: profile.DisplayName,
+		Backend:     string(profile.Backend.Kind),
+		Source:      config.EffectiveSecretsStoreSourceConfigured,
 	})
 }
 

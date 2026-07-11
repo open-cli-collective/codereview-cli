@@ -481,7 +481,7 @@ func TestSecretsStoreHelpers(t *testing.T) {
 			t.Fatalf("SetSecretsStore create = changed:%t created:%t, want true,true", changed, created)
 		}
 		got := updated.Secrets.Stores["personal"]
-		if got.Label != "Personal Keychain" || got.Backend.Kind != backend.Kind {
+		if got.DisplayName != "Personal Keychain" || got.Backend.Kind != backend.Kind {
 			t.Fatalf("created profile = %#v, want trimmed label + backend", got)
 		}
 		if len(cfg.Secrets.Stores) != 0 {
@@ -499,7 +499,7 @@ func TestSecretsStoreHelpers(t *testing.T) {
 			t.Fatalf("SetSecretsStore backend update = changed:%t created:%t, want true,false", changed, created)
 		}
 		got = updated2.Secrets.Stores["personal"]
-		if got.Label != "Personal Keychain" || got.Backend.Kind != nextBackend.Kind {
+		if got.DisplayName != "Personal Keychain" || got.Backend.Kind != nextBackend.Kind {
 			t.Fatalf("updated profile = %#v, want preserved label + new backend", got)
 		}
 
@@ -512,7 +512,7 @@ func TestSecretsStoreHelpers(t *testing.T) {
 		if !changed || created {
 			t.Fatalf("SetSecretsStore clear label = changed:%t created:%t, want true,false", changed, created)
 		}
-		if got := updated3.Secrets.Stores["personal"]; got.Label != "" || got.Backend.Kind != nextBackend.Kind {
+		if got := updated3.Secrets.Stores["personal"]; got.DisplayName != "" || got.Backend.Kind != nextBackend.Kind {
 			t.Fatalf("cleared label profile = %#v, want empty label + preserved backend", got)
 		}
 	})
@@ -596,7 +596,7 @@ func TestSecretsStoreHelpers(t *testing.T) {
 			t.Fatalf("updated config unexpectedly added review profile data: %#v", updated)
 		}
 		got := updated.Secrets.Stores["1password-personal"]
-		if got.Label != "1Password-Personal" || got.Backend.OnePassword == nil || got.Backend.OnePassword.VaultName != "Private" {
+		if got.DisplayName != "1Password-Personal" || got.Backend.OnePassword == nil || got.Backend.OnePassword.VaultName != "Private" {
 			t.Fatalf("created store = %#v, want named 1Password store", got)
 		}
 	})
@@ -682,7 +682,6 @@ func TestSecretsStoreHelpers(t *testing.T) {
 
 func testConfig() config.File {
 	return configtest.File(
-		configtest.WithoutKeyring(),
 		configtest.WithoutSecrets(),
 		configtest.RepositoryProfiles(
 			config.RepositoryProfile{

@@ -80,7 +80,7 @@ func configSecretsStoresView(profiles []config.EffectiveSecretsStore) []view.Con
 func configSecretsStoreView(cfg config.File, profile config.EffectiveSecretsStore) view.ConfigSecretsStore {
 	result := view.ConfigSecretsStore{
 		ID:       profile.ID,
-		Label:    profile.Label,
+		Label:    profile.DisplayName,
 		Backend:  profile.Backend,
 		ReadOnly: profile.ReadOnly,
 		Source:   string(profile.Source),
@@ -97,7 +97,7 @@ func configSecretsStoreView(cfg config.File, profile config.EffectiveSecretsStor
 			onePassword.ConnectHost = configured.Backend.OnePassword.ConnectHost
 			onePassword.ConnectTokenEnv = configured.Backend.OnePassword.ConnectTokenEnv
 		case config.SecretsBackendKind(credstore.BackendOPDesktop):
-			onePassword.DesktopAccountID = configured.Backend.OnePassword.DesktopAccountID
+			onePassword.DesktopAccountID = configured.Backend.OnePassword.AccountID
 			onePassword.DesktopAccountEnv = credstore.DefaultOnePasswordDesktopAccountEnv
 		}
 		result.BackendInfo = &view.ConfigSecretsStoreBackendDetails{OnePassword: onePassword}

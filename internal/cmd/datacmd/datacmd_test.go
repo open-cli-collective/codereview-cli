@@ -218,7 +218,6 @@ func TestDataPruneDefaultIgnoresConfiguredRetention(t *testing.T) {
 		t.Fatalf("config.Path: %v", err)
 	}
 	if err := config.Save(configPath, config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{

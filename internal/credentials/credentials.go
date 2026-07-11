@@ -455,7 +455,7 @@ func onePasswordOptionsFromConfig(backend config.SecretsStoreBackend) (*credstor
 		ConnectHost:      strings.TrimSpace(onePasswordCfg.ConnectHost),
 		ConnectTokenEnv:  strings.TrimSpace(onePasswordCfg.ConnectTokenEnv),
 		ServiceTokenEnv:  strings.TrimSpace(onePasswordCfg.ServiceTokenEnv),
-		DesktopAccountID: strings.TrimSpace(onePasswordCfg.DesktopAccountID),
+		DesktopAccountID: strings.TrimSpace(onePasswordCfg.AccountID),
 	}
 	if strings.TrimSpace(onePasswordCfg.Timeout) != "" {
 		timeout, err := time.ParseDuration(onePasswordCfg.Timeout)

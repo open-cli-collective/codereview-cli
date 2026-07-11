@@ -89,7 +89,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			show.Backend = string(backend)
 			show.BackendSource = string(source)
 			show.ActiveSecretsStore = resolvedSecretsStoreViewPtr(resolvedSecretsStore)
-			show.SecretsStores = config.EffectiveSecretsStores(cfg)
+			show.SecretsStores = view.NewConfigShowSecretsStores(config.EffectiveSecretsStores(cfg))
 			show.AgentSources = agents.InspectProfileSources(profile.AgentSources)
 			return view.Render(opts.Stdout, jsonOutput, show, func(w io.Writer) error {
 				return view.RenderConfigText(w, show)

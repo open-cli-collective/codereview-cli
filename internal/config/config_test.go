@@ -1646,7 +1646,6 @@ func TestEffectiveSecretsStores(t *testing.T) {
 			{
 				ID:          LocalOSCredentialStoreID,
 				DisplayName: "OS credential store",
-				Label:       "OS credential store",
 				Backend:     ProjectedOSCredentialStoreBackendKind,
 				ReadOnly:    true,
 				Source:      EffectiveSecretsStoreSourceBuiltIn,
@@ -1654,14 +1653,12 @@ func TestEffectiveSecretsStores(t *testing.T) {
 			{
 				ID:          "personal",
 				DisplayName: "Personal Keychain",
-				Label:       "Personal Keychain",
 				Backend:     string(credstore.BackendKeychain),
 				Source:      EffectiveSecretsStoreSourceConfigured,
 			},
 			{
 				ID:          "work-vault",
 				DisplayName: "Work File Store",
-				Label:       "Work File Store",
 				Backend:     string(credstore.BackendFile),
 				Source:      EffectiveSecretsStoreSourceConfigured,
 			},
@@ -1678,7 +1675,6 @@ func TestEffectiveSecretsStores(t *testing.T) {
 		want := []EffectiveSecretsStore{{
 			ID:          LocalOSCredentialStoreID,
 			DisplayName: "OS credential store",
-			Label:       "OS credential store",
 			Backend:     ProjectedOSCredentialStoreBackendKind,
 			ReadOnly:    true,
 			Source:      EffectiveSecretsStoreSourceBuiltIn,
