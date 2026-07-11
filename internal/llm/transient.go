@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
-	"strings"
 	"time"
 )
 
@@ -14,50 +13,6 @@ import (
 // sentinel so callers can classify retryable outcomes without knowing wire
 // details, mirroring the gitprovider ErrRetryable taxonomy.
 var ErrTransient = errors.New("llm: transient provider error")
-
-// transientCLIDetailSubstrings are lowercase substrings that mark a CLI
-// adapter failure detail as a transient provider error worth retrying.
-var transientCLIDetailSubstrings = []string{
-	"overloaded_error",
-	"overloaded",
-	"rate limit",
-	"rate_limit",
-	"429",
-	"500",
-	"502",
-	"503",
-	"504",
-	"529",
-	"timed out",
-	"timeout",
-	"temporarily unavailable",
-	"service unavailable",
-	"connection reset",
-}
-
-// classifyHTTPStatusTransient reports whether an HTTP status code indicates a
-// transient provider failure that is safe to retry.
-func classifyHTTPStatusTransient(status int) bool {
-	switch status {
-	case 429, 500, 502, 503, 504, 529:
-		return true
-	default:
-		return false
-	}
-}
-
-// isTransientCLIDetail reports whether a CLI adapter failure detail string
-// matches a known transient provider error signature. The match is a
-// case-insensitive substring scan.
-func isTransientCLIDetail(detail string) bool {
-	lowered := strings.ToLower(detail)
-	for _, needle := range transientCLIDetailSubstrings {
-		if strings.Contains(lowered, needle) {
-			return true
-		}
-	}
-	return false
-}
 
 // retryPolicy bounds exponential backoff for transient retries.
 type retryPolicy struct {

@@ -1,4 +1,4 @@
-package llm
+package llmadapters
 
 import (
 	"bufio"
@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
 
 const (
@@ -37,6 +39,8 @@ type PiRPCAdapter struct {
 	scratchDirFactory ScratchDirFactory
 	fastModeModels    []string
 }
+
+var _ llm.Adapter = (*PiRPCAdapter)(nil)
 
 // NewPiRPCAdapter returns a Pi RPC subprocess adapter.
 func NewPiRPCAdapter(opts PiRPCOptions) *PiRPCAdapter {
@@ -116,22 +120,16 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := writePiRPCPrompt(process.stdin, req.Prompt); err != nil {
-		process.abort(cleanup)
+	if err := writePiRPCPrompt(process.Stdin(), req.Prompt); err != nil {
+		process.Abort(cleanup)
 		return nil, err
 	}
 
 	stream := &piRPCStream{
-		baseStream: baseStream{
-			cancel:       process.cancel,
-			done:         make(chan struct{}),
-			logFile:      process.logFile,
-			cleanup:      cleanup,
-			processGroup: process.processGroup,
-		},
-		stdin: process.stdin,
+		baseStream: llm.NewProcessStream(process, cleanup),
+		stdin:      process.Stdin(),
 	}
-	go stream.run(process.ctx, process.cmd, process.stdout, process.stderr)
+	go stream.run(process.Context(), process.Command(), process.Stdout(), process.Stderr())
 	return stream, nil
 }
 
@@ -213,7 +211,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
-		if s.logFile != nil {
+		if s.HasLog() {
 			_, _ = io.Copy(&s.baseStream, stderr)
 			return
 		}
@@ -246,18 +244,11 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	case !scanResult.agentEnd:
 		result.err = errors.New("llm pi rpc: missing agent_end")
 	}
-	s.cancel()
-	if s.processGroup != nil {
-		_ = s.processGroup.close()
-	}
-	s.closeLog()
-	if s.cleanup != nil {
-		_ = s.cleanup()
-	}
-	s.mu.Lock()
-	s.result = result
-	s.mu.Unlock()
-	close(s.done)
+	s.Cancel()
+	s.CloseProcessGroup()
+	s.CloseLog()
+	s.Cleanup()
+	s.Finish(result.response, result.err)
 }
 
 type piRPCScanResult struct {
@@ -272,23 +263,23 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 	var result piRPCScanResult
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
-		s.writeLog(normalizePiRPCLogLine(line))
+		s.WriteLog(normalizePiRPCLogLine(line))
 		event, err := parsePiRPCEvent(line)
 		if err != nil {
-			s.cancel()
+			s.Cancel()
 			result.err = err
 			return result
 		}
 		if event.sessionID != "" {
-			s.setSessionID(event.sessionID)
+			s.SetSessionID(event.sessionID)
 		}
 		if event.toolUse {
-			s.cancel()
+			s.Cancel()
 			result.err = ErrToolUse
 			return result
 		}
 		if event.responseFailure != "" {
-			s.cancel()
+			s.Cancel()
 			result.err = fmt.Errorf("llm pi rpc: prompt failed: %s", event.responseFailure)
 			return result
 		}

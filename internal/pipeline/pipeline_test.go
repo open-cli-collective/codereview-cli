@@ -23,6 +23,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
@@ -5367,7 +5368,7 @@ func (a *providerOriginUsageAdapter) Resume(context.Context, string, llm.Request
 func newCodexUsageScriptAdapter(t *testing.T, sessionID string, structured string, usage llm.Usage) llm.Adapter {
 	t.Helper()
 	script := writeExecutableScript(t, "codex-usage", codexUsageScript(t, sessionID, structured, usage))
-	return llm.NewCodexCLIAdapter(llm.SubprocessOptions{
+	return llmadapters.NewCodexCLIAdapter(llmadapters.SubprocessOptions{
 		Command:                script,
 		Timeout:                5 * time.Second,
 		AllowBestEffortNoTools: true,
@@ -5387,7 +5388,7 @@ func newClaudeTranscriptScriptAdapter(t *testing.T, sessionID string, structured
 	}
 	stateJSON := mustMarshalJSON(t, state)
 	script := writeExecutableScript(t, "claude-transcript", claudeTranscriptScript(sessionID, structured, stateJSON))
-	return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{
+	return llmadapters.NewClaudeCLIAdapter(llmadapters.SubprocessOptions{
 		Command: script,
 		Env: []string{
 			"CLAUDE_CONFIG_DIR=" + configDir,
