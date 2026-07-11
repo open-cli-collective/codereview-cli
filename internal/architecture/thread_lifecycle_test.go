@@ -120,6 +120,36 @@ func TestPackagesStayOnLayeredSeams(t *testing.T) {
 	}
 }
 
+func TestReviewAndRespondUseSharedThreadAnalysisBatch(t *testing.T) {
+	repoRoot := repoRootFromTest(t)
+	for _, rel := range []string{"internal/pipeline/pipeline.go", "internal/threadrespond/threadrespond.go"} {
+		path := filepath.Join(repoRoot, filepath.FromSlash(rel))
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatalf("ParseFile(%s): %v", path, err)
+		}
+		calls := map[string]int{}
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkg, ok := selector.X.(*ast.Ident)
+			if ok && pkg.Name == "threadanalysis" {
+				calls[selector.Sel.Name]++
+			}
+			return true
+		})
+		if calls["AnalyzeThreads"] != 1 || calls["AnalyzeThread"] != 0 || calls["ResponseActions"] != 1 {
+			t.Fatalf("%s threadanalysis calls = %#v, want one shared batch and response conversion with no caller-owned single-thread loop", rel, calls)
+		}
+	}
+}
+
 func checkPackageImports(t *testing.T, repoRoot, dir string, blocked map[string]bool) {
 	t.Helper()
 	root := filepath.Join(repoRoot, filepath.FromSlash(dir))

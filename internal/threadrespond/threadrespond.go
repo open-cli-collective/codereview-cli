@@ -187,7 +187,9 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 			if err != nil {
 				return result, err
 			}
-			analyses, err := analyzeThreads(ctx, analysisOpts, artifacts, eligible)
+			analyses, err := threadanalysis.AnalyzeThreads(ctx, analysisOpts, eligible, func(thread threadcontext.Thread) (string, error) {
+				return threadLogPath(artifacts, thread.ID), nil
+			})
 			if err != nil {
 				return result, err
 			}
@@ -434,19 +436,6 @@ func buildThreadAnalysisOptions(opts Options, req Request, run ledger.Run, artif
 		Now:            opts.now,
 		NewStepID:      opts.newStepID,
 	}, nil
-}
-
-func analyzeThreads(ctx context.Context, opts threadanalysis.Options, artifacts runartifact.Paths, threads []threadcontext.Thread) ([]threadanalysis.Result, error) {
-	results := make([]threadanalysis.Result, 0, len(threads))
-	for _, thread := range threads {
-		opts.LogPath = threadLogPath(artifacts, thread.ID)
-		result, err := threadanalysis.AnalyzeThread(ctx, opts, thread)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, result)
-	}
-	return results, nil
 }
 
 func validateCachedResponseActionThreads(opts Options, req Request, run ledger.Run, artifacts runartifact.Paths, eligible []threadcontext.Thread, actions []ledger.PlannedAction) error {

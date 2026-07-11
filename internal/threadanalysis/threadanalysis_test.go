@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +79,89 @@ func TestAnalyzeThreadRunsDurableStepWithPromptSafeContext(t *testing.T) {
 		t.Fatalf("inserted sessions = %#v, want one matching metadata session", store.inserted)
 	}
 	assertFileOmits(t, meta.ValidatedOutputPath, "Here is the JSON")
+}
+
+func TestAnalyzeThreadsPreservesSingleThreadArtifactsAndOrder(t *testing.T) {
+	threads := []threadcontext.Thread{
+		promptThreadWithID("thread-1", "first reply"),
+		promptThreadWithID("thread-2", "second reply"),
+	}
+	manualAdapter := &llm.FakeAdapter{NameValue: "fake"}
+	batchAdapter := &llm.FakeAdapter{NameValue: "fake"}
+	for _, thread := range threads {
+		output := llm.FakeResult{SessionID: "session-" + string(thread.ID), Response: llm.Response{StructuredOutput: []byte(validSkipOutput(string(thread.ID)))}}
+		manualAdapter.Queue(output)
+		batchAdapter.Queue(output)
+	}
+	manualOpts := testOptions(t, newFakeStore(), manualAdapter)
+	batchOpts := testOptions(t, newFakeStore(), batchAdapter)
+	manualResults := make([]Result, 0, len(threads))
+	for _, thread := range threads {
+		manualOpts.LogPath = filepath.Join("logs", string(thread.ID)+".jsonl")
+		result, err := AnalyzeThread(context.Background(), manualOpts, thread)
+		if err != nil {
+			t.Fatalf("AnalyzeThread(%s): %v", thread.ID, err)
+		}
+		manualResults = append(manualResults, result)
+	}
+	batchResults, err := AnalyzeThreads(context.Background(), batchOpts, threads, func(thread threadcontext.Thread) (string, error) {
+		return filepath.Join("logs", string(thread.ID)+".jsonl"), nil
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeThreads: %v", err)
+	}
+	if !reflect.DeepEqual(batchResults, manualResults) {
+		t.Fatalf("batch results = %#v, want single-thread results %#v", batchResults, manualResults)
+	}
+	manualRequests, batchRequests := manualAdapter.Requests(), batchAdapter.Requests()
+	if len(manualRequests) != len(threads) || len(batchRequests) != len(threads) {
+		t.Fatalf("request counts = manual %d batch %d, want %d", len(manualRequests), len(batchRequests), len(threads))
+	}
+	for i, thread := range threads {
+		if batchRequests[i].LogPath != manualRequests[i].LogPath || batchRequests[i].Prompt != manualRequests[i].Prompt {
+			t.Fatalf("thread %s batch request = %#v, want single-thread identity %#v", thread.ID, batchRequests[i], manualRequests[i])
+		}
+		manualMeta := readThreadMetadata(t, manualOpts, string(thread.ID))
+		batchMeta := readThreadMetadata(t, batchOpts, string(thread.ID))
+		if batchMeta.TaskID != manualMeta.TaskID || batchMeta.InputFingerprint != manualMeta.InputFingerprint {
+			t.Fatalf("thread %s batch metadata identity = %#v, want task %q fingerprint %q", thread.ID, batchMeta, manualMeta.TaskID, manualMeta.InputFingerprint)
+		}
+		manualOutput, err := os.ReadFile(manualMeta.ValidatedOutputPath) // #nosec G304 -- test reads generated temp artifact.
+		if err != nil {
+			t.Fatalf("ReadFile manual output: %v", err)
+		}
+		batchOutput, err := os.ReadFile(batchMeta.ValidatedOutputPath) // #nosec G304 -- test reads generated temp artifact.
+		if err != nil {
+			t.Fatalf("ReadFile batch output: %v", err)
+		}
+		if string(batchOutput) != string(manualOutput) {
+			t.Fatalf("thread %s validated output differs: batch %q, single %q", thread.ID, batchOutput, manualOutput)
+		}
+	}
+}
+
+func TestAnalyzeThreadsCacheHitAndStaleInputSkipAdapter(t *testing.T) {
+	store := newFakeStore()
+	seedAdapter := &llm.FakeAdapter{NameValue: "fake"}
+	seedAdapter.Queue(llm.FakeResult{SessionID: "session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
+	opts := testOptions(t, store, seedAdapter)
+	logPath := func(thread threadcontext.Thread) (string, error) { return string(thread.ID) + ".log", nil }
+	if _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, logPath); err != nil {
+		t.Fatalf("AnalyzeThreads seed: %v", err)
+	}
+
+	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	opts.Adapter = adapter
+	if _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, logPath); err != nil {
+		t.Fatalf("AnalyzeThreads cache hit: %v", err)
+	}
+	_, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("changed reply")}, logPath)
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("AnalyzeThreads stale context error = %v, want fingerprint error", err)
+	}
+	if len(adapter.Requests()) != 0 {
+		t.Fatalf("adapter requests = %#v, want cache hit and stale input to skip adapter", adapter.Requests())
+	}
 }
 
 func TestAnalyzeThreadCacheHitSkipsAdapter(t *testing.T) {

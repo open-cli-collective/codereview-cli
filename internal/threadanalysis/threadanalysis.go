@@ -91,6 +91,31 @@ func AnalyzeThread(ctx context.Context, opts Options, thread threadcontext.Threa
 	return result.Value, nil
 }
 
+// AnalyzeThreads analyzes normalized inline threads in order, using logPath to
+// select each thread's provider log artifact.
+func AnalyzeThreads(ctx context.Context, opts Options, threads []threadcontext.Thread, logPath func(threadcontext.Thread) (string, error)) ([]Result, error) {
+	if err := validateOptions(opts); err != nil {
+		return nil, err
+	}
+	if logPath == nil {
+		return nil, fmt.Errorf("threadanalysis: log path function is required")
+	}
+	results := make([]Result, 0, len(threads))
+	for _, thread := range threads {
+		var err error
+		opts.LogPath, err = logPath(thread)
+		if err != nil {
+			return nil, err
+		}
+		result, err := AnalyzeThread(ctx, opts, thread)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
 // ValidateCachedThread verifies that a cached analysis task still matches the
 // current normalized thread input without invoking the provider.
 func ValidateCachedThread(opts Options, thread threadcontext.Thread) error {
