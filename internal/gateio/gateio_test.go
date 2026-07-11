@@ -314,6 +314,44 @@ func TestEvaluateRetryPostsIgnoresActiveApprovalAndOverride(t *testing.T) {
 	}
 }
 
+func TestEvaluateRetryPostsReconcilesSubmitOnlyReview(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
+	insertAction(t, fixture.store, submitReviewAction(t, run.RunID, "submit-1", ledger.PlannedActionFailedTerminal, true, review.ReviewEventComment))
+	if err := fixture.store.CompleteRun(context.Background(), run.RunID, ledger.OutcomeFailed, testNow); err != nil {
+		t.Fatalf("CompleteRun failed: %v", err)
+	}
+	body := mustRenderAction(t, marker.ActionMarker{
+		RunID:    run.RunID,
+		ActionID: "submit-1",
+		Kind:     marker.ActionKindSubmitReview,
+		SHA:      testHeadSHA,
+		BaseSHA:  testBaseSHA,
+	}) + "\n\n## Automated PR Review\n\nsummary"
+	setReviews(t, fixture, []gitprovider.Review{{
+		ID:          "review-submit",
+		Author:      fixture.req.PostingIdentity,
+		Body:        body,
+		SubmittedAt: testNow,
+	}})
+	fixture.req.Flags.RetryPosts = true
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate retry-posts: %v", err)
+	}
+	if result.Status != StatusRetryPostsExecuted || result.OutboxResult.Posted != 1 {
+		t.Fatalf("Evaluate = %#v, want reconciled retry", result)
+	}
+	if reviews := fixture.provider.RecordedReviews(fixture.req.PRRef); len(reviews) != 0 {
+		t.Fatalf("recorded reviews = %d, want no duplicate write", len(reviews))
+	}
+	action := actionByID(t, fixture.store, run.RunID, "submit-1")
+	if action.Status != ledger.PlannedActionPosted || action.UpstreamID == nil || *action.UpstreamID != "review-submit" {
+		t.Fatalf("submit action = %#v, want reconciled review-submit", action)
+	}
+}
+
 func TestEvaluateRerunBypassesActiveApprovalAndOverride(t *testing.T) {
 	fixture := newFixture(t)
 	rollup := mustRenderAction(t, marker.ActionMarker{

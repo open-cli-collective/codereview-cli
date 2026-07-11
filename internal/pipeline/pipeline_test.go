@@ -221,8 +221,8 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	if !ok {
 		t.Fatalf("sessions = %#v, want reviewer provider session", result.Sessions)
 	}
-	if len(result.PlannedActions) != 3 {
-		t.Fatalf("planned actions len = %d, want inline/rollup/submit", len(result.PlannedActions))
+	if len(result.PlannedActions) != 2 {
+		t.Fatalf("planned actions len = %d, want inline/submit", len(result.PlannedActions))
 	}
 	for _, action := range result.PlannedActions {
 		if action.Status != ledger.PlannedActionPlannedOnly {
@@ -1392,12 +1392,12 @@ func TestDryRunRepoGuidanceFailuresForceRequestChangesWithoutReviewerExecution(t
 			if result.Plan.Outcome != reviewplan.OutcomeRequestChanges {
 				t.Fatalf("outcome = %q, want request_changes", result.Plan.Outcome)
 			}
-			gotKinds := []reviewplan.ActionKind{result.Plan.Actions[0].Kind, result.Plan.Actions[1].Kind}
-			if !reflect.DeepEqual(gotKinds, []reviewplan.ActionKind{reviewplan.ActionKindRollupComment, reviewplan.ActionKindSubmitReview}) {
-				t.Fatalf("action kinds = %#v, want rollup + submit only", gotKinds)
+			gotKinds := []reviewplan.ActionKind{result.Plan.Actions[0].Kind}
+			if !reflect.DeepEqual(gotKinds, []reviewplan.ActionKind{reviewplan.ActionKindSubmitReview}) {
+				t.Fatalf("action kinds = %#v, want submit only", gotKinds)
 			}
-			if submit := result.Plan.Actions[1].SubmitReview; submit == nil || submit.Event != review.ReviewEventRequestChanges {
-				t.Fatalf("submit review = %#v, want request_changes", result.Plan.Actions[1].SubmitReview)
+			if submit := result.Plan.Actions[0].SubmitReview; submit == nil || submit.Event != review.ReviewEventRequestChanges || submit.Body != result.Plan.RollupMarkdown {
+				t.Fatalf("submit review = %#v, want request_changes with rollup body", result.Plan.Actions[0].SubmitReview)
 			}
 			if !strings.Contains(result.Plan.RollupMarkdown, tt.wantText) {
 				t.Fatalf("rollup = %q, want %q", result.Plan.RollupMarkdown, tt.wantText)
@@ -2491,8 +2491,8 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	if storedRun.Outcome != nil {
 		t.Fatalf("stored outcome = %#v, want incomplete until outbox", storedRun.Outcome)
 	}
-	if len(result.PlannedActions) != 3 {
-		t.Fatalf("planned actions len = %d, want inline/rollup/submit", len(result.PlannedActions))
+	if len(result.PlannedActions) != 2 {
+		t.Fatalf("planned actions len = %d, want inline/submit", len(result.PlannedActions))
 	}
 	for _, action := range result.PlannedActions {
 		if action.Status != ledger.PlannedActionPending {

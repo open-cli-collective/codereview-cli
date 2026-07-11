@@ -444,14 +444,6 @@ func (b *builder) buildRepoGuidanceUnavailable() (Plan, error) {
 	summary := b.deriveSummary(nil)
 	body := b.renderRepoGuidanceUnavailableRollup(summary)
 
-	rollup, err := b.newAction(ActionKindRollupComment)
-	if err != nil {
-		return Plan{}, err
-	}
-	rollup.Required = true
-	rollup.Marker = actionMarker(ActionKindRollupComment, OutcomeRequestChanges)
-	rollup.RollupComment = &RollupCommentPayload{Body: body}
-
 	submit, err := b.newAction(ActionKindSubmitReview)
 	if err != nil {
 		return Plan{}, err
@@ -459,14 +451,14 @@ func (b *builder) buildRepoGuidanceUnavailable() (Plan, error) {
 	submit.Required = true
 	submit.Marker = actionMarker(ActionKindSubmitReview, "")
 	submit.SubmitReview = &SubmitReviewPayload{
-		Body:  submitReviewBody(OutcomeRequestChanges),
+		Body:  body,
 		Event: review.ReviewEventRequestChanges,
 	}
 
 	return Plan{
 		Outcome:        OutcomeRequestChanges,
 		RollupMarkdown: body,
-		Actions:        []Action{rollup, submit},
+		Actions:        []Action{submit},
 		Summary:        summary,
 	}, nil
 }
@@ -513,15 +505,6 @@ func (b *builder) buildReview() (Plan, error) {
 	anchored := b.anchoredForOrdered(ordered)
 	summary := b.deriveSummary(ordered)
 	rollupBody := b.renderRollup(ordered, anchored, summary)
-	rollup, err := b.newAction(ActionKindRollupComment)
-	if err != nil {
-		return Plan{}, err
-	}
-	rollup.Required = true
-	rollup.Marker = actionMarker(ActionKindRollupComment, outcome)
-	rollup.RollupComment = &RollupCommentPayload{Body: rollupBody}
-	actions = append(actions, rollup)
-
 	submit, err := b.newAction(ActionKindSubmitReview)
 	if err != nil {
 		return Plan{}, err
@@ -529,7 +512,7 @@ func (b *builder) buildReview() (Plan, error) {
 	submit.Required = true
 	submit.Marker = actionMarker(ActionKindSubmitReview, "")
 	submit.SubmitReview = &SubmitReviewPayload{
-		Body:  submitReviewBody(outcome),
+		Body:  rollupBody,
 		Event: event,
 	}
 	actions = append(actions, submit)
@@ -988,10 +971,6 @@ func writeRunMetadata(out *strings.Builder, req Request) {
 		out.WriteString("`\n")
 	}
 	out.WriteString("\n")
-}
-
-func submitReviewBody(outcome Outcome) string {
-	return "Automated PR review completed with outcome: " + string(outcome) + "."
 }
 
 func severityCounts(findings []review.Finding) map[review.Severity]int {
