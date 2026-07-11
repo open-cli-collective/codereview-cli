@@ -220,6 +220,7 @@ type Metadata struct {
 	CacheRead           *int              `json:"cache_read,omitempty"`
 	CacheCreate         *int              `json:"cache_create,omitempty"`
 	CostUSD             *float64          `json:"cost_usd,omitempty"`
+	Speed               string            `json:"speed,omitempty"`
 	Attempts            []AttemptMetadata `json:"attempts,omitempty"`
 }
 
@@ -408,6 +409,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 			return zero, true, err
 		}
 		draft := SessionDraftFromLedger(session)
+		draft.Response.Usage.Speed = meta.Speed
 		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
@@ -655,6 +657,7 @@ func BaseMetadata(req Request, draft SessionDraft) Metadata {
 		CacheRead:         draft.Response.Usage.CacheRead,
 		CacheCreate:       draft.Response.Usage.CacheCreate,
 		CostUSD:           draft.Response.Usage.CostUSD,
+		Speed:             draft.Response.Usage.Speed,
 	}
 }
 
@@ -788,6 +791,7 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 				CacheRead:   meta.CacheRead,
 				CacheCreate: meta.CacheCreate,
 				CostUSD:     meta.CostUSD,
+				Speed:       meta.Speed,
 			},
 		},
 	}
@@ -815,7 +819,9 @@ func loadOptionalTaskSession(ctx context.Context, store Store, runID string, met
 	if err != nil {
 		return ledger.Session{}, SessionDraft{}, err
 	}
-	return session, SessionDraftFromLedger(session), nil
+	draft := SessionDraftFromLedger(session)
+	draft.Response.Usage.Speed = meta.Speed
+	return session, draft, nil
 }
 
 func progressResult[T any](meta Metadata, result llm.StructuredResult[T], cached bool, usage llm.Usage) ProgressResult {

@@ -241,6 +241,7 @@ type Result struct {
 	ReviewHeadSHA         string
 	ReviewerFailures      []ReviewerFailure
 	ReviewerCoverage      []reviewplan.ReviewerCoverageSummary
+	reviewerFastDelivered string
 }
 
 // ReviewerFailure records an isolated reviewer LLM task failure that should not
@@ -707,6 +708,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 	result.Findings = findings
 	result.ReviewerFailures = reviewerFailures
+	result.reviewerFastDelivered = reviewerFastDelivery(req.ReviewerFast, reviewerSessions)
 	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles)
 	result.ReviewerCoverage = reviewerCoverage
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
@@ -810,7 +812,7 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 		return err
 	}
 	result.PlannedActions = plannedActions
-	return writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection))
+	return writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered))
 }
 
 func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitprovider.PR) (ledger.Run, bool, error) {

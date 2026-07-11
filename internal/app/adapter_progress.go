@@ -19,8 +19,9 @@ type progressAdapter struct {
 }
 
 type progressStream struct {
-	stream llm.Stream
-	span   *progress.Span
+	stream        llm.Stream
+	span          *progress.Span
+	fastRequested bool
 }
 
 func withProgressAdapter(logger *progress.Logger, command string, adapter llm.Adapter, provider, harness string) llm.Adapter {
@@ -83,7 +84,7 @@ func (a progressAdapter) start(ctx context.Context, op string, req llm.Request, 
 		_ = span.End(err)
 		return nil, err
 	}
-	return progressStream{stream: stream, span: span}, nil
+	return progressStream{stream: stream, span: span, fastRequested: req.Fast}, nil
 }
 
 func (s progressStream) SessionID() string {
@@ -93,8 +94,19 @@ func (s progressStream) SessionID() string {
 func (s progressStream) Wait(ctx context.Context) (llm.Response, error) {
 	resp, err := s.stream.Wait(ctx)
 	fields := usageFields(resp.Usage)
+	if s.fastRequested && resp.Usage.Speed != "fast" && resp.Usage.Speed != "standard" {
+		fields = append(fields, fastDeliveredField(resp.Usage))
+	}
 	s.span.EndFields(err, fields...)
 	return resp, err
+}
+
+func fastDeliveredField(usage llm.Usage) progress.Field {
+	delivered := usage.Speed
+	if delivered != "fast" && delivered != "standard" {
+		delivered = "unknown"
+	}
+	return progress.Field{Key: "fast_delivered", Value: delivered}
 }
 
 func llmProgressFields(provider, harness string, req llm.Request) []progress.Field {
@@ -133,6 +145,9 @@ func usageFields(usage llm.Usage) []progress.Field {
 	}
 	if usage.CacheCreate != nil {
 		fields = append(fields, progress.Field{Key: "cache_create", Value: strconv.Itoa(*usage.CacheCreate)})
+	}
+	if usage.Speed == "fast" || usage.Speed == "standard" {
+		fields = append(fields, fastDeliveredField(usage))
 	}
 	return fields
 }

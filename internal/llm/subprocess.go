@@ -1183,6 +1183,7 @@ func parseUsage(raw map[string]json.RawMessage) Usage {
 		CacheRead:   firstRawIntPtr(usageRaw, "cache_read", "cacheRead", "cached_input_tokens", "cachedInputTokens"),
 		CacheCreate: firstRawIntPtr(usageRaw, "cache_create", "cacheCreate", "cache_write", "cacheWrite"),
 		CostUSD:     rawFloatPtr(usageRaw, "cost_usd"),
+		Speed:       rawString(usageRaw, "speed"),
 	}
 }
 
@@ -1225,6 +1226,11 @@ func mergeUsage(current Usage, next Usage) Usage {
 	}
 	if next.CostUSD != nil {
 		current.CostUSD = next.CostUSD
+	}
+	if next.Speed == "standard" || current.Speed == "" {
+		current.Speed = next.Speed
+	} else if next.Speed == "fast" && current.Speed != "standard" {
+		current.Speed = "fast"
 	}
 	return current
 }

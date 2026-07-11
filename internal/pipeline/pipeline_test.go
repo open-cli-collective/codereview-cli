@@ -2169,7 +2169,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 			{AgentID: "harness:reviewer", Files: []string{"main.go"}},
 			{AgentID: "harness:senior", Files: []string{"main.go"}},
 		},
-	})
+	}, "")
 	if got == nil {
 		t.Fatal("reviewerRuntimeArtifact = nil, want selected reviewer runtime metadata")
 	}
@@ -2247,7 +2247,9 @@ func TestDryRunFastAppliesOnlyToReviewerAndRecordsArtifact(t *testing.T) {
 	req.ReviewerFast = true
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	reviewerResult := fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
+	reviewerResult.Response.Usage.Speed = "standard"
+	adapter.Queue(reviewerResult)
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 
 	result, err := dryRunForTest(ctx, Options{
@@ -2273,7 +2275,32 @@ func TestDryRunFastAppliesOnlyToReviewerAndRecordsArtifact(t *testing.T) {
 		Mode:          "override",
 		ResolvedModel: "claude-opus-4-8",
 		Fast:          true,
+		FastDelivered: "standard",
 	})
+}
+
+func TestReviewerFastDeliveryDegradesConservatively(t *testing.T) {
+	session := func(speed string) sessionDraft {
+		return sessionDraft{Response: llm.Response{Usage: llm.Usage{Speed: speed}}}
+	}
+	for _, tt := range []struct {
+		name      string
+		requested bool
+		sessions  []sessionDraft
+		want      string
+	}{
+		{name: "not requested", sessions: []sessionDraft{session("fast")}, want: ""},
+		{name: "all fast", requested: true, sessions: []sessionDraft{session("fast"), session("fast")}, want: "fast"},
+		{name: "standard wins", requested: true, sessions: []sessionDraft{session("fast"), session("standard")}, want: "standard"},
+		{name: "unknown degrades fast", requested: true, sessions: []sessionDraft{session("fast"), session("")}, want: "unknown"},
+		{name: "no sessions", requested: true, want: "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reviewerFastDelivery(tt.requested, tt.sessions); got != tt.want {
+				t.Fatalf("reviewerFastDelivery = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestDryRunFastRejectsUnsupportedRuntimeBeforeLLM(t *testing.T) {

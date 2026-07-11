@@ -129,6 +129,20 @@ func TestAnthropicAPIAdapterFastRequest(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicResponseSpeed(t *testing.T) {
+	for _, speed := range []string{"fast", "standard"} {
+		t.Run(speed, func(t *testing.T) {
+			_, response, err := parseAnthropicResponse([]byte(fmt.Sprintf(`{"id":"msg_1","content":[{"type":"text","text":"{}"}],"usage":{"speed":%q}}`, speed)))
+			if err != nil {
+				t.Fatalf("parseAnthropicResponse: %v", err)
+			}
+			if response.Usage.Speed != speed {
+				t.Fatalf("speed = %q, want %q", response.Usage.Speed, speed)
+			}
+		})
+	}
+}
+
 func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {

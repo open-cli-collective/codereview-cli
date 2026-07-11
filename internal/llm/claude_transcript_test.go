@@ -20,9 +20,9 @@ func writeTranscript(t *testing.T, content string) string {
 func TestClaudeTranscriptUsage(t *testing.T) {
 	t.Run("sums job-scoped assistant turns and dedupes streamed repeats", func(t *testing.T) {
 		path := writeTranscript(t, `{"type":"user","timestamp":"2026-06-09T20:00:01Z","message":{"id":"u1"}}
-{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"m1","usage":{"input_tokens":3,"cache_creation_input_tokens":7225,"cache_read_input_tokens":3266,"output_tokens":50}}}
-{"type":"assistant","timestamp":"2026-06-09T20:00:03Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":300}}}
-{"type":"assistant","timestamp":"2026-06-09T20:00:04Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":400}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"m1","usage":{"input_tokens":3,"cache_creation_input_tokens":7225,"cache_read_input_tokens":3266,"output_tokens":50,"speed":"fast"}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:03Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":300,"speed":"fast"}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:04Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":400,"speed":"standard"}}}
 not json at all
 {"type":"assistant","timestamp":"2026-06-09T20:00:05Z","message":{"id":"","usage":{"input_tokens":999}}}
 {"type":"assistant","timestamp":"2026-06-09T20:00:06Z","message":{"id":"m3"}}
@@ -38,15 +38,18 @@ not json at all
 		if usage.CostUSD != nil {
 			t.Fatalf("cost = %v, want nil (transcripts carry no cost)", *usage.CostUSD)
 		}
+		if usage.Speed != "standard" {
+			t.Fatalf("speed = %q, want standard to win", usage.Speed)
+		}
 	})
 
 	t.Run("prior-session turns before job creation are excluded", func(t *testing.T) {
 		path := writeTranscript(t, `{"type":"assistant","timestamp":"2026-06-09T19:30:00Z","message":{"id":"old","usage":{"input_tokens":5000,"output_tokens":5000}}}
-{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"current","usage":{"input_tokens":10,"output_tokens":20}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"current","usage":{"input_tokens":10,"output_tokens":20,"speed":"fast"}}}
 `)
 
 		usage := claudeBGTranscriptUsage(map[string]any{"linkScanPath": path, "createdAt": transcriptJobCreatedAt})
-		if usage.TokensIn == nil || *usage.TokensIn != 10 || usage.TokensOut == nil || *usage.TokensOut != 20 {
+		if usage.TokensIn == nil || *usage.TokensIn != 10 || usage.TokensOut == nil || *usage.TokensOut != 20 || usage.Speed != "fast" {
 			t.Fatalf("usage = %#v, want only the current job's turn (in=10 out=20)", usage)
 		}
 	})

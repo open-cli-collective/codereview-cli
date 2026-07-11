@@ -137,6 +137,7 @@ type Usage struct {
 	CacheRead   *int
 	CacheCreate *int
 	CostUSD     *float64
+	Speed       string
 }
 
 // Quota records adapter quota state. A value of -1 means unknown.

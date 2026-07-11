@@ -373,10 +373,11 @@ type anthropicContentBlock struct {
 }
 
 type anthropicUsage struct {
-	InputTokens              *int `json:"input_tokens"`
-	OutputTokens             *int `json:"output_tokens"`
-	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+	InputTokens              *int   `json:"input_tokens"`
+	OutputTokens             *int   `json:"output_tokens"`
+	CacheReadInputTokens     *int   `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int   `json:"cache_creation_input_tokens"`
+	Speed                    string `json:"speed"`
 }
 
 func parseAnthropicResponse(body []byte) (string, Response, error) {
@@ -400,6 +401,7 @@ func parseAnthropicResponse(body []byte) (string, Response, error) {
 			TokensOut:   payload.Usage.OutputTokens,
 			CacheRead:   payload.Usage.CacheReadInputTokens,
 			CacheCreate: payload.Usage.CacheCreationInputTokens,
+			Speed:       payload.Usage.Speed,
 		},
 	}, nil
 }

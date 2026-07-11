@@ -1042,6 +1042,12 @@ mode and plans to remove it on July 24, 2026. Claude CLI receives a per-session
 `fastMode` setting, while Anthropic API requests use its fast-mode beta. Fast
 mode has premium pricing and applies only to reviewer agents, not selection,
 synthesis, approval-override classification, or `cr respond` thread analysis.
+Anthropic API fast mode is a research preview that requires account access;
+requests without access fail as upstream errors during the run. Subscription
+fast mode bills usage credits, requires owner enablement on Team and Enterprise,
+and can silently degrade to standard speed when credits or fast capacity are
+unavailable. Reviewer runtime artifacts therefore record both the fast request
+and the speed actually reported by the provider, or `unknown` when unavailable.
 
 Local run state and provider session state are independent. By default, each
 PR/profile/posting-identity tuple gets one durable provider session shared by
