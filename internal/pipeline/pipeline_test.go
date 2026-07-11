@@ -29,6 +29,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
+	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -330,6 +331,41 @@ func TestDryRunResumesIncompleteRunAttempt(t *testing.T) {
 	}
 	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeDryRun {
 		t.Fatalf("resumed run outcome = %v, want dry_run", stored.Outcome)
+	}
+}
+
+func TestFindIncompleteDryRunMatchesLegacyDisplayNameKey(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.PostingIdentity.DisplayName = "Legacy Reviewer"
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           req.PRURL,
+		RunID:           "legacy-display-name",
+		SHA:             provider.pr.Head.SHA,
+		BaseSHA:         provider.pr.Base.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: req.PostingIdentity.DisplayName,
+		PostMode:        ledger.PostModeDryRun,
+		StartedAt:       fixedNow(),
+		ArtifactPath:    t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	if err := runartifact.WriteMarker(run.ArtifactPath, runartifact.KindReview, run.RunID); err != nil {
+		t.Fatalf("WriteMarker: %v", err)
+	}
+
+	got, ok, err := findIncompleteDryRun(ctx, store, req, provider.pr)
+	if err != nil || !ok || got.RunID != run.RunID {
+		t.Fatalf("findIncompleteDryRun = (%q, %v, %v), want legacy run", got.RunID, ok, err)
 	}
 }
 
@@ -5122,7 +5158,7 @@ func allocateDryRunForSHAs(t *testing.T, store *ledger.Store, layout statepaths.
 	if err != nil {
 		t.Fatalf("PRKey: %v", err)
 	}
-	artifactPath := filepath.Join(layout.DataRoot, "runs", prKey, headSHA, baseSHA, statepaths.Encode(req.ProfileName)+"__"+statepaths.Encode(postingKey(req.PostingIdentity)), runID)
+	artifactPath := filepath.Join(layout.DataRoot, "runs", prKey, headSHA, baseSHA, statepaths.Encode(req.ProfileName)+"__"+statepaths.Encode(runlifecycle.PostingKey(req.PostingIdentity)), runID)
 	run, err := store.AllocateRun(context.Background(), ledger.AllocateRunParams{
 		PRKey:           prKey,
 		PRURL:           req.PRURL,
@@ -5130,7 +5166,7 @@ func allocateDryRunForSHAs(t *testing.T, store *ledger.Store, layout statepaths.
 		SHA:             headSHA,
 		BaseSHA:         baseSHA,
 		Profile:         req.ProfileName,
-		PostingIdentity: postingKey(req.PostingIdentity),
+		PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity),
 		PostMode:        ledger.PostModeDryRun,
 		StartedAt:       started,
 		ArtifactPath:    artifactPath,

@@ -30,6 +30,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
+	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -550,7 +551,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			if resumedDryRun != nil {
 				return ArtifactPathsFromDir(resumedDryRun.ArtifactPath), nil
 			}
-			return ArtifactPathsForRun(opts.Layout, req.PRRef, reviewPR, req.ProfileName, postingKey(req.PostingIdentity), runID)
+			return ArtifactPathsForRun(opts.Layout, req.PRRef, reviewPR, req.ProfileName, runlifecycle.PostingKey(req.PostingIdentity), runID)
 		},
 	})
 	if err != nil {
@@ -570,7 +571,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 				SHA:             prepared.reviewPR.Head.SHA,
 				BaseSHA:         prepared.reviewPR.Base.SHA,
 				Profile:         req.ProfileName,
-				PostingIdentity: postingKey(req.PostingIdentity),
+				PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity),
 				PostMode:        ledger.PostModeDryRun,
 				StartedAt:       now,
 				ArtifactPath:    prepared.artifacts.Dir,
@@ -815,7 +816,7 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 	if err != nil {
 		return ledger.Run{}, false, err
 	}
-	postingIdentity := postingKey(req.PostingIdentity)
+	postingIdentity := runlifecycle.PostingKey(req.PostingIdentity)
 	runs, err := store.ListRunsForHeadScope(ctx, ledger.ListRunsForHeadScopeParams{
 		PRKey:           prKey,
 		SHA:             pr.Head.SHA,
@@ -825,26 +826,20 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 	if err != nil {
 		return ledger.Run{}, false, err
 	}
-	var best ledger.Run
-	found := false
-	for _, run := range runs {
-		if run.BaseSHA != pr.Base.SHA || run.PostMode != ledger.PostModeDryRun {
-			continue
+	// Legacy read only: older review runs could store DisplayName as their key.
+	if legacy := strings.TrimSpace(req.PostingIdentity.DisplayName); legacy != "" && legacy != postingIdentity {
+		legacyRuns, err := store.ListRunsForHeadScope(ctx, ledger.ListRunsForHeadScopeParams{
+			PRKey:           prKey,
+			SHA:             pr.Head.SHA,
+			Profile:         req.ProfileName,
+			PostingIdentity: legacy,
+		})
+		if err != nil {
+			return ledger.Run{}, false, err
 		}
-		if run.Outcome != nil && *run.Outcome != ledger.OutcomeIncomplete {
-			continue
-		}
-		if strings.TrimSpace(run.ArtifactPath) == "" {
-			continue
-		}
-		if !runartifact.MarkerMatches(run.ArtifactPath, runartifact.KindReview, run.RunID) {
-			continue
-		}
-		if !found || run.Attempt > best.Attempt || (run.Attempt == best.Attempt && run.StartedAt.After(best.StartedAt)) {
-			best = run
-			found = true
-		}
+		runs = append(runs, legacyRuns...)
 	}
+	best, found := runlifecycle.NewestCompatibleIncompleteRun(runs, pr.Base.SHA, ledger.PostModeDryRun, runartifact.KindReview, runartifact.MarkerMatches)
 	return best, found, nil
 }
 
@@ -1564,7 +1559,7 @@ func defaultSessionName(req Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	scope, err := statepaths.ResumeScope(req.ProfileName, postingKey(req.PostingIdentity))
+	scope, err := statepaths.ResumeScope(req.ProfileName, runlifecycle.PostingKey(req.PostingIdentity))
 	if err != nil {
 		return "", err
 	}
@@ -1658,7 +1653,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		ToolVersion:       req.ToolVersion,
 		Adapter:           inputs.selection.Adapter,
 		Model:             sharedWorkstreamModel(workstreams),
-		PostingIdentity:   postingKey(req.PostingIdentity),
+		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,
 		ReviewerFailures:  reviewerFailureSummaries(inputs.reviewerFailures),
 		ReviewerCoverage:  inputs.reviewerCoverage,
@@ -1910,7 +1905,7 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		},
 		NoDiff:                  noDiff,
 		Profile:                 req.ProfileName,
-		PostingIdentity:         postingKey(req.PostingIdentity),
+		PostingIdentity:         runlifecycle.PostingKey(req.PostingIdentity),
 		HeadSHA:                 pr.Head.SHA,
 		AgentDefinitionsChanged: agentDefsChanged,
 		RunSummary:              runSummary,
@@ -1988,7 +1983,7 @@ func validate(opts Options, req Request) error {
 	if strings.TrimSpace(req.PRURL) == "" {
 		return fmt.Errorf("pipeline: PR URL is required")
 	}
-	if strings.TrimSpace(postingKey(req.PostingIdentity)) == "" {
+	if strings.TrimSpace(runlifecycle.PostingKey(req.PostingIdentity)) == "" {
 		return fmt.Errorf("pipeline: posting identity is required")
 	}
 	return nil
@@ -2004,7 +1999,7 @@ func validateSelectionOnly(opts Options, req SelectionRequest) error {
 	if strings.TrimSpace(req.ArtifactDir) == "" {
 		return fmt.Errorf("pipeline: selection artifact dir is required")
 	}
-	if strings.TrimSpace(postingKey(req.PostingIdentity)) == "" {
+	if strings.TrimSpace(runlifecycle.PostingKey(req.PostingIdentity)) == "" {
 		return fmt.Errorf("pipeline: selection posting identity is required")
 	}
 	return nil
@@ -2465,16 +2460,6 @@ func applyStageRuntimeOverrides(modelOverride, effortOverride, model, effort str
 		effort = override
 	}
 	return llmRuntimeConfig{model: model, effort: effort}
-}
-
-func postingKey(identity gitprovider.Identity) string {
-	if strings.TrimSpace(identity.Login) != "" {
-		return identity.Login
-	}
-	if strings.TrimSpace(identity.ID) != "" {
-		return identity.ID
-	}
-	return identity.DisplayName
 }
 
 func sameIdentity(left, right gitprovider.Identity) bool {

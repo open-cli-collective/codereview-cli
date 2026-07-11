@@ -97,6 +97,12 @@ func TestPackagesStayOnLayeredSeams(t *testing.T) {
 		"internal/threadrespond": {
 			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
 		},
+		"internal/runlifecycle": {
+			"github.com/open-cli-collective/codereview-cli/internal/outbox":        true,
+			"github.com/open-cli-collective/codereview-cli/internal/pipeline":      true,
+			"github.com/open-cli-collective/codereview-cli/internal/reviewrun":     true,
+			"github.com/open-cli-collective/codereview-cli/internal/threadrespond": true,
+		},
 		"internal/workbench": {
 			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
 		},
