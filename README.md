@@ -515,6 +515,49 @@ data:
     enforcement: at_write
 ```
 
+### Lifecycle hooks
+
+Profiles may run observe-only lifecycle commands. Commands receive one JSON
+payload on stdin, execute directly from `argv` without a shell, and never alter
+the run outcome. They start asynchronously; `cr` drains commands still running
+at exit, with each invocation bounded by its timeout.
+
+```yaml
+profiles:
+  default:
+    hooks:
+      - event: reviewer.completed
+        argv: ["/usr/local/bin/review-notify", "--reviewer-done"]
+        timeout: 10s
+        on_dry_run: true
+      - event: run.completed
+        argv: ["/usr/local/bin/review-notify", "--finished"]
+        # timeout defaults to 30s; on_dry_run defaults to false
+```
+
+Review events are `run.started`, `workspace.prepared`, `dossier.ready`,
+`selection.completed`, `reviewer.completed`, `plan.ready`, `posting.action`,
+`run.completed`, and `run.failed`. Respond exposes only matching lifecycle
+events: `respond.run.started`, `respond.plan.ready`,
+`respond.posting.action`, `respond.run.completed`, and `respond.run.failed`.
+The `benchmark.*` namespace is reserved and benchmark commands do not dispatch
+hooks.
+
+Every payload contains `event`, `pr_url`, `run_id`, `profile`, `pass_number`
+(the ledger attempt), `artifact_dir`, and `dry_run`; terminal events also contain
+`outcome`. `reviewer.completed` adds `reviewer_id` and `reviewer_status`,
+`posting.action` adds `action_kind` and the canonical `action_marker` when the
+provider call carries one, and `selection.completed` adds sorted `agents` plus
+an agent-to-model `models` object. Values not yet allocated at an early event,
+such as the run ID at `run.started`, are empty. The common fields are also
+available as `CR_EVENT`, `CR_PR_URL`, `CR_RUN_ID`, `CR_OUTCOME`, `CR_PROFILE`,
+`CR_PASS_NUMBER`, `CR_ARTIFACT_DIR`, and `CR_DRY_RUN`.
+
+Missing commands, non-zero exits, and timeouts write warnings to stderr with
+combined command output capped at 8 KiB. They never change the pipeline result
+or exit code. During dry-run, only entries with `on_dry_run: true` run, and only
+for lifecycle moments the dry-run actually reaches.
+
 Supported values:
 
 | Field | Values |

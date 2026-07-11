@@ -2338,6 +2338,43 @@ func TestValidateRetentionAppliesDefaultsAndPreservesExplicitZero(t *testing.T) 
 	}
 }
 
+func TestValidateHooks(t *testing.T) {
+	for event := range hookEvents {
+		cfg := validFile()
+		profile := cfg.Profiles["home"]
+		profile.Hooks = []Hook{{Event: event, Argv: []string{"notify"}}}
+		cfg.Profiles["home"] = profile
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("Validate event %q: %v", event, err)
+		}
+	}
+
+	tests := []struct {
+		name string
+		hook Hook
+	}{
+		{name: "unknown event", hook: Hook{Event: "benchmark.run.started", Argv: []string{"notify"}}},
+		{name: "empty argv", hook: Hook{Event: "run.started"}},
+		{name: "blank command", hook: Hook{Event: "run.started", Argv: []string{" "}}},
+		{name: "invalid timeout", hook: Hook{Event: "run.started", Argv: []string{"notify"}, Timeout: "later"}},
+		{name: "zero timeout", hook: Hook{Event: "run.started", Argv: []string{"notify"}, Timeout: "0s"}},
+		{name: "negative timeout", hook: Hook{Event: "run.started", Argv: []string{"notify"}, Timeout: "-1s"}},
+		{name: "NUL command", hook: Hook{Event: "run.started", Argv: []string{"notify\x00bad"}}},
+		{name: "NUL argument", hook: Hook{Event: "run.started", Argv: []string{"notify", "bad\x00arg"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validFile()
+			profile := cfg.Profiles["home"]
+			profile.Hooks = []Hook{tt.hook}
+			cfg.Profiles["home"] = profile
+			if err := Validate(cfg); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("Validate error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
 func validFile() File {
 	return File{
 		LLMRuntimes: map[string]LLMConfig{

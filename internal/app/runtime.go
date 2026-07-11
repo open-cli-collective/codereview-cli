@@ -19,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/hooks"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
@@ -58,12 +59,14 @@ type Runtime struct {
 type OpenRequest struct {
 	Config                            config.File
 	Profile                           config.Profile
+	ProfileName                       string
 	Backend                           string
 	BackendFlagChanged                bool
 	Command                           string
 	Progress                          *progress.Logger
 	Warnings                          io.Writer
 	PRRef                             gitprovider.PRRef
+	PRURL                             string
 	RequireOpinionatedReviewAuthority bool
 	MaxAgents                         int
 	MaxConcurrency                    int
@@ -137,6 +140,8 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 	deps := req.Dependencies.withDefaults()
 	command := commandName(req.Command)
 	profile := normalizeRuntimeProfile(req.Profile)
+	req.Profile = profile
+	dispatcher := newHookDispatcher(req, nil)
 	stores := newRuntimeCredentialStores(req.Config, req.Backend, req.BackendFlagChanged, command, req.Progress)
 	cleanup := stores.Close
 	_, repoProviderStore, err := stores.Open(profile.Git.Credential)
@@ -163,6 +168,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 	}
 	rawPostingProvider := postingProvider
 	postingProvider = withProgressProvider(req.Progress, command, postingProvider)
+	postingProvider = withHookProvider(dispatcher, postingProvider)
 	postingIdentity, err := deps.ResolvePostingIdentity(ctx, postingProvider, credential, postingProviderStore, profile)
 	if err != nil {
 		cleanup()
@@ -182,7 +188,9 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		cleanup()
 		return Runtime{}, err
 	}
+	dispatcher.store = ledgerStore
 	cleanup = func() {
+		dispatcher.drain()
 		_ = ledgerStore.Close()
 		stores.Close()
 	}
@@ -206,7 +214,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		}
 		return withProgressAdapter(req.Progress, command, adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
-	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, req.Warnings, req.Progress, req, command)
+	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, req.Warnings, req.Progress, dispatcher, req, command)
 	return Runtime{
 		Runner:          runner,
 		Responder:       runner,
@@ -364,8 +372,8 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, req OpenRequest, command string) reviewRunner {
-	taskProgress := newPipelineTaskProgress(logger, command)
+func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, dispatcher *hookDispatcher, req OpenRequest, command string) reviewRunner {
+	taskProgress := newPipelineTaskProgress(logger, command, dispatcher)
 	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
 	pipelineOpts := pipeline.Options{
 		Provider:            repoProvider,
@@ -387,7 +395,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 		live: reviewrun.Options{
 			Store:                   ledgerStore,
 			Provider:                liveProvider,
-			Planner:                 withProgressPlanner(logger, livePlanner{opts: pipelineOpts}),
+			Planner:                 withProgressPlanner(logger, dispatcher, livePlanner{opts: pipelineOpts}),
 			Limiter:                 limiter,
 			Layout:                  layout,
 			StaleHeartbeatThreshold: 10 * time.Minute,
@@ -406,6 +414,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			TaskProgress: taskProgress,
 			NewActionID:  pipelineOpts.NewActionID,
 		},
+		hooks: dispatcher,
 	}
 }
 
@@ -567,17 +576,34 @@ type reviewRunner struct {
 	pipeline pipeline.Options
 	live     reviewrun.Options
 	respond  threadrespond.Options
+	hooks    *hookDispatcher
 }
 
 func (r reviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {
-	return pipeline.DryRun(ctx, r.pipeline, req)
+	r.hooks.begin(true)
+	result, err := pipeline.DryRun(ctx, r.pipeline, req)
+	if err != nil {
+		r.hooks.emit(r.hooks.event("run.failed"), hooks.Payload{Outcome: runOutcome(result.Run, ledger.OutcomeFailed)}, result.Run, true)
+		return result, err
+	}
+	r.hooks.completeReview(result)
+	r.hooks.emit(r.hooks.event("run.completed"), hooks.Payload{Outcome: runOutcome(result.Run, ledger.OutcomeDryRun)}, result.Run, true)
+	return result, nil
 }
 
 func (r reviewRunner) Live(ctx context.Context, req pipeline.Request, flags reviewrun.Flags) (reviewrun.Result, error) {
-	return reviewrun.Run(ctx, r.live, reviewrun.Request{Pipeline: req, Flags: flags})
+	r.hooks.begin(false)
+	result, err := reviewrun.Run(ctx, r.live, reviewrun.Request{Pipeline: req, Flags: flags})
+	if err != nil {
+		r.hooks.emit(r.hooks.event("run.failed"), hooks.Payload{Outcome: runOutcome(result.Run, ledger.OutcomeFailed)}, result.Run, true)
+		return result, err
+	}
+	r.hooks.emit(r.hooks.event("run.completed"), hooks.Payload{Outcome: runOutcome(result.Run, result.Outbox.Outcome)}, result.Run, true)
+	return result, nil
 }
 
 func (r reviewRunner) Respond(ctx context.Context, req threadrespond.Request) (threadrespond.Result, error) {
+	r.hooks.begin(req.DryRun)
 	opts := r.respond
 	if opts.Acquire == nil && r.live.Acquire != nil {
 		opts.Acquire = func(path string) (threadrespond.Lock, error) {
@@ -590,7 +616,21 @@ func (r reviewRunner) Respond(ctx context.Context, req threadrespond.Request) (t
 	if opts.NewRunID == nil {
 		opts.NewRunID = r.live.NewRunID
 	}
-	return threadrespond.Run(ctx, opts, req)
+	result, err := threadrespond.Run(ctx, opts, req)
+	if err != nil {
+		r.hooks.emit(r.hooks.event("run.failed"), hooks.Payload{Outcome: runOutcome(result.Run, ledger.OutcomeFailed)}, result.Run, true)
+		return result, err
+	}
+	r.hooks.emitOnce(r.hooks.event("plan.ready"), hooks.Payload{}, result.Run)
+	r.hooks.emit(r.hooks.event("run.completed"), hooks.Payload{Outcome: runOutcome(result.Run, result.Outbox.Outcome)}, result.Run, true)
+	return result, nil
+}
+
+func runOutcome(run ledger.Run, fallback ledger.Outcome) string {
+	if run.Outcome != nil {
+		return run.Outcome.String()
+	}
+	return fallback.String()
 }
 
 type livePlanner struct {

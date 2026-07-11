@@ -17,6 +17,7 @@ func TestProviderWritesGoThroughPostingBoundary(t *testing.T) {
 		"internal/gitprovider",
 	}
 	allowedFiles := map[string]bool{
+		"internal/app/hook_provider.go":     true,
 		"internal/app/provider_progress.go": true,
 		"internal/app/runtime_provider.go":  true,
 	}
@@ -101,6 +102,10 @@ func TestPackagesStayOnLayeredSeams(t *testing.T) {
 		},
 		"internal/dossier": {
 			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
+		},
+		"internal/hooks": {
+			"github.com/open-cli-collective/codereview-cli/internal/pipeline": true,
+			"github.com/spf13/cobra": true,
 		},
 	}
 

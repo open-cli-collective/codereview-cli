@@ -166,6 +166,7 @@ type Profile struct {
 	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
 	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
+	Hooks            []Hook          `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 
 	// SecretsStore is retained as an ignored in-memory compatibility field.
 	SecretsStore string `yaml:"-" json:"-"`
@@ -184,6 +185,37 @@ type profileYAML struct {
 	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
 	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
+	Hooks            []Hook          `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+}
+
+// Hook configures one observe-only lifecycle command. Argv is executed
+// directly without a shell; timeout defaults to 30s and on_dry_run defaults
+// to false. Hook commands receive the documented JSON payload on stdin and
+// matching CR_* environment variables for common fields.
+type Hook struct {
+	Event    string   `yaml:"event" json:"event"`
+	Argv     []string `yaml:"argv" json:"argv"`
+	Timeout  string   `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	OnDryRun bool     `yaml:"on_dry_run,omitempty" json:"on_dry_run,omitempty"`
+}
+
+const defaultHookTimeout = "30s"
+
+var hookEvents = map[string]bool{
+	"run.started":            true,
+	"workspace.prepared":     true,
+	"dossier.ready":          true,
+	"selection.completed":    true,
+	"reviewer.completed":     true,
+	"plan.ready":             true,
+	"posting.action":         true,
+	"run.completed":          true,
+	"run.failed":             true,
+	"respond.run.started":    true,
+	"respond.plan.ready":     true,
+	"respond.posting.action": true,
+	"respond.run.completed":  true,
+	"respond.run.failed":     true,
 }
 
 // UnmarshalYAML accepts the legacy profile git block while the data model moves
@@ -200,6 +232,7 @@ func (p *Profile) UnmarshalYAML(value *yaml.Node) error {
 		LLMRuntime:       raw.LLMRuntime,
 		AgentSources:     raw.AgentSources,
 		ReviewPolicy:     raw.ReviewPolicy,
+		Hooks:            raw.Hooks,
 	}
 	return nil
 }
@@ -213,6 +246,7 @@ func (p Profile) MarshalYAML() (any, error) {
 		LLMRuntime:       p.LLMRuntime,
 		AgentSources:     p.AgentSources,
 		ReviewPolicy:     p.ReviewPolicy,
+		Hooks:            p.Hooks,
 	}, nil
 }
 
@@ -1244,6 +1278,33 @@ func validateProfile(cfg File, name string, profile Profile) error {
 	if !profile.ReviewPolicy.ResolveThreads.Valid() {
 		return invalid("profiles.%s.review_policy.resolve_threads %q is invalid", name, profile.ReviewPolicy.ResolveThreads)
 	}
+	for index, hook := range profile.Hooks {
+		if err := validateHook(fmt.Sprintf("profiles.%s.hooks[%d]", name, index), hook); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHook(field string, hook Hook) error {
+	if !hookEvents[hook.Event] {
+		return invalid("%s.event %q is invalid", field, hook.Event)
+	}
+	if len(hook.Argv) == 0 {
+		return invalid("%s.argv must contain at least one argument", field)
+	}
+	for index, arg := range hook.Argv {
+		if strings.ContainsRune(arg, '\x00') {
+			return invalid("%s.argv[%d] must not contain NUL", field, index)
+		}
+	}
+	if strings.TrimSpace(hook.Argv[0]) == "" {
+		return invalid("%s.argv[0] is required", field)
+	}
+	timeout, err := time.ParseDuration(hook.Timeout)
+	if err != nil || timeout <= 0 {
+		return invalid("%s.timeout %q is invalid", field, hook.Timeout)
+	}
 	return nil
 }
 
@@ -2083,6 +2144,15 @@ func (p Profile) normalized() Profile {
 	}
 	p.LLM = p.LLM.normalized()
 	p.ReviewPolicy = p.ReviewPolicy.normalized()
+	p.Hooks = append([]Hook(nil), p.Hooks...)
+	for index := range p.Hooks {
+		p.Hooks[index].Event = strings.TrimSpace(p.Hooks[index].Event)
+		p.Hooks[index].Argv = append([]string(nil), p.Hooks[index].Argv...)
+		p.Hooks[index].Timeout = strings.TrimSpace(p.Hooks[index].Timeout)
+		if p.Hooks[index].Timeout == "" {
+			p.Hooks[index].Timeout = defaultHookTimeout
+		}
+	}
 	return p
 }
 
