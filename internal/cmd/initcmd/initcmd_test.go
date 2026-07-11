@@ -17908,6 +17908,10 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 			credentials.GitHubAppPrivateKeyKey: "private-key",
 		},
 	})
+	store.deleteFunc = func(string, string) error {
+		t.Fatal("Delete called despite config save failure")
+		return nil
+	}
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:   config.GitAuthModeGitHubApp,
@@ -18083,6 +18087,78 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 	}
 }
 
+func TestApplyInitPlanCleanupFailureLeavesSavedConfigAndReportsPartialCleanup(t *testing.T) {
+	store := newFakeInitStore(map[string]map[string]string{
+		"work-reviewer": {
+			credentials.GitTokenKey:            "old-reviewer-pat",
+			credentials.GitHubAppIDKey:         "12345",
+			credentials.GitHubAppPrivateKeyKey: "private-key",
+		},
+	})
+	store.deleteFunc = func(profile, key string) error {
+		if key == credentials.GitHubAppIDKey {
+			return errors.New("cleanup failed")
+		}
+		delete(store.bundles[profile], key)
+		return nil
+	}
+	profile := basicProfile("work")
+	profile.ReviewerCredentials = &config.ReviewerCredentials{
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+	}
+	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
+	if err != nil {
+		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
+	}
+	plan := initPlan{
+		path:        filepath.Join(t.TempDir(), "config.yml"),
+		cfg:         cfg,
+		profileName: "work",
+		profile:     profile,
+		credentialPlan: []initCredentialPlanEntry{{
+			Ref: config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModeGitHubApp),
+			},
+			PreviousRef: &config.CredentialRef{
+				Purpose: "reviewer_credentials",
+				Ref:     "codereview/work-reviewer",
+				Mode:    string(config.GitAuthModePAT),
+			},
+			SecretsStore: resolved,
+			KeySpecs: []credentials.KeySpec{
+				{Key: credentials.GitHubAppPrivateKeyKey, Required: true},
+			},
+			State: initCredentialPlanStateKeepExisting,
+		}},
+	}
+	var saved bool
+	err = applyInitPlan(&root.Options{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, initOptions{}, initDeps{
+		openStore: func(string, bool, config.File) (initStore, error) { return store, nil },
+		saveConfig: func(string, config.File) error {
+			saved = true
+			return nil
+		},
+	}, plan)
+	wantErr := "init saved config before failing to delete stale reviewer keys on ; stale credential names needing manual cleanup: [codereview/work-reviewer]: cleanup failed"
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("applyInitPlan error = %v, want %q", err, wantErr)
+	}
+	if !saved {
+		t.Fatal("config was not saved before cleanup failure")
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitTokenKey); err != nil || ok {
+		t.Fatalf("git_token exists = %t, err = %v; want partial cleanup retained", ok, err)
+	}
+	if ok, err := store.Exists("work-reviewer", credentials.GitHubAppIDKey); err != nil || !ok {
+		t.Fatalf("github_app_id exists = %t, err = %v; want failed key retained", ok, err)
+	}
+}
+
 func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t *testing.T) {
 	store := newFakeInitStore(map[string]map[string]string{
 		"shared-reviewer": {
@@ -18207,6 +18283,7 @@ type fakeInitStore struct {
 	existsFunc     func(string, string) (bool, error)
 	listBundleFunc func(string) ([]string, error)
 	setBundleFunc  func(string, map[string]string, ...credstore.SetOpt) (credstore.Result, error)
+	deleteFunc     func(string, string) error
 }
 
 func newFakeInitStore(bundles map[string]map[string]string) *fakeInitStore {
@@ -18265,6 +18342,9 @@ func (s *fakeInitStore) SetBundle(profile string, kv map[string]string, opts ...
 }
 
 func (s *fakeInitStore) Delete(profile, key string) error {
+	if s.deleteFunc != nil {
+		return s.deleteFunc(profile, key)
+	}
 	if _, ok := s.bundles[profile][key]; !ok {
 		return credstore.ErrNotFound
 	}
