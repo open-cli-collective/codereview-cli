@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/open-cli-collective/codereview-cli/internal/dbmig"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -136,29 +137,17 @@ func ParseSessionRole(value string) (SessionRole, error) {
 	return role, nil
 }
 
-// PlannedActionKind identifies the host-side action to execute later.
-type PlannedActionKind string
+// PlannedActionKind is an alias for the canonical planned action kind.
+type PlannedActionKind = plannedactions.ActionKind
 
 // PlannedActionKind values.
 const (
-	PlannedActionInlineComment PlannedActionKind = "inline_comment"
-	PlannedActionThreadReply   PlannedActionKind = "thread_reply"
-	PlannedActionResolveThread PlannedActionKind = "resolve_thread"
-	PlannedActionRollupComment PlannedActionKind = "rollup_comment"
-	PlannedActionSubmitReview  PlannedActionKind = "submit_review"
+	PlannedActionInlineComment = plannedactions.ActionKindInlineComment
+	PlannedActionThreadReply   = plannedactions.ActionKindThreadReply
+	PlannedActionResolveThread = plannedactions.ActionKindResolveThread
+	PlannedActionRollupComment = plannedactions.ActionKindRollupComment
+	PlannedActionSubmitReview  = plannedactions.ActionKindSubmitReview
 )
-
-func (k PlannedActionKind) String() string { return string(k) }
-
-// Valid reports whether k is a known planned action kind.
-func (k PlannedActionKind) Valid() bool {
-	switch k {
-	case PlannedActionInlineComment, PlannedActionThreadReply, PlannedActionResolveThread, PlannedActionRollupComment, PlannedActionSubmitReview:
-		return true
-	default:
-		return false
-	}
-}
 
 // ParsePlannedActionKind parses a storage planned action kind.
 func ParsePlannedActionKind(value string) (PlannedActionKind, error) {
@@ -169,29 +158,17 @@ func ParsePlannedActionKind(value string) (PlannedActionKind, error) {
 	return kind, nil
 }
 
-// PlannedActionStatus records the durable outbox status for a planned action.
-type PlannedActionStatus string
+// PlannedActionStatus is an alias for the canonical planned action status.
+type PlannedActionStatus = plannedactions.ActionStatus
 
 // PlannedActionStatus values.
 const (
-	PlannedActionPending        PlannedActionStatus = "pending"
-	PlannedActionPosted         PlannedActionStatus = "posted"
-	PlannedActionFailedTerminal PlannedActionStatus = "failed_terminal"
-	PlannedActionSuperseded     PlannedActionStatus = "superseded"
-	PlannedActionPlannedOnly    PlannedActionStatus = "planned_only"
+	PlannedActionPending        = plannedactions.ActionStatusPending
+	PlannedActionPosted         = plannedactions.ActionStatusPosted
+	PlannedActionFailedTerminal = plannedactions.ActionStatusFailedTerminal
+	PlannedActionSuperseded     = plannedactions.ActionStatusSuperseded
+	PlannedActionPlannedOnly    = plannedactions.ActionStatusPlannedOnly
 )
-
-func (s PlannedActionStatus) String() string { return string(s) }
-
-// Valid reports whether s is a known planned action status.
-func (s PlannedActionStatus) Valid() bool {
-	switch s {
-	case PlannedActionPending, PlannedActionPosted, PlannedActionFailedTerminal, PlannedActionSuperseded, PlannedActionPlannedOnly:
-		return true
-	default:
-		return false
-	}
-}
 
 // ParsePlannedActionStatus parses a storage planned action status.
 func ParsePlannedActionStatus(value string) (PlannedActionStatus, error) {

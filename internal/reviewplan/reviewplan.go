@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
@@ -59,25 +60,25 @@ func (o Outcome) Valid() bool {
 	}
 }
 
-// ActionKind is the planner-local outbox action kind.
-type ActionKind string
+// ActionKind is an alias for the canonical planned action kind.
+type ActionKind = plannedactions.ActionKind
 
 // Action kind values.
 const (
-	ActionKindInlineComment ActionKind = "inline_comment"
-	ActionKindThreadReply   ActionKind = "thread_reply"
-	ActionKindResolveThread ActionKind = "resolve_thread"
-	ActionKindRollupComment ActionKind = "rollup_comment"
-	ActionKindSubmitReview  ActionKind = "submit_review"
+	ActionKindInlineComment = plannedactions.ActionKindInlineComment
+	ActionKindThreadReply   = plannedactions.ActionKindThreadReply
+	ActionKindResolveThread = plannedactions.ActionKindResolveThread
+	ActionKindRollupComment = plannedactions.ActionKindRollupComment
+	ActionKindSubmitReview  = plannedactions.ActionKindSubmitReview
 )
 
-// ActionStatus is the planner-local planned action status.
-type ActionStatus string
+// ActionStatus is an alias for the canonical planned action status.
+type ActionStatus = plannedactions.ActionStatus
 
 // Action status values.
 const (
-	ActionStatusPending     ActionStatus = "pending"
-	ActionStatusPlannedOnly ActionStatus = "planned_only"
+	ActionStatusPending     = plannedactions.ActionStatusPending
+	ActionStatusPlannedOnly = plannedactions.ActionStatusPlannedOnly
 )
 
 // ProviderCaps contains host capabilities that affect planning choices.
@@ -215,35 +216,20 @@ type AnchoredFinding struct {
 	Body         string
 }
 
-// InlineCommentPayload mirrors the provider-neutral inline comment payload.
-type InlineCommentPayload struct {
-	Body         string
-	Path         string
-	Side         review.DiffSide
-	Line         int
-	SubjectType  review.AnchorKind
-	DiffPosition int
-}
+// InlineCommentPayload is an alias for the canonical inline comment payload.
+type InlineCommentPayload = plannedactions.InlineCommentPayload
 
-// ThreadReplyPayload mirrors the thread reply payload.
-type ThreadReplyPayload struct {
-	Body    string
-	Summary bool
-}
+// ThreadReplyPayload is an alias for the canonical thread reply payload.
+type ThreadReplyPayload = plannedactions.ThreadReplyPayload
 
-// ResolveThreadPayload mirrors the resolve-thread payload.
-type ResolveThreadPayload struct{}
+// ResolveThreadPayload is an alias for the canonical resolve-thread payload.
+type ResolveThreadPayload = plannedactions.ResolveThreadPayload
 
-// RollupCommentPayload mirrors the rollup comment payload.
-type RollupCommentPayload struct {
-	Body string
-}
+// RollupCommentPayload is an alias for the canonical rollup comment payload.
+type RollupCommentPayload = plannedactions.RollupCommentPayload
 
-// SubmitReviewPayload mirrors the submit-review payload.
-type SubmitReviewPayload struct {
-	Body  string
-	Event review.ReviewEvent
-}
+// SubmitReviewPayload is an alias for the canonical submit-review payload.
+type SubmitReviewPayload = plannedactions.SubmitReviewPayload
 
 type builder struct {
 	req          Request

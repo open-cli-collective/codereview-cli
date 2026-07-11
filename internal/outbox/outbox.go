@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
@@ -63,35 +64,20 @@ type Result struct {
 	Aborted        bool
 }
 
-// InlineCommentPayload is the JSON payload for inline comment actions.
-type InlineCommentPayload struct {
-	Body         string            `json:"body"`
-	Path         string            `json:"path"`
-	Side         review.DiffSide   `json:"side"`
-	Line         int               `json:"line"`
-	SubjectType  review.AnchorKind `json:"subject_type"`
-	DiffPosition int               `json:"diff_position"`
-}
+// InlineCommentPayload is an alias for the canonical inline comment payload.
+type InlineCommentPayload = plannedactions.InlineCommentPayload
 
-// ThreadReplyPayload is the JSON payload for thread reply actions.
-type ThreadReplyPayload struct {
-	Body    string `json:"body"`
-	Summary bool   `json:"summary"`
-}
+// ThreadReplyPayload is an alias for the canonical thread reply payload.
+type ThreadReplyPayload = plannedactions.ThreadReplyPayload
 
-// ResolveThreadPayload is the JSON payload for resolve thread actions.
-type ResolveThreadPayload struct{}
+// ResolveThreadPayload is an alias for the canonical resolve-thread payload.
+type ResolveThreadPayload = plannedactions.ResolveThreadPayload
 
-// RollupCommentPayload is the JSON payload for rollup comment actions.
-type RollupCommentPayload struct {
-	Body string `json:"body"`
-}
+// RollupCommentPayload is an alias for the canonical rollup comment payload.
+type RollupCommentPayload = plannedactions.RollupCommentPayload
 
-// SubmitReviewPayload is the JSON payload for submit review actions.
-type SubmitReviewPayload struct {
-	Body  string             `json:"body"`
-	Event review.ReviewEvent `json:"event"`
-}
+// SubmitReviewPayload is an alias for the canonical submit-review payload.
+type SubmitReviewPayload = plannedactions.SubmitReviewPayload
 
 type hostState struct {
 	threads       []gitprovider.InlineThread

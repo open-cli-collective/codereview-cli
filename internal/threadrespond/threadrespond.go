@@ -20,7 +20,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
-	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
+	plannedactions "github.com/open-cli-collective/codereview-cli/internal/plannedactions/convert"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"

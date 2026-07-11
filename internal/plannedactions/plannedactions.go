@@ -1,110 +1,105 @@
-// Package plannedactions converts review plans into durable ledger actions.
+// Package plannedactions defines the canonical planned-action vocabulary.
 package plannedactions
 
 import (
-	"encoding/json"
-	"fmt"
-	"strings"
+	"time"
 
-	"github.com/open-cli-collective/codereview-cli/internal/ledger"
-	"github.com/open-cli-collective/codereview-cli/internal/outbox"
-	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
+	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
-// FromReviewPlan converts one planner-local action into a ledger planned action.
-func FromReviewPlan(runID string, action reviewplan.Action) (ledger.PlannedAction, error) {
-	payload, err := Payload(action)
-	if err != nil {
-		return ledger.PlannedAction{}, err
-	}
-	planned := ledger.PlannedAction{
-		ActionID:    action.ActionID,
-		RunID:       runID,
-		Kind:        LedgerKind(action.Kind),
-		PlannedAt:   action.PlannedAt,
-		PayloadJSON: string(payload),
-		Status:      LedgerStatus(action.Status),
-		Required:    action.Required,
-	}
-	if action.FindingID.Assigned() {
-		id := action.FindingID.String()
-		planned.FindingID = &id
-	}
-	if strings.TrimSpace(action.ThreadID) != "" {
-		planned.ThreadID = &action.ThreadID
-	}
-	return planned, nil
-}
+// ActionKind identifies a planned host-side action.
+type ActionKind string
 
-// Payload returns the outbox payload JSON for action.
-func Payload(action reviewplan.Action) ([]byte, error) {
-	switch action.Kind {
-	case reviewplan.ActionKindInlineComment:
-		if action.InlineComment == nil {
-			return nil, fmt.Errorf("plannedactions: inline payload missing")
-		}
-		return json.Marshal(outbox.InlineCommentPayload{
-			Body:         action.InlineComment.Body,
-			Path:         action.InlineComment.Path,
-			Side:         action.InlineComment.Side,
-			Line:         action.InlineComment.Line,
-			SubjectType:  action.InlineComment.SubjectType,
-			DiffPosition: action.InlineComment.DiffPosition,
-		})
-	case reviewplan.ActionKindThreadReply:
-		if action.ThreadReply == nil {
-			return nil, fmt.Errorf("plannedactions: thread reply payload missing")
-		}
-		return json.Marshal(outbox.ThreadReplyPayload{
-			Body:    action.ThreadReply.Body,
-			Summary: action.ThreadReply.Summary,
-		})
-	case reviewplan.ActionKindResolveThread:
-		return json.Marshal(outbox.ResolveThreadPayload{})
-	case reviewplan.ActionKindRollupComment:
-		if action.RollupComment == nil {
-			return nil, fmt.Errorf("plannedactions: rollup payload missing")
-		}
-		return json.Marshal(outbox.RollupCommentPayload{Body: action.RollupComment.Body})
-	case reviewplan.ActionKindSubmitReview:
-		if action.SubmitReview == nil {
-			return nil, fmt.Errorf("plannedactions: submit review payload missing")
-		}
-		return json.Marshal(outbox.SubmitReviewPayload{
-			Body:  action.SubmitReview.Body,
-			Event: action.SubmitReview.Event,
-		})
+// Action kind values.
+const (
+	ActionKindInlineComment ActionKind = "inline_comment"
+	ActionKindThreadReply   ActionKind = "thread_reply"
+	ActionKindResolveThread ActionKind = "resolve_thread"
+	ActionKindRollupComment ActionKind = "rollup_comment"
+	ActionKindSubmitReview  ActionKind = "submit_review"
+)
+
+// String returns the persisted action kind.
+func (k ActionKind) String() string { return string(k) }
+
+// Valid reports whether k is a known action kind.
+func (k ActionKind) Valid() bool {
+	switch k {
+	case ActionKindInlineComment, ActionKindThreadReply, ActionKindResolveThread, ActionKindRollupComment, ActionKindSubmitReview:
+		return true
 	default:
-		return nil, fmt.Errorf("plannedactions: unknown action kind %q", action.Kind)
+		return false
 	}
 }
 
-// LedgerKind maps reviewplan action kinds into ledger kinds.
-func LedgerKind(kind reviewplan.ActionKind) ledger.PlannedActionKind {
-	switch kind {
-	case reviewplan.ActionKindInlineComment:
-		return ledger.PlannedActionInlineComment
-	case reviewplan.ActionKindThreadReply:
-		return ledger.PlannedActionThreadReply
-	case reviewplan.ActionKindResolveThread:
-		return ledger.PlannedActionResolveThread
-	case reviewplan.ActionKindRollupComment:
-		return ledger.PlannedActionRollupComment
-	case reviewplan.ActionKindSubmitReview:
-		return ledger.PlannedActionSubmitReview
+// ActionStatus records the lifecycle status of a planned action.
+type ActionStatus string
+
+// Action status values.
+const (
+	ActionStatusPending        ActionStatus = "pending"
+	ActionStatusPosted         ActionStatus = "posted"
+	ActionStatusFailedTerminal ActionStatus = "failed_terminal"
+	ActionStatusSuperseded     ActionStatus = "superseded"
+	ActionStatusPlannedOnly    ActionStatus = "planned_only"
+)
+
+// String returns the persisted action status.
+func (s ActionStatus) String() string { return string(s) }
+
+// Valid reports whether s is a known action status.
+func (s ActionStatus) Valid() bool {
+	switch s {
+	case ActionStatusPending, ActionStatusPosted, ActionStatusFailedTerminal, ActionStatusSuperseded, ActionStatusPlannedOnly:
+		return true
 	default:
-		return ledger.PlannedActionKind(kind)
+		return false
 	}
 }
 
-// LedgerStatus maps reviewplan statuses into ledger statuses.
-func LedgerStatus(status reviewplan.ActionStatus) ledger.PlannedActionStatus {
-	switch status {
-	case reviewplan.ActionStatusPending:
-		return ledger.PlannedActionPending
-	case reviewplan.ActionStatusPlannedOnly:
-		return ledger.PlannedActionPlannedOnly
-	default:
-		return ledger.PlannedActionStatus(status)
-	}
+// Action is the canonical metadata and typed payload for one planned action.
+type Action struct {
+	ActionID  string
+	Kind      ActionKind
+	FindingID review.FindingID
+	ThreadID  string
+	PlannedAt time.Time
+	Status    ActionStatus
+	Required  bool
+
+	InlineComment *InlineCommentPayload
+	ThreadReply   *ThreadReplyPayload
+	ResolveThread *ResolveThreadPayload
+	RollupComment *RollupCommentPayload
+	SubmitReview  *SubmitReviewPayload
+}
+
+// InlineCommentPayload is the provider-neutral inline comment payload.
+type InlineCommentPayload struct {
+	Body         string            `json:"body"`
+	Path         string            `json:"path"`
+	Side         review.DiffSide   `json:"side"`
+	Line         int               `json:"line"`
+	SubjectType  review.AnchorKind `json:"subject_type"`
+	DiffPosition int               `json:"diff_position"`
+}
+
+// ThreadReplyPayload is the thread reply payload.
+type ThreadReplyPayload struct {
+	Body    string `json:"body"`
+	Summary bool   `json:"summary"`
+}
+
+// ResolveThreadPayload is the resolve-thread payload.
+type ResolveThreadPayload struct{}
+
+// RollupCommentPayload is the rollup comment payload.
+type RollupCommentPayload struct {
+	Body string `json:"body"`
+}
+
+// SubmitReviewPayload is the submit-review payload.
+type SubmitReviewPayload struct {
+	Body  string             `json:"body"`
+	Event review.ReviewEvent `json:"event"`
 }

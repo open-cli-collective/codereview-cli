@@ -21,10 +21,11 @@ func TestProductionImportsStayInOutboxLayer(t *testing.T) {
 	dir := filepath.Dir(testFile)
 	repoRoot, modulePath := repoRootAndModule(t, dir)
 	allowed := map[string]struct{}{
-		modulePath + "/internal/gitprovider": {},
-		modulePath + "/internal/ledger":      {},
-		modulePath + "/internal/marker":      {},
-		modulePath + "/internal/review":      {},
+		modulePath + "/internal/gitprovider":    {},
+		modulePath + "/internal/ledger":         {},
+		modulePath + "/internal/marker":         {},
+		modulePath + "/internal/plannedactions": {},
+		modulePath + "/internal/review":         {},
 	}
 	stdlib := stdlibImports(t, repoRoot)
 	fset := token.NewFileSet()
