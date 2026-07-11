@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/open-cli-collective/codereview-cli/internal/hooks"
+	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 )
@@ -12,39 +14,85 @@ import (
 type pipelineTaskProgress struct {
 	logger  *progress.Logger
 	command string
+	hooks   *hookDispatcher
 }
 
 type pipelineTaskSpan struct {
-	span *progress.Span
+	span  *progress.Span
+	hooks *hookDispatcher
+	event pipeline.LLMTaskProgressEvent
+	run   ledger.Run
 }
 
-func newPipelineTaskProgress(logger *progress.Logger, command string) pipeline.LLMTaskProgress {
-	if logger == nil {
+func newPipelineTaskProgress(logger *progress.Logger, command string, dispatcher *hookDispatcher) pipeline.LLMTaskProgress {
+	if dispatcher != nil && !dispatcher.enabled {
+		dispatcher = nil
+	}
+	if logger == nil && dispatcher == nil {
 		return nil
 	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		command = "review"
 	}
-	return pipelineTaskProgress{logger: logger, command: command}
+	return pipelineTaskProgress{logger: logger, command: command, hooks: dispatcher}
 }
 
 func (p pipelineTaskProgress) StartLLMTask(event pipeline.LLMTaskProgressEvent) pipeline.LLMTaskProgressSpan {
+	var span *progress.Span
+	if p.logger != nil {
+		span = p.logger.StartFields(p.command, "run_llm_task", "llm_task", pipelineTaskProgressFields(event)...)
+	}
+	run := p.observeStart(event)
 	return pipelineTaskSpan{
-		span: p.logger.StartFields(p.command, "run_llm_task", "llm_task", pipelineTaskProgressFields(event)...),
+		span: span, hooks: p.hooks, event: event, run: run,
 	}
 }
 
 func (p pipelineTaskProgress) LoadLLMTask(event pipeline.LLMTaskProgressEvent, result pipeline.LLMTaskProgressResult) {
-	span := p.logger.StartFields(p.command, "load_llm_task", "llm_task", pipelineTaskProgressFields(event)...)
-	span.EndFields(nil, pipelineTaskProgressResultFields(result)...)
+	run := p.observeStart(event)
+	if p.logger != nil {
+		span := p.logger.StartFields(p.command, "load_llm_task", "llm_task", pipelineTaskProgressFields(event)...)
+		span.EndFields(nil, pipelineTaskProgressResultFields(result)...)
+	}
+	emitTaskHook(p.hooks, event, nil, result, run)
 }
 
 func (s pipelineTaskSpan) End(err error, result pipeline.LLMTaskProgressResult) {
-	if s.span == nil {
+	if s.span != nil {
+		s.span.EndFields(err, pipelineTaskProgressResultFields(result)...)
+	}
+	emitTaskHook(s.hooks, s.event, err, result, s.run)
+}
+
+func (p pipelineTaskProgress) observeStart(event pipeline.LLMTaskProgressEvent) ledger.Run {
+	if p.hooks == nil {
+		return ledger.Run{}
+	}
+	run := p.hooks.observeArtifactLog(event.LogPath)
+	switch event.Phase {
+	case "dossier":
+		p.hooks.emitOnce(p.hooks.event("workspace.prepared"), hooks.Payload{}, run)
+	case "selection":
+		p.hooks.observeSelection()
+		p.hooks.emitOnce(p.hooks.event("workspace.prepared"), hooks.Payload{}, run)
+		p.hooks.emitOnce(p.hooks.event("dossier.ready"), hooks.Payload{}, run)
+	}
+	return run
+}
+
+func emitTaskHook(dispatcher *hookDispatcher, event pipeline.LLMTaskProgressEvent, err error, result pipeline.LLMTaskProgressResult, run ledger.Run) {
+	if dispatcher == nil || event.Phase != "reviewer" || dispatcher.command == "respond" {
 		return
 	}
-	s.span.EndFields(err, pipelineTaskProgressResultFields(result)...)
+	status := result.Status
+	if status == "" {
+		status = "succeeded"
+		if err != nil {
+			status = "failed"
+		}
+	}
+	dispatcher.emit(dispatcher.event("reviewer.completed"), hooks.Payload{ReviewerID: event.AgentID, ReviewerStatus: status}, run, false)
 }
 
 func pipelineTaskProgressFields(event pipeline.LLMTaskProgressEvent) []progress.Field {

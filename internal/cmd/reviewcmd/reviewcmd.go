@@ -267,6 +267,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	runtimeReq := app.OpenRequest{
 		Config:                            cfg,
 		Profile:                           profile,
+		ProfileName:                       profileName,
 		Backend:                           opts.Backend,
 		BackendFlagChanged:                cmderr.BackendFlagChanged(cmd),
 		Command:                           commandName(cmd),
@@ -275,6 +276,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		MaxAgents:                         flags.maxAgents,
 		MaxConcurrency:                    flags.maxConcurrency,
 		PRRef:                             ref,
+		PRURL:                             prArg,
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
 		Retention:                         appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,

@@ -102,12 +102,14 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory Ru
 	runtime, err := factory(ctx, app.OpenRequest{
 		Config:              cfg,
 		Profile:             profile,
+		ProfileName:         profileName,
 		Backend:             opts.Backend,
 		BackendFlagChanged:  cmderr.BackendFlagChanged(cmd),
 		Command:             "respond",
 		Progress:            progress.New(opts.Stderr, opts.Quiet, nil),
 		Warnings:            opts.Stderr,
 		PRRef:               ref,
+		PRURL:               prArg,
 		Retention:           appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 	})
