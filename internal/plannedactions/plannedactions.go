@@ -2,6 +2,7 @@
 package plannedactions
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/review"
@@ -72,6 +73,33 @@ type Action struct {
 	ResolveThread *ResolveThreadPayload
 	RollupComment *RollupCommentPayload
 	SubmitReview  *SubmitReviewPayload
+}
+
+// Payload returns the payload matching the action kind.
+func (a Action) Payload() (any, error) {
+	switch a.Kind {
+	case ActionKindInlineComment:
+		if a.InlineComment != nil {
+			return a.InlineComment, nil
+		}
+	case ActionKindThreadReply:
+		if a.ThreadReply != nil {
+			return a.ThreadReply, nil
+		}
+	case ActionKindResolveThread:
+		return ResolveThreadPayload{}, nil
+	case ActionKindRollupComment:
+		if a.RollupComment != nil {
+			return a.RollupComment, nil
+		}
+	case ActionKindSubmitReview:
+		if a.SubmitReview != nil {
+			return a.SubmitReview, nil
+		}
+	default:
+		return nil, fmt.Errorf("plannedactions: unknown action kind %q", a.Kind)
+	}
+	return nil, fmt.Errorf("plannedactions: %s payload missing", a.Kind)
 }
 
 // InlineCommentPayload is the provider-neutral inline comment payload.

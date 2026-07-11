@@ -1,7 +1,6 @@
 package view
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -147,14 +146,14 @@ type ReviewFinding struct {
 
 // ReviewAction is one planned action.
 type ReviewAction struct {
-	ID            string          `json:"id"`
-	Kind          string          `json:"kind"`
-	FindingID     string          `json:"finding_id,omitempty"`
-	ThreadID      string          `json:"thread_id,omitempty"`
-	Status        string          `json:"status"`
-	Required      bool            `json:"required"`
-	MarkerOmitted bool            `json:"marker_omitted"`
-	Payload       json.RawMessage `json:"payload"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	FindingID     string `json:"finding_id,omitempty"`
+	ThreadID      string `json:"thread_id,omitempty"`
+	Status        string `json:"status"`
+	Required      bool   `json:"required"`
+	MarkerOmitted bool   `json:"marker_omitted"`
+	Payload       any    `json:"payload"`
 }
 
 // ReviewArtifacts lists dry-run artifact paths.
@@ -303,12 +302,17 @@ func newReviewFinding(finding reviewplan.AnchoredFinding) ReviewFinding {
 
 func newReviewAction(action reviewplan.Action, planned ledger.PlannedAction) (ReviewAction, error) {
 	status := action.Status
-	payload := json.RawMessage(`{}`)
+	payload, err := action.Payload()
+	if err != nil {
+		return ReviewAction{}, fmt.Errorf("review: action %q: %w", action.ActionID, err)
+	}
 	if planned.ActionID != "" {
-		if parsed := json.RawMessage(planned.PayloadJSON); json.Valid(parsed) {
-			payload = parsed
-		} else {
-			return ReviewAction{}, fmt.Errorf("review: planned action %q payload is invalid JSON", planned.ActionID)
+		if planned.PayloadDecodeError != nil {
+			return ReviewAction{}, fmt.Errorf("review: planned action %q payload: %w", planned.ActionID, planned.PayloadDecodeError)
+		}
+		payload, err = planned.Payload()
+		if err != nil {
+			return ReviewAction{}, fmt.Errorf("review: planned action %q: %w", planned.ActionID, err)
 		}
 		if planned.Status != "" {
 			status = reviewplan.ActionStatus(planned.Status.String())

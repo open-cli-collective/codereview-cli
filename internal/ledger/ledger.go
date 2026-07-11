@@ -4,6 +4,7 @@ package ledger
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -314,21 +315,15 @@ type Finding struct {
 
 // PlannedAction records one outbox action planned for a run.
 type PlannedAction struct {
-	ActionID     string
-	RunID        string
-	Kind         PlannedActionKind
-	FindingID    *string
-	ThreadID     *string
-	PlannedAt    time.Time
-	PayloadJSON  string
-	Status       PlannedActionStatus
-	Required     bool
-	Attempts     int
-	AttemptedAt  *time.Time
-	PostedAt     *time.Time
-	UpstreamID   *string
-	Error        *string
-	FailureClass *string
+	plannedactions.Action
+	RunID              string
+	Attempts           int
+	AttemptedAt        *time.Time
+	PostedAt           *time.Time
+	UpstreamID         *string
+	Error              *string
+	FailureClass       *string
+	PayloadDecodeError error
 }
 
 // PlannedActionUpdater persists mutable planned-action state.
@@ -879,7 +874,7 @@ FROM findings WHERE run_id = ? ORDER BY finding_id`, runID)
 
 // InsertPlannedAction inserts an outbox planned-action row.
 func (s *Store) InsertPlannedAction(ctx context.Context, action PlannedAction) error {
-	if err := validatePlannedAction(action); err != nil {
+	if err := validatePlannedAction(action, true); err != nil {
 		return err
 	}
 	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
@@ -893,7 +888,7 @@ func (s *Store) InsertPlannedAction(ctx context.Context, action PlannedAction) e
 // InsertPlannedActions inserts multiple outbox planned-action rows atomically.
 func (s *Store) InsertPlannedActions(ctx context.Context, actions []PlannedAction) error {
 	for _, action := range actions {
-		if err := validatePlannedAction(action); err != nil {
+		if err := validatePlannedAction(action, true); err != nil {
 			return err
 		}
 	}
@@ -926,7 +921,7 @@ func (s *Store) InsertPlanningResult(ctx context.Context, findings []Finding, ac
 		}
 	}
 	for _, action := range actions {
-		if err := validatePlannedAction(action); err != nil {
+		if err := validatePlannedAction(action, true); err != nil {
 			return err
 		}
 	}
@@ -957,20 +952,68 @@ func (s *Store) InsertPlanningResult(ctx context.Context, findings []Finding, ac
 }
 
 func insertPlannedActionRow(ctx context.Context, db execer, action PlannedAction) error {
+	payload, err := encodePlannedActionPayload(action.Action)
+	if err != nil {
+		return err
+	}
 	required := 0
 	if action.Required {
 		required = 1
 	}
-	_, err := db.ExecContext(ctx, `
+	_, err = db.ExecContext(ctx, `
 INSERT INTO planned_actions (
 	action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
 	required, attempts, attempted_at, posted_at, upstream_id, error, failure_class
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		action.ActionID, action.RunID, action.Kind.String(), action.FindingID, action.ThreadID, encodeTime(action.PlannedAt),
-		action.PayloadJSON, action.Status.String(), required, action.Attempts, encodeOptionalTime(action.AttemptedAt),
+		action.ActionID, action.RunID, action.Kind.String(), optionalText(action.FindingID.String()), optionalText(action.ThreadID), encodeTime(action.PlannedAt),
+		string(payload), action.Status.String(), required, action.Attempts, encodeOptionalTime(action.AttemptedAt),
 		encodeOptionalTime(action.PostedAt), action.UpstreamID, action.Error, action.FailureClass,
 	)
 	return err
+}
+
+func encodePlannedActionPayload(action plannedactions.Action) ([]byte, error) {
+	payload, err := action.Payload()
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: encode %s payload: %w", action.Kind, err)
+	}
+	return encoded, nil
+}
+
+func decodePlannedActionPayload(action *PlannedAction, payload []byte) error {
+	var target any
+	switch action.Kind {
+	case PlannedActionInlineComment:
+		action.InlineComment = &plannedactions.InlineCommentPayload{}
+		target = action.InlineComment
+	case PlannedActionThreadReply:
+		action.ThreadReply = &plannedactions.ThreadReplyPayload{}
+		target = action.ThreadReply
+	case PlannedActionResolveThread:
+		action.ResolveThread = &plannedactions.ResolveThreadPayload{}
+		target = action.ResolveThread
+	case PlannedActionRollupComment:
+		action.RollupComment = &plannedactions.RollupCommentPayload{}
+		target = action.RollupComment
+	case PlannedActionSubmitReview:
+		action.SubmitReview = &plannedactions.SubmitReviewPayload{}
+		target = action.SubmitReview
+	default:
+		return fmt.Errorf("ledger: decode unknown planned action kind %q", action.Kind)
+	}
+	if err := json.Unmarshal(payload, target); err != nil {
+		action.InlineComment = nil
+		action.ThreadReply = nil
+		action.ResolveThread = nil
+		action.RollupComment = nil
+		action.SubmitReview = nil
+		return fmt.Errorf("ledger: decode %s payload: %w", action.Kind, err)
+	}
+	return nil
 }
 
 // ListPlannedActions lists planned actions for a run in stable order.
@@ -1006,7 +1049,7 @@ FROM planned_actions WHERE run_id = ? ORDER BY action_id`, runID)
 
 // UpdatePlannedAction updates the mutable outbox state for an existing action.
 func (s *Store) UpdatePlannedAction(ctx context.Context, action PlannedAction) error {
-	if err := validatePlannedAction(action); err != nil {
+	if err := validatePlannedAction(action, false); err != nil {
 		return err
 	}
 	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
@@ -1244,11 +1287,10 @@ func validateFinding(finding Finding) error {
 	return nil
 }
 
-func validatePlannedAction(action PlannedAction) error {
+func validatePlannedAction(action PlannedAction, requirePayload bool) error {
 	for field, value := range map[string]string{
-		"action_id":    action.ActionID,
-		"run_id":       action.RunID,
-		"payload_json": action.PayloadJSON,
+		"action_id": action.ActionID,
+		"run_id":    action.RunID,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return invalidInput(field, value)
@@ -1268,6 +1310,11 @@ func validatePlannedAction(action PlannedAction) error {
 	}
 	if action.FailureClass != nil && !validPlannedActionFailureClass(*action.FailureClass) {
 		return invalidInput("failure_class", *action.FailureClass)
+	}
+	if requirePayload {
+		if _, err := action.Payload(); err != nil {
+			return errors.Join(ErrInvalidInput, err)
+		}
 	}
 	return nil
 }
@@ -1309,6 +1356,13 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func optionalText(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func scanRun(row interface{ Scan(...any) error }) (Run, error) {
@@ -1447,6 +1501,7 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 	var (
 		action       PlannedAction
 		kind         string
+		payloadJSON  string
 		findingID    sql.Null[string]
 		threadID     sql.Null[string]
 		plannedAt    string
@@ -1459,7 +1514,7 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 		failureClass sql.Null[string]
 	)
 	if err := row.Scan(
-		&action.ActionID, &action.RunID, &kind, &findingID, &threadID, &plannedAt, &action.PayloadJSON,
+		&action.ActionID, &action.RunID, &kind, &findingID, &threadID, &plannedAt, &payloadJSON,
 		&status, &required, &action.Attempts, &attemptedAt, &postedAt, &upstreamID, &errorText, &failureClass,
 	); err != nil {
 		return PlannedAction{}, err
@@ -1474,8 +1529,12 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 		return PlannedAction{}, err
 	}
 	action.Status = parsedStatus
-	action.FindingID = ptrFromNull(findingID)
-	action.ThreadID = ptrFromNull(threadID)
+	if findingID.Valid {
+		action.FindingID = review.FindingID(findingID.V)
+	}
+	if threadID.Valid {
+		action.ThreadID = threadID.V
+	}
 	action.PlannedAt, err = parseTime(plannedAt)
 	if err != nil {
 		return PlannedAction{}, err
@@ -1498,6 +1557,7 @@ func scanPlannedAction(row interface{ Scan(...any) error }) (PlannedAction, erro
 		value := failureClass.V
 		action.FailureClass = &value
 	}
+	action.PayloadDecodeError = decodePlannedActionPayload(&action, []byte(payloadJSON))
 	return action, nil
 }
 

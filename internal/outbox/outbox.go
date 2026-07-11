@@ -4,7 +4,6 @@ package outbox
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -351,7 +350,7 @@ func reconcileAction(req Request, actions []ledger.PlannedAction, action ledger.
 	case ledger.PlannedActionInlineComment:
 		return reconcileInline(req, action, state), nil
 	case ledger.PlannedActionThreadReply:
-		payload, err := decodePayload[ThreadReplyPayload](action)
+		payload, err := typedPayload(action, action.ThreadReply)
 		if err != nil {
 			return reconcileMatch{}, err
 		}
@@ -361,7 +360,7 @@ func reconcileAction(req Request, actions []ledger.PlannedAction, action ledger.
 	case ledger.PlannedActionSubmitReview:
 		return reconcileSubmitReview(req, action, state), nil
 	case ledger.PlannedActionResolveThread:
-		if _, err := decodePayload[ResolveThreadPayload](action); err != nil {
+		if _, err := typedPayload(action, action.ResolveThread); err != nil {
 			return reconcileMatch{}, err
 		}
 		return reconcileResolve(action, actions, state), nil
@@ -385,11 +384,11 @@ func reconcileInline(req Request, action ledger.PlannedAction, state hostState) 
 }
 
 func reconcileThreadReply(req Request, action ledger.PlannedAction, payload ThreadReplyPayload, state hostState) reconcileMatch {
-	if action.ThreadID == nil {
+	if strings.TrimSpace(action.ThreadID) == "" {
 		return reconcileMatch{}
 	}
 	for _, thread := range state.threads {
-		if thread.ID != gitprovider.ThreadID(*action.ThreadID) {
+		if thread.ID != gitprovider.ThreadID(action.ThreadID) {
 			continue
 		}
 		for _, comment := range thread.Comments {
@@ -437,10 +436,10 @@ func reconcileSubmitReview(req Request, action ledger.PlannedAction, state hostS
 }
 
 func reconcileResolve(action ledger.PlannedAction, actions []ledger.PlannedAction, state hostState) reconcileMatch {
-	if action.ThreadID == nil {
+	if strings.TrimSpace(action.ThreadID) == "" {
 		return reconcileMatch{}
 	}
-	threadID := gitprovider.ThreadID(*action.ThreadID)
+	threadID := gitprovider.ThreadID(action.ThreadID)
 	resolved := false
 	for _, thread := range state.threads {
 		if thread.ID == threadID {
@@ -455,14 +454,14 @@ func reconcileResolve(action ledger.PlannedAction, actions []ledger.PlannedActio
 }
 
 func sameThreadReplyPosted(action ledger.PlannedAction, actions []ledger.PlannedAction) bool {
-	if action.ThreadID == nil {
+	if strings.TrimSpace(action.ThreadID) == "" {
 		return false
 	}
 	for _, candidate := range actions {
 		if candidate.Kind != ledger.PlannedActionThreadReply || candidate.Status != ledger.PlannedActionPosted {
 			continue
 		}
-		if candidate.ThreadID != nil && *candidate.ThreadID == *action.ThreadID {
+		if candidate.ThreadID == action.ThreadID {
 			return true
 		}
 	}
@@ -501,11 +500,11 @@ func buildActionPlan(provider gitprovider.GitProvider, req Request, actions []le
 		}
 		return actionPlan{action: action, inlineComment: &comment}, bundledInlineIDs, nil
 	case ledger.PlannedActionThreadReply:
-		payload, err := decodePayload[ThreadReplyPayload](action)
+		payload, err := typedPayload(action, action.ThreadReply)
 		if err != nil {
 			return actionPlan{}, bundledInlineIDs, err
 		}
-		if action.ThreadID == nil || strings.TrimSpace(*action.ThreadID) == "" {
+		if strings.TrimSpace(action.ThreadID) == "" {
 			return actionPlan{}, bundledInlineIDs, fmt.Errorf("outbox: thread reply target is required")
 		}
 		var body string
@@ -517,17 +516,17 @@ func buildActionPlan(provider gitprovider.GitProvider, req Request, actions []le
 		if err != nil {
 			return actionPlan{}, bundledInlineIDs, err
 		}
-		return actionPlan{action: action, body: body, threadID: gitprovider.ThreadID(*action.ThreadID)}, bundledInlineIDs, nil
+		return actionPlan{action: action, body: body, threadID: gitprovider.ThreadID(action.ThreadID)}, bundledInlineIDs, nil
 	case ledger.PlannedActionResolveThread:
-		if _, err := decodePayload[ResolveThreadPayload](action); err != nil {
+		if _, err := typedPayload(action, action.ResolveThread); err != nil {
 			return actionPlan{}, bundledInlineIDs, err
 		}
-		if action.ThreadID == nil || strings.TrimSpace(*action.ThreadID) == "" {
+		if strings.TrimSpace(action.ThreadID) == "" {
 			return actionPlan{}, bundledInlineIDs, fmt.Errorf("outbox: resolve thread target is required")
 		}
-		return actionPlan{action: action, resolveThread: gitprovider.ThreadID(*action.ThreadID)}, bundledInlineIDs, nil
+		return actionPlan{action: action, resolveThread: gitprovider.ThreadID(action.ThreadID)}, bundledInlineIDs, nil
 	case ledger.PlannedActionRollupComment:
-		payload, err := decodePayload[RollupCommentPayload](action)
+		payload, err := typedPayload(action, action.RollupComment)
 		if err != nil {
 			return actionPlan{}, bundledInlineIDs, err
 		}
@@ -537,7 +536,7 @@ func buildActionPlan(provider gitprovider.GitProvider, req Request, actions []le
 		}
 		return actionPlan{action: action, body: body}, bundledInlineIDs, nil
 	case ledger.PlannedActionSubmitReview:
-		payload, err := decodePayload[SubmitReviewPayload](action)
+		payload, err := typedPayload(action, action.SubmitReview)
 		if err != nil {
 			return actionPlan{}, bundledInlineIDs, err
 		}
@@ -584,7 +583,7 @@ func bundledInlineComments(req Request, actions []ledger.PlannedAction) ([]gitpr
 }
 
 func inlineComment(req Request, action ledger.PlannedAction) (gitprovider.InlineComment, error) {
-	payload, err := decodePayload[InlineCommentPayload](action)
+	payload, err := typedPayload(action, action.InlineComment)
 	if err != nil {
 		return gitprovider.InlineComment{}, err
 	}
@@ -643,12 +642,14 @@ func markBundledActionIDsPosted(ctx context.Context, store Store, actions []ledg
 	return nil
 }
 
-func decodePayload[T any](action ledger.PlannedAction) (T, error) {
-	var payload T
-	if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
-		return payload, fmt.Errorf("outbox: decode %s payload: %w", action.Kind, err)
+func typedPayload[T any](action ledger.PlannedAction, payload *T) (T, error) {
+	if action.PayloadDecodeError != nil {
+		return *new(T), fmt.Errorf("outbox: decode %s payload: %w", action.Kind, action.PayloadDecodeError)
 	}
-	return payload, nil
+	if payload == nil {
+		return *new(T), fmt.Errorf("outbox: %s payload missing", action.Kind)
+	}
+	return *payload, nil
 }
 
 func bodyWithActionMarker(req Request, action ledger.PlannedAction, kind string, outcome string, body string) (string, error) {

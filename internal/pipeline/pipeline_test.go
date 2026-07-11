@@ -228,8 +228,12 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 		if action.Status != ledger.PlannedActionPlannedOnly {
 			t.Fatalf("action status = %q, want planned_only for %#v", action.Status, action)
 		}
-		if strings.Contains(action.PayloadJSON, "<!-- codereview:") {
-			t.Fatalf("dry-run payload contains real marker: %s", action.PayloadJSON)
+		payload, err := action.Payload()
+		if err != nil {
+			t.Fatalf("dry-run payload: %v", err)
+		}
+		if strings.Contains(fmt.Sprint(payload), "<!-- codereview:") {
+			t.Fatalf("dry-run payload contains real marker: %#v", payload)
 		}
 	}
 
@@ -2498,8 +2502,12 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 		if action.Status != ledger.PlannedActionPending {
 			t.Fatalf("action status = %q, want pending for %#v", action.Status, action)
 		}
-		if strings.Contains(action.PayloadJSON, "<!-- codereview:") {
-			t.Fatalf("live payload contains marker before outbox: %s", action.PayloadJSON)
+		payload, err := action.Payload()
+		if err != nil {
+			t.Fatalf("live payload: %v", err)
+		}
+		if strings.Contains(fmt.Sprint(payload), "<!-- codereview:") {
+			t.Fatalf("live payload contains marker before outbox: %#v", payload)
 		}
 	}
 	sessions, err := store.ListSessionsForRun(ctx, run.RunID)

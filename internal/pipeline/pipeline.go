@@ -25,7 +25,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
-	plannedactions "github.com/open-cli-collective/codereview-cli/internal/plannedactions/convert"
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
@@ -796,11 +795,7 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 	}
 	plannedActions := make([]ledger.PlannedAction, 0, len(result.Plan.Actions))
 	for _, action := range result.Plan.Actions {
-		planned, err := plannedactions.FromReviewPlan(run.RunID, action)
-		if err != nil {
-			return err
-		}
-		plannedActions = append(plannedActions, planned)
+		plannedActions = append(plannedActions, ledger.PlannedAction{Action: action.Action, RunID: run.RunID})
 	}
 	_, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
 	if err != nil {

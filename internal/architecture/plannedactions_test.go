@@ -94,3 +94,37 @@ func TestPlannedActionsStaysLeaf(t *testing.T) {
 		}
 	}
 }
+
+func TestPlannedActionPayloadJSONIsLedgerPrivate(t *testing.T) {
+	repoRoot := repoRootFromTest(t)
+	err := filepath.WalkDir(filepath.Join(repoRoot, "internal"), func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		rel := filepath.ToSlash(mustRel(t, repoRoot, path))
+		ast.Inspect(parsed, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.SelectorExpr:
+				if node.Sel.Name == "PayloadJSON" {
+					t.Fatalf("%s exposes raw planned-action payload JSON", rel)
+				}
+			case *ast.BasicLit:
+				if strings.Contains(node.Value, "payload_json") && rel != "internal/ledger/ledger.go" {
+					t.Fatalf("%s accesses ledger payload_json outside ledger", rel)
+				}
+			}
+			return true
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir: %v", err)
+	}
+}

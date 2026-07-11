@@ -20,7 +20,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
-	plannedactions "github.com/open-cli-collective/codereview-cli/internal/plannedactions/convert"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
@@ -208,11 +207,7 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 		result.Plan = plan
 		plannedActions := make([]ledger.PlannedAction, 0, len(plan.Actions))
 		for _, action := range plan.Actions {
-			planned, err := plannedactions.FromReviewPlan(run.RunID, action)
-			if err != nil {
-				return result, err
-			}
-			plannedActions = append(plannedActions, planned)
+			plannedActions = append(plannedActions, ledger.PlannedAction{Action: action.Action, RunID: run.RunID})
 		}
 		if err := opts.Store.InsertPlannedActions(ctx, plannedActions); err != nil {
 			return result, err
@@ -485,10 +480,10 @@ func responseActionThreadIDs(actions []ledger.PlannedAction) []string {
 		if action.Status == ledger.PlannedActionSuperseded || action.Status == ledger.PlannedActionPlannedOnly {
 			continue
 		}
-		if !isResponseAction(action.Kind) || action.ThreadID == nil {
+		if !isResponseAction(action.Kind) {
 			continue
 		}
-		threadID := strings.TrimSpace(*action.ThreadID)
+		threadID := strings.TrimSpace(action.ThreadID)
 		if threadID == "" {
 			continue
 		}

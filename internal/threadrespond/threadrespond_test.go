@@ -2,7 +2,6 @@ package threadrespond
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -138,7 +138,7 @@ func TestRunLivePostsThroughOutbox(t *testing.T) {
 			}
 		case ledger.PlannedActionResolveThread:
 			sawPostedResolve = true
-			if action.ThreadID == nil || *action.ThreadID != "thread-1" {
+			if action.ThreadID != "thread-1" {
 				t.Fatalf("resolve action = %#v, want thread-1", action)
 			}
 		case ledger.PlannedActionInlineComment, ledger.PlannedActionRollupComment, ledger.PlannedActionSubmitReview:
@@ -701,13 +701,12 @@ func TestRetryRejectsPendingNonResponseActions(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "retry-run", ledger.PostModeLive)
 	insertAction(t, fixture.store, ledger.PlannedAction{
-		ActionID:    "inline-1",
-		RunID:       run.RunID,
-		Kind:        ledger.PlannedActionInlineComment,
-		PlannedAt:   fixedNow(),
-		PayloadJSON: `{"body":"inline","path":"main.go","side":"RIGHT","line":1,"subject_type":"line"}`,
-		Status:      ledger.PlannedActionPending,
-		Required:    false,
+		Action: plannedactions.Action{
+			ActionID: "inline-1", Kind: ledger.PlannedActionInlineComment, PlannedAt: fixedNow(),
+			InlineComment: &plannedactions.InlineCommentPayload{Body: "inline", Path: "main.go", Side: review.DiffSideRight, Line: 1, SubjectType: review.AnchorKindLine},
+			Status:        ledger.PlannedActionPending,
+		},
+		RunID: run.RunID,
 	})
 
 	_, err := Run(ctx, fixture.options(), Request{
@@ -1134,20 +1133,21 @@ func threadAnalysisResult(threadID string, decision threadanalysis.Decision, rep
 
 func responsePlannedAction(t *testing.T, runID, actionID string, kind ledger.PlannedActionKind, threadID string, payload any) ledger.PlannedAction {
 	t.Helper()
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("Marshal payload: %v", err)
+	action := ledger.PlannedAction{
+		Action: plannedactions.Action{
+			ActionID: actionID, Kind: kind, ThreadID: threadID, PlannedAt: fixedNow(), Status: ledger.PlannedActionPending, Required: true,
+		},
+		RunID: runID,
 	}
-	return ledger.PlannedAction{
-		ActionID:    actionID,
-		RunID:       runID,
-		Kind:        kind,
-		ThreadID:    &threadID,
-		PlannedAt:   fixedNow(),
-		PayloadJSON: string(payloadJSON),
-		Status:      ledger.PlannedActionPending,
-		Required:    true,
+	switch payload := payload.(type) {
+	case outbox.ThreadReplyPayload:
+		action.ThreadReply = &payload
+	case outbox.ResolveThreadPayload:
+		action.ResolveThread = &payload
+	default:
+		t.Fatalf("unsupported payload type %T", payload)
 	}
+	return action
 }
 
 func insertAction(t *testing.T, store *ledger.Store, action ledger.PlannedAction) {
@@ -1166,11 +1166,15 @@ func setInlineThreads(t *testing.T, fixture *fixture, threads []gitprovider.Inli
 
 func decodePayload[T any](t *testing.T, action ledger.PlannedAction) T {
 	t.Helper()
-	var payload T
-	if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
-		t.Fatalf("Unmarshal payload: %v", err)
+	payload, err := action.Payload()
+	if err != nil {
+		t.Fatalf("Payload: %v", err)
 	}
-	return payload
+	typed, ok := payload.(*T)
+	if !ok {
+		t.Fatalf("payload type = %T, want *%T", payload, *new(T))
+	}
+	return *typed
 }
 
 func sequence(prefix string) func() string {

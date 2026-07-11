@@ -19,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/threadanalysis"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
@@ -392,13 +393,13 @@ func testThreadRespondResult(outcome ledger.Outcome) threadrespond.Result {
 		}},
 		Plan: reviewplan.Plan{
 			Actions: []reviewplan.Action{
-				{ActionID: "thread_reply-1", Kind: reviewplan.ActionKindThreadReply, ThreadID: "thread-1", ThreadReply: &reviewplan.ThreadReplyPayload{Body: "Ack"}},
-				{ActionID: "resolve_thread-1", Kind: reviewplan.ActionKindResolveThread, ThreadID: "thread-1", ResolveThread: &reviewplan.ResolveThreadPayload{}},
+				{Action: plannedactions.Action{ActionID: "thread_reply-1", Kind: reviewplan.ActionKindThreadReply, ThreadID: "thread-1", ThreadReply: &reviewplan.ThreadReplyPayload{Body: "Ack"}}},
+				{Action: plannedactions.Action{ActionID: "resolve_thread-1", Kind: reviewplan.ActionKindResolveThread, ThreadID: "thread-1", ResolveThread: &reviewplan.ResolveThreadPayload{}}},
 			},
 		},
 		PlannedActions: []ledger.PlannedAction{
-			{ActionID: "thread_reply-1", RunID: "respond-run-1", Kind: ledger.PlannedActionThreadReply, Status: ledger.PlannedActionPending, Required: true},
-			{ActionID: "resolve_thread-1", RunID: "respond-run-1", Kind: ledger.PlannedActionResolveThread, Status: ledger.PlannedActionPending, Required: true},
+			{Action: plannedactions.Action{ActionID: "thread_reply-1", Kind: ledger.PlannedActionThreadReply, Status: ledger.PlannedActionPending, Required: true}, RunID: "respond-run-1"},
+			{Action: plannedactions.Action{ActionID: "resolve_thread-1", Kind: ledger.PlannedActionResolveThread, Status: ledger.PlannedActionPending, Required: true}, RunID: "respond-run-1"},
 		},
 		Outbox:   outbox.Result{Outcome: outcome, ExitCode: 0, Posted: 2},
 		ExitCode: 0,

@@ -3,7 +3,6 @@ package gateio
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -17,7 +16,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
-	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -936,12 +935,11 @@ func TestEvaluatePartialRepairPostsSingleReview(t *testing.T) {
 	if action.Kind != ledger.PlannedActionSubmitReview || !action.Required || action.Status != ledger.PlannedActionPosted {
 		t.Fatalf("repair action = %#v, want posted required submit_review", action)
 	}
-	var payload outbox.SubmitReviewPayload
-	if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
-		t.Fatalf("decode repair payload: %v", err)
+	if action.SubmitReview == nil {
+		t.Fatal("repair payload is nil")
 	}
-	if payload.Body != repairSubmitReviewBody || payload.Event != review.ReviewEventApprove {
-		t.Fatalf("repair payload = %#v, want pinned body/event", payload)
+	if action.SubmitReview.Body != repairSubmitReviewBody || action.SubmitReview.Event != review.ReviewEventApprove {
+		t.Fatalf("repair payload = %#v, want pinned body/event", action.SubmitReview)
 	}
 }
 
@@ -1130,7 +1128,7 @@ func TestEvaluateRetryPostsExecutesOnlyMissingReview(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
 	rollup := plannedAction(run.RunID, "rollup-1", ledger.PlannedActionPosted, true, nil)
-	rollup.PayloadJSON = payloadJSON(t, outbox.RollupCommentPayload{Body: "existing rollup"})
+	rollup.RollupComment = &plannedactions.RollupCommentPayload{Body: "existing rollup"}
 	rollup.PostedAt = timePtr(testNow.Add(-time.Minute))
 	rollup.UpstreamID = strPtr("issue-rollup")
 	insertAction(t, fixture.store, rollup)
@@ -1237,19 +1235,16 @@ func TestEvaluateRetryPostsUnprovableOutcomeDoesNotMutate(t *testing.T) {
 			name: "required inline only",
 			seed: func(t *testing.T, f *fixture, run ledger.Run) {
 				insertAction(t, f.store, ledger.PlannedAction{
-					ActionID:  "inline-1",
-					RunID:     run.RunID,
-					Kind:      ledger.PlannedActionInlineComment,
-					PlannedAt: testNow,
-					PayloadJSON: payloadJSON(t, outbox.InlineCommentPayload{
-						Body:        "inline",
-						Path:        "main.go",
-						Side:        review.DiffSideRight,
-						Line:        1,
-						SubjectType: review.AnchorKindLine,
-					}),
-					Status:   ledger.PlannedActionPending,
-					Required: true,
+					Action: plannedactions.Action{
+						ActionID:  "inline-1",
+						Kind:      ledger.PlannedActionInlineComment,
+						PlannedAt: testNow,
+						InlineComment: &plannedactions.InlineCommentPayload{
+							Body: "inline", Path: "main.go", Side: review.DiffSideRight, Line: 1, SubjectType: review.AnchorKindLine,
+						},
+						Status: ledger.PlannedActionPending, Required: true,
+					},
+					RunID: run.RunID,
 				})
 			},
 		},
@@ -2271,13 +2266,11 @@ func actionByID(t *testing.T, store *ledger.Store, runID, actionID string) ledge
 
 func plannedAction(runID, actionID string, status ledger.PlannedActionStatus, required bool, failureClass *string) ledger.PlannedAction {
 	return ledger.PlannedAction{
-		ActionID:     actionID,
+		Action: plannedactions.Action{
+			ActionID: actionID, Kind: ledger.PlannedActionRollupComment, PlannedAt: testNow,
+			RollupComment: &plannedactions.RollupCommentPayload{}, Status: status, Required: required,
+		},
 		RunID:        runID,
-		Kind:         ledger.PlannedActionRollupComment,
-		PlannedAt:    testNow,
-		PayloadJSON:  "{}",
-		Status:       status,
-		Required:     required,
 		FailureClass: failureClass,
 	}
 }
@@ -2285,13 +2278,11 @@ func plannedAction(runID, actionID string, status ledger.PlannedActionStatus, re
 func submitReviewAction(t *testing.T, runID, actionID string, status ledger.PlannedActionStatus, required bool, event review.ReviewEvent) ledger.PlannedAction {
 	t.Helper()
 	action := ledger.PlannedAction{
-		ActionID:     actionID,
+		Action: plannedactions.Action{
+			ActionID: actionID, Kind: ledger.PlannedActionSubmitReview, PlannedAt: testNow,
+			SubmitReview: &plannedactions.SubmitReviewPayload{Body: "review body", Event: event}, Status: status, Required: required,
+		},
 		RunID:        runID,
-		Kind:         ledger.PlannedActionSubmitReview,
-		PlannedAt:    testNow,
-		PayloadJSON:  payloadJSON(t, outbox.SubmitReviewPayload{Body: "review body", Event: event}),
-		Status:       status,
-		Required:     required,
 		FailureClass: nil,
 	}
 	if status == ledger.PlannedActionFailedTerminal {
@@ -2301,15 +2292,6 @@ func submitReviewAction(t *testing.T, runID, actionID string, status ledger.Plan
 		action.AttemptedAt = timePtr(testNow.Add(-time.Minute))
 	}
 	return action
-}
-
-func payloadJSON(t *testing.T, payload any) string {
-	t.Helper()
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("Marshal payload: %v", err)
-	}
-	return string(data)
 }
 
 func timePtr(value time.Time) *time.Time {

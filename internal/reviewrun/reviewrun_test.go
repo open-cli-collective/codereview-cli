@@ -21,8 +21,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
-	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -326,14 +326,11 @@ func TestRunRetryPostsWarnsWhenGitHubAppCannotResolveThreadsButArtifactsAlreadyP
 	}
 	resolveFailureClass := ledger.PlannedActionFailureClassAdvisory
 	if err := fixture.store.InsertPlannedAction(ctx, ledger.PlannedAction{
-		ActionID:     "resolve-1",
+		Action: plannedactions.Action{
+			ActionID: "resolve-1", Kind: ledger.PlannedActionResolveThread, ThreadID: "thread-1", PlannedAt: testNow(),
+			ResolveThread: &plannedactions.ResolveThreadPayload{}, Status: ledger.PlannedActionPending, Required: true,
+		},
 		RunID:        run.RunID,
-		Kind:         ledger.PlannedActionResolveThread,
-		ThreadID:     strPtr("thread-1"),
-		PlannedAt:    testNow(),
-		PayloadJSON:  payloadJSON(t, outbox.ResolveThreadPayload{}),
-		Status:       ledger.PlannedActionPending,
-		Required:     true,
 		Error:        strPtr("github graphql: GitHub App integrations cannot resolve review threads (resource not accessible by integration)"),
 		FailureClass: &resolveFailureClass,
 		Attempts:     1,
@@ -467,19 +464,12 @@ func TestRunResumeInvalidStoredActionsFailsRunWithRerunGuidance(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "invalid-actions", testBaseSHA)
 	if err := fixture.store.InsertPlannedAction(ctx, ledger.PlannedAction{
-		ActionID:  "inline-1",
-		RunID:     run.RunID,
-		Kind:      ledger.PlannedActionInlineComment,
-		PlannedAt: testNow(),
-		PayloadJSON: payloadJSON(t, outbox.InlineCommentPayload{
-			Body:        "inline",
-			Path:        "main.go",
-			Side:        review.DiffSideRight,
-			Line:        1,
-			SubjectType: review.AnchorKindLine,
-		}),
-		Status:   ledger.PlannedActionPending,
-		Required: true,
+		Action: plannedactions.Action{
+			ActionID: "inline-1", Kind: ledger.PlannedActionInlineComment, PlannedAt: testNow(),
+			InlineComment: &plannedactions.InlineCommentPayload{Body: "inline", Path: "main.go", Side: review.DiffSideRight, Line: 1, SubjectType: review.AnchorKindLine},
+			Status:        ledger.PlannedActionPending, Required: true,
+		},
+		RunID: run.RunID,
 	}); err != nil {
 		t.Fatalf("InsertPlannedAction: %v", err)
 	}
@@ -1130,14 +1120,11 @@ func (p *fakePlanner) Live(_ context.Context, req pipeline.Request, run ledger.R
 	}
 	if p.includeResolve {
 		if err := p.store.InsertPlannedAction(context.Background(), ledger.PlannedAction{
-			ActionID:    "resolve-1",
-			RunID:       run.RunID,
-			Kind:        ledger.PlannedActionResolveThread,
-			ThreadID:    strPtr("thread-1"),
-			PlannedAt:   testNow(),
-			PayloadJSON: payloadJSON(nil, outbox.ResolveThreadPayload{}),
-			Status:      ledger.PlannedActionPending,
-			Required:    true,
+			Action: plannedactions.Action{
+				ActionID: "resolve-1", Kind: ledger.PlannedActionResolveThread, ThreadID: "thread-1", PlannedAt: testNow(),
+				ResolveThread: &plannedactions.ResolveThreadPayload{}, Status: ledger.PlannedActionPending, Required: true,
+			},
+			RunID: run.RunID,
 		}); err != nil {
 			return pipeline.Result{}, err
 		}
@@ -1151,39 +1138,24 @@ func (p *fakePlanner) Live(_ context.Context, req pipeline.Request, run ledger.R
 	}, nil
 }
 
-func reviewActions(t *testing.T, runID string, event review.ReviewEvent) []ledger.PlannedAction {
+func reviewActions(_ *testing.T, runID string, event review.ReviewEvent) []ledger.PlannedAction {
 	now := testNow()
 	return []ledger.PlannedAction{
 		{
-			ActionID:    "rollup-1",
-			RunID:       runID,
-			Kind:        ledger.PlannedActionRollupComment,
-			PlannedAt:   now,
-			PayloadJSON: payloadJSON(t, outbox.RollupCommentPayload{Body: "rollup body"}),
-			Status:      ledger.PlannedActionPending,
-			Required:    true,
+			Action: plannedactions.Action{
+				ActionID: "rollup-1", Kind: ledger.PlannedActionRollupComment, PlannedAt: now,
+				RollupComment: &plannedactions.RollupCommentPayload{Body: "rollup body"}, Status: ledger.PlannedActionPending, Required: true,
+			},
+			RunID: runID,
 		},
 		{
-			ActionID:    "submit-1",
-			RunID:       runID,
-			Kind:        ledger.PlannedActionSubmitReview,
-			PlannedAt:   now,
-			PayloadJSON: payloadJSON(t, outbox.SubmitReviewPayload{Body: "review body", Event: event}),
-			Status:      ledger.PlannedActionPending,
-			Required:    true,
+			Action: plannedactions.Action{
+				ActionID: "submit-1", Kind: ledger.PlannedActionSubmitReview, PlannedAt: now,
+				SubmitReview: &plannedactions.SubmitReviewPayload{Body: "review body", Event: event}, Status: ledger.PlannedActionPending, Required: true,
+			},
+			RunID: runID,
 		},
 	}
-}
-
-func payloadJSON(t *testing.T, payload any) string {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		if t != nil {
-			t.Fatalf("Marshal: %v", err)
-		}
-		panic(err)
-	}
-	return string(data)
 }
 
 func strPtr(value string) *string {
