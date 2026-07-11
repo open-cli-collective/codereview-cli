@@ -6923,6 +6923,70 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 	}
 }
 
+func TestLoopInteractiveInitProfileV2KeepsOtherProfileRouteSubtitlesAfterStage(t *testing.T) {
+	routes := []configedit.RepositoryRouteSpec{
+		{Host: "github.com", Namespace: "open-cli-collective"},
+		{Host: "github.com", Namespace: "rianjs"},
+	}
+	cfg := config.File{
+		Profiles: map[string]config.Profile{
+			"claude-rianjs-bot": basicProfile("claude-rianjs-bot"),
+			"codex-rianjs-bot":  basicProfile("codex-rianjs-bot"),
+		},
+	}
+	for _, profileName := range []string{"claude-rianjs-bot", "codex-rianjs-bot"} {
+		var err error
+		cfg.RepositoryProfiles, err = applyInitProfileRoutes(cfg.RepositoryProfiles, profileName, "github.com", routes)
+		if err != nil {
+			t.Fatalf("applyInitProfileRoutes(%q): %v", profileName, err)
+		}
+	}
+	session := initSessionDraft{
+		originalCfg:          cloneInitConfigFile(cfg),
+		cfg:                  cloneInitConfigFile(cfg),
+		requestedProfileName: "claude-rianjs-bot",
+		touchedProfiles:      map[string]string{},
+	}
+	calls := 0
+	deps := initDeps{prompters: prompters{runProfileV2: initPrompterFunc(func(ctx initPromptContext) (initDraft, error) {
+		calls++
+		if calls == 2 {
+			model := newInitInventoryModel(initInventoryPrompt{
+				Title:  "Review Profile",
+				Width:  80,
+				Height: 20,
+				Rows:   initProfileV2InventoryRows(ctx),
+			})
+			view := model.View()
+			if !strings.Contains(view, "> [x] claude-rianjs-bot") || !strings.Contains(view, "  [ ] codex-rianjs-bot") {
+				t.Fatalf("profile inventory selection after staging:\n%s", view)
+			}
+			for _, profileName := range []string{"claude-rianjs-bot", "codex-rianjs-bot"} {
+				if !strings.Contains(view, profileName+"\n      github.com/open-cli-collective; github.com/rianjs") {
+					t.Fatalf("profile inventory after staging %q:\n%s", profileName, view)
+				}
+			}
+			return initDraft{}, errInitNavigateBack
+		}
+		profile := ctx.ExistingConfig.Profiles["codex-rianjs-bot"]
+		draft := seedInteractiveInitDraft("codex-rianjs-bot", "codex-rianjs-bot", &profile)
+		draft.Routes = append([]configedit.RepositoryRouteSpec(nil), routes...)
+		draft.RoutesSet = true
+		return draft, nil
+	})}}
+
+	next, err := loopInteractiveInitProfileV2(&cobra.Command{}, &root.Options{}, initOptions{}, deps, session)
+	if err != nil {
+		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("profile v2 calls = %d, want stage then reentry", calls)
+	}
+	if !initConfigsEqual(next.cfg, cfg) {
+		t.Fatalf("staging unchanged profile changed config:\ngot:  %#v\nwant: %#v", next.cfg, cfg)
+	}
+}
+
 func TestCompleteInteractiveInitProfileV2DraftUsesProfileNamePriorityForRoutes(t *testing.T) {
 	ctx := initPromptContext{
 		ExistingProfileName: "existing",
