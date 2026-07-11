@@ -1,4 +1,4 @@
-package llm
+package llmadapters
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
 
 // ErrAPIAdapterConfig reports invalid direct API adapter configuration.
@@ -57,6 +58,8 @@ type APIAdapter struct {
 	anthropicVersion string
 	fastModeModels   []string
 }
+
+var _ llm.Adapter = (*APIAdapter)(nil)
 
 // NewAPIAdapterFromConfig resolves an API-key LLM adapter from profile config.
 func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store credentials.Reader, opts APIOptions) (*APIAdapter, error) {
@@ -206,10 +209,7 @@ func (a *APIAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	}
 	reqCtx, cancel := context.WithCancel(ctx)
 	stream := &apiStream{
-		baseStream: baseStream{
-			cancel: cancel,
-			done:   make(chan struct{}),
-		},
+		baseStream: llm.NewBaseStream(cancel),
 	}
 	go stream.run(reqCtx, a, req)
 	return stream, nil
@@ -220,17 +220,14 @@ type apiStream struct {
 }
 
 func (s *apiStream) run(ctx context.Context, adapter *APIAdapter, req Request) {
-	defer close(s.done)
-	defer s.cancel()
+	defer s.Cancel()
 	start := time.Now()
 	sessionID, response, err := adapter.execute(ctx, req)
 	if err == nil {
 		response.DurationMS = time.Since(start).Milliseconds()
 	}
-	s.mu.Lock()
-	s.sessionID = sessionID
-	s.result = subprocessResult{response: response, err: err}
-	s.mu.Unlock()
+	s.SetSessionID(sessionID)
+	s.Finish(response, err)
 }
 
 func (a *APIAdapter) execute(ctx context.Context, req Request) (string, Response, error) {

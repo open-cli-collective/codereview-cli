@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/hooks"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
@@ -649,25 +650,25 @@ type adapterConstructor func(config.LLMConfig, credentials.Reader, config.LLMRun
 
 var adapterConstructors = map[config.LLMAdapter]adapterConstructor{
 	config.LLMAdapterClaudeCLI: func(_ config.LLMConfig, _ credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
-		return llm.NewClaudeCLIAdapter(llm.SubprocessOptions{FastModeModels: spec.FastModeModels}), nil
+		return llmadapters.NewClaudeCLIAdapter(llmadapters.SubprocessOptions{FastModeModels: spec.FastModeModels}), nil
 	},
 	config.LLMAdapterCodexCLI: func(llmConfig config.LLMConfig, _ credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
 		if llmConfig.Provider != config.LLMProviderOpenAI || llmConfig.Auth != config.LLMAuthSubscription {
 			return nil, fmt.Errorf("%w: codex_cli requires provider openai with subscription auth", config.ErrUnsupported)
 		}
-		return llm.NewCodexCLIAdapter(llm.SubprocessOptions{AllowBestEffortNoTools: true, FastModeModels: spec.FastModeModels}), nil
+		return llmadapters.NewCodexCLIAdapter(llmadapters.SubprocessOptions{AllowBestEffortNoTools: true, FastModeModels: spec.FastModeModels}), nil
 	},
 	config.LLMAdapterPiRPC: func(llmConfig config.LLMConfig, _ credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
 		if llmConfig.Provider != config.LLMProviderPi || llmConfig.Auth != config.LLMAuthSubscription {
 			return nil, fmt.Errorf("%w: pi_rpc requires provider pi with subscription auth", config.ErrUnsupported)
 		}
-		return llm.NewPiRPCAdapter(llm.PiRPCOptions{FastModeModels: spec.FastModeModels}), nil
+		return llmadapters.NewPiRPCAdapter(llmadapters.PiRPCOptions{FastModeModels: spec.FastModeModels}), nil
 	},
 	config.LLMAdapterAnthropicAPI: func(llmConfig config.LLMConfig, store credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
-		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{FastModeModels: spec.FastModeModels})
+		return llmadapters.NewAPIAdapterFromConfig(llmConfig, store, llmadapters.APIOptions{FastModeModels: spec.FastModeModels})
 	},
 	config.LLMAdapterOpenAIAPI: func(llmConfig config.LLMConfig, store credentials.Reader, spec config.LLMRuntimeSpec) (llm.Adapter, error) {
-		return llm.NewAPIAdapterFromConfig(llmConfig, store, llm.APIOptions{FastModeModels: spec.FastModeModels})
+		return llmadapters.NewAPIAdapterFromConfig(llmConfig, store, llmadapters.APIOptions{FastModeModels: spec.FastModeModels})
 	},
 }
 

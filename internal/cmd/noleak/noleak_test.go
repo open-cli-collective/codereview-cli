@@ -41,7 +41,7 @@ import (
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
-	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -786,7 +786,7 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 		cleanup()
 		return app.Runtime{}, err
 	}
-	adapter, err := llm.NewAPIAdapterFromConfig(profile.LLM, store, llm.APIOptions{BaseURL: h.llmURL})
+	adapter, err := llmadapters.NewAPIAdapterFromConfig(profile.LLM, store, llmadapters.APIOptions{BaseURL: h.llmURL})
 	if err != nil {
 		cleanup()
 		return app.Runtime{}, err
