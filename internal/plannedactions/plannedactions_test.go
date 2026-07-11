@@ -1,4 +1,4 @@
-package plannedactions
+package plannedactions_test
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	plannedactions "github.com/open-cli-collective/codereview-cli/internal/plannedactions/convert"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 )
 
@@ -23,7 +24,7 @@ func TestFromReviewPlanThreadReply(t *testing.T) {
 			Summary: true,
 		},
 	}
-	got, err := FromReviewPlan("run-1", action)
+	got, err := plannedactions.FromReviewPlan("run-1", action)
 	if err != nil {
 		t.Fatalf("FromReviewPlan: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestFromReviewPlanThreadReply(t *testing.T) {
 }
 
 func TestPayloadRejectsMissingThreadReplyPayload(t *testing.T) {
-	_, err := Payload(reviewplan.Action{Kind: reviewplan.ActionKindThreadReply})
+	_, err := plannedactions.Payload(reviewplan.Action{Kind: reviewplan.ActionKindThreadReply})
 	if err == nil {
 		t.Fatal("Payload error = nil, want missing payload error")
 	}
