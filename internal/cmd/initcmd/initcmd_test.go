@@ -339,198 +339,13 @@ func TestInitNonInteractiveWritesPiRPCProfile(t *testing.T) {
 	assertFakeStored(t, store, "default", credentials.GitTokenKey, "git-token")
 }
 
-func TestPlanInitCredentials(t *testing.T) {
-	t.Run("new git pat defaults to defer", func(t *testing.T) {
-		desired := basicProfile("work")
-		entries, err := planInitCredentials(nil, desired, nil)
-		if err != nil {
-			t.Fatalf("planInitCredentials: %v", err)
-		}
-		if len(entries) != 1 {
-			t.Fatalf("entries len = %d, want 1", len(entries))
-		}
-		entry := entries[0]
-		if entry.Ref.Ref != "codereview/work" || entry.State != initCredentialPlanStateDefer {
-			t.Fatalf("entry = %#v, want git defer codereview/work", entry)
-		}
-		if !reflect.DeepEqual(entry.KeySpecs, []credentials.KeySpec{{Key: credentials.GitTokenKey, Required: true}}) {
-			t.Fatalf("key specs = %#v, want git_token required", entry.KeySpecs)
-		}
-	})
-
-	t.Run("reviewer github app default ref includes bundle keys", func(t *testing.T) {
-		desired := basicProfile("work")
-		desired.ReviewerCredentials = &config.ReviewerCredentials{
-			AuthMode:   config.GitAuthModeGitHubApp,
-			GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
-			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
-		}
-		entries, err := planInitCredentials(nil, desired, nil)
-		if err != nil {
-			t.Fatalf("planInitCredentials: %v", err)
-		}
-		if len(entries) != 2 {
-			t.Fatalf("entries len = %d, want 2", len(entries))
-		}
-		entry := entries[1]
-		if entry.Ref.Purpose != "reviewer_credentials" || entry.Ref.Ref != "codereview/work-reviewer" || entry.State != initCredentialPlanStateDefer {
-			t.Fatalf("reviewer entry = %#v, want deferred reviewer app ref", entry)
-		}
-		want := []credentials.KeySpec{{Key: credentials.GitHubAppPrivateKeyKey, Required: true}}
-		if !reflect.DeepEqual(entry.KeySpecs, want) {
-			t.Fatalf("key specs = %#v, want %#v", entry.KeySpecs, want)
-		}
-	})
-
-	t.Run("llm providers use provider-specific api keys", func(t *testing.T) {
-		for _, tt := range []struct {
-			name     string
-			provider config.LLMProvider
-			adapter  config.LLMAdapter
-			key      string
-		}{
-			{name: "anthropic", provider: config.LLMProviderAnthropic, adapter: config.LLMAdapterAnthropicAPI, key: credentials.AnthropicAPIKeyKey},
-			{name: "openai", provider: config.LLMProviderOpenAI, adapter: config.LLMAdapterOpenAIAPI, key: credentials.OpenAIAPIKeyKey},
-		} {
-			t.Run(tt.name, func(t *testing.T) {
-				desired := basicProfile("work")
-				desired.LLM = config.LLMConfig{
-					Provider:   tt.provider,
-					Auth:       config.LLMAuthAPIKey,
-					Adapter:    tt.adapter,
-					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
-				}
-				entries, err := planInitCredentials(nil, desired, nil)
-				if err != nil {
-					t.Fatalf("planInitCredentials: %v", err)
-				}
-				if len(entries) != 2 {
-					t.Fatalf("entries len = %d, want 2", len(entries))
-				}
-				entry := entries[1]
-				if entry.Ref.Purpose != "llm" || entry.State != initCredentialPlanStateDefer {
-					t.Fatalf("llm entry = %#v, want deferred llm credential", entry)
-				}
-				want := []credentials.KeySpec{{Key: tt.key, Required: true}}
-				if !reflect.DeepEqual(entry.KeySpecs, want) {
-					t.Fatalf("key specs = %#v, want %#v", entry.KeySpecs, want)
-				}
-			})
-		}
-	})
-
-	t.Run("preserve custom refs across rename interactions", func(t *testing.T) {
-		cfg := config.File{
-			Profiles: map[string]config.Profile{
-				"work": {
-					Git: config.GitConfig{
-						Host:       "github.com",
-						AuthMode:   config.GitAuthModePAT,
-						Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work"},
-					},
-					ReviewerCredentials: &config.ReviewerCredentials{
-						AuthMode:   config.GitAuthModePAT,
-						Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-reviewer"},
-					},
-					LLM: config.LLMConfig{
-						Provider:   config.LLMProviderAnthropic,
-						Auth:       config.LLMAuthAPIKey,
-						Adapter:    config.LLMAdapterAnthropicAPI,
-						Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-llm"},
-					},
-				},
-			},
-		}
-		renamed, changed, err := configedit.RenameProfile(cfg, "work", "office")
-		if err != nil {
-			t.Fatalf("RenameProfile: %v", err)
-		}
-		if !changed {
-			t.Fatal("RenameProfile changed = false, want true")
-		}
-		previous := cfg.Profiles["work"]
-		desired := renamed.Profiles["office"]
-		entries, err := planInitCredentials(&previous, desired, nil)
-		if err != nil {
-			t.Fatalf("planInitCredentials: %v", err)
-		}
-		for _, entry := range entries {
-			if entry.State != initCredentialPlanStateKeepExisting {
-				t.Fatalf("entry = %#v, want keep_existing across rename", entry)
-			}
-		}
-	})
-
-	t.Run("overwrite custom ref without writes is tracked separately", func(t *testing.T) {
-		previous := basicProfile("work")
-		previous.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-old"}
-		desired := previous
-		desired.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-new"}
-		entries, err := planInitCredentials(&previous, desired, nil)
-		if err != nil {
-			t.Fatalf("planInitCredentials: %v", err)
-		}
-		if entries[0].State != initCredentialPlanStateOverwriteRef {
-			t.Fatalf("state = %s, want overwrite_ref", entries[0].State)
-		}
-	})
-
-	t.Run("optional refs can clear", func(t *testing.T) {
-		previous := apiKeyProfile("work", config.LLMProviderAnthropic)
-		previous.ReviewerCredentials = &config.ReviewerCredentials{
-			AuthMode:   config.GitAuthModePAT,
-			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
-		}
-		desired := basicProfile("work")
-		entries, err := planInitCredentials(&previous, desired, nil)
-		if err != nil {
-			t.Fatalf("planInitCredentials: %v", err)
-		}
-		states := map[string]initCredentialPlanState{}
-		for _, entry := range entries {
-			states[entry.Ref.Purpose] = entry.State
-		}
-		if states["git"] != initCredentialPlanStateKeepExisting {
-			t.Fatalf("git state = %s, want keep_existing", states["git"])
-		}
-		if states["reviewer_credentials"] != initCredentialPlanStateClearRef {
-			t.Fatalf("reviewer state = %s, want clear_ref", states["reviewer_credentials"])
-		}
-		if states["llm"] != initCredentialPlanStateClearRef {
-			t.Fatalf("llm state = %s, want clear_ref", states["llm"])
-		}
-	})
-
-	t.Run("github app private key not staged defers credential setup", func(t *testing.T) {
-		desired := basicProfile("work")
-		desired.Git.AuthMode = config.GitAuthModeGitHubApp
-		desired.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-		entries, err := planInitCredentials(nil, desired, map[string][]string{
-			"codereview/work": {},
-		})
-		if err != nil {
-			t.Fatalf("planInitCredentials: %v", err)
-		}
-		entry := entries[0]
-		if entry.State != initCredentialPlanStateDefer {
-			t.Fatalf("state = %s, want defer", entry.State)
-		}
-		if len(entry.PlannedWriteKeys) != 0 {
-			t.Fatalf("planned write keys = %#v, want none", entry.PlannedWriteKeys)
-		}
-		if len(entry.MissingRequiredKeys) != 0 {
-			t.Fatalf("missing required = %#v, want none without staged writes", entry.MissingRequiredKeys)
-		}
-	})
-}
-
 func TestLoadInteractiveCredentialPlanStateSkipsStoreForSettledEntries(t *testing.T) {
 	previous := basicProfile("work")
-	keepEntries, err := planInitCredentials(&previous, previous, nil)
+	keepEntries, err := credentials.Plan(&previous, previous, nil)
 	if err != nil {
 		t.Fatalf("planInitCredentials keep: %v", err)
 	}
-	writeEntries, err := planInitCredentials(nil, basicProfile("office"), map[string][]string{
+	writeEntries, err := credentials.Plan(nil, basicProfile("office"), map[string][]string{
 		"codereview/office": {credentials.GitTokenKey},
 	})
 	if err != nil {
@@ -563,13 +378,13 @@ func TestLoadInteractiveCredentialPlanStateSkipsStoreForSettledEntries(t *testin
 }
 
 func TestLoadInteractiveCredentialPlanStatePreservesSettledEntriesWhenMixedPlanNeedsStore(t *testing.T) {
-	keepEntries, err := planInitCredentials(nil, basicProfile("work"), nil)
+	keepEntries, err := credentials.Plan(nil, basicProfile("work"), nil)
 	if err != nil {
 		t.Fatalf("planInitCredentials keep seed: %v", err)
 	}
 	keepEntries[0].State = initCredentialPlanStateKeepExisting
 
-	writeEntries, err := planInitCredentials(nil, basicProfile("office"), map[string][]string{
+	writeEntries, err := credentials.Plan(nil, basicProfile("office"), map[string][]string{
 		"codereview/office": {credentials.GitTokenKey},
 	})
 	if err != nil {
@@ -577,7 +392,7 @@ func TestLoadInteractiveCredentialPlanStatePreservesSettledEntriesWhenMixedPlanN
 	}
 
 	deferredProfile := apiKeyProfile("lab", config.LLMProviderAnthropic)
-	deferredEntries, err := planInitCredentials(nil, deferredProfile, nil)
+	deferredEntries, err := credentials.Plan(nil, deferredProfile, nil)
 	if err != nil {
 		t.Fatalf("planInitCredentials deferred: %v", err)
 	}
@@ -3495,30 +3310,6 @@ func testInitMultiKeySecretWorkspace() initWorkspaceDraft {
 			},
 			State: initCredentialPlanStateMissingRequired,
 		}},
-	}
-}
-
-func TestPlanInitCredentialsClearsOptionalRefsInStableOrder(t *testing.T) {
-	previous := apiKeyProfile("work", config.LLMProviderAnthropic)
-	previous.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:   config.GitAuthModePAT,
-		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
-	}
-	desired := basicProfile("work")
-
-	entries, err := planInitCredentials(&previous, desired, nil)
-	if err != nil {
-		t.Fatalf("planInitCredentials: %v", err)
-	}
-
-	var cleared []string
-	for _, entry := range entries {
-		if entry.State == initCredentialPlanStateClearRef {
-			cleared = append(cleared, entry.Ref.Purpose)
-		}
-	}
-	if !reflect.DeepEqual(cleared, []string{"reviewer_credentials", "llm"}) {
-		t.Fatalf("cleared purposes = %#v, want reviewer then llm", cleared)
 	}
 }
 
@@ -14000,7 +13791,7 @@ func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *
 			GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
 			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 		}
-		if _, err := planInitCredentialsWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
+		if _, err := credentials.PlanWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
 			t.Fatalf("planInitCredentialsWithConfig: %v", err)
 		}
 	})
@@ -14030,7 +13821,7 @@ func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *
 			AuthMode:   config.GitAuthModePAT,
 			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 		}
-		if _, err := planInitCredentialsWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
+		if _, err := credentials.PlanWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
 			t.Fatalf("planInitCredentialsWithConfig: %v", err)
 		}
 	})
@@ -18338,7 +18129,7 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
 	appEntry.SecretsStore = resolved
-	groups, err := groupStaleReviewerCredentialCleanupsByStore(cfg, []initCredentialPlanEntry{appEntry})
+	groups, err := credentials.GroupStaleReviewerCredentialCleanupsByStore(cfg, []initCredentialPlanEntry{appEntry})
 	if err != nil {
 		t.Fatalf("groupStaleReviewerCredentialCleanupsByStore: %v", err)
 	}
