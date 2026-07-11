@@ -399,16 +399,16 @@ func TestRenameProfileUpdatesRoutesAndPreservesProfileValues(t *testing.T) {
 		t.Fatal("old profile still exists after rename")
 	}
 	office := got.Profiles["office"]
-	if office.Git.CredentialRef != "codereview/custom-work" || office.Git.IdentityCache != "work-user" {
+	if office.Git.Credential.Name != "codereview/custom-work" || office.Git.IdentityCache != "work-user" {
 		t.Fatalf("git fields = %#v, want preserved credential ref and identity cache", office.Git)
 	}
 	if office.ReviewerCredentials == nil ||
-		office.ReviewerCredentials.CredentialRef != "codereview/custom-reviewer" ||
+		office.ReviewerCredentials.Credential.Name != "codereview/custom-reviewer" ||
 		office.ReviewerCredentials.IdentityCache != "review-bot" {
 		t.Fatalf("reviewer credentials = %#v, want preserved refs/cache", office.ReviewerCredentials)
 	}
-	if office.LLM.CredentialRef != "codereview/custom-llm" {
-		t.Fatalf("llm credential ref = %q, want preserved custom ref", office.LLM.CredentialRef)
+	if office.LLM.Credential.Name != "codereview/custom-llm" {
+		t.Fatalf("llm credential ref = %q, want preserved custom ref", office.LLM.Credential.Name)
 	}
 	wantRoutes := []config.RepositoryProfile{
 		{
@@ -701,9 +701,9 @@ func testConfig() config.File {
 		),
 		configtest.HomeProfile(config.Profile{
 			Git: config.GitConfig{
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/home",
+				Host:       "github.com",
+				AuthMode:   config.GitAuthModePAT,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 			},
 			LLM: config.LLMConfig{
 				Provider: config.LLMProviderAnthropic,
@@ -715,19 +715,19 @@ func testConfig() config.File {
 			Git: config.GitConfig{
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/custom-work",
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work"},
 				IdentityCache: "work-user",
 			},
 			ReviewerCredentials: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/custom-reviewer",
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-reviewer"},
 				IdentityCache: "review-bot",
 			},
 			LLM: config.LLMConfig{
-				Provider:      config.LLMProviderAnthropic,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterAnthropicAPI,
-				CredentialRef: "codereview/custom-llm",
+				Provider:   config.LLMProviderAnthropic,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterAnthropicAPI,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-llm"},
 			},
 			AgentSources: []string{"~/agents"},
 		}),

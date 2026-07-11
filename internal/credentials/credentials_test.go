@@ -492,7 +492,7 @@ func githubAppMatrixProfile(ref string) config.Profile {
 	p.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	p.LLM.Auth = config.LLMAuthSubscription
 	p.LLM.Adapter = config.LLMAdapterClaudeCLI
-	p.LLM.CredentialRef = ""
+	p.LLM.Credential = config.CredentialLocation{}
 	return p
 }
 
@@ -503,9 +503,9 @@ func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.
 			"shared-pat": matrixProfile("codereview/shared-git", "codereview/shared-llm", config.LLMProviderOpenAI),
 			"future": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModeOAuthDevice,
-					CredentialRef: "codereview/future", // #nosec G101 -- keyring ref, not a secret value.
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModeOAuthDevice,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/future"}, // #nosec G101 -- keyring ref, not a secret value.
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,
@@ -515,9 +515,9 @@ func TestExpectedKeysForConfigRefIgnoresUnrelatedUnsupportedProfiles(t *testing.
 			},
 			"shared-future": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModeOAuthDevice,
-					CredentialRef: "codereview/shared-git",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModeOAuthDevice,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-git"},
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,
@@ -953,15 +953,15 @@ func matrixProfile(gitRef, llmRef string, provider config.LLMProvider) config.Pr
 	}
 	return config.Profile{
 		Git: config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: gitRef,
+			Host:       "github.com",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: gitRef},
 		},
 		LLM: config.LLMConfig{
-			Provider:      provider,
-			Auth:          config.LLMAuthAPIKey,
-			Adapter:       adapter,
-			CredentialRef: llmRef,
+			Provider:   provider,
+			Auth:       config.LLMAuthAPIKey,
+			Adapter:    adapter,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: llmRef},
 		},
 	}
 }

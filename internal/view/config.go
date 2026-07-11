@@ -78,9 +78,9 @@ type LLMCredential struct {
 func NewConfigShow(profileName string, profile config.Profile, data config.DataConfig, refs []CredentialStatus) ConfigShow {
 	llmCredential := LLMCredential{Mode: "adapter_managed"}
 	if profile.LLM.Auth == config.LLMAuthAPIKey {
-		llmCredential = LLMCredential{Mode: "stored_ref", Ref: profile.LLM.CredentialRef}
+		llmCredential = LLMCredential{Mode: "stored_ref", Ref: profile.LLM.Credential.Name}
 	}
-	credentialRef := profile.Git.CredentialRef
+	credentialRef := profile.Git.Credential.Name
 	return ConfigShow{
 		ActiveProfile:  profileName,
 		Profile:        profile,
@@ -137,7 +137,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	if err := writeKV(w, "  Auth mode", string(show.Profile.Git.AuthMode)); err != nil {
 		return err
 	}
-	if err := writeKV(w, "  Credential name", show.Profile.Git.CredentialRef); err != nil {
+	if err := writeKV(w, "  Credential name", show.Profile.Git.Credential.Name); err != nil {
 		return err
 	}
 	if err := writeOptionalKV(w, "  Identity cache", show.Profile.Git.IdentityCache); err != nil {
@@ -155,7 +155,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 		if err := writeKV(w, "  Auth mode", string(show.Profile.ReviewerCredentials.AuthMode)); err != nil {
 			return err
 		}
-		if err := writeKV(w, "  Credential name", show.Profile.ReviewerCredentials.CredentialRef); err != nil {
+		if err := writeKV(w, "  Credential name", show.Profile.ReviewerCredentials.Credential.Name); err != nil {
 			return err
 		}
 		if err := writeOptionalKV(w, "  Identity cache", show.Profile.ReviewerCredentials.IdentityCache); err != nil {

@@ -73,13 +73,13 @@ func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store credentials.Reade
 	if store == nil {
 		return nil, fmt.Errorf("%w: token store is required", ErrAPIAdapterConfig)
 	}
-	parsed, err := credentials.ParseRef(llmConfig.CredentialRef)
+	parsed, err := credentials.ParseRef(llmConfig.Credential.Name)
 	if err != nil {
 		return nil, err
 	}
 	key, err := credentials.KeyForPurpose(config.CredentialRef{
 		Purpose:  "llm",
-		Ref:      llmConfig.CredentialRef,
+		Ref:      llmConfig.Credential.Name,
 		Mode:     string(llmConfig.Auth),
 		Provider: string(llmConfig.Provider),
 	})
@@ -88,7 +88,7 @@ func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store credentials.Reade
 	}
 	apiKey, err := store.Get(parsed.Profile, key)
 	if err != nil {
-		return nil, fmt.Errorf("%w: read llm credential %s/%s: %w", ErrAPIAdapterConfig, llmConfig.CredentialRef, key, err)
+		return nil, fmt.Errorf("%w: read llm credential %s/%s: %w", ErrAPIAdapterConfig, llmConfig.Credential.Name, key, err)
 	}
 	opts.APIKey = apiKey
 	return newAPIAdapter(kind, opts)

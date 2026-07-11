@@ -1125,7 +1125,7 @@ func testConfig() config.File {
 			Git: config.GitConfig{
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/home",
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 				IdentityCache: "review-bot",
 			},
 			LLM: config.LLMConfig{

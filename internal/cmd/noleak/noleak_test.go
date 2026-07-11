@@ -541,23 +541,20 @@ func (h *auditHarness) config() config.File {
 		Profiles: map[string]config.Profile{
 			"default": {
 				Git: config.GitConfig{
-					Host:          h.prRef.Host,
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default"},
-					CredentialRef: "codereview/default",
+					Host:       h.prRef.Host,
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default"},
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-reviewer"},
-					CredentialRef: "codereview/default-reviewer",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-reviewer"},
 				},
 				LLM: config.LLMConfig{
-					Provider:      config.LLMProviderAnthropic,
-					Auth:          config.LLMAuthAPIKey,
-					Adapter:       config.LLMAdapterAnthropicAPI,
-					Credential:    config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-llm"},
-					CredentialRef: "codereview/default-llm",
-					ModelMap:      config.ModelMap{"medium": "claude-sonnet-4-6"},
+					Provider:   config.LLMProviderAnthropic,
+					Auth:       config.LLMAuthAPIKey,
+					Adapter:    config.LLMAdapterAnthropicAPI,
+					Credential: config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-llm"},
+					ModelMap:   config.ModelMap{"medium": "claude-sonnet-4-6"},
 				},
 				AgentSources: []string{h.agentDir},
 				ReviewPolicy: config.ReviewPolicy{
@@ -579,7 +576,7 @@ func (h *auditHarness) githubAppGitConfig() config.File {
 	profile.Git.AuthMode = config.GitAuthModeGitHubApp
 	profile.Git.GitHubApp = &config.GitHubAppConfig{AppID: h.githubAppIDSecret}
 	profile.Git.Credential = config.CredentialLocation{Store: auditCredentialStoreID, Name: "codereview/default-app"}
-	profile.Git.CredentialRef = "codereview/default-app"
+	profile.Git.Credential.Name = "codereview/default-app"
 	cfg.Profiles["default"] = profile
 	return cfg
 }
@@ -866,7 +863,6 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		GitHubApp:     profile.ReviewerCredentials.GitHubApp,
 		Credential:    profile.ReviewerCredentials.Credential,
-		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}
 }

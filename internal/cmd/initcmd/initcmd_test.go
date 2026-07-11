@@ -71,10 +71,10 @@ func TestInitNonInteractiveNormalizesProfileNameCredentialRefs(t *testing.T) {
 		t.Fatalf("Load config: %v", err)
 	}
 	profile := cfg.Profiles["bad.profile"]
-	if profile.Git.CredentialRef != "codereview/bad_x2eprofile" {
-		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.CredentialRef)
+	if profile.Git.Credential.Name != "codereview/bad_x2eprofile" {
+		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.Credential.Name)
 	}
-	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/bad_x2eprofile-reviewer" {
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.Credential.Name != "codereview/bad_x2eprofile-reviewer" {
 		t.Fatalf("ReviewerCredentials = %#v, want normalized reviewer ref", profile.ReviewerCredentials)
 	}
 }
@@ -103,7 +103,7 @@ func TestInitNonInteractiveWritesReviewerCredential(t *testing.T) {
 		t.Fatal("reviewer credentials missing")
 		return
 	}
-	if reviewer.AuthMode != config.GitAuthModePAT || reviewer.CredentialRef != "codereview/default-reviewer" {
+	if reviewer.AuthMode != config.GitAuthModePAT || reviewer.Credential.Name != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want pat codereview/default-reviewer", reviewer)
 	}
 	if reviewer.Credential.Store != config.LocalOSCredentialStoreID || reviewer.Credential.Name != "codereview/default-reviewer" {
@@ -137,14 +137,14 @@ func TestInitNonInteractiveWritesGitHubAppReviewerConfigOnly(t *testing.T) {
 		t.Fatalf("profile reviewer github_app_installation = %#v, want discover_from_repository", profile.Reviewer.GitHubAppInstallation)
 	}
 	entity := cfg.ReviewerEntities["default-reviewer"]
-	if entity.AuthMode != config.GitAuthModeGitHubApp || entity.CredentialRef != "codereview/default-reviewer" {
+	if entity.AuthMode != config.GitAuthModeGitHubApp || entity.Credential.Name != "codereview/default-reviewer" {
 		t.Fatalf("reviewer entity = %#v, want github_app codereview/default-reviewer", entity)
 	}
 	if entity.GitHubApp == nil || entity.GitHubApp.AppID != "12345" {
 		t.Fatalf("reviewer entity github_app = %#v, want app_id 12345", entity.GitHubApp)
 	}
 	reviewer := cfg.Profiles["default"].ReviewerCredentials
-	if reviewer == nil || reviewer.AuthMode != config.GitAuthModeGitHubApp || reviewer.CredentialRef != "codereview/default-reviewer" {
+	if reviewer == nil || reviewer.AuthMode != config.GitAuthModeGitHubApp || reviewer.Credential.Name != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want github_app codereview/default-reviewer", reviewer)
 	}
 	if reviewer.GitHubApp == nil || reviewer.GitHubApp.AppID != "12345" {
@@ -220,7 +220,7 @@ func TestInitNonInteractiveWritesCustomReviewerCredentialFromStdin(t *testing.T)
 		t.Fatalf("Load config: %v", err)
 	}
 	reviewer := cfg.Profiles["work"].ReviewerCredentials
-	if reviewer == nil || reviewer.CredentialRef != "codereview/review-bot" {
+	if reviewer == nil || reviewer.Credential.Name != "codereview/review-bot" {
 		t.Fatalf("reviewer credentials = %#v, want custom codereview/review-bot", reviewer)
 	}
 	assertFakeStored(t, store, "work", credentials.GitTokenKey, "git-token")
@@ -246,7 +246,7 @@ func TestInitNonInteractiveDerivesReviewerRefFromStdinForProfile(t *testing.T) {
 		t.Fatalf("Load config: %v", err)
 	}
 	reviewer := cfg.Profiles["work"].ReviewerCredentials
-	if reviewer == nil || reviewer.CredentialRef != "codereview/work-reviewer" {
+	if reviewer == nil || reviewer.Credential.Name != "codereview/work-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want derived codereview/work-reviewer", reviewer)
 	}
 	assertFakeStored(t, store, "work", credentials.GitTokenKey, "git-token")
@@ -298,7 +298,7 @@ func TestInitNonInteractiveWritesProviderSpecificAPIKeySecret(t *testing.T) {
 				t.Fatalf("Load config: %v", err)
 			}
 			profile := cfg.Profiles["default"]
-			if profile.LLM.Provider != tt.provider || profile.LLM.CredentialRef != "codereview/default-llm" {
+			if profile.LLM.Provider != tt.provider || profile.LLM.Credential.Name != "codereview/default-llm" {
 				t.Fatalf("LLM config = %#v, want provider %s default LLM ref", profile.LLM, tt.provider)
 			}
 			assertFakeBundleKeys(t, store, "default", []string{credentials.GitTokenKey})
@@ -332,7 +332,7 @@ func TestInitNonInteractiveWritesPiRPCProfile(t *testing.T) {
 	if profile.LLM.Provider != config.LLMProviderPi ||
 		profile.LLM.Auth != config.LLMAuthSubscription ||
 		profile.LLM.Adapter != config.LLMAdapterPiRPC ||
-		profile.LLM.CredentialRef != "" {
+		profile.LLM.Credential.Name != "" {
 		t.Fatalf("LLM config = %#v, want pi subscription pi_rpc without credential ref", profile.LLM)
 	}
 	assertFakeBundleKeys(t, store, "default", []string{credentials.GitTokenKey})
@@ -361,9 +361,9 @@ func TestPlanInitCredentials(t *testing.T) {
 	t.Run("reviewer github app default ref includes bundle keys", func(t *testing.T) {
 		desired := basicProfile("work")
 		desired.ReviewerCredentials = &config.ReviewerCredentials{
-			AuthMode:      config.GitAuthModeGitHubApp,
-			GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-			CredentialRef: "codereview/work-reviewer",
+			AuthMode:   config.GitAuthModeGitHubApp,
+			GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		}
 		entries, err := planInitCredentials(nil, desired, nil)
 		if err != nil {
@@ -395,10 +395,10 @@ func TestPlanInitCredentials(t *testing.T) {
 			t.Run(tt.name, func(t *testing.T) {
 				desired := basicProfile("work")
 				desired.LLM = config.LLMConfig{
-					Provider:      tt.provider,
-					Auth:          config.LLMAuthAPIKey,
-					Adapter:       tt.adapter,
-					CredentialRef: "codereview/work-llm",
+					Provider:   tt.provider,
+					Auth:       config.LLMAuthAPIKey,
+					Adapter:    tt.adapter,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 				}
 				entries, err := planInitCredentials(nil, desired, nil)
 				if err != nil {
@@ -424,19 +424,19 @@ func TestPlanInitCredentials(t *testing.T) {
 			Profiles: map[string]config.Profile{
 				"work": {
 					Git: config.GitConfig{
-						Host:          "github.com",
-						AuthMode:      config.GitAuthModePAT,
-						CredentialRef: "codereview/custom-work",
+						Host:       "github.com",
+						AuthMode:   config.GitAuthModePAT,
+						Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work"},
 					},
 					ReviewerCredentials: &config.ReviewerCredentials{
-						AuthMode:      config.GitAuthModePAT,
-						CredentialRef: "codereview/custom-reviewer",
+						AuthMode:   config.GitAuthModePAT,
+						Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-reviewer"},
 					},
 					LLM: config.LLMConfig{
-						Provider:      config.LLMProviderAnthropic,
-						Auth:          config.LLMAuthAPIKey,
-						Adapter:       config.LLMAdapterAnthropicAPI,
-						CredentialRef: "codereview/custom-llm",
+						Provider:   config.LLMProviderAnthropic,
+						Auth:       config.LLMAuthAPIKey,
+						Adapter:    config.LLMAdapterAnthropicAPI,
+						Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-llm"},
 					},
 				},
 			},
@@ -478,8 +478,8 @@ func TestPlanInitCredentials(t *testing.T) {
 	t.Run("optional refs can clear", func(t *testing.T) {
 		previous := apiKeyProfile("work", config.LLMProviderAnthropic)
 		previous.ReviewerCredentials = &config.ReviewerCredentials{
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/work-reviewer",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		}
 		desired := basicProfile("work")
 		entries, err := planInitCredentials(&previous, desired, nil)
@@ -641,15 +641,15 @@ func TestBuildInteractiveInitSessionPlanUsesOriginalProfileForRenamedTouchedProf
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModeGitHubApp,
-					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-					CredentialRef: "codereview/work-reviewer",
-					DisplayName:   "Old label",
+					AuthMode:    config.GitAuthModeGitHubApp,
+					GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+					Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+					DisplayName: "Old label",
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,
@@ -737,7 +737,7 @@ func TestInitReviewerConfigOnlyCarriesBackendIntoCredentialHint(t *testing.T) {
 		t.Fatalf("Load config: %v", err)
 	}
 	reviewer := cfg.Profiles["default"].ReviewerCredentials
-	if reviewer == nil || reviewer.CredentialRef != "codereview/default-reviewer" {
+	if reviewer == nil || reviewer.Credential.Name != "codereview/default-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want codereview/default-reviewer", reviewer)
 	}
 	if got := errOut.String(); !strings.Contains(got, "cr set-credential --store local-os --name codereview/default-reviewer --key git_token --stdin") {
@@ -805,22 +805,19 @@ func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T
 		Profiles: map[string]config.Profile{
 			"work": profileWithCredentialStore(config.Profile{
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-git"},
-					CredentialRef: "codereview/custom-git",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-git"},
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-reviewer"},
-					CredentialRef: "codereview/custom-reviewer",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-reviewer"},
 				},
 				LLM: config.LLMConfig{
-					Provider:      config.LLMProviderAnthropic,
-					Auth:          config.LLMAuthAPIKey,
-					Adapter:       config.LLMAdapterAnthropicAPI,
-					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-llm"},
-					CredentialRef: "codereview/custom-llm",
+					Provider:   config.LLMProviderAnthropic,
+					Auth:       config.LLMAuthAPIKey,
+					Adapter:    config.LLMAdapterAnthropicAPI,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-llm"},
 				},
 			}, testFileCredentialStoreID),
 		},
@@ -842,20 +839,20 @@ func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T
 		t.Fatalf("Load config: %v", err)
 	}
 	profile := got.Profiles["work"]
-	if profile.Git.CredentialRef != "codereview/custom-git" {
-		t.Fatalf("git ref = %q, want preserved custom-git", profile.Git.CredentialRef)
+	if profile.Git.Credential.Name != "codereview/custom-git" {
+		t.Fatalf("git ref = %q, want preserved custom-git", profile.Git.Credential.Name)
 	}
 	if profile.Git.Credential.Store != testFileCredentialStoreID || profile.Git.Credential.Name != "codereview/custom-git" {
 		t.Fatalf("git credential = %#v, want preserved test-file custom-git", profile.Git.Credential)
 	}
-	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/custom-reviewer" {
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.Credential.Name != "codereview/custom-reviewer" {
 		t.Fatalf("reviewer = %#v, want preserved custom-reviewer", profile.ReviewerCredentials)
 	}
 	if profile.ReviewerCredentials.Credential.Store != testFileCredentialStoreID || profile.ReviewerCredentials.Credential.Name != "codereview/custom-reviewer" {
 		t.Fatalf("reviewer credential = %#v, want preserved test-file custom-reviewer", profile.ReviewerCredentials.Credential)
 	}
-	if profile.LLM.CredentialRef != "codereview/custom-llm" {
-		t.Fatalf("llm ref = %q, want preserved custom-llm", profile.LLM.CredentialRef)
+	if profile.LLM.Credential.Name != "codereview/custom-llm" {
+		t.Fatalf("llm ref = %q, want preserved custom-llm", profile.LLM.Credential.Name)
 	}
 	if profile.LLM.Credential.Store != testFileCredentialStoreID || profile.LLM.Credential.Name != "codereview/custom-llm" {
 		t.Fatalf("llm credential = %#v, want preserved test-file custom-llm", profile.LLM.Credential)
@@ -885,8 +882,8 @@ func TestInitReplaceProfileRefOverwriteEmitsFollowUpHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if got.Profiles["work"].Git.CredentialRef != "codereview/rotated-git" {
-		t.Fatalf("git ref = %q, want rotated-git", got.Profiles["work"].Git.CredentialRef)
+	if got.Profiles["work"].Git.Credential.Name != "codereview/rotated-git" {
+		t.Fatalf("git ref = %q, want rotated-git", got.Profiles["work"].Git.Credential.Name)
 	}
 	if !strings.Contains(errOut.String(), "set-credential --store local-os --name codereview/rotated-git --key git_token --stdin") {
 		t.Fatalf("stderr = %q, want overwrite-ref follow-up hint", errOut.String())
@@ -1058,7 +1055,7 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 	existing.Git.IdentityCache = "git-cache"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		IdentityCache: "reviewer-cache",
 	}
 	existing.LLM.ModelMap = config.ModelMap{
@@ -1109,7 +1106,7 @@ func TestInitReplaceProfilePreservesReviewerDisplayNameWhenReviewerIdentityUncha
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		DisplayName:   "Work reviewer bot",
 		IdentityCache: "reviewer-cache",
 	}
@@ -1175,7 +1172,7 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 		existing.Git.IdentityCache = "git-cache"
 		existing.ReviewerCredentials = &config.ReviewerCredentials{
 			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/work-reviewer",
+			Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 			IdentityCache: "reviewer-cache",
 		}
 		existing.LLM.ModelMap = config.ModelMap{
@@ -1512,7 +1509,6 @@ func TestInitGitScopeDraftRoundTripPreservesIdentityCacheFromPreviousProfile(t *
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work",
 		IdentityCache: "rianjs-work",
 	}
 
@@ -1530,7 +1526,6 @@ func TestInitGitScopeDraftExportClearsIdentityCacheWhenShapeChanges(t *testing.T
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work",
 		IdentityCache: "rianjs-work",
 	}
 
@@ -1572,7 +1567,6 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 				p.ReviewerCredentials = &config.ReviewerCredentials{
 					AuthMode:      config.GitAuthModePAT,
 					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
-					CredentialRef: "codereview/work-reviewer",
 					IdentityCache: "review-bot",
 				}
 				return p
@@ -1580,13 +1574,11 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 			previous: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModePAT,
 				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
-				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-bot",
 			},
 			want: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModePAT,
 				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
-				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-bot",
 			},
 			kind: initReviewerEntityKindPAT,
@@ -1599,7 +1591,6 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 					AuthMode:      config.GitAuthModeGitHubApp,
 					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-					CredentialRef: "codereview/work-reviewer",
 					IdentityCache: "review-app",
 				}
 				return p
@@ -1608,14 +1599,12 @@ func TestInitReviewerEntityDraftRoundTripVariants(t *testing.T) {
 				AuthMode:      config.GitAuthModeGitHubApp,
 				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-app",
 			},
 			want: &config.ReviewerCredentials{
 				AuthMode:      config.GitAuthModeGitHubApp,
 				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-				CredentialRef: "codereview/work-reviewer",
 				IdentityCache: "review-app",
 			},
 			kind: initReviewerEntityKindGitHubApp,
@@ -1640,7 +1629,6 @@ func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *tes
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
 		IdentityCache: "review-app",
 	}
 	entity := initReviewerEntityDraft{
@@ -1664,11 +1652,10 @@ func TestInitReviewerEntityDraftExportClearsIdentityCacheWhenShapeChanges(t *tes
 func TestBuildInteractiveInitWorkspaceClearsReviewerDisplayNameWhenDraftLeavesItBlank(t *testing.T) {
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
-		DisplayName:   "Old label",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+		DisplayName: "Old label",
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -1725,8 +1712,8 @@ func TestBuildInitGitScopeInventoryUsesProjectedRepositoryAccessNames(t *testing
 	work := basicProfile("work")
 	home.Git.Host = "github.com"
 	work.Git.Host = "https://github.com/"
-	home.Git.CredentialRef = "codereview/home"
-	work.Git.CredentialRef = "codereview/work"
+	home.Git.Credential.Name = "codereview/home"
+	work.Git.Credential.Name = "codereview/work"
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
 			"home": home,
@@ -1755,12 +1742,12 @@ func TestBuildInitReviewerEntityInventoryVariantsAndDeduping(t *testing.T) {
 	work := basicProfile("work")
 	bot := basicProfile("bot")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	bot.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -1787,12 +1774,12 @@ func TestBuildInitReviewerEntityInventoryAssignsStableSuffixOnNameCollision(t *t
 	home := basicProfile("home")
 	work := basicProfile("work")
 	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/home-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home-reviewer"},
 	}
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -1921,14 +1908,14 @@ func TestBuildInitReviewerEntityInventoryConflictingSharedDisplayNamesFallBackTo
 	home := basicProfile("home")
 	work := basicProfile("work")
 	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-		DisplayName:   "OC Collective bot",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/open-cli-collective-rianjs-bot"},
+		DisplayName: "OC Collective bot",
 	}
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-		DisplayName:   "Work reviewer bot",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/open-cli-collective-rianjs-bot"},
+		DisplayName: "Work reviewer bot",
 	}
 
 	entities, profileEntityNames := buildInitReviewerEntityInventory(config.File{
@@ -2006,15 +1993,15 @@ func TestBuildInitReviewerEntityInventorySharedDisplayNameWinsWhenOnlyOneProfile
 	home := basicProfile("home")
 	work := basicProfile("work")
 	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-		DisplayName:   "OC Collective bot",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/open-cli-collective-rianjs-bot"},
+		DisplayName: "OC Collective bot",
 	}
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/open-cli-collective-rianjs-bot"},
 	}
 
 	entities, profileEntityNames := buildInitReviewerEntityInventory(config.File{
@@ -2048,11 +2035,11 @@ func TestEditInteractiveInitReviewerEntityStepUpdatesConfiguredEntity(t *testing
 	cfg := config.File{
 		ReviewerEntities: map[string]config.ReviewerEntity{
 			"oc-collective-bot": {
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModeGitHubApp,
-				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-				CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-				DisplayName:   "Old label",
+				Host:        "github.com",
+				AuthMode:    config.GitAuthModeGitHubApp,
+				GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+				Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/open-cli-collective-rianjs-bot"},
+				DisplayName: "Old label",
 			},
 		},
 		Profiles: map[string]config.Profile{
@@ -2093,7 +2080,7 @@ func TestEditInteractiveInitReviewerEntityStepUpdatesConfiguredEntity(t *testing
 	if got, want := entity.AuthMode, config.GitAuthModeGitHubApp; got != want {
 		t.Fatalf("entity auth mode = %q, want %q", got, want)
 	}
-	if got, want := entity.CredentialRef, "codereview/open-cli-collective-rianjs-bot-renamed"; got != want {
+	if got, want := entity.Credential.Name, "codereview/open-cli-collective-rianjs-bot-renamed"; got != want {
 		t.Fatalf("entity credential ref = %q, want %q", got, want)
 	}
 	if got, want := entity.DisplayName, "OC Collective bot"; got != want {
@@ -2110,7 +2097,7 @@ func TestEditInteractiveInitReviewerEntityStepUpdatesConfiguredEntity(t *testing
 		if got, want := profile.ReviewerCredentials.AuthMode, config.GitAuthModeGitHubApp; got != want {
 			t.Fatalf("%s auth mode = %q, want %q", profileName, got, want)
 		}
-		if got, want := profile.ReviewerCredentials.CredentialRef, "codereview/open-cli-collective-rianjs-bot-renamed"; got != want {
+		if got, want := profile.ReviewerCredentials.Credential.Name, "codereview/open-cli-collective-rianjs-bot-renamed"; got != want {
 			t.Fatalf("%s credential ref = %q, want %q", profileName, got, want)
 		}
 		if got, want := profile.ReviewerCredentials.DisplayName, "OC Collective bot"; got != want {
@@ -2158,7 +2145,7 @@ func TestEditInteractiveInitReviewerEntityStepDefaultsBlankRefToStandaloneEntity
 		t.Fatal("stayInCategory = true, want focused reviewer flow to return to main menu after stage")
 	}
 	entity := next.cfg.ReviewerEntities["reviewer-github-app"]
-	if got, want := entity.CredentialRef, "codereview/reviewer-github-app"; got != want {
+	if got, want := entity.Credential.Name, "codereview/reviewer-github-app"; got != want {
 		t.Fatalf("entity credential ref = %q, want %q", got, want)
 	}
 	if got, want := entity.DisplayName, "OC Collective bot"; got != want {
@@ -2174,11 +2161,11 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 	cfg := config.File{
 		ReviewerEntities: map[string]config.ReviewerEntity{
 			"oc-collective-bot": {
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModeGitHubApp,
-				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-				CredentialRef: "codereview/open-cli-collective-rianjs-bot",
-				DisplayName:   "Old label",
+				Host:        "github.com",
+				AuthMode:    config.GitAuthModeGitHubApp,
+				GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+				Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/open-cli-collective-rianjs-bot"},
+				DisplayName: "Old label",
 			},
 		},
 		Profiles: map[string]config.Profile{
@@ -2224,7 +2211,7 @@ func TestEditInteractiveInitReviewerEntityStepSelectingFallbackDoesNotPropagateS
 	if got, want := workProfile.ReviewerCredentials.DisplayName, "Old label"; got != want {
 		t.Fatalf("work display name = %q, want %q", got, want)
 	}
-	if got, want := workProfile.ReviewerCredentials.CredentialRef, "codereview/open-cli-collective-rianjs-bot"; got != want {
+	if got, want := workProfile.ReviewerCredentials.Credential.Name, "codereview/open-cli-collective-rianjs-bot"; got != want {
 		t.Fatalf("work credential ref = %q, want %q", got, want)
 	}
 }
@@ -2275,7 +2262,7 @@ func TestInitReviewerEntityInventoryRowsUseExplicitGitAccountFallbackLabels(t *t
 			git: config.GitConfig{
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/home",
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 				IdentityCache: "rianjs",
 			},
 			wantText: "Post as rianjs (GitHub PAT)",
@@ -2285,7 +2272,7 @@ func TestInitReviewerEntityInventoryRowsUseExplicitGitAccountFallbackLabels(t *t
 			git: config.GitConfig{
 				Host:          "github.com",
 				AuthMode:      config.GitAuthModeGitHubApp,
-				CredentialRef: "codereview/home-app",
+				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home-app"},
 				IdentityCache: "review-bot",
 			},
 			wantText: "Post as review-bot (GitHub App)",
@@ -2293,18 +2280,18 @@ func TestInitReviewerEntityInventoryRowsUseExplicitGitAccountFallbackLabels(t *t
 		{
 			name: "unknown PAT identity",
 			git: config.GitConfig{
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModePAT,
-				CredentialRef: "codereview/home",
+				Host:       "github.com",
+				AuthMode:   config.GitAuthModePAT,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 			},
 			wantText: "Post using this profile's Git account (GitHub PAT)",
 		},
 		{
 			name: "unknown GitHub App identity",
 			git: config.GitConfig{
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModeGitHubApp,
-				CredentialRef: "codereview/home-app",
+				Host:       "github.com",
+				AuthMode:   config.GitAuthModeGitHubApp,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home-app"},
 			},
 			wantText: "Post using this profile's Git account (GitHub App)",
 		},
@@ -2344,7 +2331,7 @@ func TestProfileEditorReviewerEntityFallbackLabelUsesExplicitGitAccountFallbackL
 				Git: config.GitConfig{
 					Host:          "github.com",
 					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/home",
+					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 					IdentityCache: "rianjs",
 				},
 			},
@@ -2359,9 +2346,9 @@ func TestProfileEditorReviewerEntityFallbackLabelUsesExplicitGitAccountFallbackL
 			},
 			existing: &config.Profile{
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModeGitHubApp,
-					CredentialRef: "codereview/home-app",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModeGitHubApp,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home-app"},
 				},
 			},
 			wantText: "Post using this profile's Git account (GitHub App)",
@@ -2401,18 +2388,18 @@ func TestSharedGitScopeAndReviewerEntityDoNotDriftIdentityCacheAcrossProfiles(t 
 	work.Git.Host = "https://github.mycompany.com/"
 	home.Git.AuthMode = config.GitAuthModeGitHubApp
 	work.Git.AuthMode = config.GitAuthModeGitHubApp
-	home.Git.CredentialRef = "codereview/shared-git"
-	work.Git.CredentialRef = "codereview/shared-git"
+	home.Git.Credential.Name = "codereview/shared-git"
+	work.Git.Credential.Name = "codereview/shared-git"
 	home.Git.IdentityCache = "home-cache"
 	work.Git.IdentityCache = "work-cache"
 	home.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/shared-reviewer",
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 		IdentityCache: "home-reviewer-cache",
 	}
 	work.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/shared-reviewer",
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 		IdentityCache: "work-reviewer-cache",
 	}
 	cfg := config.File{
@@ -2480,22 +2467,20 @@ func TestInitLLMRuntimeDraftFromConfigRecognizesKnownPresets(t *testing.T) {
 		{
 			name: "anthropic api key",
 			llm: config.LLMConfig{
-				Provider:      config.LLMProviderAnthropic,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterAnthropicAPI,
-				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
-				CredentialRef: "codereview/work-llm",
+				Provider:   config.LLMProviderAnthropic,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterAnthropicAPI,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 			},
 			preset: initLLMRuntimePresetAnthropicAPIKey,
 		},
 		{
 			name: "openai api key",
 			llm: config.LLMConfig{
-				Provider:      config.LLMProviderOpenAI,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterOpenAIAPI,
-				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
-				CredentialRef: "codereview/work-llm",
+				Provider:   config.LLMProviderOpenAI,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterOpenAIAPI,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 			},
 			preset: initLLMRuntimePresetOpenAIAPIKey,
 		},
@@ -2707,13 +2692,13 @@ func TestDeleteInteractiveInitProfilePrunesRoutesAndUndoRestores(t *testing.T) {
 func TestDeleteInteractiveInitReviewerEntityClearsAffectedProfilesAndUndoSkipsReeditedProfiles(t *testing.T) {
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	home := basicProfile("home")
 	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	bot := basicProfile("bot")
 	session := initSessionDraft{
@@ -2745,8 +2730,8 @@ func TestDeleteInteractiveInitReviewerEntityClearsAffectedProfilesAndUndoSkipsRe
 
 	editedHome := next.cfg.Profiles["home"]
 	editedHome.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/home-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home-reviewer"},
 	}
 	next.cfg.Profiles["home"] = editedHome
 
@@ -2757,7 +2742,7 @@ func TestDeleteInteractiveInitReviewerEntityClearsAffectedProfilesAndUndoSkipsRe
 	if restored.cfg.Profiles["work"].ReviewerCredentials == nil {
 		t.Fatal("work reviewer credentials = nil, want restored shared reviewer")
 	}
-	if got := restored.cfg.Profiles["home"].ReviewerCredentials; got == nil || got.CredentialRef != "codereview/home-reviewer" {
+	if got := restored.cfg.Profiles["home"].ReviewerCredentials; got == nil || got.Credential.Name != "codereview/home-reviewer" {
 		t.Fatalf("home reviewer credentials after undo = %#v, want preserved re-edit", got)
 	}
 }
@@ -2787,10 +2772,11 @@ func TestDeleteInteractiveInitLLMRuntimeRebindsAffectedProfilesAndUndoSkipsReedi
 	_, profileRuntimeNames := buildInitLLMRuntimeInventory(session.cfg)
 	runtimeName := profileRuntimeNames["work"]
 	replacement := initLLMRuntimeDraft{
-		Provider:      config.LLMProviderOpenAI,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterOpenAIAPI,
-		CredentialRef: "codereview/shared-llm",
+		Provider:        config.LLMProviderOpenAI,
+		Auth:            config.LLMAuthAPIKey,
+		Adapter:         config.LLMAdapterOpenAIAPI,
+		CredentialStore: config.LocalOSCredentialStoreID,
+		CredentialRef:   "codereview/shared-llm",
 	}
 
 	next, err := deleteInteractiveInitLLMRuntime(session, runtimeName, replacement)
@@ -2799,7 +2785,7 @@ func TestDeleteInteractiveInitLLMRuntimeRebindsAffectedProfilesAndUndoSkipsReedi
 	}
 	for _, profileName := range []string{"work", "home"} {
 		llm := next.cfg.Profiles[profileName].LLM
-		if llm.Provider != config.LLMProviderOpenAI || llm.Auth != config.LLMAuthAPIKey || llm.Adapter != config.LLMAdapterOpenAIAPI || llm.CredentialRef != "codereview/shared-llm" {
+		if llm.Provider != config.LLMProviderOpenAI || llm.Auth != config.LLMAuthAPIKey || llm.Adapter != config.LLMAdapterOpenAIAPI || llm.Credential.Name != "codereview/shared-llm" {
 			t.Fatalf("%s llm after delete = %#v, want shared openai api-key replacement", profileName, llm)
 		}
 	}
@@ -2872,13 +2858,11 @@ func TestBuildInteractiveInitWorkspaceImportsGitScopeAndReviewerEntityInventory(
 	existing.Git.AuthMode = config.GitAuthModeGitHubApp
 	existing.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
 	existing.Git.Credential = config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/office-git"}
-	existing.Git.CredentialRef = "codereview/office-git"
 	existing.Git.IdentityCache = "git-cache"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModeGitHubApp,
 		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/office-reviewer"},
 		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/office-reviewer",
 		IdentityCache: "reviewer-cache",
 	}
 	cfg := config.File{
@@ -2952,7 +2936,7 @@ func TestInitInteractivePromptDrivenFlowStillExportsReviewerNilAfterDraftInvento
 		t.Fatalf("runInitWithDeps: %v", err)
 	}
 	profile := savedCfg.Profiles["office"]
-	if profile.Git.Host != "github.mycompany.com" || profile.Git.AuthMode != config.GitAuthModePAT || profile.Git.CredentialRef != "codereview/office-git" {
+	if profile.Git.Host != "github.mycompany.com" || profile.Git.AuthMode != config.GitAuthModePAT || profile.Git.Credential.Name != "codereview/office-git" {
 		t.Fatalf("git profile = %#v, want PAT office git scope", profile.Git)
 	}
 	if profile.ReviewerCredentials != nil {
@@ -3028,7 +3012,7 @@ func TestInitInteractivePromptDrivenFlowStillExportsSeparateReviewerAfterDraftIn
 	if profile.ReviewerCredentials == nil {
 		t.Fatal("reviewer credentials = nil, want separate reviewer preserved")
 	}
-	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.CredentialRef != "codereview/office-reviewer" {
+	if profile.ReviewerCredentials.AuthMode != config.GitAuthModeGitHubApp || profile.ReviewerCredentials.Credential.Name != "codereview/office-reviewer" {
 		t.Fatalf("reviewer credentials = %#v, want github_app office reviewer", profile.ReviewerCredentials)
 	}
 }
@@ -3120,7 +3104,7 @@ func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "team-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{Git: config.GitConfig{Credential: config.CredentialLocation{Store: "team-vault"}}})
 	if err != nil {
 		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
@@ -3517,8 +3501,8 @@ func testInitMultiKeySecretWorkspace() initWorkspaceDraft {
 func TestPlanInitCredentialsClearsOptionalRefsInStableOrder(t *testing.T) {
 	previous := apiKeyProfile("work", config.LLMProviderAnthropic)
 	previous.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
 	desired := basicProfile("work")
 
@@ -3618,9 +3602,9 @@ func TestInitCreateProfileSeedNameUsesNextAvailableGeneratedName(t *testing.T) {
 func TestProfileEditorSelectionPreservesSelectedReviewerEntityLabel(t *testing.T) {
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/work-reviewer",
-		DisplayName:   "Old label",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		DisplayName: "Old label",
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
 
@@ -3728,8 +3712,8 @@ func TestHuhInitReviewerEntityPrompterAccessibleKeepsFallbackSelectedInMixedInve
 	home.Git.IdentityCache = "rianjs"
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -3781,8 +3765,8 @@ func TestHuhInitReviewerEntityPrompterAccessibleConfiguredReviewerRoundTripsInMi
 	home := basicProfile("home")
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/custom-work-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -4585,10 +4569,10 @@ func TestInitLLMRuntimeLinearEditorChangingSelectionResetsDeleteMode(t *testing.
 func TestHuhInitLLMRuntimePrompterDefaultPreservesConfiguredAPIKeyRuntimeRef(t *testing.T) {
 	existing := basicProfile("work")
 	existing.LLM = config.LLMConfig{
-		Provider:      config.LLMProviderOpenAI,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterOpenAIAPI,
-		CredentialRef: "codereview/custom-openai",
+		Provider:   config.LLMProviderOpenAI,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterOpenAIAPI,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-openai"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"work": existing},
@@ -4695,9 +4679,9 @@ func TestHuhInitReviewerEntityPrompterNewTemplateDoesNotInheritCustomSecretLocat
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/custom-work-reviewer",
-		DisplayName:   "Old reviewer",
+		AuthMode:    config.GitAuthModePAT,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work-reviewer"},
+		DisplayName: "Old reviewer",
 	}
 	var stderr bytes.Buffer
 	prompter := huhInitReviewerEntityPrompter{
@@ -4801,9 +4785,9 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCustomSecretLocationPersis
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/custom-work-reviewer",
-		DisplayName:   "Old reviewer",
+		AuthMode:    config.GitAuthModePAT,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work-reviewer"},
+		DisplayName: "Old reviewer",
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
 	var stderr bytes.Buffer
@@ -4837,9 +4821,9 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerFallbackSeedDoesNotPersist
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/open-cli-collective-rianjs-bot",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/open-cli-collective-rianjs-bot"},
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
 	var stderr bytes.Buffer
@@ -4864,10 +4848,10 @@ func TestHuhInitReviewerEntityPrompterAccessibleShowsSeededDisplayNamePrompt(t *
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
-		DisplayName:   "Old label",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		DisplayName: "Old label",
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
 	draft.ReviewerEnabled = true
@@ -4900,9 +4884,9 @@ func TestHuhInitReviewerEntityPrompterExistingReviewerCanEditLabel(t *testing.T)
 	t.Setenv("TERM", "dumb")
 	existing := basicProfile("work")
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
 	draft := seedInteractiveInitDraft("work", "work", &existing)
 	var stderr bytes.Buffer
@@ -5206,9 +5190,9 @@ func TestReviewerEntityLinearEditorManualSecretLocationStopsLabelDerivedUpdates(
 func TestReviewerEntityLinearEditorExistingReviewerLabelDoesNotMigrateRef(t *testing.T) {
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/existing-reviewer",
-		DisplayName:   "Old label",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/existing-reviewer"},
+		DisplayName: "Old label",
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"work": profile},
@@ -5241,9 +5225,9 @@ func TestReviewerEntityLinearEditorExistingReviewerLabelDoesNotMigrateRef(t *tes
 func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testing.T) {
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/existing-reviewer",
-		DisplayName:   "Existing reviewer",
+		AuthMode:    config.GitAuthModePAT,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/existing-reviewer"},
+		DisplayName: "Existing reviewer",
 	}
 	seed := seedInteractiveInitDraft("work", "work", &profile)
 	state, err := newReviewerEntityEditorState(initReviewerEntityDraft{
@@ -5294,9 +5278,9 @@ func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecrets(t *testin
 func TestReviewerEntityExistingReviewerChangedRefRequiresInlineSecretsWhenStatusUnavailable(t *testing.T) {
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/existing-reviewer",
-		DisplayName:   "Existing reviewer",
+		AuthMode:    config.GitAuthModePAT,
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/existing-reviewer"},
+		DisplayName: "Existing reviewer",
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"work": profile},
@@ -5689,8 +5673,8 @@ func TestReviewerEntityLinearEditorLabelDerivedRefPreservesBackendUnavailableSta
 func TestHuhInitReviewerEntityStatusUpdatesWhenSecretLocationChanges(t *testing.T) {
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/old-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/old-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"work": profile},
@@ -6239,63 +6223,6 @@ func TestInitProfileReadinessLineIncludesNotes(t *testing.T) {
 	}
 }
 
-func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsStoreSelection(t *testing.T) {
-	cfg := config.Normalize(config.File{
-		Profiles: map[string]config.Profile{
-			"work": func() config.Profile {
-				profile := basicProfile("work")
-				profile.SecretsStore = "missing-vault"
-				return profile
-			}(),
-		},
-	})
-	profile := cfg.Profiles["work"]
-	draft := seedInteractiveInitDraft("work", "work", &profile)
-	draft.SecretsStore = ""
-
-	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
-	if err != nil {
-		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
-	}
-	if got := workspace.profile.SecretsStore; got != "" {
-		t.Fatalf("workspace.profile.SecretsStore = %q, want cleared explicit selection", got)
-	}
-}
-
-func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsStoreToConfiguredProfile(t *testing.T) {
-	cfg := config.Normalize(config.File{
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"team-vault": {
-					DisplayName: "Team Vault",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-				},
-			},
-		},
-		Profiles: map[string]config.Profile{
-			"work": func() config.Profile {
-				profile := basicProfile("work")
-				profile.SecretsStore = "missing-vault"
-				return profile
-			}(),
-		},
-	})
-	profile := cfg.Profiles["work"]
-	draft := seedInteractiveInitDraft("work", "work", &profile)
-	draft.SecretsStore = "team-vault"
-
-	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
-	if err != nil {
-		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
-	}
-	if got := workspace.profile.SecretsStore; got != "team-vault" {
-		t.Fatalf("workspace.profile.SecretsStore = %q, want team-vault", got)
-	}
-	if got := workspace.cfg.Profiles["work"].SecretsStore; got != "team-vault" {
-		t.Fatalf("workspace cfg secrets_profile = %q, want team-vault", got)
-	}
-}
-
 func TestRunInitWithDepsDeferredHintsUseSelectedSecretsStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	var stdout bytes.Buffer
@@ -6350,38 +6277,6 @@ func TestRunInitWithDepsDeferredHintsUseSelectedSecretsStore(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "Next via Team Vault: cr set-credential --store team-vault --name codereview/work --key "+credentials.GitTokenKey+" --stdin") {
 		t.Fatalf("stderr = %q, want deferred hint naming the selected credential store", got)
-	}
-}
-
-func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBrokenSecretsStore(t *testing.T) {
-	cfg := config.Normalize(config.File{
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"team-vault": {
-					DisplayName: "Team Vault",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-				},
-			},
-		},
-		Profiles: map[string]config.Profile{
-			"home": basicProfile("home"),
-			"work": func() config.Profile {
-				profile := basicProfile("work")
-				profile.SecretsStore = "missing-vault"
-				return profile
-			}(),
-		},
-	})
-	home := cfg.Profiles["home"]
-	draft := seedInteractiveInitDraft("home", "home", &home)
-	draft.SecretsStore = "team-vault"
-
-	workspace, err := buildInteractiveInitWorkspace(&cobra.Command{}, &root.Options{}, initOptions{}, initDeps{}, filepath.Join(t.TempDir(), "config.yml"), cfg, draft)
-	if err != nil {
-		t.Fatalf("buildInteractiveInitWorkspace: %v", err)
-	}
-	if got := workspace.profile.SecretsStore; got != "team-vault" {
-		t.Fatalf("workspace.profile.SecretsStore = %q, want team-vault", got)
 	}
 }
 
@@ -6490,7 +6385,7 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	existing.Git.IdentityCache = "git-cache"
 	existing.ReviewerCredentials = &config.ReviewerCredentials{
 		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work-reviewer",
+		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 		IdentityCache: "reviewer-cache",
 	}
 	saveCredentialTestConfig(t, path, config.File{
@@ -6585,7 +6480,7 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	if gotCtx.ExistingProfileName != "work" {
 		t.Fatalf("prompt context = %#v, want existing work", gotCtx)
 	}
-	if gotCtx.ExistingProfile == nil || gotCtx.ExistingProfile.Git.CredentialRef != "codereview/work" {
+	if gotCtx.ExistingProfile == nil || gotCtx.ExistingProfile.Git.Credential.Name != "codereview/work" {
 		t.Fatalf("prompt existing profile = %#v, want work profile", gotCtx.ExistingProfile)
 	}
 	cfg, err := config.Load(path)
@@ -6596,17 +6491,17 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 		t.Fatalf("old profile still present after rename: %#v", cfg.Profiles)
 	}
 	profile := cfg.Profiles["office"]
-	if profile.Git.CredentialRef != "codereview/office-git" {
-		t.Fatalf("git ref = %q, want office-git", profile.Git.CredentialRef)
+	if profile.Git.Credential.Name != "codereview/office-git" {
+		t.Fatalf("git ref = %q, want office-git", profile.Git.Credential.Name)
 	}
 	if profile.Git.AuthMode != config.GitAuthModeGitHubApp {
 		t.Fatalf("git auth_mode = %q, want github_app", profile.Git.AuthMode)
 	}
-	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/custom-office-reviewer" {
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.Credential.Name != "codereview/custom-office-reviewer" {
 		t.Fatalf("reviewer ref = %#v, want preserved custom-office-reviewer", profile.ReviewerCredentials)
 	}
-	if profile.LLM.CredentialRef != "codereview/custom-office-llm" {
-		t.Fatalf("llm ref = %q, want custom-office-llm", profile.LLM.CredentialRef)
+	if profile.LLM.Credential.Name != "codereview/custom-office-llm" {
+		t.Fatalf("llm ref = %q, want custom-office-llm", profile.LLM.Credential.Name)
 	}
 	if profile.Git.IdentityCache != "" {
 		t.Fatalf("git identity cache = %q, want cleared after git scope change", profile.Git.IdentityCache)
@@ -6697,10 +6592,10 @@ func TestLoopInteractiveInitProfileV2StagesDraftIntoSessionBeforeReentry(t *test
 		t.Fatalf("old profile still present after staged rename: %#v", next.cfg.Profiles)
 	}
 	profile := next.cfg.Profiles["open-cli-collective-lkjlkj"]
-	if profile.Git.CredentialRef != "codereview/open-cli-collective12365" {
-		t.Fatalf("staged git ref = %q, want edited v2 Git label", profile.Git.CredentialRef)
+	if profile.Git.Credential.Name != "codereview/open-cli-collective12365" {
+		t.Fatalf("staged git ref = %q, want edited v2 Git label", profile.Git.Credential.Name)
 	}
-	if reentryCtx.ExistingConfig.Profiles["open-cli-collective-lkjlkj"].Git.CredentialRef != "codereview/open-cli-collective12365" {
+	if reentryCtx.ExistingConfig.Profiles["open-cli-collective-lkjlkj"].Git.Credential.Name != "codereview/open-cli-collective12365" {
 		t.Fatalf("reentry context profile = %#v, want staged v2 edits", reentryCtx.ExistingConfig.Profiles)
 	}
 }
@@ -6715,30 +6610,27 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedPrimitiveCredential
 			"github-rianjs": {
 				DisplayName: "github-rianjs",
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: repositoryAccessRef},
-					CredentialRef: repositoryAccessRef,
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: repositoryAccessRef},
 				},
 			},
 		},
 		ReviewerEntities: map[string]config.ReviewerEntity{
 			"rianjs-bot": {
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModeGitHubApp,
-				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: reviewerRef},
-				CredentialRef: reviewerRef,
-				GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-				DisplayName:   "rianjs-bot",
+				Host:        "github.com",
+				AuthMode:    config.GitAuthModeGitHubApp,
+				Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: reviewerRef},
+				GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+				DisplayName: "rianjs-bot",
 			},
 		},
 		LLMRuntimes: map[string]config.LLMConfig{
 			"openai-api": {
-				Provider:      config.LLMProviderOpenAI,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterOpenAIAPI,
-				Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: llmRef},
-				CredentialRef: llmRef,
+				Provider:   config.LLMProviderOpenAI,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterOpenAIAPI,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: llmRef},
 			},
 		},
 		Profiles: map[string]config.Profile{},
@@ -6801,17 +6693,17 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedPrimitiveCredential
 	if profile.RepositoryAccess != "github-rianjs" {
 		t.Fatalf("repository_access = %q, want github-rianjs", profile.RepositoryAccess)
 	}
-	if profile.Git.CredentialRef != repositoryAccessRef {
-		t.Fatalf("git credential ref = %q, want selected repository access ref %q", profile.Git.CredentialRef, repositoryAccessRef)
+	if profile.Git.Credential.Name != repositoryAccessRef {
+		t.Fatalf("git credential ref = %q, want selected repository access ref %q", profile.Git.Credential.Name, repositoryAccessRef)
 	}
 	if profile.Reviewer.Kind != config.ProfileReviewerKindEntity || profile.Reviewer.Entity != "rianjs-bot" {
 		t.Fatalf("reviewer = %#v, want selected rianjs-bot reviewer entity", profile.Reviewer)
 	}
-	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != reviewerRef {
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.Credential.Name != reviewerRef {
 		t.Fatalf("reviewer credentials = %#v, want selected reviewer ref %q", profile.ReviewerCredentials, reviewerRef)
 	}
-	if profile.LLMRuntime != "openai-api" || profile.LLM.CredentialRef != llmRef {
-		t.Fatalf("llm runtime/ref = %q/%q, want openai-api/%q", profile.LLMRuntime, profile.LLM.CredentialRef, llmRef)
+	if profile.LLMRuntime != "openai-api" || profile.LLM.Credential.Name != llmRef {
+		t.Fatalf("llm runtime/ref = %q/%q, want openai-api/%q", profile.LLMRuntime, profile.LLM.Credential.Name, llmRef)
 	}
 }
 
@@ -6885,8 +6777,8 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 		t.Fatalf("loopInteractiveInitProfileV2: %v", err)
 	}
 	profile := next.cfg.Profiles["work"]
-	if profile.Git.CredentialRef != "codereview/custom-work-git" {
-		t.Fatalf("git ref = %q, want custom v2 git label", profile.Git.CredentialRef)
+	if profile.Git.Credential.Name != "codereview/custom-work-git" {
+		t.Fatalf("git ref = %q, want custom v2 git label", profile.Git.Credential.Name)
 	}
 	if profile.LLM.Provider != config.LLMProviderOpenAI || profile.LLM.Adapter != config.LLMAdapterCodexCLI || profile.LLM.ReviewerModelTier != config.ModelTierMedium {
 		t.Fatalf("llm = %#v, want v2 runtime/model-tier edits", profile.LLM)
@@ -6904,7 +6796,7 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 		t.Fatalf("repository_profiles = %#v, want v2 route edit", next.cfg.RepositoryProfiles)
 	}
 	reentryProfile := reentryCtx.ExistingConfig.Profiles["work"]
-	if reentryProfile.Git.CredentialRef != "codereview/custom-work-git" || !reflect.DeepEqual(reentryProfile.AgentSources, []string{"/tmp/agents"}) {
+	if reentryProfile.Git.Credential.Name != "codereview/custom-work-git" || !reflect.DeepEqual(reentryProfile.AgentSources, []string{"/tmp/agents"}) {
 		t.Fatalf("reentry profile = %#v, want staged v2 detail edits", reentryProfile)
 	}
 }
@@ -9300,15 +9192,15 @@ func TestValidateInteractiveInitGlobalConfigWithoutProfilesStillValidatesSecrets
 func TestBuildInteractiveInitMenuPromptNoWorkspaceStillShowsExistingInventoryCounts(t *testing.T) {
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
 	home := basicProfile("home")
 	home.LLM = config.LLMConfig{
-		Provider:      config.LLMProviderOpenAI,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterOpenAIAPI,
-		CredentialRef: "codereview/home-llm",
+		Provider:   config.LLMProviderOpenAI,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterOpenAIAPI,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home-llm"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -10592,14 +10484,14 @@ func TestSynthesizeInteractiveProfileNormalizesProfileNameCredentialRefs(t *test
 	if err != nil {
 		t.Fatalf("synthesizeInteractiveProfile: %v", err)
 	}
-	if profile.Git.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot" {
-		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.CredentialRef)
+	if profile.Git.Credential.Name != "codereview/open-cli-collective_x2frianjs-bot" {
+		t.Fatalf("Git.CredentialRef = %q, want normalized profile ref", profile.Git.Credential.Name)
 	}
-	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot-reviewer" {
+	if profile.ReviewerCredentials == nil || profile.ReviewerCredentials.Credential.Name != "codereview/open-cli-collective_x2frianjs-bot-reviewer" {
 		t.Fatalf("ReviewerCredentials = %#v, want normalized reviewer ref", profile.ReviewerCredentials)
 	}
-	if profile.LLM.CredentialRef != "codereview/open-cli-collective_x2frianjs-bot-llm" {
-		t.Fatalf("LLM.CredentialRef = %q, want normalized LLM ref", profile.LLM.CredentialRef)
+	if profile.LLM.Credential.Name != "codereview/open-cli-collective_x2frianjs-bot-llm" {
+		t.Fatalf("LLM.CredentialRef = %q, want normalized LLM ref", profile.LLM.Credential.Name)
 	}
 }
 
@@ -12844,8 +12736,8 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 	if profile.LLM.Auth != config.LLMAuthAPIKey || profile.LLM.Adapter != config.LLMAdapterOpenAIAPI {
 		t.Fatalf("llm profile = %#v, want openai api-key runtime", profile.LLM)
 	}
-	if profile.LLM.CredentialRef == "" {
-		t.Fatalf("llm credential ref = %q, want generated ref after runtime rebuild", profile.LLM.CredentialRef)
+	if profile.LLM.Credential.Name == "" {
+		t.Fatalf("llm credential ref = %q, want generated ref after runtime rebuild", profile.LLM.Credential.Name)
 	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 30 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
 		t.Fatalf("global settings after runtime rebuild = %#v, want 30/manual_only", cfg.Data.Retention)
@@ -12948,8 +12840,8 @@ func TestInitInteractiveMenuFocusedLLMRuntimePreservesUnrelatedProfileState(t *t
 	if got.LLM.Provider != config.LLMProviderOpenAI || got.LLM.Adapter != config.LLMAdapterCodexCLI || got.LLM.Auth != config.LLMAuthSubscription {
 		t.Fatalf("llm = %#v, want codex subscription runtime", got.LLM)
 	}
-	if got.LLM.CredentialRef != "" {
-		t.Fatalf("llm credential ref = %q, want cleared for subscription runtime", got.LLM.CredentialRef)
+	if got.LLM.Credential.Name != "" {
+		t.Fatalf("llm credential ref = %q, want cleared for subscription runtime", got.LLM.Credential.Name)
 	}
 	if got.Git != profile.Git {
 		t.Fatalf("git = %#v, want preserved %#v", got.Git, profile.Git)
@@ -13248,8 +13140,8 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	if gotEntity == nil {
 		t.Fatalf("reviewer_entities = %#v, want staged GitHub App reviewer entity", cfg.ReviewerEntities)
 	}
-	if gotEntity.CredentialRef == "" {
-		t.Fatalf("reviewer entity credential ref = %q, want generated ref after reviewer rebuild", gotEntity.CredentialRef)
+	if gotEntity.Credential.Name == "" {
+		t.Fatalf("reviewer entity credential ref = %q, want generated ref after reviewer rebuild", gotEntity.Credential.Name)
 	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("global settings after reviewer rebuild = %#v, want 14/at_write", cfg.Data.Retention)
@@ -13374,7 +13266,7 @@ func TestInitCredentialDestinationDescriptionNamedOnePasswordShowsRoutingWithout
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "team-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{Git: config.GitConfig{Credential: config.CredentialLocation{Store: "team-vault"}}})
 	if err != nil {
 		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
@@ -13434,7 +13326,7 @@ func TestInitCredentialDestinationDescriptionOnePasswordConnectDoesNotReadTokenV
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "connect-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{Git: config.GitConfig{Credential: config.CredentialLocation{Store: "connect-vault"}}})
 	if err != nil {
 		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
@@ -13479,7 +13371,7 @@ func TestInitCredentialDestinationDescriptionOnePasswordDesktopShowsAccountID(t 
 			},
 		},
 	}
-	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{SecretsStore: "desktop-vault"})
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, config.Profile{Git: config.GitConfig{Credential: config.CredentialLocation{Store: "desktop-vault"}}})
 	if err != nil {
 		t.Fatalf("ResolveSecretsStoreForProfile: %v", err)
 	}
@@ -13890,8 +13782,8 @@ func TestInitReviewerCredentialStatusIncludesSelectableReviewerEntities(t *testi
 	work := basicProfile("work")
 	bot := basicProfile("bot")
 	bot.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -14104,9 +13996,9 @@ func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *
 
 		profile := basicProfile("work")
 		profile.ReviewerCredentials = &config.ReviewerCredentials{
-			AuthMode:      config.GitAuthModeGitHubApp,
-			GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-			CredentialRef: ref,
+			AuthMode:   config.GitAuthModeGitHubApp,
+			GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 		}
 		if _, err := planInitCredentialsWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
 			t.Fatalf("planInitCredentialsWithConfig: %v", err)
@@ -14135,8 +14027,8 @@ func TestMergeReviewerCredentialDraftWritesDropsStaleKeysWhenAuthModeChanges(t *
 
 		profile := basicProfile("work")
 		profile.ReviewerCredentials = &config.ReviewerCredentials{
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: ref,
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 		}
 		if _, err := planInitCredentialsWithConfig(config.File{Profiles: map[string]config.Profile{"work": profile}}, nil, profile, projectInitPlannedWriteKeys(session.writes)); err != nil {
 			t.Fatalf("planInitCredentialsWithConfig: %v", err)
@@ -14173,9 +14065,9 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,
@@ -14244,7 +14136,7 @@ func TestInitInteractiveMenuFocusedGitHubAppReviewerInlineWritesReadyWithoutHint
 	}
 	entity := got.ReviewerEntities["reviewer-github-app"]
 	if entity.AuthMode != config.GitAuthModeGitHubApp ||
-		entity.CredentialRef != "codereview/rianjs-bot" ||
+		entity.Credential.Name != "codereview/rianjs-bot" ||
 		entity.DisplayName != "rianjs-bot" {
 		t.Fatalf("reviewer entity = %#v, want rianjs-bot GitHub App reviewer", entity)
 	}
@@ -14737,7 +14629,7 @@ func TestInitInteractiveMenuReviewerCredentialDecisionDropsAfterReviewerRefChang
 		t.Fatalf("Load config: %v", err)
 	}
 	entity := got.ReviewerEntities["reviewer-github-app"]
-	if entity.CredentialRef != "codereview/new-reviewer" {
+	if entity.Credential.Name != "codereview/new-reviewer" {
 		t.Fatalf("reviewer entity = %#v, want new reviewer ref", entity)
 	}
 	if entity.GitHubApp == nil || entity.GitHubApp.AppID != "222" {
@@ -14968,14 +14860,14 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 	}
 	cfg.Profiles["work"] = config.Profile{
 		Git: config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			CredentialRef: "codereview/work",
+			Host:       "github.com",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 		},
 		ReviewerCredentials: &config.ReviewerCredentials{
-			AuthMode:      config.GitAuthModeGitHubApp,
-			GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-			CredentialRef: "codereview/custom-work-reviewer",
+			AuthMode:   config.GitAuthModeGitHubApp,
+			GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work-reviewer"},
 		},
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,
@@ -15047,8 +14939,8 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesCustomCredentialRe
 	if profile.ReviewerCredentials == nil {
 		t.Fatal("reviewer credentials = nil, want custom reviewer ref preserved after save")
 	}
-	if profile.ReviewerCredentials.CredentialRef != "codereview/custom-work-reviewer" {
-		t.Fatalf("reviewer credential ref = %q, want custom reviewer ref preserved after save", profile.ReviewerCredentials.CredentialRef)
+	if profile.ReviewerCredentials.Credential.Name != "codereview/custom-work-reviewer" {
+		t.Fatalf("reviewer credential ref = %q, want custom reviewer ref preserved after save", profile.ReviewerCredentials.Credential.Name)
 	}
 }
 
@@ -15058,15 +14950,15 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModeGitHubApp,
-					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-					CredentialRef: "codereview/work-reviewer",
-					DisplayName:   "Old label",
+					AuthMode:    config.GitAuthModeGitHubApp,
+					GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+					Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+					DisplayName: "Old label",
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,
@@ -15138,7 +15030,7 @@ func TestInitInteractiveMenuFocusedReviewerEntityLabelOnlySaveSkipsCredentialWri
 	if got, want := profile.ReviewerCredentials.DisplayName, "OC Collective bot"; got != want {
 		t.Fatalf("reviewer display name = %q, want %q", got, want)
 	}
-	if got, want := profile.ReviewerCredentials.CredentialRef, "codereview/work-reviewer"; got != want {
+	if got, want := profile.ReviewerCredentials.Credential.Name, "codereview/work-reviewer"; got != want {
 		t.Fatalf("reviewer credential ref = %q, want %q", got, want)
 	}
 }
@@ -15149,14 +15041,14 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesExistingCredential
 		Profiles: map[string]config.Profile{
 			"work": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/work",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 				},
 				ReviewerCredentials: &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModeGitHubApp,
-					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-					CredentialRef: "codereview/custom-work-reviewer",
+					AuthMode:   config.GitAuthModeGitHubApp,
+					GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/custom-work-reviewer"},
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,
@@ -15243,8 +15135,8 @@ func TestInitInteractiveMenuFocusedReviewerEntitySavePreservesExistingCredential
 	if profile.ReviewerCredentials == nil {
 		t.Fatal("reviewer credentials = nil, want existing reviewer ref preserved after save")
 	}
-	if profile.ReviewerCredentials.CredentialRef != "codereview/custom-work-reviewer" {
-		t.Fatalf("reviewer credential ref = %q, want existing reviewer ref preserved after clearing draft ref", profile.ReviewerCredentials.CredentialRef)
+	if profile.ReviewerCredentials.Credential.Name != "codereview/custom-work-reviewer" {
+		t.Fatalf("reviewer credential ref = %q, want existing reviewer ref preserved after clearing draft ref", profile.ReviewerCredentials.Credential.Name)
 	}
 }
 
@@ -15364,9 +15256,9 @@ func TestInitInteractiveMenuFocusedReviewerEntityDeleteUndoReturnsToMenu(t *test
 			"work": func() config.Profile {
 				profile := basicProfile("work")
 				profile.ReviewerCredentials = &config.ReviewerCredentials{
-					AuthMode:      config.GitAuthModeGitHubApp,
-					GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-					CredentialRef: "codereview/shared-reviewer",
+					AuthMode:   config.GitAuthModeGitHubApp,
+					GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 				}
 				return profile
 			}(),
@@ -15900,15 +15792,15 @@ func TestInitInteractiveMenuDeleteUndoAndSaveFlow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	work := basicProfile("work")
 	work.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	home := basicProfile("home")
 	home.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	saveCredentialTestConfig(t, path, config.File{
 		Profiles: map[string]config.Profile{
@@ -16243,8 +16135,8 @@ func TestInitInteractiveMenuFinalSaveSetNowWritesCredentialsAndMarksProfileReady
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
-		t.Fatalf("suggested profile git ref = %q, want codereview/default", cfg.Profiles["default"].Git.CredentialRef)
+	if cfg.Profiles["default"].Git.Credential.Name != "codereview/default" {
+		t.Fatalf("suggested profile git ref = %q, want codereview/default", cfg.Profiles["default"].Git.Credential.Name)
 	}
 	if !strings.Contains(stdout.String(), "Saved staged init changes") || !strings.Contains(stdout.String(), "- review profiles: 1") || !strings.Contains(stdout.String(), "- credential secrets: 1 name") || !strings.Contains(stdout.String(), "- default: ready") {
 		t.Fatalf("stdout = %q, want ready summary for suggested profile", stdout.String())
@@ -16456,7 +16348,7 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 		t.Fatalf("profiles = %#v, want only existing work profile", got)
 	}
 	work := cfg.Profiles["work"]
-	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.CredentialRef != "codereview/work" {
+	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.Credential.Name != "codereview/work" {
 		t.Fatalf("work git = %#v, want untouched bootstrap profile git config", work.Git)
 	}
 	if work.ReviewerCredentials != nil {
@@ -16522,7 +16414,7 @@ func TestInitInteractiveMenuSecretsManagementOnlySaveDoesNotFinalizeBootstrapped
 		t.Fatalf("Load config: %v", err)
 	}
 	work := cfg.Profiles["work"]
-	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.CredentialRef != "codereview/work" {
+	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.Credential.Name != "codereview/work" {
 		t.Fatalf("work git = %#v, want untouched bootstrap profile git config", work.Git)
 	}
 	if work.ReviewerCredentials != nil {
@@ -17060,12 +16952,12 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsStoresIndependently
 		Profiles: map[string]config.Profile{
 			"home": func() config.Profile {
 				p := basicProfile("home")
-				p.SecretsStore = "personal-memory"
+				p.Git.Credential.Store = "personal-memory"
 				return p
 			}(),
 			"work": func() config.Profile {
 				p := basicProfile("work")
-				p.SecretsStore = "work-file"
+				p.Git.Credential.Store = "work-file"
 				return p
 			}(),
 		},
@@ -17128,11 +17020,11 @@ func TestApplyInteractiveInitSessionPlanWritesSeparateSecretsStoresIndependently
 func TestApplyInteractiveInitSessionPlanWritesReviewerSecretsToResolvedStore(t *testing.T) {
 	workStore := newFakeInitStore(nil)
 	profile := basicProfile("work")
-	profile.SecretsStore = "work-file"
+	profile.Git.Credential.Store = "work-file"
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: "work-file", Name: "codereview/work-reviewer"},
 	}
 	cfg := config.File{
 		Secrets: config.SecretsConfig{
@@ -17221,7 +17113,7 @@ func TestApplyInteractiveInitSessionPlanNamedSecretsStoreWriteFailureStopsConfig
 		Profiles: map[string]config.Profile{
 			"work": func() config.Profile {
 				p := basicProfile("work")
-				p.SecretsStore = "work-1password"
+				p.Git.Credential.Store = "work-1password"
 				return p
 			}(),
 		},
@@ -17662,8 +17554,8 @@ func TestInitInteractiveCollectsClipboardGitSecretWithoutHint(t *testing.T) {
 	if strings.Contains(stderr.String(), "set-credential --store local-os --name codereview/default --key "+credentials.GitTokenKey) {
 		t.Fatalf("stderr = %q, want no stale follow-up hint after collected secret", stderr.String())
 	}
-	if savedCfg.Profiles["default"].Git.CredentialRef != "codereview/default" {
-		t.Fatalf("git ref = %q, want codereview/default", savedCfg.Profiles["default"].Git.CredentialRef)
+	if savedCfg.Profiles["default"].Git.Credential.Name != "codereview/default" {
+		t.Fatalf("git ref = %q, want codereview/default", savedCfg.Profiles["default"].Git.Credential.Name)
 	}
 }
 
@@ -18150,10 +18042,10 @@ func TestApplyInteractiveInitSessionPlanDeletesStaleReviewerKeyWithoutWrites(t *
 	})
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
-		DisplayName:   "work bot",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		DisplayName: "work bot",
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"work": profile},
@@ -18227,9 +18119,9 @@ func TestApplyInteractiveInitSessionPlanSaveFailureDoesNotDeleteStaleReviewerKey
 	})
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
 	}
 	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
 	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
@@ -18277,14 +18169,14 @@ func TestApplyInteractiveInitSessionPlanKeepsSharedRefPATKeyAfterStagedAuthSwitc
 	})
 	appProfile := basicProfile("app")
 	appProfile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	patProfile := basicProfile("pat")
 	patProfile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -18349,10 +18241,10 @@ func TestApplyInitPlanDeletesStaleReviewerKeyWithoutWrites(t *testing.T) {
 	})
 	profile := basicProfile("work")
 	profile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
-		DisplayName:   "work bot",
+		AuthMode:    config.GitAuthModeGitHubApp,
+		GitHubApp:   &config.GitHubAppConfig{AppID: "12345"},
+		Credential:  config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-reviewer"},
+		DisplayName: "work bot",
 	}
 	cfg := config.File{Profiles: map[string]config.Profile{"work": profile}}
 	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
@@ -18426,14 +18318,14 @@ func TestStaleReviewerCleanupKeepsKeysRequiredByAnotherActiveModeWithoutWrites(t
 	}
 	appProfile := basicProfile("app")
 	appProfile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModeGitHubApp,
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModeGitHubApp,
+		GitHubApp:  &config.GitHubAppConfig{AppID: "12345"},
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	patProfile := basicProfile("pat")
 	patProfile.ReviewerCredentials = &config.ReviewerCredentials{
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/shared-reviewer",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/shared-reviewer"},
 	}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
@@ -18784,10 +18676,9 @@ func basicProfile(profile string) config.Profile {
 	}
 	return config.Profile{
 		Git: config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
-			CredentialRef: ref,
+			Host:       "github.com",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 		},
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,
@@ -18810,11 +18701,10 @@ func apiKeyProfile(profile string, provider config.LLMProvider) config.Profile {
 	p := basicProfile(profile)
 	ref := "codereview/" + profile + "-llm"
 	p.LLM = config.LLMConfig{
-		Provider:      provider,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterAnthropicAPI,
-		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
-		CredentialRef: ref,
+		Provider:   provider,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterAnthropicAPI,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 	}
 	if provider == config.LLMProviderOpenAI {
 		p.LLM.Adapter = config.LLMAdapterOpenAIAPI

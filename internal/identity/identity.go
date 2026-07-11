@@ -155,7 +155,6 @@ func reviewerIdentitySource(profile config.Profile) (config.GitConfig, string) {
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		Credential:    profile.ReviewerCredentials.Credential,
 		GitHubApp:     githubApp,
-		CredentialRef: profile.ReviewerCredentials.CredentialRef,
 		IdentityCache: profile.ReviewerCredentials.IdentityCache,
 	}, profile.ReviewerCredentials.IdentityCache
 }

@@ -221,9 +221,9 @@ func TestDataPruneDefaultIgnoresConfiguredRetention(t *testing.T) {
 		Profiles: map[string]config.Profile{
 			"home": {
 				Git: config.GitConfig{
-					Host:          "github.com",
-					AuthMode:      config.GitAuthModePAT,
-					CredentialRef: "codereview/home",
+					Host:       "github.com",
+					AuthMode:   config.GitAuthModePAT,
+					Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/home"},
 				},
 				LLM: config.LLMConfig{
 					Provider: config.LLMProviderAnthropic,

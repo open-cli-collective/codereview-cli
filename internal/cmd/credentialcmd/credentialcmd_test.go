@@ -205,8 +205,7 @@ func TestSetCredentialUsesGitHubAppCredentialMatrix(t *testing.T) {
 			Store: testFileCredentialStoreID,
 			Name:  "codereview/work-reviewer",
 		},
-		GitHubApp:     &config.GitHubAppConfig{AppID: "12345"},
-		CredentialRef: "codereview/work-reviewer",
+		GitHubApp: &config.GitHubAppConfig{AppID: "12345"},
 	}
 	cfg.Profiles["work"] = work
 	saveCredentialTestConfig(t, path, cfg)
@@ -597,10 +596,9 @@ func basicProfile(profile string) config.Profile {
 	}
 	return config.Profile{
 		Git: config.GitConfig{
-			Host:          "github.com",
-			AuthMode:      config.GitAuthModePAT,
-			Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
-			CredentialRef: ref,
+			Host:       "github.com",
+			AuthMode:   config.GitAuthModePAT,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 		},
 		LLM: config.LLMConfig{
 			Provider: config.LLMProviderAnthropic,
@@ -614,11 +612,10 @@ func apiKeyProfile(profile string, provider config.LLMProvider) config.Profile {
 	p := basicProfile(profile)
 	ref := "codereview/" + profile + "-llm"
 	p.LLM = config.LLMConfig{
-		Provider:      provider,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterAnthropicAPI,
-		Credential:    config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
-		CredentialRef: ref,
+		Provider:   provider,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterAnthropicAPI,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: ref},
 	}
 	if provider == config.LLMProviderOpenAI {
 		p.LLM.Adapter = config.LLMAdapterOpenAIAPI

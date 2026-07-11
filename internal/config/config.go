@@ -150,8 +150,6 @@ type Profile struct {
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 	Hooks            []Hook          `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 
-	// SecretsStore is retained as an ignored in-memory compatibility field.
-	SecretsStore string `yaml:"-" json:"-"`
 	// ReviewerCredentials is the resolved effective reviewer credential block
 	// derived from ReviewerEntities for runtime callers. It is not config schema.
 	ReviewerCredentials *ReviewerCredentials `yaml:"-" json:"-"`
@@ -239,9 +237,6 @@ type GitConfig struct {
 	Credential    CredentialLocation `yaml:"credential" json:"credential"`
 	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
-
-	// CredentialRef is retained as an ignored in-memory compatibility field.
-	CredentialRef string `yaml:"-" json:"-"`
 }
 
 // GitHubAppConfig stores non-secret GitHub App identifiers.
@@ -262,9 +257,6 @@ type ReviewerCredentials struct {
 	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	DisplayName   string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
-
-	// CredentialRef is retained as an ignored in-memory compatibility field.
-	CredentialRef string `yaml:"-" json:"-"`
 }
 
 // ProfileReviewer selects the identity used to post review comments.
@@ -328,9 +320,6 @@ type ReviewerEntity struct {
 	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	DisplayName   string             `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
-
-	// CredentialRef is retained as an ignored in-memory compatibility field.
-	CredentialRef string `yaml:"-" json:"-"`
 }
 
 // RepositoryProfile routes repositories to profiles when --profile is omitted.
@@ -354,9 +343,6 @@ type LLMConfig struct {
 	Credential        CredentialLocation `yaml:"credential,omitempty" json:"credential,omitempty"`
 	ModelMap          ModelMap           `yaml:"model_map,omitempty" json:"model_map,omitempty"`
 	ReviewerModelTier ModelTier          `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
-
-	// CredentialRef is retained as an ignored in-memory compatibility field.
-	CredentialRef string `yaml:"-" json:"-"`
 }
 
 // ModelMap maps portable model tiers to provider-specific model identifiers.
@@ -1936,7 +1922,6 @@ func reviewerEntityFromProfile(profile Profile) ReviewerEntity {
 		Host:          profile.Git.Host,
 		AuthMode:      reviewer.AuthMode,
 		Credential:    reviewer.Credential,
-		CredentialRef: reviewer.CredentialRef,
 		GitHubApp:     cloneGitHubAppConfig(reviewer.GitHubApp),
 		DisplayName:   reviewer.DisplayName,
 		IdentityCache: reviewer.IdentityCache,
@@ -2102,7 +2087,6 @@ func IsOnePasswordSecretsBackend(kind SecretsBackendKind) bool {
 }
 
 func (p Profile) normalized() Profile {
-	p.SecretsStore = strings.TrimSpace(p.SecretsStore)
 	p.RepositoryAccess = strings.TrimSpace(p.RepositoryAccess)
 	p.Git = p.Git.normalized()
 	p.Reviewer = p.Reviewer.normalized()
@@ -2144,7 +2128,7 @@ func (i ProfileReviewerGitHubAppInstallation) normalized() ProfileReviewerGitHub
 func (g GitConfig) normalized() GitConfig {
 	g.Host = normalizeConfigHost(g.Host)
 	g.AuthMode = GitAuthMode(strings.TrimSpace(string(g.AuthMode)))
-	g.CredentialRef, g.Credential = syncCredentialRef(g.CredentialRef, g.Credential)
+	g.Credential = g.Credential.normalized()
 	g.GitHubApp = cloneGitHubAppConfig(g.GitHubApp)
 	return g
 }
@@ -2165,7 +2149,7 @@ func (r RepositoryAccessConfig) normalized() RepositoryAccessConfig {
 }
 
 func (r ReviewerCredentials) normalized() ReviewerCredentials {
-	r.CredentialRef, r.Credential = syncCredentialRef(r.CredentialRef, r.Credential)
+	r.Credential = r.Credential.normalized()
 	r.GitHubApp = cloneGitHubAppConfig(r.GitHubApp)
 	return r
 }
@@ -2173,7 +2157,7 @@ func (r ReviewerCredentials) normalized() ReviewerCredentials {
 func (r ReviewerEntity) normalized() ReviewerEntity {
 	r.Host = normalizeConfigHost(r.Host)
 	r.AuthMode = GitAuthMode(strings.TrimSpace(string(r.AuthMode)))
-	r.CredentialRef, r.Credential = syncCredentialRef(r.CredentialRef, r.Credential)
+	r.Credential = r.Credential.normalized()
 	r.GitHubApp = cloneGitHubAppConfig(r.GitHubApp)
 	r.DisplayName = strings.TrimSpace(r.DisplayName)
 	r.IdentityCache = strings.TrimSpace(r.IdentityCache)
@@ -2188,7 +2172,6 @@ func (r ReviewerEntity) reviewerCredentials() *ReviewerCredentials {
 		GitHubApp:     cloneGitHubAppConfig(r.GitHubApp),
 		DisplayName:   r.DisplayName,
 		IdentityCache: r.IdentityCache,
-		CredentialRef: r.Credential.Name,
 	}
 }
 
@@ -2202,7 +2185,7 @@ func cloneGitHubAppConfig(app *GitHubAppConfig) *GitHubAppConfig {
 }
 
 func (l LLMConfig) normalized() LLMConfig {
-	l.CredentialRef, l.Credential = syncCredentialRef(l.CredentialRef, l.Credential)
+	l.Credential = l.Credential.normalized()
 	l.ReviewerModelTier = ModelTier(strings.TrimSpace(string(l.ReviewerModelTier)))
 	if len(l.ModelMap) > 0 {
 		modelMap := make(ModelMap, len(l.ModelMap))
@@ -2214,26 +2197,13 @@ func (l LLMConfig) normalized() LLMConfig {
 	return l
 }
 
-func syncCredentialRef(ref string, credential CredentialLocation) (string, CredentialLocation) {
-	ref = strings.TrimSpace(ref)
-	credential = credential.normalized()
-	if credential.Name == "" && ref != "" {
-		if credential.Store == "" {
-			credential.Store = LocalOSCredentialStoreID
-		}
-		credential.Name = ref
-	}
-	return credential.Name, credential
-}
-
 func (l LLMConfig) empty() bool {
 	return strings.TrimSpace(string(l.Provider)) == "" &&
 		strings.TrimSpace(string(l.Auth)) == "" &&
 		strings.TrimSpace(string(l.Adapter)) == "" &&
 		l.Credential.empty() &&
 		len(l.ModelMap) == 0 &&
-		strings.TrimSpace(string(l.ReviewerModelTier)) == "" &&
-		strings.TrimSpace(l.CredentialRef) == ""
+		strings.TrimSpace(string(l.ReviewerModelTier)) == ""
 }
 
 func (p ReviewPolicy) normalized() ReviewPolicy {

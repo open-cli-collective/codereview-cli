@@ -218,10 +218,10 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 		{
 			name: "anthropic",
 			cfg: config.LLMConfig{
-				Provider:      config.LLMProviderAnthropic,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterAnthropicAPI,
-				CredentialRef: "codereview/work-llm",
+				Provider:   config.LLMProviderAnthropic,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterAnthropicAPI,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 			},
 			apiKey:   "stored-value",
 			want:     "anthropic_api",
@@ -231,10 +231,10 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 		{
 			name: "openai",
 			cfg: config.LLMConfig{
-				Provider:      config.LLMProviderOpenAI,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterOpenAIAPI,
-				CredentialRef: "codereview/work-llm",
+				Provider:   config.LLMProviderOpenAI,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterOpenAIAPI,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 			},
 			apiKey:   "openai-stored-value",
 			want:     "openai_api",
@@ -264,10 +264,10 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 			"work-llm": {credentials.LegacyLLMAPIKeyKey: "stored-value"},
 		}}
 		_, err := NewAPIAdapterFromConfig(config.LLMConfig{
-			Provider:      config.LLMProviderAnthropic,
-			Auth:          config.LLMAuthAPIKey,
-			Adapter:       config.LLMAdapterAnthropicAPI,
-			CredentialRef: "codereview/work-llm",
+			Provider:   config.LLMProviderAnthropic,
+			Auth:       config.LLMAuthAPIKey,
+			Adapter:    config.LLMAdapterAnthropicAPI,
+			Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 		}, store, APIOptions{})
 		if !errors.Is(err, ErrAPIAdapterConfig) {
 			t.Fatalf("NewAPIAdapterFromConfig error = %v, want ErrAPIAdapterConfig", err)
@@ -295,10 +295,10 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 		{
 			name: "provider mismatch refused",
 			cfg: config.LLMConfig{
-				Provider:      config.LLMProviderOpenAI,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterAnthropicAPI,
-				CredentialRef: "codereview/work-llm",
+				Provider:   config.LLMProviderOpenAI,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterAnthropicAPI,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 			},
 		},
 	} {
@@ -313,18 +313,18 @@ func TestAPIAdapterFromConfig(t *testing.T) {
 	}
 
 	if _, err := NewAPIAdapterFromConfig(config.LLMConfig{
-		Provider:      config.LLMProviderOpenAI,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterOpenAIAPI,
-		CredentialRef: "codereview/work-llm",
+		Provider:   config.LLMProviderOpenAI,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterOpenAIAPI,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 	}, nil, APIOptions{}); !errors.Is(err, ErrAPIAdapterConfig) {
 		t.Fatalf("nil store error = %v, want ErrAPIAdapterConfig", err)
 	}
 	if _, err := NewAPIAdapterFromConfig(config.LLMConfig{
-		Provider:      config.LLMProviderOpenAI,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterAnthropicAPI,
-		CredentialRef: "codereview/missing",
+		Provider:   config.LLMProviderOpenAI,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterAnthropicAPI,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/missing"},
 	}, nil, APIOptions{}); !errors.Is(err, ErrAPIAdapterConfig) || !strings.Contains(err.Error(), "requires provider anthropic") {
 		t.Fatalf("mismatch with nil store error = %v, want provider/adapter validation", err)
 	}
@@ -336,10 +336,10 @@ func TestAPIAdapterFromConfigUsesCachingReaderAcrossRepeatedReads(t *testing.T) 
 	}}
 	reader := credentials.CachingReader("llm-store", base)
 	cfg := config.LLMConfig{
-		Provider:      config.LLMProviderOpenAI,
-		Auth:          config.LLMAuthAPIKey,
-		Adapter:       config.LLMAdapterOpenAIAPI,
-		CredentialRef: "codereview/work-llm",
+		Provider:   config.LLMProviderOpenAI,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterOpenAIAPI,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work-llm"},
 	}
 
 	first, err := NewAPIAdapterFromConfig(cfg, reader, APIOptions{BaseURL: "https://example.invalid"})

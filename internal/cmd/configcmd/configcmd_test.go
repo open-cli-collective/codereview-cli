@@ -1400,7 +1400,7 @@ func TestConfigShowGitHubAppGitCredentialStatus(t *testing.T) {
 	work := cfg.Profiles["work"]
 	work.Git.AuthMode = config.GitAuthModeGitHubApp
 	work.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-	work.Git.CredentialRef = "codereview/work-app"
+	work.Git.Credential.Name = "codereview/work-app"
 	work.Git.Credential.Name = "codereview/work-app"
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
@@ -2492,7 +2492,7 @@ func TestConfigClearGitHubAppCredentialMatrix(t *testing.T) {
 	work := cfg.Profiles["work"]
 	work.Git.AuthMode = config.GitAuthModeGitHubApp
 	work.Git.GitHubApp = &config.GitHubAppConfig{AppID: "12345"}
-	work.Git.CredentialRef = "codereview/work-app"
+	work.Git.Credential.Name = "codereview/work-app"
 	work.Git.Credential.Name = "codereview/work-app"
 	cfg.Profiles["work"] = work
 	path := saveTestConfig(t, cfg)
@@ -2601,11 +2601,11 @@ func TestConfigClearAllDryRunTextReportsPredictedReset(t *testing.T) {
 func TestConfigClearAllClearsOnlySelectedProfileAndRemovesCache(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	alpha := cfg.Profiles["home"]
-	alpha.Git.CredentialRef = "codereview/alpha"
+	alpha.Git.Credential.Name = "codereview/alpha"
 	alpha.Git.Credential.Name = "codereview/alpha"
 	cfg.Profiles["alpha"] = alpha
 	beta := cfg.Profiles["home"]
-	beta.Git.CredentialRef = "codereview/beta"
+	beta.Git.Credential.Name = "codereview/beta"
 	beta.Git.Credential.Name = "codereview/beta"
 	cfg.Profiles["beta"] = beta
 	path := saveTestConfig(t, cfg)
@@ -2901,7 +2901,7 @@ func TestConfigClearProfileAllClearsOnlySelectedProfile(t *testing.T) {
 func TestConfigClearProfileAllPrunesSelectedProfileRoutes(t *testing.T) {
 	cfg := fileBackendConfig(t)
 	alpha := cfg.Profiles["home"]
-	alpha.Git.CredentialRef = "codereview/alpha"
+	alpha.Git.Credential.Name = "codereview/alpha"
 	alpha.Git.Credential.Name = "codereview/alpha"
 	cfg.Profiles["alpha"] = alpha
 	cfg.RepositoryProfiles = []config.RepositoryProfile{
@@ -3411,32 +3411,28 @@ func testConfig() config.File {
 		configtest.WithoutRepositoryProfiles(),
 		configtest.HomeProfile(config.Profile{
 			Git: config.GitConfig{
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModePAT,
-				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
-				CredentialRef: "codereview/home",
+				Host:       "github.com",
+				AuthMode:   config.GitAuthModePAT,
+				Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/home"},
 			},
 			LLM:          config.LLMConfig{Provider: config.LLMProviderAnthropic, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterClaudeCLI},
 			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventComment},
 		}),
 		configtest.Profile("work", config.Profile{
 			Git: config.GitConfig{
-				Host:          "github.com",
-				AuthMode:      config.GitAuthModePAT,
-				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
-				CredentialRef: "codereview/work",
+				Host:       "github.com",
+				AuthMode:   config.GitAuthModePAT,
+				Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/work"},
 			},
 			ReviewerCredentials: &config.ReviewerCredentials{
-				AuthMode:      config.GitAuthModePAT,
-				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
-				CredentialRef: "codereview/work-reviewer",
+				AuthMode:   config.GitAuthModePAT,
+				Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/work-reviewer"},
 			},
 			LLM: config.LLMConfig{
-				Provider:      config.LLMProviderAnthropic,
-				Auth:          config.LLMAuthAPIKey,
-				Adapter:       config.LLMAdapterAnthropicAPI,
-				Credential:    config.CredentialLocation{Store: "test-memory", Name: "codereview/work-llm"},
-				CredentialRef: "codereview/work-llm",
+				Provider:   config.LLMProviderAnthropic,
+				Auth:       config.LLMAuthAPIKey,
+				Adapter:    config.LLMAdapterAnthropicAPI,
+				Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/work-llm"},
 			},
 			ReviewPolicy: config.ReviewPolicy{MajorEvent: config.ReviewMajorEventRequestChanges},
 		}),

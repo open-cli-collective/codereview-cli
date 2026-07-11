@@ -32,9 +32,9 @@ func TestCapabilities(t *testing.T) {
 func TestNewFromGitConfigBuildsPATClientAndCredential(t *testing.T) {
 	store := tokenStore{"work": {credentials.GitTokenKey: "token"}}
 	client, credential, err := NewFromGitConfig(config.GitConfig{
-		Host:          "github.example.com",
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work",
+		Host:       "github.example.com",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 	}, store, Options{})
 	if err != nil {
 		t.Fatalf("NewFromGitConfig: %v", err)
@@ -59,9 +59,9 @@ func TestNewFromGitConfigPATUsesCachingReaderAcrossRepeatedReads(t *testing.T) {
 	}}
 	reader := credentials.CachingReader("git-store", base)
 	cfg := config.GitConfig{
-		Host:          "github.example.com",
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work",
+		Host:       "github.example.com",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 	}
 
 	first, credential, err := NewFromGitConfig(cfg, reader, Options{})
@@ -90,18 +90,18 @@ func TestNewRequiresExplicitHost(t *testing.T) {
 func TestNewFromGitConfigRejectsReservedAuthModesAndHostConflict(t *testing.T) {
 	store := tokenStore{"work": {credentials.GitTokenKey: "token"}}
 	_, _, err := NewFromGitConfig(config.GitConfig{
-		Host:          "github.com",
-		AuthMode:      config.GitAuthModeOAuthDevice,
-		CredentialRef: "codereview/work",
+		Host:       "github.com",
+		AuthMode:   config.GitAuthModeOAuthDevice,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 	}, store, Options{})
 	if !errors.Is(err, config.ErrUnsupported) {
 		t.Fatalf("NewFromGitConfig(oauth_device) error = %v, want ErrUnsupported", err)
 	}
 
 	_, _, err = NewFromGitConfig(config.GitConfig{
-		Host:          "github.com",
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work",
+		Host:       "github.com",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 	}, store, Options{Host: "github.example.com"})
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("NewFromGitConfig host conflict error = %v, want ErrValidation", err)
@@ -110,9 +110,9 @@ func TestNewFromGitConfigRejectsReservedAuthModesAndHostConflict(t *testing.T) {
 
 func TestNewFromGitConfigRejectsMissingTokenWithoutLeaking(t *testing.T) {
 	_, _, err := NewFromGitConfig(config.GitConfig{
-		Host:          "github.com",
-		AuthMode:      config.GitAuthModePAT,
-		CredentialRef: "codereview/work",
+		Host:       "github.com",
+		AuthMode:   config.GitAuthModePAT,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/work"},
 	}, tokenStore{"work": {}}, Options{})
 	if !errors.Is(err, gitprovider.ErrAuth) {
 		t.Fatalf("NewFromGitConfig missing token error = %v, want ErrAuth", err)
