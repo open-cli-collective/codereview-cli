@@ -30,6 +30,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
@@ -1210,13 +1211,13 @@ func TestReviewLiveNonUpstreamExitCodesReturnAfterRendering(t *testing.T) {
 
 func TestNewReviewDryRunRejectsInvalidPlannedPayload(t *testing.T) {
 	result := testPipelineResult(false)
-	result.PlannedActions[0].PayloadJSON = "{bad"
+	result.PlannedActions[0].PayloadDecodeError = errors.New("invalid payload JSON")
 
 	_, err := view.NewReviewDryRun(result)
 	if err == nil {
 		t.Fatal("newReviewDryRun error = nil, want invalid payload failure")
 	}
-	if !strings.Contains(err.Error(), "payload is invalid JSON") {
+	if !strings.Contains(err.Error(), "invalid payload JSON") {
 		t.Fatalf("newReviewDryRun error = %v, want payload JSON failure", err)
 	}
 }
@@ -1477,29 +1478,22 @@ func testPipelineResult(failOnTriggered bool) pipeline.Result {
 				Body:      "Fix this",
 			}},
 			Actions: []reviewplan.Action{{
-				ActionID:  "inline_comment-1",
-				Kind:      reviewplan.ActionKindInlineComment,
-				FindingID: "finding-1",
-				PlannedAt: now,
-				Status:    reviewplan.ActionStatusPlannedOnly,
-				Marker:    reviewplan.MarkerPlacement{BodyBearing: true},
-				InlineComment: &reviewplan.InlineCommentPayload{
-					Body:        "Fix this",
-					Path:        "main.go",
-					Side:        review.DiffSideRight,
-					Line:        2,
-					SubjectType: review.AnchorKindLine,
+				Action: plannedactions.Action{
+					ActionID: "inline_comment-1", Kind: reviewplan.ActionKindInlineComment, FindingID: "finding-1",
+					PlannedAt: now, Status: reviewplan.ActionStatusPlannedOnly,
+					InlineComment: &reviewplan.InlineCommentPayload{
+						Body: "Fix this", Path: "main.go", Side: review.DiffSideRight, Line: 2, SubjectType: review.AnchorKindLine,
+					},
 				},
+				Marker: reviewplan.MarkerPlacement{BodyBearing: true},
 			}},
 		},
 		PlannedActions: []ledger.PlannedAction{{
-			ActionID:    "inline_comment-1",
-			RunID:       "run-1",
-			Kind:        ledger.PlannedActionInlineComment,
-			FindingID:   stringPtr("finding-1"),
-			PlannedAt:   now,
-			PayloadJSON: `{"body":"Fix this","path":"main.go"}`,
-			Status:      ledger.PlannedActionPlannedOnly,
+			Action: plannedactions.Action{
+				ActionID: "inline_comment-1", Kind: ledger.PlannedActionInlineComment, FindingID: "finding-1", PlannedAt: now,
+				InlineComment: &plannedactions.InlineCommentPayload{Body: "Fix this", Path: "main.go"}, Status: ledger.PlannedActionPlannedOnly,
+			},
+			RunID: "run-1",
 		}},
 	}
 }
@@ -1524,10 +1518,6 @@ func testLiveResult(failOnTriggered bool) reviewrun.Result {
 		Outbox:          outbox.Result{Outcome: ledger.OutcomeComment, ExitCode: 0, Posted: 2},
 		FailOnTriggered: failOnTriggered,
 	}
-}
-
-func stringPtr(value string) *string {
-	return &value
 }
 
 func writeReviewFile(t *testing.T, path, body string) {

@@ -2,7 +2,6 @@ package outbox
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -13,6 +12,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
@@ -793,17 +793,10 @@ func TestPostFinalizationIgnoresOptionalFailuresAndPlannedOnlyRows(t *testing.T)
 		run := allocateRun(t, store, ledger.PostModeLive)
 		provider := newRecordingProvider()
 		limiter := &spyLimiter{}
-		insertAction(t, store, ledger.PlannedAction{
-			ActionID:    "optional-bad-json",
-			RunID:       run.RunID,
-			Kind:        ledger.PlannedActionRollupComment,
-			PlannedAt:   testTime(),
-			PayloadJSON: `{bad-json`,
-			Status:      ledger.PlannedActionPending,
-			Required:    false,
-		})
+		action := plannedAction(run.RunID, "optional-bad-json", ledger.PlannedActionRollupComment, false, "", RollupCommentPayload{Body: "rollup"})
+		insertAction(t, store, action)
 
-		result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
+		result, err := Post(context.Background(), Options{Store: corruptingStore{Store: store, actionID: action.ActionID}, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
 		if err != nil {
 			t.Fatalf("Post: %v", err)
 		}
@@ -820,18 +813,11 @@ func TestPostFinalizationIgnoresOptionalFailuresAndPlannedOnlyRows(t *testing.T)
 		store := openStore(t)
 		run := allocateRun(t, store, ledger.PostModeLive)
 		provider := newRecordingProvider()
-		action := ledger.PlannedAction{
-			ActionID:    "planned-only-bad-json",
-			RunID:       run.RunID,
-			Kind:        ledger.PlannedActionRollupComment,
-			PlannedAt:   testTime(),
-			PayloadJSON: `{bad-json`,
-			Status:      ledger.PlannedActionPlannedOnly,
-			Required:    true,
-		}
+		action := plannedAction(run.RunID, "planned-only-bad-json", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup"})
+		action.Status = ledger.PlannedActionPlannedOnly
 		insertAction(t, store, action)
 
-		result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+		result, err := Post(context.Background(), Options{Store: corruptingStore{Store: store, actionID: action.ActionID}, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
 		if err != nil {
 			t.Fatalf("Post: %v", err)
 		}
@@ -909,17 +895,10 @@ func TestPostLocalValidationFailsTerminalWithoutLimiterOrProvider(t *testing.T) 
 	run := allocateRun(t, store, ledger.PostModeLive)
 	provider := newRecordingProvider()
 	limiter := &spyLimiter{}
-	insertAction(t, store, ledger.PlannedAction{
-		ActionID:    "bad-json",
-		RunID:       run.RunID,
-		Kind:        ledger.PlannedActionRollupComment,
-		PlannedAt:   testTime(),
-		PayloadJSON: `{bad-json`,
-		Status:      ledger.PlannedActionPending,
-		Required:    true,
-	})
+	action := plannedAction(run.RunID, "bad-json", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup"})
+	insertAction(t, store, action)
 
-	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
+	result, err := Post(context.Background(), Options{Store: corruptingStore{Store: store, actionID: action.ActionID}, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
@@ -929,7 +908,7 @@ func TestPostLocalValidationFailsTerminalWithoutLimiterOrProvider(t *testing.T) 
 	if limiter.calls != 0 || len(provider.writes) != 0 {
 		t.Fatalf("limiter calls = %d writes = %#v, want none", limiter.calls, provider.writes)
 	}
-	action := actionByID(t, store, run.RunID, "bad-json")
+	action = actionByID(t, store, run.RunID, "bad-json")
 	if action.Status != ledger.PlannedActionFailedTerminal || action.Attempts != 0 || action.Error == nil {
 		t.Fatalf("bad action = %#v, want failed terminal without attempts", action)
 	}
@@ -937,8 +916,9 @@ func TestPostLocalValidationFailsTerminalWithoutLimiterOrProvider(t *testing.T) 
 
 func TestPostLocalValidationFailsTerminalWithoutLimiterOrProviderByActionKind(t *testing.T) {
 	tests := []struct {
-		name   string
-		action ledger.PlannedAction
+		name    string
+		action  ledger.PlannedAction
+		corrupt bool
 	}{
 		{
 			name: "inline invalid provider request",
@@ -954,17 +934,9 @@ func TestPostLocalValidationFailsTerminalWithoutLimiterOrProviderByActionKind(t 
 			action: plannedAction("run-1", "reply-1", ledger.PlannedActionThreadReply, true, "", ThreadReplyPayload{Body: "reply"}),
 		},
 		{
-			name: "resolve malformed json",
-			action: ledger.PlannedAction{
-				ActionID:    "resolve-1",
-				RunID:       "run-1",
-				Kind:        ledger.PlannedActionResolveThread,
-				ThreadID:    strPtr("thread-1"),
-				PlannedAt:   testTime(),
-				PayloadJSON: `{bad-json`,
-				Status:      ledger.PlannedActionPending,
-				Required:    true,
-			},
+			name:    "resolve malformed json",
+			action:  plannedAction("run-1", "resolve-1", ledger.PlannedActionResolveThread, true, "thread-1", ResolveThreadPayload{}),
+			corrupt: true,
 		},
 		{
 			name:   "rollup missing body",
@@ -987,7 +959,11 @@ func TestPostLocalValidationFailsTerminalWithoutLimiterOrProviderByActionKind(t 
 			tt.action.RunID = run.RunID
 			insertAction(t, store, tt.action)
 
-			result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
+			var postStore Store = store
+			if tt.corrupt {
+				postStore = corruptingStore{Store: store, actionID: tt.action.ActionID}
+			}
+			result, err := Post(context.Background(), Options{Store: postStore, Provider: provider, Limiter: limiter, Now: fixedClock()}, testRequest(run))
 			if err != nil {
 				t.Fatalf("Post: %v", err)
 			}
@@ -1094,8 +1070,8 @@ func TestPostPersistedAuthFailureClassDrivesRerunExitAuth(t *testing.T) {
 
 func TestSortActionsPreservesEqualKeyOrder(t *testing.T) {
 	actions := []ledger.PlannedAction{
-		{RunID: "first", ActionID: "same", Kind: ledger.PlannedActionRollupComment},
-		{RunID: "second", ActionID: "same", Kind: ledger.PlannedActionRollupComment},
+		{RunID: "first", Action: plannedactions.Action{ActionID: "same", Kind: ledger.PlannedActionRollupComment}},
+		{RunID: "second", Action: plannedactions.Action{ActionID: "same", Kind: ledger.PlannedActionRollupComment}},
 	}
 
 	sorted := sortActions(actions)
@@ -1308,21 +1284,13 @@ func TestPostResolveMalformedPayloadFailsBeforeReconciliation(t *testing.T) {
 	reply.PostedAt = strPtrTime(testTime())
 	reply.UpstreamID = strPtr("comment-reply")
 	insertAction(t, store, reply)
-	insertAction(t, store, ledger.PlannedAction{
-		ActionID:    "resolve-1",
-		RunID:       run.RunID,
-		Kind:        ledger.PlannedActionResolveThread,
-		ThreadID:    strPtr("thread-1"),
-		PlannedAt:   testTime(),
-		PayloadJSON: `{bad-json`,
-		Status:      ledger.PlannedActionPending,
-		Required:    true,
-	})
+	resolve := plannedAction(run.RunID, "resolve-1", ledger.PlannedActionResolveThread, true, "thread-1", ResolveThreadPayload{})
+	insertAction(t, store, resolve)
 	if err := provider.SetInlineThreads(ref, []gitprovider.InlineThread{{ID: gitprovider.ThreadID("thread-1"), Resolved: true}}); err != nil {
 		t.Fatalf("SetInlineThreads: %v", err)
 	}
 
-	result, err := Post(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+	result, err := Post(context.Background(), Options{Store: corruptingStore{Store: store, actionID: resolve.ActionID}, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
@@ -1597,23 +1565,47 @@ func testBaseSHA() string {
 }
 
 func plannedAction(runID, actionID string, kind ledger.PlannedActionKind, required bool, threadID string, payload any) ledger.PlannedAction {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		panic(err)
-	}
 	action := ledger.PlannedAction{
-		ActionID:    actionID,
-		RunID:       runID,
-		Kind:        kind,
-		PlannedAt:   testTime(),
-		PayloadJSON: string(body),
-		Status:      ledger.PlannedActionPending,
-		Required:    required,
+		Action: plannedactions.Action{
+			ActionID:  actionID,
+			Kind:      kind,
+			ThreadID:  threadID,
+			PlannedAt: testTime(),
+			Status:    ledger.PlannedActionPending,
+			Required:  required,
+		},
+		RunID: runID,
 	}
-	if threadID != "" {
-		action.ThreadID = &threadID
+	switch payload := payload.(type) {
+	case InlineCommentPayload:
+		action.InlineComment = &payload
+	case ThreadReplyPayload:
+		action.ThreadReply = &payload
+	case ResolveThreadPayload:
+		action.ResolveThread = &payload
+	case RollupCommentPayload:
+		action.RollupComment = &payload
+	case SubmitReviewPayload:
+		action.SubmitReview = &payload
+	default:
+		panic("unsupported planned action payload")
 	}
 	return action
+}
+
+type corruptingStore struct {
+	*ledger.Store
+	actionID string
+}
+
+func (s corruptingStore) ListPlannedActions(ctx context.Context, runID string) ([]ledger.PlannedAction, error) {
+	actions, err := s.Store.ListPlannedActions(ctx, runID)
+	for i := range actions {
+		if actions[i].ActionID == s.actionID {
+			actions[i].PayloadDecodeError = errors.New("invalid payload JSON")
+		}
+	}
+	return actions, err
 }
 
 func insertAction(t *testing.T, store *ledger.Store, action ledger.PlannedAction) {

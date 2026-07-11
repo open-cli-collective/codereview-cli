@@ -3,7 +3,6 @@ package reviewrun
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -422,13 +421,15 @@ func desiredOutcomeFromActions(actions []ledger.PlannedAction) (ledger.Outcome, 
 		}
 		switch action.Kind {
 		case ledger.PlannedActionSubmitReview:
-			var payload outbox.SubmitReviewPayload
-			if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
-				return "", fmt.Errorf("reviewrun: decode submit_review payload %q: %w", action.ActionID, err)
+			if action.PayloadDecodeError != nil {
+				return "", fmt.Errorf("reviewrun: decode submit_review payload %q: %w", action.ActionID, action.PayloadDecodeError)
 			}
-			outcome, err := reviewplan.OutcomeFromReviewEvent(payload.Event)
+			if action.SubmitReview == nil {
+				return "", fmt.Errorf("reviewrun: submit_review payload %q missing", action.ActionID)
+			}
+			outcome, err := reviewplan.OutcomeFromReviewEvent(action.SubmitReview.Event)
 			if err != nil {
-				return "", fmt.Errorf("reviewrun: unsupported submit_review event %q", payload.Event)
+				return "", fmt.Errorf("reviewrun: unsupported submit_review event %q", action.SubmitReview.Event)
 			}
 			mapped := ledger.Outcome(outcome)
 			if haveSubmitOutcome && submitOutcome != mapped {

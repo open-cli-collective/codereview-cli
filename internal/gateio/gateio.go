@@ -3,7 +3,6 @@ package gateio
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
@@ -687,40 +687,30 @@ func allocateRepair(ctx context.Context, opts Options, req Request, runID string
 }
 
 func insertRepairSubmitReview(ctx context.Context, opts Options, runID string, event review.ReviewEvent) error {
-	payload, err := json.Marshal(outbox.SubmitReviewPayload{
-		Body:  repairSubmitReviewBody,
-		Event: event,
-	})
-	if err != nil {
-		return err
-	}
 	return opts.Store.InsertPlannedAction(ctx, ledger.PlannedAction{
-		ActionID:    repairSubmitReviewActionID,
-		RunID:       runID,
-		Kind:        ledger.PlannedActionSubmitReview,
-		PlannedAt:   opts.now(),
-		PayloadJSON: string(payload),
-		Status:      ledger.PlannedActionPending,
-		Required:    true,
+		Action: plannedactions.Action{
+			ActionID:     repairSubmitReviewActionID,
+			Kind:         ledger.PlannedActionSubmitReview,
+			PlannedAt:    opts.now(),
+			Status:       ledger.PlannedActionPending,
+			Required:     true,
+			SubmitReview: &plannedactions.SubmitReviewPayload{Body: repairSubmitReviewBody, Event: event},
+		},
+		RunID: runID,
 	})
 }
 
 func insertApprovalOverrideSubmitReview(ctx context.Context, opts Options, runID string) error {
-	payload, err := json.Marshal(outbox.SubmitReviewPayload{
-		Body:  approvalOverrideSubmitReviewBody,
-		Event: review.ReviewEventApprove,
-	})
-	if err != nil {
-		return err
-	}
 	return opts.Store.InsertPlannedAction(ctx, ledger.PlannedAction{
-		ActionID:    approvalOverrideSubmitReviewActionID,
-		RunID:       runID,
-		Kind:        ledger.PlannedActionSubmitReview,
-		PlannedAt:   opts.now(),
-		PayloadJSON: string(payload),
-		Status:      ledger.PlannedActionPending,
-		Required:    true,
+		Action: plannedactions.Action{
+			ActionID:     approvalOverrideSubmitReviewActionID,
+			Kind:         ledger.PlannedActionSubmitReview,
+			PlannedAt:    opts.now(),
+			Status:       ledger.PlannedActionPending,
+			Required:     true,
+			SubmitReview: &plannedactions.SubmitReviewPayload{Body: approvalOverrideSubmitReviewBody, Event: review.ReviewEventApprove},
+		},
+		RunID: runID,
 	})
 }
 
@@ -782,12 +772,14 @@ func retryDesiredOutcome(actions []ledger.PlannedAction) (ledger.Outcome, gate.D
 	return "", invalidInputDecision("retry-posts desired outcome cannot be derived from planned actions")
 }
 
-func decodeSubmitReviewPayload(action ledger.PlannedAction) (outbox.SubmitReviewPayload, error) {
-	var payload outbox.SubmitReviewPayload
-	if err := json.Unmarshal([]byte(action.PayloadJSON), &payload); err != nil {
-		return payload, fmt.Errorf("gateio: decode submit_review payload %q: %w", action.ActionID, err)
+func decodeSubmitReviewPayload(action ledger.PlannedAction) (plannedactions.SubmitReviewPayload, error) {
+	if action.PayloadDecodeError != nil {
+		return plannedactions.SubmitReviewPayload{}, fmt.Errorf("gateio: decode submit_review payload %q: %w", action.ActionID, action.PayloadDecodeError)
 	}
-	return payload, nil
+	if action.SubmitReview == nil {
+		return plannedactions.SubmitReviewPayload{}, fmt.Errorf("gateio: submit_review payload %q missing", action.ActionID)
+	}
+	return *action.SubmitReview, nil
 }
 
 func repairOutcomeEvent(outcome gate.PROutcome) (ledger.Outcome, review.ReviewEvent, error) {

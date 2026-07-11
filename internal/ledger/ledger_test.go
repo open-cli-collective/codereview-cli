@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	_ "modernc.org/sqlite"
 )
@@ -69,13 +70,15 @@ func TestOpenMigratesVersion1LedgerAndPreservesPlannedActions(t *testing.T) {
 		t.Fatalf("ListPlannedActions: %v", err)
 	}
 	want := PlannedAction{
-		ActionID:    "action-1",
-		RunID:       "run-1",
-		Kind:        PlannedActionRollupComment,
-		PlannedAt:   plannedAt,
-		PayloadJSON: `{"body":"hello"}`,
-		Status:      PlannedActionPending,
-		Required:    true,
+		Action: plannedactions.Action{
+			ActionID:      "action-1",
+			Kind:          PlannedActionRollupComment,
+			PlannedAt:     plannedAt,
+			RollupComment: &plannedactions.RollupCommentPayload{Body: "hello"},
+			Status:        PlannedActionPending,
+			Required:      true,
+		},
+		RunID: "run-1",
 	}
 	if !reflect.DeepEqual(actions, []PlannedAction{want}) {
 		t.Fatalf("ListPlannedActions after migration = %#v, want %#v", actions, []PlannedAction{want})
@@ -682,6 +685,95 @@ func TestTypedPersistenceRoundTrips(t *testing.T) {
 	}
 }
 
+func TestPlannedActionPayloadsRoundTripWithCompatibleBytes(t *testing.T) {
+	tests := []struct {
+		name string
+		kind PlannedActionKind
+		want string
+		set  func(*plannedactions.Action)
+	}{
+		{
+			name: "inline comment", kind: PlannedActionInlineComment,
+			want: `{"body":"inline body","path":"internal/example.go","side":"RIGHT","line":42,"subject_type":"line","diff_position":7}`,
+			set: func(a *plannedactions.Action) {
+				a.InlineComment = &plannedactions.InlineCommentPayload{Body: "inline body", Path: "internal/example.go", Side: review.DiffSideRight, Line: 42, SubjectType: review.AnchorKindLine, DiffPosition: 7}
+			},
+		},
+		{
+			name: "thread reply", kind: PlannedActionThreadReply,
+			want: `{"body":"reply body","summary":true}`,
+			set: func(a *plannedactions.Action) {
+				a.ThreadReply = &plannedactions.ThreadReplyPayload{Body: "reply body", Summary: true}
+			},
+		},
+		{
+			name: "resolve thread", kind: PlannedActionResolveThread, want: `{}`,
+			set: func(a *plannedactions.Action) { a.ResolveThread = &plannedactions.ResolveThreadPayload{} },
+		},
+		{
+			name: "rollup comment", kind: PlannedActionRollupComment,
+			want: `{"body":"rollup body"}`,
+			set: func(a *plannedactions.Action) {
+				a.RollupComment = &plannedactions.RollupCommentPayload{Body: "rollup body"}
+			},
+		},
+		{
+			name: "submit review", kind: PlannedActionSubmitReview,
+			want: `{"body":"review body","event":"request_changes"}`,
+			set: func(a *plannedactions.Action) {
+				a.SubmitReview = &plannedactions.SubmitReviewPayload{Body: "review body", Event: review.ReviewEventRequestChanges}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := openStore(t)
+			run := allocateRun(t, store, validAllocateRunParams())
+			action := PlannedAction{Action: plannedactions.Action{
+				ActionID: "action-1", Kind: tt.kind, PlannedAt: time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC),
+				Status: PlannedActionPending, Required: true,
+			}, RunID: run.RunID}
+			tt.set(&action.Action)
+
+			insertPlannedAction(t, store, action)
+			if got := queryString(t, store.db, "SELECT payload_json FROM planned_actions WHERE action_id = ?", action.ActionID); got != tt.want {
+				t.Fatalf("payload_json = %s, want byte-compatible %s", got, tt.want)
+			}
+			if got := queryString(t, store.db, "SELECT typeof(payload_json) FROM planned_actions WHERE action_id = ?", action.ActionID); got != "text" {
+				t.Fatalf("typeof(payload_json) = %s, want text", got)
+			}
+			got, err := store.ListPlannedActions(context.Background(), run.RunID)
+			if err != nil {
+				t.Fatalf("ListPlannedActions: %v", err)
+			}
+			if !reflect.DeepEqual(got, []PlannedAction{action}) {
+				t.Fatalf("round trip = %#v, want %#v", got, []PlannedAction{action})
+			}
+		})
+	}
+}
+
+func TestListPlannedActionsSurfacesPayloadDecodeErrorPerAction(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	action := validPlannedAction(run.RunID)
+	action.FindingID = ""
+	insertPlannedAction(t, store, action)
+	execSQL(t, store.db, "UPDATE planned_actions SET payload_json = ? WHERE action_id = ?", `{bad-json`, action.ActionID)
+
+	actions, err := store.ListPlannedActions(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	if len(actions) != 1 || actions[0].PayloadDecodeError == nil {
+		t.Fatalf("actions = %#v, want one per-action payload decode error", actions)
+	}
+	if actions[0].InlineComment != nil {
+		t.Fatalf("decoded payload = %#v, want nil after decode failure", actions[0].InlineComment)
+	}
+}
+
 func TestNamedSessionListAndDelete(t *testing.T) {
 	store := openStore(t)
 
@@ -724,7 +816,7 @@ func TestInsertPlannedActionsIsAtomic(t *testing.T) {
 
 	first := validPlannedAction(run.RunID)
 	second := validPlannedAction(run.RunID)
-	second.PayloadJSON = `{"body":"duplicate action id"}`
+	second.InlineComment.Body = "duplicate action id"
 
 	err := store.InsertPlannedActions(context.Background(), []PlannedAction{first, second})
 	if err == nil {
@@ -748,7 +840,7 @@ func TestInsertPlanningResultIsAtomic(t *testing.T) {
 	finding := validFinding(run.RunID, session.SessionRowID)
 	first := validPlannedAction(run.RunID)
 	second := validPlannedAction(run.RunID)
-	second.PayloadJSON = `{"body":"duplicate action id"}`
+	second.InlineComment.Body = "duplicate action id"
 
 	err := store.InsertPlanningResult(context.Background(), []Finding{finding}, []PlannedAction{first, second})
 	if err == nil {
@@ -775,7 +867,7 @@ func TestUpdatePlannedActionPersistsMutableFields(t *testing.T) {
 	run := allocateRun(t, store, validAllocateRunParams())
 
 	action := validPlannedAction(run.RunID)
-	action.FindingID = nil
+	action.FindingID = ""
 	insertPlannedAction(t, store, action)
 
 	attemptedAt := time.Date(2026, 5, 30, 12, 7, 0, 0, time.UTC)
@@ -805,7 +897,7 @@ func TestUpdatePlannedActionMissingRow(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())
 	action := validPlannedAction(run.RunID)
-	action.FindingID = nil
+	action.FindingID = ""
 
 	err := store.UpdatePlannedAction(context.Background(), action)
 	if !errors.Is(err, ErrNotFound) {
@@ -817,7 +909,7 @@ func TestListPlannedActionsRejectsUnknownFailureClass(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, validAllocateRunParams())
 	action := validPlannedAction(run.RunID)
-	action.FindingID = nil
+	action.FindingID = ""
 	insertPlannedAction(t, store, action)
 
 	execSQL(t, store.db, "UPDATE planned_actions SET failure_class = ? WHERE action_id = ?", "network", action.ActionID)
@@ -1070,7 +1162,7 @@ func TestInvalidInputsReturnErrInvalidInputBeforeMutation(t *testing.T) {
 		{name: "planned action missing payload", run: func(t *testing.T, s *Store) error {
 			run := allocateRun(t, s, validAllocateRunParams())
 			action := validPlannedAction(run.RunID)
-			action.PayloadJSON = ""
+			action.InlineComment = nil
 			return s.InsertPlannedAction(context.Background(), action)
 		}},
 		{name: "planned action bad status", run: func(t *testing.T, s *Store) error {
@@ -1433,15 +1525,16 @@ func insertFinding(t *testing.T, store *Store, finding Finding) {
 func validPlannedAction(runID string) PlannedAction {
 	attemptedAt := time.Date(2026, 5, 30, 12, 4, 0, 0, time.UTC)
 	return PlannedAction{
-		ActionID:    "action-1",
+		Action: plannedactions.Action{
+			ActionID:      "action-1",
+			Kind:          PlannedActionInlineComment,
+			FindingID:     "finding-1",
+			PlannedAt:     time.Date(2026, 5, 30, 12, 2, 0, 0, time.UTC),
+			InlineComment: &plannedactions.InlineCommentPayload{Body: "hello"},
+			Status:        PlannedActionPending,
+			Required:      true,
+		},
 		RunID:       runID,
-		Kind:        PlannedActionInlineComment,
-		FindingID:   strPtr("finding-1"),
-		ThreadID:    nil,
-		PlannedAt:   time.Date(2026, 5, 30, 12, 2, 0, 0, time.UTC),
-		PayloadJSON: `{"body":"hello"}`,
-		Status:      PlannedActionPending,
-		Required:    true,
 		Attempts:    1,
 		AttemptedAt: &attemptedAt,
 		PostedAt:    nil,

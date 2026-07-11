@@ -179,20 +179,8 @@ type Plan struct {
 
 // Action is one planner-local planned action.
 type Action struct {
-	ActionID  string
-	Kind      ActionKind
-	FindingID review.FindingID
-	ThreadID  string
-	PlannedAt time.Time
-	Status    ActionStatus
-	Required  bool
-	Marker    MarkerPlacement
-
-	InlineComment *InlineCommentPayload
-	ThreadReply   *ThreadReplyPayload
-	ResolveThread *ResolveThreadPayload
-	RollupComment *RollupCommentPayload
-	SubmitReview  *SubmitReviewPayload
+	plannedactions.Action
+	Marker MarkerPlacement
 }
 
 // MarkerPlacement records where the post phase should place markers.
@@ -784,12 +772,12 @@ func (b *builder) newAction(kind ActionKind) (Action, error) {
 		return Action{}, fmt.Errorf("reviewplan: duplicate action ID %q", id)
 	}
 	b.usedIDs[id] = true
-	return Action{
+	return Action{Action: plannedactions.Action{
 		ActionID:  id,
 		Kind:      kind,
 		PlannedAt: b.now,
 		Status:    b.status,
-	}, nil
+	}}, nil
 }
 
 func actionMarker(kind ActionKind, outcome Outcome) MarkerPlacement {
