@@ -13,12 +13,14 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 )
 
 var errTokenNotFound = errors.New("token not found")
 
 func TestClientImplementsGitProvider(_ *testing.T) {
 	var _ gitprovider.GitProvider = (*Client)(nil)
+	var _ outbox.Provider = (*Client)(nil)
 }
 
 func TestCapabilities(t *testing.T) {

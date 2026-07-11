@@ -64,7 +64,7 @@ type AcquireFunc func(string) (Lock, error)
 // Options contains response-run dependencies.
 type Options struct {
 	Store        Store
-	Provider     gitprovider.GitProvider
+	Provider     outbox.LiveProvider
 	Adapter      llm.Adapter
 	Limiter      outbox.Limiter
 	Layout       statepaths.Layout

@@ -36,10 +36,29 @@ type Limiter interface {
 	Wait(context.Context, string) error
 }
 
+// Provider is the git-provider behavior required by the post phase.
+type Provider interface {
+	ListInlineThreads(context.Context, gitprovider.PRRef) ([]gitprovider.InlineThread, error)
+	ListReviews(context.Context, gitprovider.PRRef) ([]gitprovider.Review, error)
+	ListIssueComments(context.Context, gitprovider.PRRef) ([]gitprovider.IssueComment, error)
+	PostInlineComment(context.Context, gitprovider.PRRef, gitprovider.InlineComment) (gitprovider.CommentID, error)
+	ReplyToThread(context.Context, gitprovider.PRRef, gitprovider.ThreadID, string) (gitprovider.CommentID, error)
+	ResolveThread(context.Context, gitprovider.PRRef, gitprovider.ThreadID) error
+	PostIssueComment(context.Context, gitprovider.PRRef, string) (gitprovider.CommentID, error)
+	SubmitReview(context.Context, gitprovider.PRRef, gitprovider.ReviewRequest) (gitprovider.ReviewID, error)
+	Capabilities() gitprovider.ProviderCaps
+}
+
+// LiveProvider adds the pull-request read required by live orchestration.
+type LiveProvider interface {
+	Provider
+	GetPR(context.Context, gitprovider.PRRef) (gitprovider.PR, error)
+}
+
 // Options contains post-phase dependencies.
 type Options struct {
 	Store    Store
-	Provider gitprovider.GitProvider
+	Provider Provider
 	Limiter  Limiter
 	Now      func() time.Time
 }
@@ -324,7 +343,7 @@ func validDesiredOutcome(outcome ledger.Outcome) bool {
 		outcome == ledger.OutcomeNothingToReview
 }
 
-func readHostState(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef) (hostState, error) {
+func readHostState(ctx context.Context, provider Provider, ref gitprovider.PRRef) (hostState, error) {
 	threads, err := provider.ListInlineThreads(ctx, ref)
 	if err != nil {
 		return hostState{}, err
@@ -487,7 +506,7 @@ func actionMarkerMatches(req Request, action ledger.PlannedAction, kind string, 
 	return false
 }
 
-func buildActionPlan(provider gitprovider.GitProvider, req Request, actions []ledger.PlannedAction, action ledger.PlannedAction) (actionPlan, map[string]bool, error) {
+func buildActionPlan(provider Provider, req Request, actions []ledger.PlannedAction, action ledger.PlannedAction) (actionPlan, map[string]bool, error) {
 	bundledInlineIDs := map[string]bool{}
 	switch action.Kind {
 	case ledger.PlannedActionInlineComment:
@@ -684,7 +703,7 @@ func bodyWithThreadSummaryMarker(req Request, action ledger.PlannedAction, body 
 	return rendered + "\n\n" + marker.SanitizeModelContent(body), nil
 }
 
-func dispatch(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef, plan actionPlan) (string, error) {
+func dispatch(ctx context.Context, provider Provider, ref gitprovider.PRRef, plan actionPlan) (string, error) {
 	switch plan.action.Kind {
 	case ledger.PlannedActionInlineComment:
 		id, err := provider.PostInlineComment(ctx, ref, *plan.inlineComment)

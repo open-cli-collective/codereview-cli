@@ -63,7 +63,7 @@ type AcquireFunc func(string) (Lock, error)
 // Options contains gate IO dependencies.
 type Options struct {
 	Store                   Store
-	Provider                gitprovider.GitProvider
+	Provider                outbox.LiveProvider
 	Limiter                 outbox.Limiter
 	Layout                  statepaths.Layout
 	Acquire                 AcquireFunc
@@ -871,7 +871,7 @@ func summarizeStaleCandidate(opts Options, req Request, run ledger.Run, summary 
 	}, nil, nil
 }
 
-func fetchReviewsUnlessApproved(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef, reviews []gitprovider.Review, loaded bool, posting gitprovider.Identity) ([]gitprovider.Review, *Result, error) {
+func fetchReviewsUnlessApproved(ctx context.Context, provider outbox.LiveProvider, ref gitprovider.PRRef, reviews []gitprovider.Review, loaded bool, posting gitprovider.Identity) ([]gitprovider.Review, *Result, error) {
 	if !loaded {
 		var err error
 		reviews, err = provider.ListReviews(ctx, ref)
@@ -891,7 +891,7 @@ func fetchReviewsUnlessApproved(ctx context.Context, provider gitprovider.GitPro
 	}, nil
 }
 
-func readGateHostState(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef) (gateHostState, error) {
+func readGateHostState(ctx context.Context, provider outbox.LiveProvider, ref gitprovider.PRRef) (gateHostState, error) {
 	reviews, err := provider.ListReviews(ctx, ref)
 	if err != nil {
 		return gateHostState{}, err
@@ -899,7 +899,7 @@ func readGateHostState(ctx context.Context, provider gitprovider.GitProvider, re
 	return readGateHostStateWithReviews(ctx, provider, ref, reviews)
 }
 
-func readGateHostStateWithReviews(ctx context.Context, provider gitprovider.GitProvider, ref gitprovider.PRRef, reviews []gitprovider.Review) (gateHostState, error) {
+func readGateHostStateWithReviews(ctx context.Context, provider outbox.LiveProvider, ref gitprovider.PRRef, reviews []gitprovider.Review) (gateHostState, error) {
 	comments, err := provider.ListIssueComments(ctx, ref)
 	if err != nil {
 		return gateHostState{}, err
