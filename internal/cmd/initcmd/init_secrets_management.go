@@ -258,7 +258,7 @@ func initSecretsStoreInventoryTitle(profile config.EffectiveSecretsStore) string
 	} else if profile.Backend != "" {
 		backendLabel = initSecretsBackendDisplayLabel(config.SecretsBackendKind(profile.Backend))
 	}
-	title := fmt.Sprintf("%s (%s)", initSecretsStoreDisplayName(profile.ID, profile.Label), backendLabel)
+	title := fmt.Sprintf("%s (%s)", initSecretsStoreDisplayName(profile.ID, profile.DisplayName), backendLabel)
 	return title
 }
 
@@ -283,7 +283,7 @@ type initSecretsStoreLabelSeed struct {
 }
 
 func initSecretsStoreEditorLabelSeed(profile config.SecretsStore, id string, kind config.SecretsBackendKind, creating bool) initSecretsStoreLabelSeed {
-	if trimmed := strings.TrimSpace(profile.Label); trimmed != "" {
+	if trimmed := strings.TrimSpace(profile.DisplayName); trimmed != "" {
 		return initSecretsStoreLabelSeed{
 			DisplayValue: trimmed,
 			StoredLabel:  trimmed,

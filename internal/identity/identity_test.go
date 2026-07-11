@@ -238,7 +238,6 @@ func (f *fakeResolver) ResolveIdentity(_ context.Context, _ string, git config.G
 
 func testConfig() config.File {
 	return configtest.File(
-		configtest.WithoutKeyring(),
 		configtest.WithoutSecrets(),
 		configtest.WithoutRepositoryProfiles(),
 		configtest.HomeProfile(config.Profile{

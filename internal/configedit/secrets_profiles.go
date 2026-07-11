@@ -77,11 +77,9 @@ func SetSecretsStore(cfg config.File, rawID string, patch SecretsStorePatch) (co
 	}
 	if normalizedLabel != nil {
 		updated.DisplayName = *normalizedLabel
-		updated.Label = *normalizedLabel
 	}
 	if patch.ClearLabel {
 		updated.DisplayName = ""
-		updated.Label = ""
 	}
 	if !existed && strings.TrimSpace(string(updated.Backend.Kind)) == "" {
 		return config.File{}, false, false, ErrSecretsStoreBackendRequired

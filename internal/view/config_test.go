@@ -87,18 +87,18 @@ func TestRenderConfigTextCredentialStores(t *testing.T) {
 	show := NewConfigShow("work", workProfile(), dataConfig(), nil)
 	show.Backend = "memory"
 	show.BackendSource = "credential_store"
-	show.SecretsStores = []config.EffectiveSecretsStore{
+	show.SecretsStores = []ConfigShowSecretsStore{
 		{
-			ID:      config.LocalOSCredentialStoreID,
-			Label:   "macOS Login Keychain",
-			Backend: "memory",
-			Source:  config.EffectiveSecretsStoreSourceBuiltIn,
+			ID:          config.LocalOSCredentialStoreID,
+			DisplayName: "macOS Login Keychain",
+			Backend:     "memory",
+			Source:      config.EffectiveSecretsStoreSourceBuiltIn,
 		},
 		{
-			ID:      "personal-keychain",
-			Label:   "Personal Keychain",
-			Backend: "keychain",
-			Source:  config.EffectiveSecretsStoreSourceConfigured,
+			ID:          "personal-keychain",
+			DisplayName: "Personal Keychain",
+			Backend:     "keychain",
+			Source:      config.EffectiveSecretsStoreSourceConfigured,
 		},
 	}
 

@@ -6452,9 +6452,6 @@ func interactiveInitSessionSummaryLines(plan initSessionPlan) []string {
 			lines = append(lines, "secrets storage")
 		}
 	}
-	if !reflect.DeepEqual(plan.originalCfg.Keyring, plan.cfg.Keyring) {
-		lines = append(lines, "credential store settings")
-	}
 	if !reflect.DeepEqual(plan.originalCfg.Data.Retention, plan.cfg.Data.Retention) {
 		lines = append(lines, "global settings")
 	}

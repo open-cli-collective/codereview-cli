@@ -49,9 +49,6 @@ func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
-	}
 	profile := cfg.Profiles["default"]
 	if profile.Git.Credential.Store != config.LocalOSCredentialStoreID || profile.Git.Credential.Name != "codereview/default" {
 		t.Fatalf("git credential = %#v, want local-os codereview/default", profile.Git.Credential)
@@ -716,13 +713,6 @@ func TestInitRuntimeOnlyBackendIsCarriedIntoCredentialHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring.backend = %q, want empty runtime-only backend", cfg.Keyring.Backend)
-	}
 	if !strings.Contains(errOut.String(), "cr set-credential --store local-os --name codereview/default --key git_token --stdin") {
 		t.Fatalf("stderr = %q, want explicit local-os set-credential hint", errOut.String())
 	}
@@ -782,9 +772,6 @@ func TestInitPersistsExplicitBackendWhenExistingAPIKeySatisfiesConfig(t *testing
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
 	}
 	if cfg.Profiles["default"].LLM.Credential.Store != config.LocalOSCredentialStoreID {
 		t.Fatalf("llm credential store = %q, want local-os", cfg.Profiles["default"].LLM.Credential.Store)
@@ -1267,7 +1254,6 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		ResolveThreads:   config.ResolveThreadsNever,
 	}
 	existing := config.File{
-		Keyring: config.KeyringConfig{Backend: "file"},
 		RepositoryProfiles: []config.RepositoryProfile{
 			{
 				Profile: "home",
@@ -3128,8 +3114,8 @@ func TestCollectInteractiveInitSecretsPassesDestinationToSharedCredentialPrompts
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"team-vault": {
-					Label:   "Team Vault",
-					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "Team Vault",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
@@ -6281,8 +6267,8 @@ func TestBuildInteractiveInitWorkspaceRepairsBrokenSecretsStoreToConfiguredProfi
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"team-vault": {
-					Label:   "Team Vault",
-					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "Team Vault",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
@@ -6372,8 +6358,8 @@ func TestBuildInteractiveInitWorkspaceAllowsRepairWhileAnotherProfileStillHasBro
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"team-vault": {
-					Label:   "Team Vault",
-					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "Team Vault",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
@@ -8301,14 +8287,14 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsStore(t *t
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"personal": {
-					Label: "1Password",
+					DisplayName: "1Password",
 					Backend: config.SecretsStoreBackend{
 						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
 						OnePassword: &config.SecretsStoreOnePasswordConfig{VaultID: "Personal"},
 					},
 				},
 				"onepasswordfoo": {
-					Label: "1PasswordFoo",
+					DisplayName: "1PasswordFoo",
 					Backend: config.SecretsStoreBackend{
 						Kind:        config.SecretsBackendKind(credstore.BackendOPDesktop),
 						OnePassword: &config.SecretsStoreOnePasswordConfig{VaultID: "Personal"},
@@ -8367,20 +8353,20 @@ func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletion
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"personal": {
-					Label:   "Personal",
-					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "Personal",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
 	}
 	pendingDeletes := map[string]initPendingSecretsManagementDelete{
 		"alpha": {ID: "alpha", Profile: config.SecretsStore{
-			Label:   "Alpha",
-			Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+			DisplayName: "Alpha",
+			Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 		}},
 		"beta": {ID: "beta", Profile: config.SecretsStore{
-			Label:   "Beta",
-			Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+			DisplayName: "Beta",
+			Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 		}},
 	}
 
@@ -8413,12 +8399,12 @@ func TestInitSecretsManagementLinearEditorDeleteActionOnlyAppliesToConfiguredPro
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"personal": {
-					Label:   "1Password",
-					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "1Password",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 				"unused": {
-					Label:   "Unused",
-					Backend: config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
+					DisplayName: "Unused",
+					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
 				},
 			},
 		},
@@ -8517,7 +8503,7 @@ func TestInitSecretsManagementLinearEditorOnlyFocusedSelectChangesAndShowsCaret(
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"work-secrets": {
-					Label: "Work secrets",
+					DisplayName: "Work secrets",
 					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendFile),
 					},
@@ -9201,7 +9187,7 @@ func TestInitSecretsManagementLinearEditorConfiguredProfileKeepsBackendEditable(
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"work-secrets": {
-					Label: "Work secrets",
+					DisplayName: "Work secrets",
 					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendFile),
 					},
@@ -12311,9 +12297,6 @@ func TestInitInteractiveMenuCarriesGlobalSettingsIntoFirstProfile(t *testing.T) 
 	if _, ok := cfg.Profiles["default"]; !ok {
 		t.Fatalf("profiles = %#v, want suggested profile", cfg.Profiles)
 	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
-	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 45 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
 		t.Fatalf("retention = %#v, want 45/manual_only", cfg.Data.Retention)
 	}
@@ -12864,8 +12847,8 @@ func TestInitInteractiveMenuFocusedLLMRuntimeRebuildsSecretPlanning(t *testing.T
 	if profile.LLM.CredentialRef == "" {
 		t.Fatalf("llm credential ref = %q, want generated ref after runtime rebuild", profile.LLM.CredentialRef)
 	}
-	if cfg.Keyring.Backend != "" || cfg.Data.Retention.MaxAgeDaysValue() != 30 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
-		t.Fatalf("global settings after runtime rebuild = %#v / %#v, want empty backend + 30/manual_only", cfg.Keyring, cfg.Data.Retention)
+	if cfg.Data.Retention.MaxAgeDaysValue() != 30 || cfg.Data.Retention.Enforcement != config.RetentionManualOnly {
+		t.Fatalf("global settings after runtime rebuild = %#v, want 30/manual_only", cfg.Data.Retention)
 	}
 }
 
@@ -13050,9 +13033,6 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring backend = %q, want empty", cfg.Keyring.Backend)
 	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 14/at_write", cfg.Data.Retention)
@@ -13271,8 +13251,8 @@ func TestInitInteractiveMenuFocusedReviewerEntityRebuildsSecretPlanning(t *testi
 	if gotEntity.CredentialRef == "" {
 		t.Fatalf("reviewer entity credential ref = %q, want generated ref after reviewer rebuild", gotEntity.CredentialRef)
 	}
-	if cfg.Keyring.Backend != "" || cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
-		t.Fatalf("global settings after reviewer rebuild = %#v / %#v, want empty backend + 14/at_write", cfg.Keyring, cfg.Data.Retention)
+	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
+		t.Fatalf("global settings after reviewer rebuild = %#v, want 14/at_write", cfg.Data.Retention)
 	}
 }
 
@@ -13491,8 +13471,8 @@ func TestInitCredentialDestinationDescriptionOnePasswordDesktopShowsAccountID(t 
 					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
 						OnePassword: &config.SecretsStoreOnePasswordConfig{
-							VaultID:          "Engineering",
-							DesktopAccountID: "account-123",
+							VaultID:   "Engineering",
+							AccountID: "account-123",
 						},
 					},
 				},
@@ -13780,8 +13760,8 @@ func TestInitReviewerCredentialStatusShowsExistingPATAndSecretsStoreDestination(
 					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
 						OnePassword: &config.SecretsStoreOnePasswordConfig{
-							VaultID:          "Engineering",
-							DesktopAccountID: "account-123",
+							VaultID:   "Engineering",
+							AccountID: "account-123",
 						},
 					},
 				},
@@ -16403,7 +16383,6 @@ func TestInitInteractiveMenuFinalSaveMixedReadinessSummarizesPerProfileState(t *
 func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
 		Data: config.DataConfig{
 			Retention: config.RetentionConfig{
 				MaxAgeDays:  intPtr(14),
@@ -16470,9 +16449,6 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
 	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
-	}
 	if cfg.Data.Retention.MaxAgeDaysValue() != 30 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 30/at_write", cfg.Data.Retention)
 	}
@@ -16494,7 +16470,6 @@ func TestInitInteractiveMenuGlobalSettingsOnlySaveDoesNotFinalizeBootstrappedPro
 func TestInitInteractiveMenuSecretsManagementOnlySaveDoesNotFinalizeBootstrappedProfile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	saveCredentialTestConfig(t, path, config.File{
-		Keyring: config.KeyringConfig{Backend: "memory"},
 		Profiles: map[string]config.Profile{
 			"work": basicProfile("work"),
 		},
@@ -16545,9 +16520,6 @@ func TestInitInteractiveMenuSecretsManagementOnlySaveDoesNotFinalizeBootstrapped
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
 	}
 	work := cfg.Profiles["work"]
 	if work.Git.Host != "github.com" || work.Git.AuthMode != config.GitAuthModePAT || work.Git.CredentialRef != "codereview/work" {
@@ -16959,7 +16931,7 @@ func TestApplyInteractiveInitSessionPlanSummarizesSecretsStorageOnlyChanges(t *t
 	next.Secrets = config.SecretsConfig{
 		Stores: map[string]config.SecretsStore{
 			"one-password": {
-				Label: "1Password",
+				DisplayName: "1Password",
 				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
 					OnePassword: &config.SecretsStoreOnePasswordConfig{
@@ -17236,7 +17208,7 @@ func TestApplyInteractiveInitSessionPlanNamedSecretsStoreWriteFailureStopsConfig
 		Secrets: config.SecretsConfig{
 			Stores: map[string]config.SecretsStore{
 				"work-1password": {
-					Label: "Work 1Password",
+					DisplayName: "Work 1Password",
 					Backend: config.SecretsStoreBackend{
 						Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
 						OnePassword: &config.SecretsStoreOnePasswordConfig{
@@ -17625,13 +17597,6 @@ func TestInitInteractiveDeferredLLMHintUsesExplicitLocalOSStore(t *testing.T) {
 	err := runInitWithDeps(&cobra.Command{}, opts, initOptions{}, deps)
 	if err != nil {
 		t.Fatalf("runInitWithDeps: %v", err)
-	}
-	cfg, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load config: %v", err)
-	}
-	if cfg.Keyring.Backend != "" {
-		t.Fatalf("keyring.backend = %q, want empty", cfg.Keyring.Backend)
 	}
 	if strings.Contains(stderr.String(), "--backend") {
 		t.Fatalf("stderr = %q, want no backend flag in deferred credential hint", stderr.String())

@@ -74,15 +74,6 @@ type File struct {
 	RepositoryProfiles []RepositoryProfile               `yaml:"repository_profiles,omitempty" json:"repository_profiles,omitempty"`
 	Profiles           map[string]Profile                `yaml:"profiles,omitempty" json:"profiles,omitempty"`
 	Data               DataConfig                        `yaml:"data,omitempty" json:"data"`
-
-	// Keyring is retained as an ignored in-memory compatibility field while
-	// credential-store runtime selection is rewritten. It is not config schema.
-	Keyring KeyringConfig `yaml:"-" json:"-"`
-}
-
-// KeyringConfig carries non-secret keyring backend preferences.
-type KeyringConfig struct {
-	Backend string `yaml:"backend,omitempty" json:"backend,omitempty"`
 }
 
 // SecretsConfig carries named credential store configuration.
@@ -94,9 +85,6 @@ type SecretsConfig struct {
 type SecretsStore struct {
 	DisplayName string              `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	Backend     SecretsStoreBackend `yaml:"backend" json:"backend"`
-
-	// Label is an ignored compatibility alias for DisplayName.
-	Label string `yaml:"-" json:"-"`
 }
 
 // SecretsStoreBackend carries one typed backend choice.
@@ -115,9 +103,6 @@ type SecretsStoreOnePasswordConfig struct {
 	ConnectHost     string `yaml:"connect_host,omitempty" json:"connect_host,omitempty"`
 	ConnectTokenEnv string `yaml:"connect_token_env,omitempty" json:"connect_token_env,omitempty"`
 	ServiceTokenEnv string `yaml:"service_token_env,omitempty" json:"service_token_env,omitempty"`
-
-	// Ignored compatibility aliases while callers are rewritten.
-	DesktopAccountID string `yaml:"-" json:"-"`
 }
 
 // SecretsBackendKind is the durable non-secret backend selector for a named
@@ -153,9 +138,6 @@ type EffectiveSecretsStore struct {
 	Backend     string                      `json:"backend"`
 	ReadOnly    bool                        `json:"read_only,omitempty"`
 	Source      EffectiveSecretsStoreSource `json:"source"`
-
-	// Compatibility fields for old callers while UI/runtime are rewritten.
-	Label string `json:"label,omitempty"`
 }
 
 // Profile is one named review profile.
@@ -906,8 +888,7 @@ func fileHasNoExplicitContent(cfg File) bool {
 		cfg.RepositoryProfiles == nil &&
 		cfg.Profiles == nil &&
 		cfg.Data.Retention.MaxAgeDays == nil &&
-		cfg.Data.Retention.Enforcement == "" &&
-		cfg.Keyring.Backend == ""
+		cfg.Data.Retention.Enforcement == ""
 }
 
 func yamlDocumentHasMappingPath(body []byte, path ...string) bool {
@@ -1014,7 +995,6 @@ func EffectiveSecretsStores(cfg File) []EffectiveSecretsStore {
 	out := []EffectiveSecretsStore{{
 		ID:          LocalOSCredentialStoreID,
 		DisplayName: "OS credential store",
-		Label:       "OS credential store",
 		Backend:     ProjectedOSCredentialStoreBackendKind,
 		ReadOnly:    true,
 		Source:      EffectiveSecretsStoreSourceBuiltIn,
@@ -1032,7 +1012,6 @@ func EffectiveSecretsStores(cfg File) []EffectiveSecretsStore {
 		out = append(out, EffectiveSecretsStore{
 			ID:          id,
 			DisplayName: displayName,
-			Label:       displayName,
 			Backend:     string(store.Backend.Kind),
 			Source:      EffectiveSecretsStoreSourceConfigured,
 		})
@@ -1678,7 +1657,7 @@ func validateSecretsStoreBackend(id string, backend SecretsStoreBackend) error {
 			return invalid("%s is required", field("connect_token_env"))
 		}
 	case SecretsBackendKind(credstore.BackendOPDesktop):
-		// DesktopAccountID may be omitted so ByteNess can fall back to
+		// AccountID may be omitted so ByteNess can fall back to
 		// OP_DESKTOP_ACCOUNT_ID at runtime.
 	}
 	return nil
@@ -2059,11 +2038,6 @@ func (s SecretsConfig) normalized() SecretsConfig {
 
 func (s SecretsStore) normalized() SecretsStore {
 	s.DisplayName = strings.TrimSpace(s.DisplayName)
-	s.Label = strings.TrimSpace(s.Label)
-	if s.DisplayName == "" {
-		s.DisplayName = s.Label
-	}
-	s.Label = s.DisplayName
 	s.Backend = s.Backend.normalized()
 	return s
 }
@@ -2088,13 +2062,13 @@ func (b SecretsStoreBackend) normalized() SecretsStoreBackend {
 		}
 		onePassword.ConnectHost = ""
 		onePassword.ConnectTokenEnv = ""
-		onePassword.DesktopAccountID = ""
+		onePassword.AccountID = ""
 	case SecretsBackendKind(credstore.BackendOPConnect):
 		if onePassword.ConnectTokenEnv == "" {
 			onePassword.ConnectTokenEnv = credstore.DefaultOnePasswordConnectTokenEnv
 		}
 		onePassword.ServiceTokenEnv = ""
-		onePassword.DesktopAccountID = ""
+		onePassword.AccountID = ""
 	case SecretsBackendKind(credstore.BackendOPDesktop):
 		onePassword.ServiceTokenEnv = ""
 		onePassword.ConnectHost = ""
@@ -2113,11 +2087,6 @@ func (c SecretsStoreOnePasswordConfig) normalized() SecretsStoreOnePasswordConfi
 	c.ConnectHost = strings.TrimSpace(c.ConnectHost)
 	c.ConnectTokenEnv = strings.TrimSpace(c.ConnectTokenEnv)
 	c.ServiceTokenEnv = strings.TrimSpace(c.ServiceTokenEnv)
-	c.DesktopAccountID = strings.TrimSpace(c.DesktopAccountID)
-	if c.AccountID == "" {
-		c.AccountID = c.DesktopAccountID
-	}
-	c.DesktopAccountID = c.AccountID
 	return c
 }
 

@@ -1105,7 +1105,6 @@ func testPrivateKeyPEM(t *testing.T) string {
 
 func testConfig() config.File {
 	return configtest.File(
-		configtest.WithoutKeyring(),
 		configtest.WithoutRepositoryProfiles(),
 		configtest.HomeProfile(config.Profile{
 			Git: config.GitConfig{

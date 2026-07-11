@@ -34,14 +34,6 @@ func TestParseRefEnforcesCodereviewService(t *testing.T) {
 func TestStoreOptionsBackendPrecedenceMetadata(t *testing.T) {
 	t.Setenv(BackendEnvVar(), "")
 
-	opts, err := StoreOptions("", false, config.File{Keyring: config.KeyringConfig{Backend: "memory"}})
-	if err != nil {
-		t.Fatalf("StoreOptions: %v", err)
-	}
-	if opts.Backend != "" || opts.ConfigBackend != "" {
-		t.Fatalf("StoreOptions legacy config backend = (%s,%s), want ignored", opts.Backend, opts.ConfigBackend)
-	}
-
 	store, err := OpenStore("memory", true, config.File{})
 	if err != nil {
 		t.Fatalf("OpenStore explicit backend: %v", err)
@@ -680,7 +672,7 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 			name:        "service account",
 			backendKind: credstore.BackendOP,
 			profile: config.SecretsStore{
-				Label: "Work 1Password",
+				DisplayName: "Work 1Password",
 				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOP),
 					OnePassword: &config.SecretsStoreOnePasswordConfig{
@@ -700,7 +692,7 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 			name:        "connect",
 			backendKind: credstore.BackendOPConnect,
 			profile: config.SecretsStore{
-				Label: "Work 1Password",
+				DisplayName: "Work 1Password",
 				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOPConnect),
 					OnePassword: &config.SecretsStoreOnePasswordConfig{
@@ -722,13 +714,13 @@ func TestStoreOptionsForResolvedStore_OnePasswordBackend(t *testing.T) {
 			name:        "desktop",
 			backendKind: credstore.BackendOPDesktop,
 			profile: config.SecretsStore{
-				Label: "Work 1Password",
+				DisplayName: "Work 1Password",
 				Backend: config.SecretsStoreBackend{
 					Kind: config.SecretsBackendKind(credstore.BackendOPDesktop),
 					OnePassword: &config.SecretsStoreOnePasswordConfig{
-						Timeout:          "9s",
-						VaultID:          "Employee",
-						DesktopAccountID: "desktop-account",
+						Timeout:   "9s",
+						VaultID:   "Employee",
+						AccountID: "desktop-account",
 					},
 				},
 			},

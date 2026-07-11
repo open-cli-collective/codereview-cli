@@ -204,7 +204,7 @@ func renderLoadedConfigShowJSON(t *testing.T, body string) string {
 	show.Backend = resolved.Backend
 	show.BackendSource = string(credentials.BackendSourceCredentialStore)
 	show.ActiveSecretsStore = resolvedSecretsStoreViewPtr(resolved)
-	show.SecretsStores = config.EffectiveSecretsStores(cfg)
+	show.SecretsStores = view.NewConfigShowSecretsStores(config.EffectiveSecretsStores(cfg))
 	var out bytes.Buffer
 	if err := view.RenderConfigJSON(&out, show); err != nil {
 		t.Fatalf("view.RenderConfigJSON: %v", err)
@@ -1532,7 +1532,7 @@ func TestConfigShowReportsEffectiveCredentialStores(t *testing.T) {
 	if got.Backend != "memory" || got.BackendSource != "credential_store" {
 		t.Fatalf("backend = (%q,%q), want (memory,credential_store)", got.Backend, got.BackendSource)
 	}
-	want := []config.EffectiveSecretsStore{{
+	want := []view.ConfigShowSecretsStore{{
 		ID:          config.LocalOSCredentialStoreID,
 		DisplayName: "OS credential store",
 		Label:       "OS credential store",
@@ -1578,7 +1578,7 @@ func TestConfigShowSelectsProfileCredentialStore(t *testing.T) {
 	if got.ActiveSecretsStore == nil || got.ActiveSecretsStore.ID != "work-file" || got.ActiveSecretsStore.Label != "Work File Store" {
 		t.Fatalf("active credential store = %#v, want work-file", got.ActiveSecretsStore)
 	}
-	want := []config.EffectiveSecretsStore{
+	want := []view.ConfigShowSecretsStore{
 		{
 			ID:          config.LocalOSCredentialStoreID,
 			DisplayName: "OS credential store",
@@ -1982,9 +1982,6 @@ func TestConfigRetentionSetMutatesAndPreservesUnrelatedConfig(t *testing.T) {
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
 		t.Fatalf("repository_profiles = %#v, want preserved", saved.RepositoryProfiles)
 	}
-	if !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
-		t.Fatalf("keyring = %#v, want preserved", saved.Keyring)
-	}
 }
 
 func TestConfigRetentionSetPartialUpdates(t *testing.T) {
@@ -2123,9 +2120,6 @@ func TestConfigRetentionResetRestoresDefaultsAndPreservesConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
 		t.Fatalf("repository_profiles = %#v, want preserved", saved.RepositoryProfiles)
-	}
-	if !reflect.DeepEqual(saved.Keyring, cfg.Keyring) {
-		t.Fatalf("keyring = %#v, want preserved", saved.Keyring)
 	}
 }
 
@@ -3414,7 +3408,6 @@ func writeConfigTestAgentSource(t *testing.T, root, prompt string) {
 
 func testConfig() config.File {
 	return configtest.File(
-		configtest.WithoutKeyring(),
 		configtest.WithoutRepositoryProfiles(),
 		configtest.HomeProfile(config.Profile{
 			Git: config.GitConfig{

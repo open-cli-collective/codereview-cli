@@ -518,7 +518,6 @@ func withRawSynthesisStage(body, stage string) string {
 
 func testConfig() config.File {
 	return configtest.File(
-		configtest.WithoutKeyring(),
 		configtest.WithoutSecrets(),
 		configtest.WithoutRepositoryProfiles(),
 		configtest.HomeProfile(config.Profile{Git: config.GitConfig{Host: "github.com"}}),

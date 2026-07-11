@@ -12,17 +12,43 @@ import (
 
 // ConfigShow is the presentation model for `cr config show`.
 type ConfigShow struct {
-	ActiveProfile      string                         `json:"active_profile"`
-	Profile            config.Profile                 `json:"profile"`
-	Data               config.DataConfig              `json:"data"`
-	Backend            string                         `json:"backend,omitempty"`
-	BackendSource      string                         `json:"backend_source,omitempty"`
-	ActiveSecretsStore *ConfigSecretsStore            `json:"active_secrets_profile,omitempty"`
-	SecretsStores      []config.EffectiveSecretsStore `json:"secrets_profiles,omitempty"`
-	CredentialRef      string                         `json:"credential_ref,omitempty"`
-	CredentialRefs     []CredentialStatus             `json:"credential_refs"`
-	LLMCredential      LLMCredential                  `json:"llm_credential"`
-	AgentSources       []agents.SourceInfo            `json:"agent_sources,omitempty"`
+	ActiveProfile      string                   `json:"active_profile"`
+	Profile            config.Profile           `json:"profile"`
+	Data               config.DataConfig        `json:"data"`
+	Backend            string                   `json:"backend,omitempty"`
+	BackendSource      string                   `json:"backend_source,omitempty"`
+	ActiveSecretsStore *ConfigSecretsStore      `json:"active_secrets_profile,omitempty"`
+	SecretsStores      []ConfigShowSecretsStore `json:"secrets_profiles,omitempty"`
+	CredentialRef      string                   `json:"credential_ref,omitempty"`
+	CredentialRefs     []CredentialStatus       `json:"credential_refs"`
+	LLMCredential      LLMCredential            `json:"llm_credential"`
+	AgentSources       []agents.SourceInfo      `json:"agent_sources,omitempty"`
+}
+
+// ConfigShowSecretsStore preserves the legacy config-show wire names.
+type ConfigShowSecretsStore struct {
+	ID          string                             `json:"id"`
+	DisplayName string                             `json:"display_name,omitempty"`
+	Backend     string                             `json:"backend"`
+	ReadOnly    bool                               `json:"read_only,omitempty"`
+	Source      config.EffectiveSecretsStoreSource `json:"source"`
+	Label       string                             `json:"label,omitempty"`
+}
+
+// NewConfigShowSecretsStores maps the canonical config inventory to its legacy wire shape.
+func NewConfigShowSecretsStores(stores []config.EffectiveSecretsStore) []ConfigShowSecretsStore {
+	result := make([]ConfigShowSecretsStore, 0, len(stores))
+	for _, store := range stores {
+		result = append(result, ConfigShowSecretsStore{
+			ID:          store.ID,
+			DisplayName: store.DisplayName,
+			Backend:     store.Backend,
+			ReadOnly:    store.ReadOnly,
+			Source:      store.Source,
+			Label:       store.DisplayName,
+		})
+	}
+	return result
 }
 
 // CredentialStatus reports key presence for one declared credential ref.
@@ -93,7 +119,7 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 			return err
 		}
 		for _, profile := range show.SecretsStores {
-			label := ConfigSecretsStore{ID: profile.ID, Label: profile.Label}.DisplayName()
+			label := ConfigSecretsStore{ID: profile.ID, Label: profile.DisplayName}.DisplayName()
 			if _, err := fmt.Fprintf(w, "  - %s: %s (%s)\n", profile.ID, label, profile.Backend); err != nil {
 				return err
 			}
