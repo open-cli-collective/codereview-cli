@@ -1,0 +1,103 @@
+{
+  "active_profile": "fixture",
+  "profile": {
+    "repository_access": "fixture-git",
+    "reviewer": {
+      "kind": "entity",
+      "entity": "fixture-reviewer",
+      "github_app_installation": {
+        "mode": "discover_from_repository"
+      }
+    },
+    "llm_runtime": "fixture-llm",
+    "review_policy": {
+      "major_event": "comment",
+      "allow_self_approve": true,
+      "resolve_threads": "never"
+    }
+  },
+  "data": {
+    "retention": {
+      "max_age_days": 30,
+      "enforcement": "manual_only"
+    }
+  },
+  "backend": "memory",
+  "backend_source": "credential_store",
+  "active_secrets_profile": {
+    "id": "fixture-store",
+    "label": "Fixture Store",
+    "backend": "memory",
+    "source": "configured"
+  },
+  "secrets_profiles": [
+    {
+      "id": "local-os",
+      "display_name": "OS credential store",
+      "backend": "auto",
+      "read_only": true,
+      "source": "built_in",
+      "label": "OS credential store"
+    },
+    {
+      "id": "desktop",
+      "display_name": "Desktop 1Password",
+      "backend": "op-desktop",
+      "source": "configured",
+      "label": "Desktop 1Password"
+    },
+    {
+      "id": "fixture-store",
+      "display_name": "Fixture Store",
+      "backend": "memory",
+      "source": "configured",
+      "label": "Fixture Store"
+    }
+  ],
+  "credential_ref": "codereview/fixture",
+  "credential_refs": [
+    {
+      "purpose": "git",
+      "ref": "codereview/fixture",
+      "mode": "pat",
+      "keys": [
+        {
+          "key": "git_token",
+          "required": true,
+          "present": false,
+          "status": "missing"
+        }
+      ]
+    },
+    {
+      "purpose": "reviewer_credentials",
+      "ref": "codereview/fixture-reviewer",
+      "mode": "github_app",
+      "keys": [
+        {
+          "key": "github_app_private_key",
+          "required": true,
+          "present": false,
+          "status": "missing"
+        }
+      ]
+    },
+    {
+      "purpose": "llm",
+      "ref": "codereview/fixture-llm",
+      "mode": "api_key",
+      "keys": [
+        {
+          "key": "anthropic_api_key",
+          "required": true,
+          "present": false,
+          "status": "missing"
+        }
+      ]
+    }
+  ],
+  "llm_credential": {
+    "mode": "stored_ref",
+    "ref": "codereview/fixture-llm"
+  }
+}

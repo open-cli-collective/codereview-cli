@@ -119,6 +119,282 @@ func TestConfigShowJSON(t *testing.T) {
 	}
 }
 
+func TestConfigShowJSONWireFixtures(t *testing.T) {
+	fixtures := []struct {
+		name string
+		slug string
+		yaml string
+	}{
+		{name: "built-in credential store", slug: "built-in", yaml: configShowBuiltInStoreYAML},
+		{name: "named secrets store", slug: "named", yaml: configShowNamedStoreYAML},
+		{name: "1Password desktop metadata", slug: "onepassword", yaml: configShowOnePasswordYAML},
+		{name: "PAT reviewer entity", slug: "pat-reviewer", yaml: configShowPATReviewerYAML},
+		{name: "GitHub App reviewer entity", slug: "github-app-reviewer", yaml: configShowGitHubAppReviewerYAML},
+		{name: "API-key LLM runtime", slug: "api-key-llm", yaml: configShowAPIKeyLLMYAML},
+		{name: "kitchen sink", slug: "kitchen-sink", yaml: configShowKitchenSinkYAML},
+	}
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			got := renderLoadedConfigShowJSON(t, fixture.yaml)
+			if fixture.slug != "built-in" && fixture.slug != "onepassword" {
+				path := filepath.Join(t.TempDir(), "config.yml")
+				writeRawConfig(t, path, fixture.yaml)
+				cmd, out := newTestCommand(path)
+				if err := root.Execute(cmd, []string{"config", "show", "--profile", "fixture", "--json"}); err != nil {
+					t.Fatalf("Execute config show: %v", err)
+				}
+				if out.String() != got {
+					t.Fatalf("command and rendering entry points differ\ncommand:\n%s\nrender:\n%s", out.String(), got)
+				}
+			}
+			goldenPath := filepath.Join("testdata", "config_show", fixture.slug+".golden.json")
+			// #nosec G304 -- fixture.slug is selected from the fixed table above.
+			want, err := os.ReadFile(goldenPath)
+			if err != nil {
+				t.Fatalf("ReadFile(%s): %v", goldenPath, err)
+			}
+			if fixture.slug == "built-in" {
+				backend, err := credentials.PlatformOSBackend(runtime.GOOS)
+				if err != nil {
+					t.Fatalf("credentials.PlatformOSBackend: %v", err)
+				}
+				want = []byte(strings.ReplaceAll(string(want), "{{os_backend}}", string(backend)))
+			}
+			if got != string(want) {
+				t.Fatalf("config show JSON bytes differ\ngot:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+func renderLoadedConfigShowJSON(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yml")
+	writeRawConfig(t, path, body)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	_, profile, err := config.ResolveProfile(cfg, "fixture")
+	if err != nil {
+		t.Fatalf("config.ResolveProfile: %v", err)
+	}
+	resolved, err := credentials.ResolveSecretsStoreForProfile(cfg, profile)
+	if err != nil {
+		t.Fatalf("credentials.ResolveSecretsStoreForProfile: %v", err)
+	}
+	refs, err := config.CredentialRefs(profile)
+	if err != nil {
+		t.Fatalf("config.CredentialRefs: %v", err)
+	}
+	store, err := credstore.Open(credentials.ServiceName, &credstore.Options{
+		AllowedKeys: credentials.AllowedKeys(),
+		Backend:     credstore.BackendMemory,
+	})
+	if err != nil {
+		t.Fatalf("credstore.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	statuses, err := credentialStatuses(store, refs, nil)
+	if err != nil {
+		t.Fatalf("credentialStatuses: %v", err)
+	}
+	show := view.NewConfigShow("fixture", profile, cfg.Data, statuses)
+	show.Backend = resolved.Backend
+	show.BackendSource = string(credentials.BackendSourceCredentialStore)
+	show.ActiveSecretsStore = resolvedSecretsStoreViewPtr(resolved)
+	show.SecretsStores = config.EffectiveSecretsStores(cfg)
+	var out bytes.Buffer
+	if err := view.RenderConfigJSON(&out, show); err != nil {
+		t.Fatalf("view.RenderConfigJSON: %v", err)
+	}
+	return out.String()
+}
+
+const configShowBuiltInStoreYAML = `repository_access:
+  fixture-git:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential: {store: local-os, name: codereview/fixture}
+llm_runtimes:
+  fixture-llm: {provider: anthropic, auth: subscription, adapter: claude_cli}
+profiles:
+  fixture:
+    repository_access: fixture-git
+    reviewer: {kind: git_identity}
+    llm_runtime: fixture-llm
+`
+
+const configShowNamedStoreYAML = `secrets:
+  stores:
+    team-store:
+      display_name: Team Store
+      backend: {kind: memory}
+repository_access:
+  fixture-git:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential: {store: team-store, name: codereview/fixture}
+llm_runtimes:
+  fixture-llm: {provider: anthropic, auth: subscription, adapter: claude_cli}
+profiles:
+  fixture:
+    repository_access: fixture-git
+    reviewer: {kind: git_identity}
+    llm_runtime: fixture-llm
+`
+
+const configShowOnePasswordYAML = `secrets:
+  stores:
+    desktop:
+      display_name: Desktop 1Password
+      backend:
+        kind: op-desktop
+        onepassword:
+          account_id: acct-desktop
+          vault_id: vault-fixture
+repository_access:
+  fixture-git:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential: {store: desktop, name: codereview/fixture}
+llm_runtimes:
+  fixture-llm: {provider: anthropic, auth: subscription, adapter: claude_cli}
+profiles:
+  fixture:
+    repository_access: fixture-git
+    reviewer: {kind: git_identity}
+    llm_runtime: fixture-llm
+`
+
+const configShowPATReviewerYAML = `secrets:
+  stores:
+    fixture-store:
+      backend: {kind: memory}
+repository_access:
+  fixture-git:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential: {store: fixture-store, name: codereview/fixture}
+reviewer_entities:
+  fixture-reviewer:
+    host: github.com
+    auth_mode: pat
+    credential: {store: fixture-store, name: codereview/fixture-reviewer}
+    display_name: Fixture Reviewer
+llm_runtimes:
+  fixture-llm: {provider: anthropic, auth: subscription, adapter: claude_cli}
+profiles:
+  fixture:
+    repository_access: fixture-git
+    reviewer: {kind: entity, entity: fixture-reviewer}
+    llm_runtime: fixture-llm
+`
+
+const configShowGitHubAppReviewerYAML = `secrets:
+  stores:
+    fixture-store:
+      backend: {kind: memory}
+repository_access:
+  fixture-git:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential: {store: fixture-store, name: codereview/fixture}
+reviewer_entities:
+  fixture-reviewer:
+    host: github.com
+    auth_mode: github_app
+    credential: {store: fixture-store, name: codereview/fixture-reviewer}
+    github_app: {app_id: "12345"}
+    display_name: Fixture App
+llm_runtimes:
+  fixture-llm: {provider: anthropic, auth: subscription, adapter: claude_cli}
+profiles:
+  fixture:
+    repository_access: fixture-git
+    reviewer:
+      kind: entity
+      entity: fixture-reviewer
+      github_app_installation: {mode: pinned, installation_id: "67890"}
+    llm_runtime: fixture-llm
+`
+
+const configShowAPIKeyLLMYAML = `secrets:
+  stores:
+    fixture-store:
+      backend: {kind: memory}
+repository_access:
+  fixture-git:
+    git:
+      host: github.com
+      auth_mode: pat
+      credential: {store: fixture-store, name: codereview/fixture}
+llm_runtimes:
+  fixture-llm:
+    provider: openai
+    auth: api_key
+    adapter: openai_api
+    credential: {store: fixture-store, name: codereview/fixture-llm}
+profiles:
+  fixture:
+    repository_access: fixture-git
+    reviewer: {kind: git_identity}
+    llm_runtime: fixture-llm
+`
+
+const configShowKitchenSinkYAML = `secrets:
+  stores:
+    fixture-store:
+      display_name: Fixture Store
+      backend: {kind: memory}
+    desktop:
+      display_name: Desktop 1Password
+      backend:
+        kind: op-desktop
+        onepassword: {account_id: acct-desktop, vault_id: vault-fixture}
+repository_access:
+  fixture-git:
+    display_name: Fixture GitHub
+    git:
+      host: github.com
+      auth_mode: pat
+      credential: {store: fixture-store, name: codereview/fixture}
+      identity_cache: fixture@example.com
+reviewer_entities:
+  fixture-reviewer:
+    host: github.com
+    auth_mode: github_app
+    credential: {store: fixture-store, name: codereview/fixture-reviewer}
+    github_app: {app_id: "12345"}
+    display_name: Fixture App
+    identity_cache: app@example.com
+llm_runtimes:
+  fixture-llm:
+    provider: anthropic
+    auth: api_key
+    adapter: anthropic_api
+    credential: {store: fixture-store, name: codereview/fixture-llm}
+    model_map: {small: claude-small-fixture, large: claude-large-fixture}
+    reviewer_model_tier: large
+profiles:
+  fixture:
+    repository_access: fixture-git
+    reviewer:
+      kind: entity
+      entity: fixture-reviewer
+      github_app_installation: {mode: discover_from_repository}
+    llm_runtime: fixture-llm
+    review_policy: {major_event: comment, allow_self_approve: true, resolve_threads: never}
+data:
+  retention: {max_age_days: 30, enforcement: manual_only}
+`
+
 func TestKeychainProbeManifestMatchesConfigShowContract(t *testing.T) {
 	manifest := readKeychainProbeManifest(t)
 	wantCommand := []string{"config", "show", "--profile", "default", "--json"}
