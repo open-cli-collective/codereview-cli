@@ -5386,6 +5386,19 @@ func initCredentialEntryDeferredByDecision(decisions map[initCredentialDecisionK
 
 type initReviewerCredentialCleanupGroup = credentials.ReviewerCredentialCleanupGroup
 
+type initApplicationPlan struct {
+	path            string
+	cfg             config.File
+	credentialPlan  []initCredentialPlanEntry
+	writes          map[string]map[string]string
+	overwriteRefs   map[string]bool
+	backendFlagSet  bool
+	overwrite       bool
+	primaryStore    initStore
+	primaryResolved credentials.ResolvedSecretsStore
+	profileName     string
+}
+
 func openInitStoreForEntry(deps initDeps, opts *root.Options, flagSet bool, cfg config.File, entry initCredentialPlanEntry) (initStore, error) {
 	backend := ""
 	if opts != nil {
@@ -6129,54 +6142,14 @@ func initCredentialOptionalKeySummary(entry initCredentialPlanEntry) string {
 }
 
 func applyInteractiveInitSessionPlan(opts *root.Options, deps initDeps, plan initSessionPlan) error {
-	if err := config.Validate(plan.cfg); err != nil {
-		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
-			return cmderr.Config(err)
-		}
-		return err
-	}
-	touchedCredentialRefs := map[string]struct{}{}
-	if len(plan.writes) > 0 {
-		groups, err := credentials.GroupWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
-		if err != nil {
-			return cmderr.Config(err)
-		}
-		for _, group := range groups {
-			store, err := openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsStore: group.Resolved})
-			if err != nil {
-				if config.IsConfigSelection(err) {
-					return cmderr.Config(err)
-				}
-				return cmderr.Credential(err)
-			}
-			if err := preflightNoOverwrite(store, group.Writes, group.OverwriteRefs); err != nil {
-				_ = store.Close()
-				return cmderr.Credential(err)
-			}
-			if _, err := writeBundles(store, group.Writes, false, group.OverwriteRefs); err != nil {
-				_ = store.Close()
-				return cmderr.Credential(err)
-			}
-			for ref := range group.Writes {
-				touchedCredentialRefs[ref] = struct{}{}
-			}
-			_ = store.Close()
-		}
-	}
-	cleanupGroups, err := credentials.GroupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
-	if err != nil {
-		return cmderr.Config(err)
-	}
-	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
-		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
-			return cmderr.Config(err)
-		}
-		if len(touchedCredentialRefs) > 0 {
-			return fmt.Errorf("init updated credentials but failed to save config; credential names needing cleanup: %v: %w", sortedCredentialRefSet(touchedCredentialRefs), err)
-		}
-		return err
-	}
-	if err := applyStaleReviewerCredentialCleanups(opts, deps, plan.backendFlagSet, plan.cfg, cleanupGroups); err != nil {
+	if err := applyInitApplicationPlan(opts, deps, initApplicationPlan{
+		path:           plan.path,
+		cfg:            plan.cfg,
+		credentialPlan: plan.credentialPlan,
+		writes:         plan.writes,
+		overwriteRefs:  plan.overwriteRefs,
+		backendFlagSet: plan.backendFlagSet,
+	}); err != nil {
 		return err
 	}
 	if err := writeInteractiveInitSessionSummary(opts.Stdout, plan); err != nil {
@@ -6330,13 +6303,79 @@ func applyStaleReviewerCredentialCleanups(opts *root.Options, deps initDeps, bac
 	return nil
 }
 
-func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
-	var store initStore
-	var primaryResolved credentials.ResolvedSecretsStore
+func applyInitApplicationPlan(opts *root.Options, deps initDeps, plan initApplicationPlan) error {
+	if err := config.Validate(plan.cfg); err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
+			return cmderr.Config(err)
+		}
+		return err
+	}
+	var writeGroups []credentials.WriteGroup
+	if len(plan.writes) > 0 {
+		var err error
+		writeGroups, err = credentials.GroupWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
+		if err != nil {
+			return cmderr.Config(err)
+		}
+	}
 	cleanupGroups, err := credentials.GroupStaleReviewerCredentialCleanupsByStore(plan.cfg, plan.credentialPlan)
 	if err != nil {
 		return cmderr.Config(err)
 	}
+	touchedCredentialRefs := map[string]struct{}{}
+	for _, group := range writeGroups {
+		store := plan.primaryStore
+		closeStore := false
+		if store == nil || !sameInitCredentialStore(group.Resolved, plan.primaryResolved) {
+			store, err = openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsStore: group.Resolved})
+			if err != nil {
+				if config.IsConfigSelection(err) {
+					return cmderr.Config(err)
+				}
+				return cmderr.Credential(err)
+			}
+			closeStore = true
+		}
+		if !plan.overwrite {
+			if err := preflightNoOverwrite(store, group.Writes, group.OverwriteRefs); err != nil {
+				if closeStore {
+					_ = store.Close()
+				}
+				return cmderr.Credential(err)
+			}
+		}
+		if _, err := writeBundles(store, group.Writes, plan.overwrite, group.OverwriteRefs); err != nil {
+			if closeStore {
+				_ = store.Close()
+			}
+			return cmderr.Credential(err)
+		}
+		if closeStore {
+			_ = store.Close()
+		}
+		for ref := range group.Writes {
+			touchedCredentialRefs[ref] = struct{}{}
+		}
+	}
+	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
+		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
+			return cmderr.Config(err)
+		}
+		if len(touchedCredentialRefs) > 0 {
+			refs := sortedCredentialRefSet(touchedCredentialRefs)
+			if plan.profileName != "" {
+				return fmt.Errorf("init updated credentials but failed to save config for profile %q; credential names needing cleanup: %v: %w", plan.profileName, refs, err)
+			}
+			return fmt.Errorf("init updated credentials but failed to save config; credential names needing cleanup: %v: %w", refs, err)
+		}
+		return err
+	}
+	return applyStaleReviewerCredentialCleanups(opts, deps, plan.backendFlagSet, plan.cfg, cleanupGroups)
+}
+
+func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan initPlan) error {
+	var store initStore
+	var primaryResolved credentials.ResolvedSecretsStore
 	needsPrimaryStore := len(plan.writes) > 0 || (plan.profile.LLM.Auth == config.LLMAuthAPIKey && !plan.allowDeferredLLM)
 	openPrimaryStore := func() (initStore, credentials.ResolvedSecretsStore, error) {
 		if store != nil {
@@ -6391,49 +6430,18 @@ func applyInitPlan(opts *root.Options, flags initOptions, deps initDeps, plan in
 			return exitcode.Usage(fmt.Errorf("api_key LLM auth requires --llm-api-key-stdin or --llm-api-key-from-env"))
 		}
 	}
-	touchedCredentialRefs := map[string]struct{}{}
-	if len(plan.writes) > 0 {
-		groups, err := credentials.GroupWritesByStore(plan.credentialPlan, plan.writes, plan.overwriteRefs)
-		if err != nil {
-			return cmderr.Config(err)
-		}
-		for _, group := range groups {
-			groupStore := store
-			if groupStore == nil || !sameInitCredentialStore(group.Resolved, primaryResolved) {
-				groupStore, err = openInitStoreForEntry(deps, opts, plan.backendFlagSet, plan.cfg, initCredentialPlanEntry{SecretsStore: group.Resolved})
-				if err != nil {
-					if config.IsConfigSelection(err) {
-						return cmderr.Config(err)
-					}
-					return cmderr.Credential(err)
-				}
-				if groupStore != store {
-					defer groupStore.Close()
-				}
-			}
-			if !flags.overwrite {
-				if err := preflightNoOverwrite(groupStore, group.Writes, group.OverwriteRefs); err != nil {
-					return cmderr.Credential(err)
-				}
-			}
-			if _, err := writeBundles(groupStore, group.Writes, flags.overwrite, group.OverwriteRefs); err != nil {
-				return cmderr.Credential(err)
-			}
-			for ref := range group.Writes {
-				touchedCredentialRefs[ref] = struct{}{}
-			}
-		}
-	}
-	if err := deps.saveConfig(plan.path, plan.cfg); err != nil {
-		if errors.Is(err, config.ErrInvalid) || errors.Is(err, config.ErrProfileNotFound) {
-			return cmderr.Config(err)
-		}
-		if len(touchedCredentialRefs) > 0 {
-			return fmt.Errorf("init updated credentials but failed to save config for profile %q; credential names needing cleanup: %v: %w", plan.profileName, sortedCredentialRefSet(touchedCredentialRefs), err)
-		}
-		return err
-	}
-	if err := applyStaleReviewerCredentialCleanups(opts, deps, plan.backendFlagSet, plan.cfg, cleanupGroups); err != nil {
+	if err := applyInitApplicationPlan(opts, deps, initApplicationPlan{
+		path:            plan.path,
+		cfg:             plan.cfg,
+		credentialPlan:  plan.credentialPlan,
+		writes:          plan.writes,
+		overwriteRefs:   plan.overwriteRefs,
+		backendFlagSet:  plan.backendFlagSet,
+		overwrite:       flags.overwrite,
+		primaryStore:    store,
+		primaryResolved: primaryResolved,
+		profileName:     plan.profileName,
+	}); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(opts.Stdout, "Initialized profile %s\n", plan.profileName); err != nil {
