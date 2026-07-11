@@ -125,9 +125,19 @@ func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map
 	return artifact
 }
 
-func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.Selection) map[string]reviewerRuntimeResolution {
+func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.Selection, fastDelivered string) map[string]reviewerRuntimeResolution {
+	if req.ReviewerFast && fastDelivered != "fast" && fastDelivered != "standard" {
+		fastDelivered = "unknown"
+	}
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
-		return nil
+		if !req.ReviewerFast {
+			return nil
+		}
+		out := make(map[string]reviewerRuntimeResolution, len(selection.SelectedAgents))
+		for _, selected := range selection.SelectedAgents {
+			out[selected.AgentID] = reviewerRuntimeResolution{Mode: "override", ResolvedModel: strings.TrimSpace(req.ReviewerModelOverride), Fast: true, FastDelivered: fastDelivered}
+		}
+		return out
 	}
 	if len(selection.SelectedAgents) == 0 {
 		return nil
@@ -146,10 +156,34 @@ func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.
 		if err != nil {
 			continue
 		}
+		resolution.Fast = req.ReviewerFast
+		if req.ReviewerFast {
+			resolution.FastDelivered = fastDelivered
+		}
 		out[selected.AgentID] = resolution
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func reviewerFastDelivery(requested bool, sessions []sessionDraft) string {
+	if !requested {
+		return ""
+	}
+	delivered := "fast"
+	if len(sessions) == 0 {
+		return "unknown"
+	}
+	for _, session := range sessions {
+		switch session.Response.Usage.Speed {
+		case "standard":
+			return "standard"
+		case "fast":
+		default:
+			delivered = "unknown"
+		}
+	}
+	return delivered
 }

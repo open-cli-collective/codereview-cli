@@ -36,6 +36,7 @@ type SubprocessOptions struct {
 	Timeout                time.Duration
 	ScratchDirFactory      ScratchDirFactory
 	AllowBestEffortNoTools bool
+	FastModeModels         []string
 	commandArgsPrefix      []string
 }
 
@@ -80,6 +81,7 @@ type SubprocessAdapter struct {
 	timeout                time.Duration
 	scratchDirFactory      ScratchDirFactory
 	allowBestEffortNoTools bool
+	fastModeModels         []string
 }
 
 // NewClaudeCLIAdapter returns a Claude Code subprocess adapter.
@@ -109,6 +111,7 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 		timeout:                opts.Timeout,
 		scratchDirFactory:      factory,
 		allowBestEffortNoTools: opts.AllowBestEffortNoTools,
+		fastModeModels:         append([]string(nil), opts.FastModeModels...),
 	}
 }
 
@@ -245,6 +248,9 @@ func (p *launchedProcess) abort(cleanup func() error) {
 
 // Start launches the configured subprocess in a fresh scratch directory.
 func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, error) {
+	if err := validateFastMode(a.Name(), a.fastModeModels, req); err != nil {
+		return nil, err
+	}
 	if a.kind == subprocessClaude {
 		return a.startClaudeBG(ctx, req, "")
 	}
@@ -426,6 +432,9 @@ func appendCompilerFlag(existing, flag string) string {
 // Resume starts a subprocess request from an existing provider session when the
 // adapter supports provider-side session reuse.
 func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Request) (Stream, error) {
+	if err := validateFastMode(a.Name(), a.fastModeModels, req); err != nil {
+		return nil, err
+	}
 	sessionID = strings.TrimSpace(sessionID)
 	switch a.kind {
 	case subprocessClaude:
@@ -479,6 +488,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		}
 		if req.Effort != "" {
 			args = append(args, "--effort", req.Effort)
+		}
+		if req.Fast {
+			args = append(args, "--settings", `{"fastMode":true}`)
 		}
 		return append(args, "--", claudeBGPositionalPrompt(scratch)), nil
 	case subprocessCodex:
@@ -558,6 +570,7 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 			"--resume":          true,
 			"--model":           true,
 			"--effort":          true,
+			"--settings":        true,
 		}); err != nil {
 			return err
 		}
@@ -1170,6 +1183,7 @@ func parseUsage(raw map[string]json.RawMessage) Usage {
 		CacheRead:   firstRawIntPtr(usageRaw, "cache_read", "cacheRead", "cached_input_tokens", "cachedInputTokens"),
 		CacheCreate: firstRawIntPtr(usageRaw, "cache_create", "cacheCreate", "cache_write", "cacheWrite"),
 		CostUSD:     rawFloatPtr(usageRaw, "cost_usd"),
+		Speed:       rawString(usageRaw, "speed"),
 	}
 }
 
@@ -1212,6 +1226,11 @@ func mergeUsage(current Usage, next Usage) Usage {
 	}
 	if next.CostUSD != nil {
 		current.CostUSD = next.CostUSD
+	}
+	if next.Speed == "standard" || current.Speed == "" {
+		current.Speed = next.Speed
+	} else if next.Speed == "fast" && current.Speed != "standard" {
+		current.Speed = "fast"
 	}
 	return current
 }

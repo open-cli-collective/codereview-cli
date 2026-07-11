@@ -27,10 +27,11 @@ func claudeBGTranscriptUsage(state map[string]any) Usage {
 }
 
 type claudeTranscriptUsagePayload struct {
-	InputTokens         int `json:"input_tokens"`
-	OutputTokens        int `json:"output_tokens"`
-	CacheReadTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationTokens int `json:"cache_creation_input_tokens"`
+	InputTokens         int    `json:"input_tokens"`
+	OutputTokens        int    `json:"output_tokens"`
+	CacheReadTokens     int    `json:"cache_read_input_tokens"`
+	CacheCreationTokens int    `json:"cache_creation_input_tokens"`
+	Speed               string `json:"speed"`
 }
 
 type claudeTranscriptEvent struct {
@@ -80,16 +81,27 @@ func claudeTranscriptUsage(path string, since time.Time) Usage {
 	}
 
 	var tokensIn, tokensOut, cacheRead, cacheCreate int
+	speed := "fast"
 	for _, usage := range perMessage {
 		tokensIn += usage.InputTokens
 		tokensOut += usage.OutputTokens
 		cacheRead += usage.CacheReadTokens
 		cacheCreate += usage.CacheCreationTokens
+		switch usage.Speed {
+		case "standard":
+			speed = "standard"
+		case "fast":
+		default:
+			if speed != "standard" {
+				speed = "unknown"
+			}
+		}
 	}
 	return Usage{
 		TokensIn:    &tokensIn,
 		TokensOut:   &tokensOut,
 		CacheRead:   &cacheRead,
 		CacheCreate: &cacheCreate,
+		Speed:       speed,
 	}
 }

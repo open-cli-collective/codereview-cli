@@ -527,6 +527,8 @@ type reviewerRuntimeResolution struct {
 	EffectiveTier  string                `json:"effective_tier,omitempty"`
 	ResolvedModel  string                `json:"resolved_model"`
 	ModelMapSource config.ModelMapSource `json:"model_map_source,omitempty"`
+	Fast           bool                  `json:"fast,omitempty"`
+	FastDelivered  string                `json:"fast_delivered,omitempty"`
 }
 
 type outputContract struct {

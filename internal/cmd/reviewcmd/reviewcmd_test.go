@@ -79,7 +79,7 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	}
 	if req.SelectionModelOverride != "" || req.SelectionEffortOverride != "" ||
 		req.SelectionPromptInstructions != "" ||
-		req.ReviewerModelOverride != "" || req.ReviewerEffortOverride != "" {
+		req.ReviewerModelOverride != "" || req.ReviewerEffortOverride != "" || req.ReviewerFast {
 		t.Fatalf("stage overrides = %#v, want empty when flags omitted", req)
 	}
 	if gotRuntime.MaxAgents != 3 || gotRuntime.MaxConcurrency != 2 {
@@ -379,6 +379,7 @@ func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
 		"--rerun to bypass these local gates",
 		"Provider session reuse is independent",
 		"--fresh-session starts a fresh provider",
+		"--fast requests fast execution for reviewer agents only",
 		"approval override request newer than that marker",
 		"--retry-posts is recovery-only",
 	} {
@@ -920,6 +921,17 @@ func TestReviewFreshSessionPropagatesWithoutChangingRunMode(t *testing.T) {
 	}
 }
 
+func TestReviewFastPropagatesToPipelineRequest(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+	if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--fast", "--reviewer-model", "claude-opus-4-8"}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 || !runner.requests[0].ReviewerFast {
+		t.Fatalf("requests = %#v, want reviewer fast", runner.requests)
+	}
+}
+
 func TestReviewLiveSessionPassesNamedSession(t *testing.T) {
 	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -966,6 +978,7 @@ func TestReviewRejectsInvalidInputs(t *testing.T) {
 		{name: "session no post", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--no-post", "--session", "daily"}},
 		{name: "session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--session", "daily"}},
 		{name: "fresh session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--fresh-session"}},
+		{name: "fast retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--fast"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

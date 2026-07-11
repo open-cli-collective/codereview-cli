@@ -95,6 +95,9 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
 	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
+	if containsFlag(record.AdapterArgs, "--settings") {
+		t.Fatalf("args = %#v, want no --settings without fast request", record.AdapterArgs)
+	}
 	if addDir := flagValue(record.AdapterArgs, "--add-dir"); !samePath(t, addDir, record.Cwd) {
 		if !samePath(t, addDir, record.AddDir) {
 			t.Fatalf("--add-dir = %q, recorded add-dir = %q", addDir, record.AddDir)
@@ -140,6 +143,26 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	if !strings.Contains(string(logged), "claude attach job-1") {
 		t.Fatalf("log = %q, want launch output", logged)
 	}
+}
+
+func TestSubprocessClaudeFastRequestUsesSessionSetting(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: helperPrefix(),
+		Env:               helperClaudeEnv("success", recordPath, filepath.Join(tempDir, "claude")),
+		Timeout:           5 * time.Second,
+		FastModeModels:    []string{"claude-opus-4-8"},
+	})
+	stream, err := adapter.Start(context.Background(), Request{Model: "claude-opus-4-8", Prompt: "prompt", Fast: true})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	assertFlagValue(t, readHelperRecord(t, recordPath).AdapterArgs, "--settings", `{"fastMode":true}`)
 }
 
 func TestSubprocessClaudeBackgroundResume(t *testing.T) {

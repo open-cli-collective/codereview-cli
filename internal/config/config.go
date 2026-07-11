@@ -490,6 +490,7 @@ type LLMRuntimeSpec struct {
 	SuggestedName         string
 	DisplayName           string
 	BuiltInModelMap       ModelMap
+	FastModeModels        []string
 	RequiresCredentialRef bool
 }
 
@@ -504,6 +505,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 			string(ModelTierMedium): "claude-sonnet-4-6",
 			string(ModelTierLarge):  "claude-opus-4-8",
 		},
+		FastModeModels: []string{"claude-opus-4-8", "claude-opus-4-7"},
 	},
 	{
 		Provider:              LLMProviderAnthropic,
@@ -512,6 +514,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName:         "anthropic-api-key",
 		DisplayName:           "Anthropic API",
 		BuiltInModelMap:       ModelMap{},
+		FastModeModels:        []string{"claude-opus-4-8", "claude-opus-4-7"},
 		RequiresCredentialRef: true,
 	},
 	{
@@ -554,6 +557,7 @@ func LLMRuntimeSpecs() []LLMRuntimeSpec {
 	specs := make([]LLMRuntimeSpec, len(llmRuntimeSpecs))
 	for i, spec := range llmRuntimeSpecs {
 		spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+		spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 		specs[i] = spec
 	}
 	return specs
@@ -565,10 +569,22 @@ func FindLLMRuntimeSpec(provider LLMProvider, auth LLMAuth, adapter LLMAdapter) 
 	for _, spec := range llmRuntimeSpecs {
 		if spec.Provider == provider && (spec.Auth == "" || spec.Auth == auth) && spec.Adapter == adapter {
 			spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+			spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 			return spec, true
 		}
 	}
 	return LLMRuntimeSpec{}, false
+}
+
+// SupportsFastMode reports whether this runtime can honor fast mode for model.
+func (s LLMRuntimeSpec) SupportsFastMode(model string) bool {
+	model = strings.TrimSpace(model)
+	for _, supported := range s.FastModeModels {
+		if model == supported {
+			return true
+		}
+	}
+	return false
 }
 
 func findLLMRuntimeSpecByProviderAdapter(provider LLMProvider, adapter LLMAdapter) (LLMRuntimeSpec, bool) {

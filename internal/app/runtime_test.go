@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -842,11 +843,18 @@ func TestNewAdapterCreatesSupportedCLIAdapters(t *testing.T) {
 
 func TestAdapterConstructorsCoverLLMRuntimeSpecs(t *testing.T) {
 	want := make(map[config.LLMAdapter]struct{}, len(config.LLMRuntimeSpecs()))
+	wantFastModels := map[config.LLMAdapter][]string{
+		config.LLMAdapterClaudeCLI:    {"claude-opus-4-8", "claude-opus-4-7"},
+		config.LLMAdapterAnthropicAPI: {"claude-opus-4-8", "claude-opus-4-7"},
+	}
 	for _, spec := range config.LLMRuntimeSpecs() {
 		if _, duplicate := want[spec.Adapter]; duplicate {
 			t.Fatalf("duplicate LLM runtime spec for adapter %q", spec.Adapter)
 		}
 		want[spec.Adapter] = struct{}{}
+		if !slices.Equal(spec.FastModeModels, wantFastModels[spec.Adapter]) {
+			t.Errorf("runtime spec %q fast models = %#v, want %#v", spec.Adapter, spec.FastModeModels, wantFastModels[spec.Adapter])
+		}
 	}
 	if len(adapterConstructors) != len(want) {
 		t.Fatalf("adapter constructors = %d, runtime spec adapters = %d", len(adapterConstructors), len(want))

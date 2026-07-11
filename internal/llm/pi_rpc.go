@@ -24,6 +24,7 @@ type PiRPCOptions struct {
 	Env               []string
 	Timeout           time.Duration
 	ScratchDirFactory ScratchDirFactory
+	FastModeModels    []string
 	commandArgsPrefix []string
 }
 
@@ -34,6 +35,7 @@ type PiRPCAdapter struct {
 	env               []string
 	timeout           time.Duration
 	scratchDirFactory ScratchDirFactory
+	fastModeModels    []string
 }
 
 // NewPiRPCAdapter returns a Pi RPC subprocess adapter.
@@ -52,6 +54,7 @@ func NewPiRPCAdapter(opts PiRPCOptions) *PiRPCAdapter {
 		env:               append([]string(nil), opts.Env...),
 		timeout:           opts.Timeout,
 		scratchDirFactory: factory,
+		fastModeModels:    append([]string(nil), opts.FastModeModels...),
 	}
 }
 
@@ -79,6 +82,9 @@ func (a *PiRPCAdapter) Resume(context.Context, string, Request) (Stream, error) 
 
 // Start launches Pi in RPC mode in a fresh scratch directory.
 func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
+	if err := validateFastMode(a.Name(), a.fastModeModels, req); err != nil {
+		return nil, err
+	}
 	scratch, cleanup, err := a.scratchDirFactory()
 	if err != nil {
 		return nil, err
