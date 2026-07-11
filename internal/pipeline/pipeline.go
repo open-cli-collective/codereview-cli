@@ -1152,28 +1152,21 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 	if err != nil {
 		return nil, err
 	}
-	results := make([]threadanalysis.Result, 0, len(eligible))
-	for _, thread := range eligible {
-		logPath, err := artifacts.AgentLog("thread-analysis-" + string(thread.ID))
-		if err != nil {
-			return nil, err
-		}
-		result, err := threadanalysis.AnalyzeThread(ctx, threadanalysis.Options{
-			Store:          opts.Store,
-			RunID:          run.RunID,
-			Adapter:        opts.Adapter,
-			Model:          runtimeConfig.model,
-			Effort:         runtimeConfig.effort,
-			LogPath:        logPath,
-			LifecyclePaths: lifecyclePaths(artifacts),
-			Progress:       opts.TaskProgress,
-			Now:            opts.now,
-			NewStepID:      opts.newSessionRowID,
-		}, thread)
-		if err != nil {
-			return nil, pipelineTaskError(err)
-		}
-		results = append(results, result)
+	results, err := threadanalysis.AnalyzeThreads(ctx, threadanalysis.Options{
+		Store:          opts.Store,
+		RunID:          run.RunID,
+		Adapter:        opts.Adapter,
+		Model:          runtimeConfig.model,
+		Effort:         runtimeConfig.effort,
+		LifecyclePaths: lifecyclePaths(artifacts),
+		Progress:       opts.TaskProgress,
+		Now:            opts.now,
+		NewStepID:      opts.newSessionRowID,
+	}, eligible, func(thread threadcontext.Thread) (string, error) {
+		return artifacts.AgentLog("thread-analysis-" + string(thread.ID))
+	})
+	if err != nil {
+		return nil, pipelineTaskError(err)
 	}
 	return threadanalysis.ResponseActions(results), nil
 }
