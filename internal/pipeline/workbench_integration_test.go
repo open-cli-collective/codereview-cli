@@ -17,6 +17,7 @@ import (
 
 func TestSelectionOnlyPreparesWorkbenchInCallerOwnedArtifacts(t *testing.T) {
 	ctx := context.Background()
+	t.Chdir(t.TempDir())
 	fixture := newWorkbenchGitFixture(t)
 	provider, req := dryRunHarness(t)
 	provider.pr = fixture.pr
@@ -54,6 +55,9 @@ func TestSelectionOnlyPreparesWorkbenchInCallerOwnedArtifacts(t *testing.T) {
 
 func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
 	ctx := context.Background()
+	invocationDir := t.TempDir()
+	gitCommandMustSucceed(t, invocationDir, "init")
+	t.Chdir(invocationDir)
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	fixture := newWorkbenchGitFixture(t)

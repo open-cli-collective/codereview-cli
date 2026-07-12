@@ -122,6 +122,51 @@ func TestSelectionOnlyRejectsRepositoryMismatchBeforeGit(t *testing.T) {
 	}
 }
 
+func TestLiveClassifiesRepositoryBindingFailureAsTerminalBeforeGit(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	run := allocateLiveRun(t, store, provider, req, "terminal-binding")
+	req.Profile.Git.Host = "git.example.com"
+	gitCalls := 0
+	_, err := Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		ResolveRepoRoot: func(context.Context) (string, error) { return "", reporoot.ErrUnavailable },
+		GitCommand: func(context.Context, string, ...string) ([]byte, error) {
+			gitCalls++
+			return nil, errors.New("unexpected git call")
+		},
+	}, req, run)
+	if err == nil || ClassifyFailure(err) != FailureTerminal {
+		t.Fatalf("Live error = %v kind %v, want terminal repository binding failure", err, ClassifyFailure(err))
+	}
+	if gitCalls != 0 {
+		t.Fatalf("Git calls = %d, want zero before trust binding", gitCalls)
+	}
+}
+
+func TestLiveClassifiesUnsafeFetchRefAsTerminal(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.pr.Base.Ref = "main"
+	run := allocateLiveRun(t, store, provider, req, "terminal-ref")
+	_, err := liveForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+	}, req, run)
+	if err == nil || ClassifyFailure(err) != FailureTerminal {
+		t.Fatalf("Live error = %v kind %v, want terminal unsafe-ref failure", err, ClassifyFailure(err))
+	}
+}
+
 func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

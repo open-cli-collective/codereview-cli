@@ -5,6 +5,7 @@ package gitexec
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,12 +15,39 @@ import (
 type rotatingTokens struct {
 	values []string
 	calls  int
+	err    error
 }
 
 func (s *rotatingTokens) AccessToken(context.Context) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
 	value := s.values[s.calls]
 	s.calls++
 	return value, nil
+}
+
+func TestClientLocalCommandDoesNotReadToken(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "git")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o700); err != nil { // #nosec G302 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	tokens := &rotatingTokens{err: errors.New("refresh unavailable")}
+	client, err := New("github.example.com", tokens)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := client.Run(context.Background(), dir, "status", "--porcelain"); err != nil {
+		t.Fatalf("local Run: %v", err)
+	}
+	if tokens.calls != 0 {
+		t.Fatalf("token calls = %d, want none for local Git", tokens.calls)
+	}
 }
 
 func TestClientUsesFreshHostScopedTokenWithoutLeakingArguments(t *testing.T) {

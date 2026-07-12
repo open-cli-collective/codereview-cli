@@ -28,6 +28,9 @@ const (
 	defaultReviewerWorkspaceToolOutputBytes = 32 * 1024
 )
 
+// ErrUnsafeFetchRef marks a provider ref that cannot be passed to Git safely.
+var ErrUnsafeFetchRef = errors.New("workbench: unsafe fetch ref")
+
 // Deps contains the injected repository operations used to prepare workspaces.
 type Deps struct {
 	GitCommand func(context.Context, string, ...string) ([]byte, error)
@@ -240,7 +243,7 @@ func validateFetchRef(ref string) error {
 		return nil
 	}
 	if !strings.HasPrefix(ref, "refs/") {
-		return fmt.Errorf("pipeline: reject unsafe fetch ref %q", ref)
+		return fmt.Errorf("%w %q", ErrUnsafeFetchRef, ref)
 	}
 	return nil
 }

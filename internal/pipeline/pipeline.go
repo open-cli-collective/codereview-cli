@@ -514,6 +514,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	if err := validateRepositoryBinding(req.PRRef, req.Profile.Git.Host, reviewCtx.reviewPR); err != nil {
+		if mode.live {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	var resumedDryRun *ledger.Run
@@ -597,6 +600,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ChangedFiles: prepared.changedFiles,
 		Artifacts:    prepared.artifacts,
 	}); err != nil {
+		if errors.Is(err, workbench.ErrUnsafeFetchRef) {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
@@ -856,7 +862,7 @@ func persistedPlanning(ctx context.Context, store Store, runID string) ([]ledger
 		return nil, nil, false, nil
 	}
 	if len(actions) == 0 {
-		return nil, nil, false, fmt.Errorf("pipeline: persisted planning for run %s has findings but no planned actions", runID)
+		return nil, nil, false, Failure(FailureTerminal, fmt.Errorf("pipeline: persisted planning for run %s has findings but no planned actions", runID))
 	}
 	return findings, actions, true, nil
 }

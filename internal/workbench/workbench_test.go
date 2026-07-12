@@ -184,7 +184,7 @@ func TestPrepareRejectsUnsafeFetchRef(t *testing.T) {
 	err := Prepare(ctx, Deps{
 		GitCommand: gitRunner,
 	}, Request{PRRef: pr.Ref, ReviewPR: pr, ChangedFiles: []string{"main.go"}, Artifacts: artifacts})
-	if err == nil || !strings.Contains(err.Error(), `reject unsafe fetch ref "--upload-pack=/tmp/pwn"`) {
+	if !errors.Is(err, ErrUnsafeFetchRef) {
 		t.Fatalf("Prepare error = %v, want unsafe ref rejection", err)
 	}
 }
