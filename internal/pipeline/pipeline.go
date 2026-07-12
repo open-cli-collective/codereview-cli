@@ -668,7 +668,7 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 			startedAt:   now,
 		})
 		if err != nil {
-			return nil, false, Failure(FailureTerminal, err)
+			return nil, false, err
 		}
 		result.Plan = plan
 		return nil, false, nil
@@ -1889,7 +1889,7 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 
 func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool, runInputs planRunInputs) (reviewplan.Plan, error) {
 	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
-	return reviewplan.Build(reviewplan.Request{
+	plan, err := reviewplan.Build(reviewplan.Request{
 		PostMode:                      postMode,
 		ProviderCaps:                  caps,
 		Diff:                          diff,
@@ -1914,6 +1914,10 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		Now:                     opts.now,
 		NewActionID:             opts.newActionID,
 	})
+	if err != nil {
+		return reviewplan.Plan{}, Failure(FailureTerminal, err)
+	}
+	return plan, nil
 }
 
 func (opts Options) emitWarning(warning string) {

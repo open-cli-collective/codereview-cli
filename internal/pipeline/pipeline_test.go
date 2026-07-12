@@ -167,6 +167,39 @@ func TestLiveClassifiesUnsafeFetchRefAsTerminal(t *testing.T) {
 	}
 }
 
+func TestBuildPlanClassifiesActionIDFailureTerminalAcrossPaths(t *testing.T) {
+	wantErr := errors.New("action ID unavailable")
+	opts := Options{
+		Now: fixedNow,
+		NewActionID: func(reviewplan.ActionKind) (string, error) {
+			return "", wantErr
+		},
+	}
+	req := Request{
+		ProfileName:     "home",
+		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+	}
+	pr := gitprovider.PR{Head: gitprovider.PRBranchRef{SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	tests := []struct {
+		name    string
+		noDiff  bool
+		rollup  review.Rollup
+		sources []agents.SourceInfo
+	}{
+		{name: "no diff", noDiff: true},
+		{name: "repo guidance unavailable", sources: []agents.SourceInfo{{Kind: agents.SourceRepo, Status: agents.SourceStatusMissing}}},
+		{name: "normal review", rollup: review.Rollup{ReviewEvent: review.ReviewEventComment}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := opts.buildPlan(req, pr, reviewplan.PostModeLive, reviewplan.ProviderCaps{}, reviewplan.Diff{}, nil, tt.rollup, nil, tt.noDiff, false, planRunInputs{repoSources: tt.sources})
+			if !errors.Is(err, wantErr) || ClassifyFailure(err) != FailureTerminal {
+				t.Fatalf("buildPlan error = %v kind %v, want terminal action-ID failure", err, ClassifyFailure(err))
+			}
+		})
+	}
+}
+
 func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
