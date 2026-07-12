@@ -2068,10 +2068,10 @@ func validateRepositoryBinding(ref gitprovider.PRRef, configuredHost string, pr 
 	if !strings.EqualFold(strings.TrimSpace(configuredHost), strings.TrimSpace(ref.Host)) {
 		return fmt.Errorf("pipeline: configured git host %q does not match PR host %q", configuredHost, ref.Host)
 	}
-	if !strings.EqualFold(pr.Ref.Host, ref.Host) || pr.Ref.Owner != ref.Owner || pr.Ref.Repo != ref.Repo || pr.Ref.Number != ref.Number {
+	if !strings.EqualFold(pr.Ref.Host, ref.Host) || !strings.EqualFold(pr.Ref.Owner, ref.Owner) || !strings.EqualFold(pr.Ref.Repo, ref.Repo) || pr.Ref.Number != ref.Number {
 		return fmt.Errorf("pipeline: fetched PR identity does not match requested PR %s/%s#%d on %s", ref.Owner, ref.Repo, ref.Number, ref.Host)
 	}
-	if !strings.EqualFold(pr.Base.Host, ref.Host) || pr.Base.Owner != ref.Owner || pr.Base.Repo != ref.Repo {
+	if !strings.EqualFold(pr.Base.Host, ref.Host) || !strings.EqualFold(pr.Base.Owner, ref.Owner) || !strings.EqualFold(pr.Base.Repo, ref.Repo) {
 		return fmt.Errorf("pipeline: PR base repository does not match requested repository %s/%s on %s", ref.Owner, ref.Repo, ref.Host)
 	}
 	if !strings.EqualFold(pr.Head.Host, ref.Host) {

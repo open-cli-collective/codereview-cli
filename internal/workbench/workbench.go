@@ -128,14 +128,11 @@ func (p *RunPreparer) Prepare(ctx context.Context, req Request) error {
 	if err := ensureCommit(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Base, baseRemoteURL); err != nil {
 		return err
 	}
-	headRemoteURL := baseRemoteURL
 	if !sameBranchRepo(req.ReviewPR.Base, req.ReviewPR.Head) {
-		headRemoteURL, err = branchRemoteURL(req.ReviewPR.Head)
-		if err != nil {
-			return fmt.Errorf("pipeline: derive head remote URL: %w", err)
+		if err := ensurePullRequestHead(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.PRRef.Number, req.ReviewPR.Head, baseRemoteURL); err != nil {
+			return err
 		}
-	}
-	if err := ensureCommit(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head, headRemoteURL); err != nil {
+	} else if err := ensureCommit(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head, baseRemoteURL); err != nil {
 		return err
 	}
 	if _, err := p.deps.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "checkout", "--detach", req.ReviewPR.Head.SHA); err != nil {
@@ -241,6 +238,14 @@ func ensureCommit(ctx context.Context, deps Deps, repoDir string, branch gitprov
 	return fmt.Errorf("pipeline: fetch commit %s for %s/%s from %q", prref.ShortSHA(branch.SHA), branch.Owner, branch.Repo, remoteURL)
 }
 
+func ensurePullRequestHead(ctx context.Context, deps Deps, repoDir string, number int, head gitprovider.PRBranchRef, remoteURL string) error {
+	ref := fmt.Sprintf("refs/pull/%d/head", number)
+	if _, err := deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, ref); err == nil && commitPresent(ctx, deps, repoDir, head.SHA) {
+		return nil
+	}
+	return fmt.Errorf("pipeline: fetch PR head commit %s from %q ref %q", prref.ShortSHA(head.SHA), remoteURL, ref)
+}
+
 func validateFetchRef(ref string) error {
 	if ref == "" {
 		return nil
@@ -260,7 +265,7 @@ func commitPresent(ctx context.Context, deps Deps, repoDir, sha string) bool {
 }
 
 func sameBranchRepo(left, right gitprovider.PRBranchRef) bool {
-	return strings.EqualFold(left.Host, right.Host) && left.Owner == right.Owner && left.Repo == right.Repo
+	return strings.EqualFold(left.Host, right.Host) && strings.EqualFold(left.Owner, right.Owner) && strings.EqualFold(left.Repo, right.Repo)
 }
 
 func branchArtifactFromRef(ref gitprovider.PRBranchRef) branchArtifact {
@@ -414,98 +419,6 @@ func validateReviewerWorkspaceFileTarget(target string, displayPath string) erro
 		return fmt.Errorf("pipeline: reviewer workspace file %s must be a regular file", displayPath)
 	}
 	return nil
-}
-
-type remoteStyle struct {
-	scheme string
-	user   string
-	host   string
-	scp    bool
-	dotGit bool
-}
-
-func parseRemoteURL(raw string) (host, owner, repo string, style remoteStyle, err error) {
-	raw = strings.TrimSpace(raw)
-	switch {
-	case strings.Contains(raw, "://"):
-		parsed, parseErr := url.Parse(raw)
-		if parseErr != nil {
-			return "", "", "", remoteStyle{}, parseErr
-		}
-		owner, repo, dotGit, parseErr := parseRepoPath(parsed.Path)
-		if parseErr != nil {
-			return "", "", "", remoteStyle{}, parseErr
-		}
-		style = remoteStyle{
-			scheme: parsed.Scheme,
-			host:   parsed.Host,
-			dotGit: dotGit,
-		}
-		if parsed.User != nil {
-			style.user = parsed.User.Username()
-		}
-		return parsed.Host, owner, repo, style, nil
-	case strings.Contains(raw, "@") && strings.Contains(raw, ":"):
-		parts := strings.SplitN(raw, ":", 2)
-		if len(parts) != 2 {
-			return "", "", "", remoteStyle{}, fmt.Errorf("invalid scp-style remote")
-		}
-		userHost := parts[0]
-		pathPart := parts[1]
-		userHostParts := strings.SplitN(userHost, "@", 2)
-		if len(userHostParts) != 2 {
-			return "", "", "", remoteStyle{}, fmt.Errorf("invalid scp-style remote")
-		}
-		owner, repo, dotGit, parseErr := parseRepoPath(pathPart)
-		if parseErr != nil {
-			return "", "", "", remoteStyle{}, parseErr
-		}
-		style = remoteStyle{
-			user:   userHostParts[0],
-			host:   userHostParts[1],
-			scp:    true,
-			dotGit: dotGit,
-		}
-		return userHostParts[1], owner, repo, style, nil
-	default:
-		return "", "", "", remoteStyle{}, fmt.Errorf("unsupported remote URL %q", raw)
-	}
-}
-
-func parseRepoPath(path string) (owner, repo string, dotGit bool, err error) {
-	path = strings.Trim(strings.TrimSpace(path), "/")
-	if strings.HasSuffix(path, ".git") {
-		dotGit = true
-		path = strings.TrimSuffix(path, ".git")
-	}
-	parts := strings.Split(path, "/")
-	if len(parts) < 2 {
-		return "", "", false, fmt.Errorf("unsupported repo path %q", path)
-	}
-	return parts[len(parts)-2], parts[len(parts)-1], dotGit, nil
-}
-
-func deriveRemoteURL(originURL string, branch gitprovider.PRBranchRef) (string, error) {
-	_, _, _, style, err := parseRemoteURL(originURL)
-	if err != nil {
-		return "", err
-	}
-	repoPath := branch.Owner + "/" + branch.Repo
-	if style.dotGit {
-		repoPath += ".git"
-	}
-	if style.scp {
-		return style.user + "@" + branch.Host + ":" + repoPath, nil
-	}
-	u := &url.URL{
-		Scheme: style.scheme,
-		Host:   branch.Host,
-		Path:   "/" + repoPath,
-	}
-	if style.user != "" {
-		u.User = url.User(style.user)
-	}
-	return u.String(), nil
 }
 
 func writeJSONFile(path string, payload any) error {

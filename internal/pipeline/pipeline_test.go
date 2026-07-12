@@ -88,14 +88,21 @@ func TestValidateRepositoryBinding(t *testing.T) {
 		{name: "fetched identity mismatch", host: ref.Host, pr: func() gitprovider.PR { pr := valid; pr.Ref.Number++; return pr }()},
 		{name: "base identity mismatch", host: ref.Host, pr: func() gitprovider.PR { pr := valid; pr.Base.Repo = "other"; return pr }()},
 		{name: "cross-host head", host: ref.Host, pr: func() gitprovider.PR { pr := valid; pr.Head.Host = "git.example.com"; return pr }()},
+		{name: "mixed-case identity", host: "GitHub.com", pr: func() gitprovider.PR {
+			pr := valid
+			pr.Ref.Owner, pr.Ref.Repo = "ACME", "Widgets"
+			pr.Base.Owner, pr.Base.Repo = "ACME", "Widgets"
+			return pr
+		}()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateRepositoryBinding(ref, tt.host, tt.pr)
-			if tt.name == "valid same-host fork" && err != nil {
+			valid := tt.name == "valid same-host fork" || tt.name == "mixed-case identity"
+			if valid && err != nil {
 				t.Fatalf("validateRepositoryBinding: %v", err)
 			}
-			if tt.name != "valid same-host fork" && err == nil {
+			if !valid && err == nil {
 				t.Fatal("validateRepositoryBinding succeeded, want rejection")
 			}
 		})

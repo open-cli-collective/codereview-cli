@@ -85,40 +85,20 @@ func TestPrepareCreatesCleanPinnedCheckoutAndMetadata(t *testing.T) {
 	}
 }
 
-func TestDeriveRemoteURLPreservesRemoteStyle(t *testing.T) {
-	branch := gitprovider.PRBranchRef{Host: "github.com", Owner: "fork-owner", Repo: "codereview-cli"}
-
-	scpURL, err := deriveRemoteURL("git@github.com:open-cli-collective/codereview-cli.git", branch)
-	if err != nil {
-		t.Fatalf("derive scp remote: %v", err)
-	}
-	if scpURL != "git@github.com:fork-owner/codereview-cli.git" {
-		t.Fatalf("scp remote = %q, want fork-style scp URL", scpURL)
-	}
-
-	httpsURL, err := deriveRemoteURL("https://github.com/open-cli-collective/codereview-cli.git", branch)
-	if err != nil {
-		t.Fatalf("derive https remote: %v", err)
-	}
-	if httpsURL != "https://github.com/fork-owner/codereview-cli.git" {
-		t.Fatalf("https remote = %q, want fork-style https URL", httpsURL)
-	}
-}
-
-func TestPrepareFetchesForkHeadFromDerivedRemote(t *testing.T) {
+func TestPrepareFetchesForkHeadThroughBasePullRef(t *testing.T) {
 	ctx := context.Background()
 	fixture := newForkWorkbenchFixture(t)
 	artifacts := runartifact.FromDir(t.TempDir())
 	var fetchedRemotes []string
+	var fetchedRefs []string
 	gitRunner := func(ctx context.Context, dir string, args ...string) ([]byte, error) {
 		cmdArgs := append([]string(nil), args...)
 		if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" {
 			fetchedRemotes = append(fetchedRemotes, cmdArgs[2])
+			fetchedRefs = append(fetchedRefs, cmdArgs[len(cmdArgs)-1])
 			switch cmdArgs[2] {
 			case "https://github.com/open-cli-collective/codereview-cli.git":
 				cmdArgs[2] = fixture.baseRemotePath
-			case "https://github.com/fork-owner/codereview-cli-fork.git":
-				cmdArgs[2] = fixture.forkRemotePath
 			}
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
@@ -149,8 +129,8 @@ func TestPrepareFetchesForkHeadFromDerivedRemote(t *testing.T) {
 	if got := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "diff", "--name-only", fixture.pr.Base.SHA+"...HEAD")); got != "main.go" {
 		t.Fatalf("workbench diff names = %q, want main.go", got)
 	}
-	if !slices.Contains(fetchedRemotes, "https://github.com/fork-owner/codereview-cli-fork.git") {
-		t.Fatalf("fetched remotes = %#v, want derived fork remote fetch", fetchedRemotes)
+	if slices.Contains(fetchedRemotes, "https://github.com/fork-owner/codereview-cli-fork.git") || !slices.Contains(fetchedRefs, "refs/pull/371/head") {
+		t.Fatalf("fetches = remotes %#v refs %#v, want base remote PR-head ref", fetchedRemotes, fetchedRefs)
 	}
 }
 
@@ -159,15 +139,13 @@ func TestPrepareRejectsUnsafeFetchRef(t *testing.T) {
 	fixture := newForkWorkbenchFixture(t)
 	artifacts := runartifact.FromDir(t.TempDir())
 	pr := fixture.pr
-	pr.Head.Ref = "--upload-pack=/tmp/pwn"
+	pr.Base.Ref = "--upload-pack=/tmp/pwn"
 	gitRunner := func(ctx context.Context, dir string, args ...string) ([]byte, error) {
 		cmdArgs := append([]string(nil), args...)
 		if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" {
 			switch cmdArgs[2] {
 			case "https://github.com/open-cli-collective/codereview-cli.git":
 				cmdArgs[2] = fixture.baseRemotePath
-			case "https://github.com/fork-owner/codereview-cli-fork.git":
-				cmdArgs[2] = fixture.forkRemotePath
 			}
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
@@ -434,9 +412,7 @@ type workbenchGitFixture struct {
 }
 
 type forkWorkbenchFixture struct {
-	sourceRepoDir  string
 	baseRemotePath string
-	forkRemotePath string
 	pr             gitprovider.PR
 }
 
@@ -489,9 +465,6 @@ func newForkWorkbenchFixture(t *testing.T) forkWorkbenchFixture {
 	baseSHA := strings.TrimSpace(gitCommandOutput(t, baseSeedDir, "rev-parse", "HEAD"))
 	baseRemotePath := filepath.Join(t.TempDir(), "base-remote.git")
 	gitCommandMustSucceed(t, "", "clone", "--bare", baseSeedDir, baseRemotePath)
-	sourceRepoDir := filepath.Join(t.TempDir(), "source")
-	gitCommandMustSucceed(t, "", "clone", baseRemotePath, sourceRepoDir)
-	gitCommandMustSucceed(t, sourceRepoDir, "remote", "set-url", "origin", "git@github.com:open-cli-collective/codereview-cli.git")
 	forkRemotePath := filepath.Join(t.TempDir(), "fork-remote.git")
 	gitCommandMustSucceed(t, "", "clone", baseRemotePath, forkRemotePath)
 	gitCommandMustSucceed(t, forkRemotePath, "checkout", "-b", "feature")
@@ -502,9 +475,10 @@ func newForkWorkbenchFixture(t *testing.T) forkWorkbenchFixture {
 	}
 	gitCommandMustSucceed(t, forkRemotePath, "commit", "-am", "fork head")
 	headSHA := strings.TrimSpace(gitCommandOutput(t, forkRemotePath, "rev-parse", "HEAD"))
+	gitCommandMustSucceed(t, forkRemotePath, "push", baseRemotePath, "HEAD:refs/pull/371/head")
 	ref := gitprovider.PRRef{Host: "github.com", Owner: "open-cli-collective", Repo: "codereview-cli", Number: 371}
 	return forkWorkbenchFixture{
-		sourceRepoDir: sourceRepoDir, baseRemotePath: baseRemotePath, forkRemotePath: forkRemotePath,
+		baseRemotePath: baseRemotePath,
 		pr: gitprovider.PR{
 			Ref: ref, Title: "Fork workbench fixture", URL: "https://github.com/open-cli-collective/codereview-cli/pull/371", State: gitprovider.PRStateOpen,
 			Base: gitprovider.PRBranchRef{Host: ref.Host, Owner: ref.Owner, Repo: ref.Repo, Name: "main", Ref: "refs/heads/main", SHA: baseSHA},
