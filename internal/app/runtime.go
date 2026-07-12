@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
+	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
@@ -27,7 +28,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
-	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -131,7 +131,7 @@ func (d Dependencies) withDefaults() Dependencies {
 		}
 	}
 	if d.ResolveRepoRoot == nil {
-		d.ResolveRepoRoot = func(ctx context.Context) (string, error) { return reporoot.Resolve(ctx, "", nil) }
+		d.ResolveRepoRoot = appruntime.ResolveRepoRoot
 	}
 	if d.NewAdapter == nil {
 		d.NewAdapter = newAdapter

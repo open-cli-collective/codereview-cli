@@ -1232,13 +1232,14 @@ func TestSelectionOnlyCapsMaxAgents(t *testing.T) {
 		"reasoning": "too many"
 	}`, 10, 2))
 
+	selectionReq := selectionRequestFromReview(req, t.TempDir())
+	selectionReq.MaxAgents = 1
 	result, err := selectionOnlyForTest(ctx, Options{
-		Provider:  provider,
-		Adapter:   adapter,
-		Now:       fixedNow,
-		MaxAgents: 1,
-		Warnings:  &warnings,
-	}, selectionRequestFromReview(req, t.TempDir()))
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+		Warnings: &warnings,
+	}, selectionReq)
 	if err != nil {
 		t.Fatalf("SelectionOnly: %v", err)
 	}

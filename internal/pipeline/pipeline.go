@@ -483,7 +483,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		Threads:                     prepared.threads,
 		ThreadContext:               prepared.threadContext,
 		Artifacts:                   prepared.artifacts,
-		MaxAgents:                   opts.maxAgents(),
+		MaxAgents:                   selectionMaxAgents(req.MaxAgents, opts.maxAgents()),
 	})
 	result.SelectionSession = selectionSessionFromDraft(session)
 	if err != nil {
@@ -491,6 +491,13 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}
 	result.Selection = selection
 	return result, nil
+}
+
+func selectionMaxAgents(requested, fallback int) int {
+	if requested > 0 {
+		return requested
+	}
+	return fallback
 }
 
 func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
