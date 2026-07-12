@@ -98,10 +98,10 @@ packages; shared command infrastructure belongs in packages such as
 `internal/cmd/root`. Command-independent helpers used to compose review and
 response application runtimes, such as retention-policy conversion and
 repository-root resolution, belong in `internal/appruntime` rather than
-`internal/cmd/cmdruntime`. Review lifecycle runtime assembly belongs in
-`internal/reviewruntime`; `cr review` and `cr respond` command packages should
-construct `reviewruntime.OpenRequest` values and keep CLI-only validation,
-rendering, config-path selection, and error mapping at the command boundary.
+`internal/cmd/cmdruntime`. Production review lifecycle assembly belongs in
+`internal/app`; `cr review` and `cr respond` command packages should construct
+`app.OpenRequest` values and keep CLI-only validation, rendering, config-path
+selection, and error mapping at the command boundary.
 
 Application packages outside `internal/cmd` and `internal/view` should not
 depend on Cobra, command packages, or view packages. Those packages should

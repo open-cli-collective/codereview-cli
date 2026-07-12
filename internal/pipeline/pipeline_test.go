@@ -106,6 +106,7 @@ func TestSelectionOnlyRejectsRepositoryMismatchBeforeGit(t *testing.T) {
 	provider, req := dryRunHarness(t)
 	req.Profile.Git.Host = "git.example.com"
 	gitCalls := 0
+	artifactDir := t.TempDir()
 	_, err := selectionOnlyForTest(context.Background(), Options{
 		Provider: provider,
 		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
@@ -113,12 +114,19 @@ func TestSelectionOnlyRejectsRepositoryMismatchBeforeGit(t *testing.T) {
 			gitCalls++
 			return nil, errors.New("unexpected git call")
 		},
-	}, selectionRequestFromReview(req, t.TempDir()))
+	}, selectionRequestFromReview(req, artifactDir))
 	if err == nil || !strings.Contains(err.Error(), "configured git host") {
 		t.Fatalf("SelectionOnly error = %v, want configured host mismatch", err)
 	}
 	if gitCalls != 0 {
 		t.Fatalf("Git calls = %d, want zero before trust binding", gitCalls)
+	}
+	entries, readErr := os.ReadDir(artifactDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir artifacts: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifacts = %#v, want no writes before trust binding", entries)
 	}
 }
 

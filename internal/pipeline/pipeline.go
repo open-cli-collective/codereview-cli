@@ -426,6 +426,13 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources, invocationRoot); err != nil {
 		return SelectionResult{}, err
 	}
+	reviewCtx, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
+	if err != nil {
+		return SelectionResult{}, err
+	}
+	if err := validateRepositoryBinding(req.PRRef, req.Profile.Git.Host, reviewCtx.reviewPR); err != nil {
+		return SelectionResult{}, err
+	}
 
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
 		PRRef:            req.PRRef,
@@ -435,6 +442,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: false,
+		ResolvedPR:       &reviewCtx,
 		InvocationRoot:   &invocationRoot,
 		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
 			return ArtifactPathsFromDir(req.ArtifactDir), nil
@@ -443,10 +451,6 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	if err != nil {
 		return SelectionResult{}, err
 	}
-	if err := validateRepositoryBinding(req.PRRef, req.Profile.Git.Host, prepared.reviewPR); err != nil {
-		return SelectionResult{}, err
-	}
-
 	result := prepared.selectionResult()
 	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
 		PRRef:        req.PRRef,
