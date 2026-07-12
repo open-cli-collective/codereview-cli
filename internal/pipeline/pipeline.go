@@ -173,6 +173,7 @@ type SelectionRequest struct {
 	ArtifactDir     string
 	ReviewBaseSHA   string
 	ReviewHeadSHA   string
+	MaxAgents       int
 
 	SelectionModelOverride      string
 	SelectionEffortOverride     string
@@ -392,19 +393,19 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 // Live executes the review planning phases into a gate-allocated live run.
 func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
 	if hasDryRunStageOverrides(req) {
-		return Result{}, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review"))
 	}
 	if strings.TrimSpace(req.ReviewBaseSHA) != "" || strings.TrimSpace(req.ReviewHeadSHA) != "" {
-		return Result{}, fmt.Errorf("pipeline: pinned review SHAs require dry-run review")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: pinned review SHAs require dry-run review"))
 	}
 	if strings.TrimSpace(run.RunID) == "" {
-		return Result{}, fmt.Errorf("pipeline: live run ID is required")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live run ID is required"))
 	}
 	if strings.TrimSpace(run.ArtifactPath) == "" {
-		return Result{}, fmt.Errorf("pipeline: live artifact path is required")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live artifact path is required"))
 	}
 	if run.PostMode != ledger.PostModeLive {
-		return Result{}, fmt.Errorf("pipeline: live run post mode is required")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live run post mode is required"))
 	}
 	return execute(ctx, opts, req, executionMode{
 		live:         true,
@@ -440,6 +441,9 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		},
 	})
 	if err != nil {
+		return SelectionResult{}, err
+	}
+	if err := validateRepositoryBinding(req.PRRef, req.Profile.Git.Host, prepared.reviewPR); err != nil {
 		return SelectionResult{}, err
 	}
 
@@ -498,13 +502,6 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}
 	completed := false
 	failureOutcome := ledger.OutcomeFailed
-	if mode.live {
-		defer func() {
-			if !completed && !isContextError(err) {
-				_ = opts.Store.CompleteRun(context.Background(), mode.run.RunID, failureOutcome, opts.now())
-			}
-		}()
-	}
 	now := opts.now()
 	maxAgents := opts.maxAgents()
 	maxConcurrency := opts.maxConcurrency(maxAgents)
@@ -514,6 +511,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}
 	reviewCtx, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := validateRepositoryBinding(req.PRRef, req.Profile.Git.Host, reviewCtx.reviewPR); err != nil {
 		return Result{}, err
 	}
 	var resumedDryRun *ledger.Run
@@ -1196,10 +1196,6 @@ func validatePinnedReviewPR(ref gitprovider.PRRef, pr gitprovider.PR) error {
 		return fmt.Errorf("pipeline: pinned base/head review does not support fork PR heads; head repository %s/%s differs from base repository %s/%s", pr.Head.Owner, pr.Head.Repo, ref.Owner, ref.Repo)
 	}
 	return nil
-}
-
-func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func sessionRowIDForFinding(finding reviewplan.AnchoredFinding, findingSession map[review.FindingID]string) (string, error) {
@@ -2041,6 +2037,22 @@ func validateReviewSHAs(baseSHA, headSHA string) error {
 	return nil
 }
 
+func validateRepositoryBinding(ref gitprovider.PRRef, configuredHost string, pr gitprovider.PR) error {
+	if !strings.EqualFold(strings.TrimSpace(configuredHost), strings.TrimSpace(ref.Host)) {
+		return fmt.Errorf("pipeline: configured git host %q does not match PR host %q", configuredHost, ref.Host)
+	}
+	if !strings.EqualFold(pr.Ref.Host, ref.Host) || pr.Ref.Owner != ref.Owner || pr.Ref.Repo != ref.Repo || pr.Ref.Number != ref.Number {
+		return fmt.Errorf("pipeline: fetched PR identity does not match requested PR %s/%s#%d on %s", ref.Owner, ref.Repo, ref.Number, ref.Host)
+	}
+	if !strings.EqualFold(pr.Base.Host, ref.Host) || pr.Base.Owner != ref.Owner || pr.Base.Repo != ref.Repo {
+		return fmt.Errorf("pipeline: PR base repository does not match requested repository %s/%s on %s", ref.Owner, ref.Repo, ref.Host)
+	}
+	if !strings.EqualFold(pr.Head.Host, ref.Host) {
+		return fmt.Errorf("pipeline: cross-host PR head %s/%s on %s is unsupported", pr.Head.Owner, pr.Head.Repo, pr.Head.Host)
+	}
+	return nil
+}
+
 // ArtifactPathsForRun returns the artifact paths for a generated run ID.
 func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, profile, postingIdentity, runID string) (ArtifactPaths, error) {
 	return runartifact.ForRun(layout, ref, pr, profile, postingIdentity, runID)
@@ -2165,7 +2177,7 @@ func (opts Options) resolveRepoRoot(ctx context.Context) (string, error) {
 }
 
 func workbenchDeps(opts Options) workbench.Deps {
-	return workbench.Deps{GitCommand: opts.GitCommand, ResolveRepoRoot: opts.ResolveRepoRoot}
+	return workbench.Deps{GitCommand: opts.GitCommand}
 }
 
 func dossierEnv(opts Options) dossier.Env {

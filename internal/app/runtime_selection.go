@@ -4,16 +4,14 @@ import (
 	"context"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
-	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
-	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 )
 
 // SelectionRuntime contains the dependencies needed for selection-only
 // execution paths that must match review-command runtime semantics.
 type SelectionRuntime struct {
-	Provider gitprovider.GitProvider
-	Adapter  llm.Adapter
-	Cleanup  func()
+	Select  func(context.Context, pipeline.SelectionRequest) (pipeline.SelectionResult, error)
+	Cleanup func()
 }
 
 // OpenSelection resolves provider and adapter setup using the same
@@ -35,7 +33,12 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 	}
 	// Selection-only paths read with the profile git credential while keeping
 	// PR-scoped GitHub App installation lookup aligned with review runs.
-	provider, _, err := deps.NewGitProvider(profile.Git, gitStore, gitProviderOptions(profile, profile.Git, req.PRRef))
+	provider, credential, err := deps.NewGitProvider(profile.Git, gitStore, gitProviderOptions(profile, profile.Git, req.PRRef))
+	if err != nil {
+		cleanup()
+		return SelectionRuntime{}, err
+	}
+	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(provider, credential))
 	if err != nil {
 		cleanup()
 		return SelectionRuntime{}, err
@@ -54,8 +57,15 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 		return SelectionRuntime{}, err
 	}
 	return SelectionRuntime{
-		Provider: provider,
-		Adapter:  adapter,
-		Cleanup:  cleanup,
+		Select: func(ctx context.Context, selection pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			return pipeline.SelectionOnly(ctx, pipeline.Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				GitCommand:      gitCommand,
+				ResolveRepoRoot: deps.ResolveRepoRoot,
+				MaxAgents:       selection.MaxAgents,
+			}, selection)
+		},
+		Cleanup: cleanup,
 	}, nil
 }

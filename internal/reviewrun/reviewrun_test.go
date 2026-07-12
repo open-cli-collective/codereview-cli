@@ -17,6 +17,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/gate"
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -456,6 +457,97 @@ func TestRunResumeExistingActionsSkipsPlanner(t *testing.T) {
 	}
 	if reviews := fixture.fake.RecordedReviews(fixture.ref); len(reviews) != 1 {
 		t.Fatalf("reviews = %d, want one review", len(reviews))
+	}
+}
+
+func TestPlanOrResumePersistsFailureOutcomeMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		kind    pipeline.FailureKind
+		resume  bool
+		outcome ledger.Outcome
+	}{
+		{name: "fresh transient", kind: pipeline.FailureTransient, outcome: ledger.OutcomeFailed},
+		{name: "resumed transient", kind: pipeline.FailureTransient, resume: true, outcome: ledger.OutcomeIncomplete},
+		{name: "fresh durable blocking", kind: pipeline.FailureDurableBlocking, outcome: ledger.OutcomeIncomplete},
+		{name: "resumed durable blocking", kind: pipeline.FailureDurableBlocking, resume: true, outcome: ledger.OutcomeIncomplete},
+		{name: "fresh terminal", kind: pipeline.FailureTerminal, outcome: ledger.OutcomeFailed},
+		{name: "resumed terminal", kind: pipeline.FailureTerminal, resume: true, outcome: ledger.OutcomeFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			run := fixture.allocateRun(t, strings.ReplaceAll(tt.name, " ", "-"), testBaseSHA)
+			decision := gate.Decision{Kind: gate.DecisionFresh}
+			if tt.resume {
+				decision.Kind = gate.DecisionResume
+			}
+			plannerErr := errors.New("planner failed")
+			planner := &fakePlanner{store: fixture.store, err: pipeline.Failure(tt.kind, plannerErr)}
+
+			_, _, err := planOrResume(context.Background(), fixture.opts(planner), Request{Pipeline: fixture.req}, Result{Run: run, Decision: decision})
+			if !errors.Is(err, plannerErr) {
+				t.Fatalf("planOrResume error = %v, want planner failure", err)
+			}
+			stored, err := fixture.store.GetRun(context.Background(), run.RunID)
+			if err != nil {
+				t.Fatalf("GetRun: %v", err)
+			}
+			if stored.Outcome == nil || *stored.Outcome != tt.outcome {
+				t.Fatalf("outcome = %#v, want %q", stored.Outcome, tt.outcome)
+			}
+		})
+	}
+}
+
+func TestPlanOrResumeLeavesCanceledRunOpen(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "canceled-plan", testBaseSHA)
+	planner := &fakePlanner{store: fixture.store, err: context.Canceled}
+
+	_, _, err := planOrResume(context.Background(), fixture.opts(planner), Request{Pipeline: fixture.req}, Result{
+		Run:      run,
+		Decision: gate.Decision{Kind: gate.DecisionFresh},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("planOrResume error = %v, want context canceled", err)
+	}
+	stored, err := fixture.store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Outcome != nil {
+		t.Fatalf("outcome = %#v, want running run for next invocation", stored.Outcome)
+	}
+}
+
+func TestRunAfterCanceledPlanningResumesSameRun(t *testing.T) {
+	fixture := newFixture(t)
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, err: context.Canceled}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("interrupted")
+
+	first, err := Run(context.Background(), opts, Request{Pipeline: fixture.req})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Run error = %v, want context canceled", err)
+	}
+	if first.Run.RunID == "" || first.Run.Outcome != nil {
+		t.Fatalf("first run = %#v, want open allocated run", first.Run)
+	}
+
+	planner.err = nil
+	second, err := Run(context.Background(), opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if second.Run.RunID != first.Run.RunID {
+		t.Fatalf("second run ID = %q, want resumed %q", second.Run.RunID, first.Run.RunID)
+	}
+	if second.Run.Outcome == nil || *second.Run.Outcome != ledger.OutcomeComment {
+		t.Fatalf("second run outcome = %#v, want comment", second.Run.Outcome)
+	}
+	if planner.calls != 2 {
+		t.Fatalf("planner calls = %d, want interrupted attempt plus resumed attempt", planner.calls)
 	}
 }
 
@@ -1086,6 +1178,7 @@ func (s findingOnlyStore) ListFindings(ctx context.Context, runID string) ([]led
 type fakePlanner struct {
 	store          *ledger.Store
 	outcome        reviewplan.Outcome
+	err            error
 	namedCandidate *ledger.NamedSession
 	includeResolve bool
 	calls          int
@@ -1109,6 +1202,9 @@ func (p *fakePlanner) Live(_ context.Context, req pipeline.Request, run ledger.R
 	p.calls++
 	p.runs = append(p.runs, run)
 	p.requests = append(p.requests, req)
+	if p.err != nil {
+		return pipeline.Result{}, p.err
+	}
 	event := review.ReviewEventComment
 	if p.outcome == reviewplan.OutcomeRequestChanges {
 		event = review.ReviewEventRequestChanges

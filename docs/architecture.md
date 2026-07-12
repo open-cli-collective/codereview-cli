@@ -75,6 +75,19 @@ This keeps markers, retries, reconciliation, idempotency, and resume behavior in
 one place. New commands such as `cr respond` should produce planned thread
 actions and let the reviewplan/ledger/outbox flow perform provider writes.
 
+## Authenticated Git Reads
+
+`internal/gitexec` is the narrow transport adapter for non-interactive Git
+commands. The application composition roots construct it from the configured
+repository/read provider's refreshable token source and inject its command
+function into review and selection pipelines. Authentication is host-scoped
+and process-only; posting/reviewer credentials are not checkout credentials.
+
+The pipeline validates the requested, fetched, base, and head repository
+identities before invoking Git. `internal/workbench.RunPreparer` then owns only
+run-workbench creation, exact-commit fetching, validation, reuse, and metadata.
+It does not inspect the caller's current directory or local Git origin.
+
 ## Command And Review Harness Guardrails
 
 Command packages should stay thin: parse args and flags, load runtime

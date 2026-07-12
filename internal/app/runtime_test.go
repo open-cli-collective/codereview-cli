@@ -16,6 +16,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitexec"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -77,28 +78,43 @@ func TestOpenUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	reviewerProvider.SetCapabilities(gitprovider.ProviderCaps{NativeFileLevelComments: true})
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 
+	deps := testDependencies(t,
+		func(git config.GitConfig, _ credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			providerCalls = append(providerCalls, git)
+			if git.Credential.Name == "codereview/home-reviewer" {
+				return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
+			}
+			return repoProvider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
+		},
+		func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ credentials.Reader, _ config.Profile) (gitprovider.Identity, error) {
+			if provider != reviewerProvider || credential.Token != "reviewer-token" {
+				t.Fatalf("identity resolver provider=%#v credential=%#v, want reviewer provider/token", provider, credential)
+			}
+			return identity, nil
+		},
+		func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+	deps.NewGitCommand = func(host string, tokens gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error) {
+		if host != "github.com" {
+			t.Fatalf("Git host = %q, want github.com", host)
+		}
+		token, err := tokens.AccessToken(context.Background())
+		if err != nil {
+			t.Fatalf("repository token source: %v", err)
+		}
+		if token != "repo-token" {
+			t.Fatalf("checkout token = %q, want repository token and not reviewer token", token)
+		}
+		return func(context.Context, string, ...string) ([]byte, error) { return nil, nil }, nil
+	}
+
 	runtime, err := Open(context.Background(), OpenRequest{
-		Config:  cfg,
-		Profile: profile,
-		PRRef:   testPRRef(),
-		Dependencies: testDependencies(t,
-			func(git config.GitConfig, _ credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-				providerCalls = append(providerCalls, git)
-				if git.Credential.Name == "codereview/home-reviewer" {
-					return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
-				}
-				return repoProvider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
-			},
-			func(_ context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ credentials.Reader, _ config.Profile) (gitprovider.Identity, error) {
-				if provider != reviewerProvider || credential.Token != "reviewer-token" {
-					t.Fatalf("identity resolver provider=%#v credential=%#v, want reviewer provider/token", provider, credential)
-				}
-				return identity, nil
-			},
-			func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
-				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
-			},
-		),
+		Config:       cfg,
+		Profile:      profile,
+		PRRef:        testPRRef(),
+		Dependencies: deps,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)

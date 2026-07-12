@@ -29,9 +29,10 @@ func TestSelectionOnlyPreparesWorkbenchInCallerOwnedArtifacts(t *testing.T) {
 	artifactDir := t.TempDir()
 
 	result, err := selectionOnlyForTest(ctx, Options{
-		Provider: provider,
-		Adapter:  adapter,
-		Now:      fixedNow,
+		Provider:   provider,
+		Adapter:    adapter,
+		Now:        fixedNow,
+		GitCommand: workbenchGitCommandForTest(req.PRRef, fixture.repoDir),
 		ResolveRepoRoot: func(context.Context) (string, error) {
 			return fixture.repoDir, nil
 		},
@@ -73,11 +74,12 @@ func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", nil), 30, 6))
 
 	result, err := dryRunForTest(ctx, Options{
-		Provider: provider,
-		Adapter:  adapter,
-		Store:    store,
-		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
-		Now:      fixedNow,
+		Provider:   provider,
+		Adapter:    adapter,
+		Store:      store,
+		Layout:     statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:        fixedNow,
+		GitCommand: workbenchGitCommandForTest(req.PRRef, fixture.repoDir),
 		ResolveRepoRoot: func(context.Context) (string, error) {
 			return fixture.repoDir, nil
 		},

@@ -154,6 +154,12 @@ func (c *Client) Host() string {
 	return c.host
 }
 
+// AccessToken returns the current repository access token. GitHub App clients
+// refresh their installation token through the same path used by API calls.
+func (c *Client) AccessToken(ctx context.Context) (string, error) {
+	return c.bearerToken(ctx, "")
+}
+
 // Capabilities returns GitHub feature support.
 func (c *Client) Capabilities() gitprovider.ProviderCaps {
 	return gitprovider.ProviderCaps{

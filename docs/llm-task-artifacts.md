@@ -86,9 +86,12 @@ reviewer failure must not approve; the final event is clamped to at least
 `comment`.
 
 `failed_blocking` means the task prevents dependent phases from safely running.
-Selection and rollup failures are blocking. Once a run exists, blocking LLM task
-failures leave the run `incomplete` so the normal resume gate can rerun only the
-failed task and downstream work.
+Selection and rollup failures are blocking. `reviewrun` is the sole owner of
+live planner-error outcomes: blocking LLM failures leave fresh and resumed runs
+`incomplete`; transient failures leave resumed runs `incomplete` but fail fresh
+runs; terminal failures fail either kind; cancellation leaves the current
+outcome untouched. The normal resume gate can therefore rerun only the failed
+task and downstream work after an interruption or durable blocking failure.
 
 Provider start/wait failures may have empty `attempts` because no structured
 output existed. When a provider session ID is known, retry should seed the next

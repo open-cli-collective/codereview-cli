@@ -43,6 +43,12 @@ Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 and no ledger or posting side effects so benchmark tooling can reuse the real
 selector implementation.
 
+Review workbench preparation is location-independent. Runtime composition
+constructs the authenticated Git command adapter from the repository/read
+credential and injects it into the pipeline; workbench code derives remotes
+from the validated PR identity and must not resolve or inspect the invocation
+checkout.
+
 Structured LLM calls in the review pipeline are durable per-task units. See
 `docs/llm-task-artifacts.md` for the artifact schema, status taxonomy, and
 resume invariants.

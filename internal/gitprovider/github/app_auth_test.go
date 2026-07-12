@@ -87,6 +87,13 @@ func TestNewFromGitConfigBuildsGitHubAppClientAndRefreshesToken(t *testing.T) {
 		t.Fatalf("GetPR first: %v", err)
 	}
 	now = now.Add(59 * time.Minute)
+	gitToken, err := client.AccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("AccessToken refresh: %v", err)
+	}
+	if gitToken != "installation-token-2" {
+		t.Fatalf("AccessToken = %q, want refreshed installation token", gitToken)
+	}
 	if _, err := client.GetPR(context.Background(), ref); err != nil {
 		t.Fatalf("GetPR refresh: %v", err)
 	}

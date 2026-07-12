@@ -37,7 +37,6 @@ var (
 			PRRef:              ref,
 		})
 	}
-	runSelectionOnly = pipeline.SelectionOnly
 )
 
 type selectFlags struct {
@@ -284,11 +283,7 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 	_ = promptSpan.End(nil)
 
 	selectionSpan := logger.Start("benchmark.select", "selection_pipeline", runID)
-	selectionResult, err := runSelectionOnly(ctx, pipeline.Options{
-		Provider:  state.runtime.Provider,
-		Adapter:   state.runtime.Adapter,
-		MaxAgents: candidate.MaxAgents,
-	}, pipeline.SelectionRequest{
+	selectionResult, err := state.runtime.Select(ctx, pipeline.SelectionRequest{
 		PRRef:                       ref,
 		ProfileName:                 state.profileName,
 		Profile:                     state.profile,
@@ -297,6 +292,7 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		ArtifactDir:                 runDir,
 		ReviewBaseSHA:               benchCase.ReviewBaseSHA,
 		ReviewHeadSHA:               benchCase.ReviewHeadSHA,
+		MaxAgents:                   candidate.MaxAgents,
 		SelectionModelOverride:      candidate.Stages.Selection.Model,
 		SelectionEffortOverride:     candidate.Stages.Selection.Effort,
 		SelectionPromptInstructions: selectionPromptInstructions,

@@ -17,6 +17,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/gitexec"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/hooks"
@@ -26,6 +27,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -73,8 +75,6 @@ type OpenRequest struct {
 	MaxConcurrency                    int
 	Retention                         datalifecycle.RetentionPolicy
 	RetentionManualOnly               bool
-	ResolveRepoRoot                   func(context.Context) (string, error)
-	GitCommand                        func(context.Context, string, ...string) ([]byte, error)
 	Dependencies                      Dependencies
 }
 
@@ -103,6 +103,8 @@ type AdapterFactory func(config.LLMConfig, credentials.Reader) (llm.Adapter, err
 // defaults.
 type Dependencies struct {
 	NewGitProvider         GitProviderFactory
+	NewGitCommand          func(string, gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error)
+	ResolveRepoRoot        func(context.Context) (string, error)
 	ResolvePostingIdentity PostingIdentityResolver
 	NewAdapter             AdapterFactory
 	RuntimeLayout          func() (statepaths.Layout, error)
@@ -118,6 +120,18 @@ func (d Dependencies) withDefaults() Dependencies {
 	}
 	if d.ResolvePostingIdentity == nil {
 		d.ResolvePostingIdentity = resolvePostingIdentity
+	}
+	if d.NewGitCommand == nil {
+		d.NewGitCommand = func(host string, tokens gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error) {
+			client, err := gitexec.New(host, tokens)
+			if err != nil {
+				return nil, err
+			}
+			return client.Run, nil
+		}
+	}
+	if d.ResolveRepoRoot == nil {
+		d.ResolveRepoRoot = func(ctx context.Context) (string, error) { return reporoot.Resolve(ctx, "", nil) }
 	}
 	if d.NewAdapter == nil {
 		d.NewAdapter = newAdapter
@@ -150,7 +164,12 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		cleanup()
 		return Runtime{}, err
 	}
-	repoProvider, _, err := deps.NewGitProvider(profile.Git, repoProviderStore, gitProviderOptions(profile, profile.Git, req.PRRef))
+	repoProvider, repoCredential, err := deps.NewGitProvider(profile.Git, repoProviderStore, gitProviderOptions(profile, profile.Git, req.PRRef))
+	if err != nil {
+		cleanup()
+		return Runtime{}, err
+	}
+	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(repoProvider, repoCredential))
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
@@ -215,7 +234,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		}
 		return withProgressAdapter(req.Progress, command, adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
-	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, req.Warnings, req.Progress, dispatcher, req, command)
+	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, req.Warnings, req.Progress, dispatcher, req, command, gitCommand, deps.ResolveRepoRoot)
 	return Runtime{
 		Runner:          runner,
 		Responder:       runner,
@@ -372,7 +391,7 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, dispatcher *hookDispatcher, req OpenRequest, command string) reviewRunner {
+func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, dispatcher *hookDispatcher, req OpenRequest, command string, gitCommand func(context.Context, string, ...string) ([]byte, error), resolveRepoRoot func(context.Context) (string, error)) reviewRunner {
 	taskProgress := newPipelineTaskProgress(logger, command, dispatcher)
 	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
 	pipelineOpts := pipeline.Options{
@@ -387,8 +406,8 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 		MaxConcurrency:      req.MaxConcurrency,
 		Retention:           req.Retention,
 		RetentionManualOnly: req.RetentionManualOnly,
-		ResolveRepoRoot:     req.ResolveRepoRoot,
-		GitCommand:          req.GitCommand,
+		ResolveRepoRoot:     resolveRepoRoot,
+		GitCommand:          gitCommand,
 	}
 	return reviewRunner{
 		pipeline: pipelineOpts,
@@ -403,7 +422,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			ApprovalOverride:        withProgressApprovalOverrideClassifier(logger, buildApprovalOverrideClassifier(profile, adapter, warnings)),
 			Retention:               req.Retention,
 			RetentionManualOnly:     req.RetentionManualOnly,
-			ResolveRepoRoot:         req.ResolveRepoRoot,
+			ResolveRepoRoot:         resolveRepoRoot,
 		},
 		respond: threadrespond.Options{
 			Store:        ledgerStore,
@@ -643,6 +662,13 @@ func (p livePlanner) Live(ctx context.Context, req pipeline.Request, run ledger.
 
 func resolvePostingIdentity(ctx context.Context, provider gitprovider.GitProvider, credential gitprovider.Credential, _ credentials.Reader, _ config.Profile) (gitprovider.Identity, error) {
 	return provider.WhoAmI(ctx, credential)
+}
+
+func repositoryTokenSource(provider gitprovider.GitProvider, credential gitprovider.Credential) gitexec.TokenSource {
+	if source, ok := provider.(gitexec.TokenSource); ok {
+		return source
+	}
+	return gitexec.TokenSourceFunc(func(context.Context) (string, error) { return credential.Token, nil })
 }
 
 type adapterConstructor func(config.LLMConfig, credentials.Reader, config.LLMRuntimeSpec) (llm.Adapter, error)

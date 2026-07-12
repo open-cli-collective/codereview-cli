@@ -677,6 +677,11 @@ Run a live review:
 cr review https://github.com/OWNER/REPO/pull/123
 ```
 
+The PR URL and selected profile are the repository inputs. `cr review` may be
+run outside a Git checkout or from an unrelated repository; it fetches the
+PR's exact base and head commits into the run-owned workbench using the
+profile's repository credential.
+
 Run a live review and fail the command when a major or blocking finding exists:
 
 ```bash

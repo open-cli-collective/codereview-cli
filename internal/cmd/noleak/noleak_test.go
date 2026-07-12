@@ -439,12 +439,13 @@ func noLeakGitOutput(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-func noLeakGitCommand(ref gitprovider.PRRef) func(context.Context, string, ...string) ([]byte, error) {
+func noLeakGitCommand(ref gitprovider.PRRef, repoDir string) func(context.Context, string, ...string) ([]byte, error) {
 	return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
-		if len(args) == 3 && args[0] == "remote" && args[1] == "get-url" && args[2] == "origin" {
-			return []byte(fmt.Sprintf("https://%s/%s/%s.git\n", ref.Host, ref.Owner, ref.Repo)), nil
+		cmdArgs := append([]string(nil), args...)
+		if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" && cmdArgs[2] == fmt.Sprintf("https://%s/%s/%s.git", ref.Host, ref.Owner, ref.Repo) {
+			cmdArgs[2] = repoDir
 		}
-		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}
@@ -457,7 +458,7 @@ func noLeakGitCommand(ref gitprovider.PRRef) func(context.Context, string, ...st
 			if message == "" {
 				message = err.Error()
 			}
-			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+			return nil, fmt.Errorf("git %s: %s", strings.Join(cmdArgs, " "), message)
 		}
 		return out, nil
 	}
@@ -809,7 +810,7 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
 		MaxAgents:           runtimeOpts.MaxAgents,
 		MaxConcurrency:      runtimeOpts.MaxConcurrency,
-		GitCommand:          noLeakGitCommand(h.prRef),
+		GitCommand:          noLeakGitCommand(h.prRef, h.workbenchRepoDir),
 		ResolveRepoRoot:     func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
 	}
 	liveProvider := noLeakRuntimeProvider{read: readProvider, write: postingProvider}
