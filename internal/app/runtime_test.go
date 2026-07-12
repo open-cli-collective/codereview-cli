@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,6 +25,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -484,6 +487,93 @@ func TestOpenSelectionPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T)
 				t.Fatalf("InstallationID = %q, want %q", gotInstallationID, tt.wantInstallationID)
 			}
 		})
+	}
+}
+
+func TestOpenSelectionReturnsExecutableSelectionRuntime(t *testing.T) {
+	ctx := context.Background()
+	repoDir := t.TempDir()
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...) // #nosec G204 -- test uses structured Git arguments.
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(repoDir, "init", "-b", "main")
+	git(repoDir, "config", "user.name", "Selection Test")
+	git(repoDir, "config", "user.email", "selection@example.com")
+	git(repoDir, "commit", "--allow-empty", "-m", "base")
+	baseSHA := git(repoDir, "rev-parse", "HEAD")
+	git(repoDir, "commit", "--allow-empty", "-m", "head")
+	headSHA := git(repoDir, "rev-parse", "HEAD")
+
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	ref := testPRRef()
+	pr := testPR()
+	pr.Base.SHA = baseSHA
+	pr.Head.SHA = headSHA
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	tokenCalls := 0
+	runtime, err := OpenSelection(ctx, SelectionOpenRequest{
+		Config: cfg, Profile: profile, PRRef: ref,
+		Dependencies: Dependencies{
+			NewGitProvider: func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+				return provider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
+			},
+			NewGitCommand: func(_ string, tokens gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error) {
+				return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+					cmdArgs := append([]string(nil), args...)
+					if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" {
+						token, err := tokens.AccessToken(ctx)
+						if err != nil || token != "repo-token" {
+							t.Fatalf("repository token = %q, %v", token, err)
+						}
+						tokenCalls++
+						cmdArgs[2] = repoDir
+					}
+					cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- test uses structured Git arguments.
+					cmd.Dir = dir
+					return cmd.CombinedOutput()
+				}, nil
+			},
+			NewAdapter: func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
+				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+			},
+			ResolveRepoRoot: func(context.Context) (string, error) { return "", reporoot.ErrUnavailable },
+		},
+	})
+	if err != nil {
+		t.Fatalf("OpenSelection: %v", err)
+	}
+	defer runtime.Cleanup()
+	artifactDir := t.TempDir()
+	result, err := runtime.Select(ctx, pipeline.SelectionRequest{
+		PRRef: ref, ProfileName: "home", Profile: profile,
+		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+		ArtifactDir:     artifactDir,
+	})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if tokenCalls == 0 {
+		t.Fatal("selection runtime did not use repository token source for fetch")
+	}
+	if result.Artifacts.Dir != artifactDir {
+		t.Fatalf("artifact dir = %q, want %q", result.Artifacts.Dir, artifactDir)
+	}
+	if _, err := os.Stat(result.Artifacts.WorkbenchMetadataPath()); err != nil {
+		t.Fatalf("workbench metadata: %v", err)
 	}
 }
 

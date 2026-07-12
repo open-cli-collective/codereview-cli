@@ -259,6 +259,9 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newAuditHarness(t)
+			if strings.HasPrefix(tc.name, "review ") {
+				t.Chdir(t.TempDir())
+			}
 			if tc.prepare != nil {
 				tc.prepare(t, h)
 			}
