@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -863,12 +862,6 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 			}
 			if got.Retention.LiveForever != tt.wantForever || got.Retention.LiveMaxAge != tt.wantLiveMaxAge || got.RetentionManualOnly != tt.wantManualOnly {
 				t.Fatalf("runtime retention = %#v manual %v, want forever=%v max_age=%s manual=%v", got.Retention, got.RetentionManualOnly, tt.wantForever, tt.wantLiveMaxAge, tt.wantManualOnly)
-			}
-			if got.ResolveRepoRoot == nil {
-				t.Fatal("runtime ResolveRepoRoot is nil")
-			}
-			if gotPtr, wantPtr := reflect.ValueOf(got.ResolveRepoRoot).Pointer(), reflect.ValueOf(appruntime.ResolveRepoRoot).Pointer(); gotPtr != wantPtr {
-				t.Fatalf("ResolveRepoRoot pointer = %x, want %x", gotPtr, wantPtr)
 			}
 		})
 	}

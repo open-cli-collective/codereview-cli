@@ -173,6 +173,7 @@ type SelectionRequest struct {
 	ArtifactDir     string
 	ReviewBaseSHA   string
 	ReviewHeadSHA   string
+	MaxAgents       int
 
 	SelectionModelOverride      string
 	SelectionEffortOverride     string
@@ -392,19 +393,19 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 // Live executes the review planning phases into a gate-allocated live run.
 func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
 	if hasDryRunStageOverrides(req) {
-		return Result{}, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review"))
 	}
 	if strings.TrimSpace(req.ReviewBaseSHA) != "" || strings.TrimSpace(req.ReviewHeadSHA) != "" {
-		return Result{}, fmt.Errorf("pipeline: pinned review SHAs require dry-run review")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: pinned review SHAs require dry-run review"))
 	}
 	if strings.TrimSpace(run.RunID) == "" {
-		return Result{}, fmt.Errorf("pipeline: live run ID is required")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live run ID is required"))
 	}
 	if strings.TrimSpace(run.ArtifactPath) == "" {
-		return Result{}, fmt.Errorf("pipeline: live artifact path is required")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live artifact path is required"))
 	}
 	if run.PostMode != ledger.PostModeLive {
-		return Result{}, fmt.Errorf("pipeline: live run post mode is required")
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live run post mode is required"))
 	}
 	return execute(ctx, opts, req, executionMode{
 		live:         true,
@@ -425,6 +426,13 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources, invocationRoot); err != nil {
 		return SelectionResult{}, err
 	}
+	reviewCtx, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
+	if err != nil {
+		return SelectionResult{}, err
+	}
+	if err := validateRepositoryBinding(req.PRRef, req.Profile.Git.Host, reviewCtx.reviewPR); err != nil {
+		return SelectionResult{}, err
+	}
 
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
 		PRRef:            req.PRRef,
@@ -434,6 +442,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: false,
+		ResolvedPR:       &reviewCtx,
 		InvocationRoot:   &invocationRoot,
 		ResolveArtifacts: func(gitprovider.PR) (ArtifactPaths, error) {
 			return ArtifactPathsFromDir(req.ArtifactDir), nil
@@ -442,7 +451,6 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	if err != nil {
 		return SelectionResult{}, err
 	}
-
 	result := prepared.selectionResult()
 	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
 		PRRef:        req.PRRef,
@@ -475,7 +483,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		Threads:                     prepared.threads,
 		ThreadContext:               prepared.threadContext,
 		Artifacts:                   prepared.artifacts,
-		MaxAgents:                   opts.maxAgents(),
+		MaxAgents:                   selectionMaxAgents(req.MaxAgents, opts.maxAgents()),
 	})
 	result.SelectionSession = selectionSessionFromDraft(session)
 	if err != nil {
@@ -485,8 +493,18 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	return result, nil
 }
 
+func selectionMaxAgents(requested, fallback int) int {
+	if requested > 0 {
+		return requested
+	}
+	return fallback
+}
+
 func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
 	if err := validate(opts, req); err != nil {
+		if mode.live {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	invocationRoot, err := resolveInvocationRootForSafety(ctx, opts)
@@ -494,17 +512,13 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources, invocationRoot); err != nil {
+		if mode.live {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	completed := false
 	failureOutcome := ledger.OutcomeFailed
-	if mode.live {
-		defer func() {
-			if !completed && !isContextError(err) {
-				_ = opts.Store.CompleteRun(context.Background(), mode.run.RunID, failureOutcome, opts.now())
-			}
-		}()
-	}
 	now := opts.now()
 	maxAgents := opts.maxAgents()
 	maxConcurrency := opts.maxConcurrency(maxAgents)
@@ -514,6 +528,12 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}
 	reviewCtx, err := resolveReviewPRContext(ctx, opts.Provider, req.PRRef, req.ReviewBaseSHA, req.ReviewHeadSHA)
 	if err != nil {
+		return Result{}, err
+	}
+	if err := validateRepositoryBinding(req.PRRef, req.Profile.Git.Host, reviewCtx.reviewPR); err != nil {
+		if mode.live {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	var resumedDryRun *ledger.Run
@@ -597,6 +617,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ChangedFiles: prepared.changedFiles,
 		Artifacts:    prepared.artifacts,
 	}); err != nil {
+		if errors.Is(err, workbench.ErrUnsafeFetchRef) || errors.Is(err, workbench.ErrInvalidRepositoryIdentity) {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
@@ -667,7 +690,7 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 func executeLLMPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, repoSources []agents.SourceInfo, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
 	if err != nil {
@@ -715,15 +738,15 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 
 	rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
 	if err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
 	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings, reviewerFailures, reviewerCoverage)
 	if err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
 	if err != nil {
@@ -856,7 +879,7 @@ func persistedPlanning(ctx context.Context, store Store, runID string) ([]ledger
 		return nil, nil, false, nil
 	}
 	if len(actions) == 0 {
-		return nil, nil, false, fmt.Errorf("pipeline: persisted planning for run %s has findings but no planned actions", runID)
+		return nil, nil, false, Failure(FailureTerminal, fmt.Errorf("pipeline: persisted planning for run %s has findings but no planned actions", runID))
 	}
 	return findings, actions, true, nil
 }
@@ -1077,7 +1100,7 @@ func resolveReviewPRContext(ctx context.Context, provider ReadProvider, ref gitp
 func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequest) (llm.Selection, sessionDraft, ledger.Session, error) {
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
-		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
@@ -1094,10 +1117,10 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	selectionPrompt, err := buildSelectionPrompt(req.Catalog, promptInput, req.MaxAgents, req.SelectionPromptInstructions)
 	if err != nil {
-		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
-		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	selectionLog, err := req.Artifacts.AgentLog(orchestratorSelectionStage)
 	if err != nil {
@@ -1196,10 +1219,6 @@ func validatePinnedReviewPR(ref gitprovider.PRRef, pr gitprovider.PR) error {
 		return fmt.Errorf("pipeline: pinned base/head review does not support fork PR heads; head repository %s/%s differs from base repository %s/%s", pr.Head.Owner, pr.Head.Repo, ref.Owner, ref.Repo)
 	}
 	return nil
-}
-
-func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func sessionRowIDForFinding(finding reviewplan.AnchoredFinding, findingSession map[review.FindingID]string) (string, error) {
@@ -1303,17 +1322,17 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string) (llm.Findings, sessionDraft, ledger.Session, *ReviewerFailure, error) {
 	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := patchPaths(parsed.Patches)
 	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	if err := opts.checkPromptBudget("reviewer", agent.ID, model, strings.Join(selected.Files, ","), prompt); err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	logPath, err := artifacts.AgentLog(agent.ID)
 	if err != nil {
@@ -1881,7 +1900,7 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 
 func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewplan.PostMode, caps reviewplan.ProviderCaps, diff reviewplan.Diff, findings []review.Finding, rollup review.Rollup, threadActions []review.ThreadAction, noDiff bool, agentDefsChanged bool, runInputs planRunInputs) (reviewplan.Plan, error) {
 	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
-	return reviewplan.Build(reviewplan.Request{
+	plan, err := reviewplan.Build(reviewplan.Request{
 		PostMode:                      postMode,
 		ProviderCaps:                  caps,
 		Diff:                          diff,
@@ -1906,6 +1925,10 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		Now:                     opts.now,
 		NewActionID:             opts.newActionID,
 	})
+	if err != nil {
+		return reviewplan.Plan{}, Failure(FailureTerminal, err)
+	}
+	return plan, nil
 }
 
 func (opts Options) emitWarning(warning string) {
@@ -2041,6 +2064,22 @@ func validateReviewSHAs(baseSHA, headSHA string) error {
 	return nil
 }
 
+func validateRepositoryBinding(ref gitprovider.PRRef, configuredHost string, pr gitprovider.PR) error {
+	if !strings.EqualFold(strings.TrimSpace(configuredHost), strings.TrimSpace(ref.Host)) {
+		return fmt.Errorf("pipeline: configured git host %q does not match PR host %q", configuredHost, ref.Host)
+	}
+	if !strings.EqualFold(pr.Ref.Host, ref.Host) || !strings.EqualFold(pr.Ref.Owner, ref.Owner) || !strings.EqualFold(pr.Ref.Repo, ref.Repo) || pr.Ref.Number != ref.Number {
+		return fmt.Errorf("pipeline: fetched PR identity does not match requested PR %s/%s#%d on %s", ref.Owner, ref.Repo, ref.Number, ref.Host)
+	}
+	if !strings.EqualFold(pr.Base.Host, ref.Host) || !strings.EqualFold(pr.Base.Owner, ref.Owner) || !strings.EqualFold(pr.Base.Repo, ref.Repo) {
+		return fmt.Errorf("pipeline: PR base repository does not match requested repository %s/%s on %s", ref.Owner, ref.Repo, ref.Host)
+	}
+	if !strings.EqualFold(pr.Head.Host, ref.Host) {
+		return fmt.Errorf("pipeline: cross-host PR head %s/%s on %s is unsupported", pr.Head.Owner, pr.Head.Repo, pr.Head.Host)
+	}
+	return nil
+}
+
 // ArtifactPathsForRun returns the artifact paths for a generated run ID.
 func ArtifactPathsForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, profile, postingIdentity, runID string) (ArtifactPaths, error) {
 	return runartifact.ForRun(layout, ref, pr, profile, postingIdentity, runID)
@@ -2165,7 +2204,7 @@ func (opts Options) resolveRepoRoot(ctx context.Context) (string, error) {
 }
 
 func workbenchDeps(opts Options) workbench.Deps {
-	return workbench.Deps{GitCommand: opts.GitCommand, ResolveRepoRoot: opts.ResolveRepoRoot}
+	return workbench.Deps{GitCommand: opts.GitCommand}
 }
 
 func dossierEnv(opts Options) dossier.Env {

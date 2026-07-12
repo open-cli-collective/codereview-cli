@@ -260,6 +260,9 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 
 	desired, planResult, err := planOrResume(ctx, opts, req, result)
 	if err != nil {
+		if run, loadErr := opts.Store.GetRun(context.Background(), result.Run.RunID); loadErr == nil {
+			result.Run = run
+		}
 		return result, err
 	}
 	if planResult != nil {
@@ -356,6 +359,13 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 
 	planned, err := opts.Planner.Live(ctx, req.Pipeline, result.Run)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", nil, err
+		}
+		outcome := plannerFailureOutcome(pipeline.ClassifyFailure(err), result.Decision.Kind == gate.DecisionResume)
+		if completeErr := opts.Store.CompleteRun(context.Background(), result.Run.RunID, outcome, opts.now()); completeErr != nil {
+			return "", nil, completeErr
+		}
 		return "", nil, err
 	}
 	desired, err := desiredOutcomeFromPlan(planned.Plan.Outcome)
@@ -363,6 +373,13 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 		return "", nil, err
 	}
 	return desired, &planned, nil
+}
+
+func plannerFailureOutcome(kind pipeline.FailureKind, resumed bool) ledger.Outcome {
+	if kind == pipeline.FailureDurableBlocking || kind == pipeline.FailureTransient && resumed {
+		return ledger.OutcomeIncomplete
+	}
+	return ledger.OutcomeFailed
 }
 
 func planningStateEmpty(ctx context.Context, store Store, runID string) (bool, error) {

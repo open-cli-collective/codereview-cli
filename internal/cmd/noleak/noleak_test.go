@@ -37,6 +37,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/sessionscmd"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/gitexec"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
@@ -258,6 +259,9 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newAuditHarness(t)
+			if strings.HasPrefix(tc.name, "review ") {
+				t.Chdir(t.TempDir())
+			}
 			if tc.prepare != nil {
 				tc.prepare(t, h)
 			}
@@ -439,25 +443,17 @@ func noLeakGitOutput(t *testing.T, dir string, args ...string) string {
 	return string(out)
 }
 
-func noLeakGitCommand(ref gitprovider.PRRef) func(context.Context, string, ...string) ([]byte, error) {
+func noLeakGitCommand(ref gitprovider.PRRef, repoDir string, run func(context.Context, string, ...string) ([]byte, error)) func(context.Context, string, ...string) ([]byte, error) {
 	return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
-		if len(args) == 3 && args[0] == "remote" && args[1] == "get-url" && args[2] == "origin" {
-			return []byte(fmt.Sprintf("https://%s/%s/%s.git\n", ref.Host, ref.Owner, ref.Repo)), nil
-		}
-		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
-		if strings.TrimSpace(dir) != "" {
-			cmd.Dir = dir
-		}
-		out, err := cmd.CombinedOutput()
+		out, err := run(ctx, dir, args...)
 		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, ctxErr
+			return nil, err
+		}
+		remoteURL := fmt.Sprintf("https://%s/%s/%s.git", ref.Host, ref.Owner, ref.Repo)
+		if len(args) == 4 && args[0] == "remote" && args[1] == "add" && args[3] == remoteURL {
+			if _, err := run(ctx, dir, "config", "url."+repoDir+".insteadOf", remoteURL); err != nil {
+				return nil, err
 			}
-			message := strings.TrimSpace(string(out))
-			if message == "" {
-				message = err.Error()
-			}
-			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
 		}
 		return out, nil
 	}
@@ -772,6 +768,11 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 		cleanup()
 		return app.Runtime{}, err
 	}
+	gitClient, err := gitexec.New(profile.Git.Host, readProvider)
+	if err != nil {
+		cleanup()
+		return app.Runtime{}, err
+	}
 	postingGit := gitConfigForReviewerAuth(profile)
 	postingProvider, credential, err := h.newGitHubProvider(postingGit, store, installationLookup(runtimeOpts.PRRef))
 	if err != nil {
@@ -809,7 +810,7 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
 		MaxAgents:           runtimeOpts.MaxAgents,
 		MaxConcurrency:      runtimeOpts.MaxConcurrency,
-		GitCommand:          noLeakGitCommand(h.prRef),
+		GitCommand:          noLeakGitCommand(h.prRef, h.workbenchRepoDir, gitClient.Run),
 		ResolveRepoRoot:     func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
 	}
 	liveProvider := noLeakRuntimeProvider{read: readProvider, write: postingProvider}

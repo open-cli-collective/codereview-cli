@@ -71,6 +71,150 @@ func TestResolveInvocationRootForSafetyTreatsUnavailableAsUnknownAndOtherErrorsA
 	}
 }
 
+func TestValidateRepositoryBinding(t *testing.T) {
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "acme", Repo: "widgets", Number: 42}
+	valid := gitprovider.PR{
+		Ref:  ref,
+		Base: gitprovider.PRBranchRef{Host: ref.Host, Owner: ref.Owner, Repo: ref.Repo},
+		Head: gitprovider.PRBranchRef{Host: ref.Host, Owner: "contributor", Repo: ref.Repo},
+	}
+	tests := []struct {
+		name string
+		host string
+		pr   gitprovider.PR
+	}{
+		{name: "valid same-host fork", host: ref.Host, pr: valid},
+		{name: "configured host mismatch", host: "git.example.com", pr: valid},
+		{name: "fetched identity mismatch", host: ref.Host, pr: func() gitprovider.PR { pr := valid; pr.Ref.Number++; return pr }()},
+		{name: "base identity mismatch", host: ref.Host, pr: func() gitprovider.PR { pr := valid; pr.Base.Repo = "other"; return pr }()},
+		{name: "cross-host head", host: ref.Host, pr: func() gitprovider.PR { pr := valid; pr.Head.Host = "git.example.com"; return pr }()},
+		{name: "mixed-case identity", host: "GitHub.com", pr: func() gitprovider.PR {
+			pr := valid
+			pr.Ref.Owner, pr.Ref.Repo = "ACME", "Widgets"
+			pr.Base.Owner, pr.Base.Repo = "ACME", "Widgets"
+			return pr
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRepositoryBinding(ref, tt.host, tt.pr)
+			valid := tt.name == "valid same-host fork" || tt.name == "mixed-case identity"
+			if valid && err != nil {
+				t.Fatalf("validateRepositoryBinding: %v", err)
+			}
+			if !valid && err == nil {
+				t.Fatal("validateRepositoryBinding succeeded, want rejection")
+			}
+		})
+	}
+}
+
+func TestSelectionOnlyRejectsRepositoryMismatchBeforeGit(t *testing.T) {
+	provider, req := dryRunHarness(t)
+	req.Profile.Git.Host = "git.example.com"
+	gitCalls := 0
+	artifactDir := t.TempDir()
+	_, err := selectionOnlyForTest(context.Background(), Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		GitCommand: func(context.Context, string, ...string) ([]byte, error) {
+			gitCalls++
+			return nil, errors.New("unexpected git call")
+		},
+	}, selectionRequestFromReview(req, artifactDir))
+	if err == nil || !strings.Contains(err.Error(), "configured git host") {
+		t.Fatalf("SelectionOnly error = %v, want configured host mismatch", err)
+	}
+	if gitCalls != 0 {
+		t.Fatalf("Git calls = %d, want zero before trust binding", gitCalls)
+	}
+	entries, readErr := os.ReadDir(artifactDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir artifacts: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifacts = %#v, want no writes before trust binding", entries)
+	}
+}
+
+func TestLiveClassifiesRepositoryBindingFailureAsTerminalBeforeGit(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	run := allocateLiveRun(t, store, provider, req, "terminal-binding")
+	req.Profile.Git.Host = "git.example.com"
+	gitCalls := 0
+	_, err := Live(ctx, Options{
+		Provider:        provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		ResolveRepoRoot: func(context.Context) (string, error) { return "", reporoot.ErrUnavailable },
+		GitCommand: func(context.Context, string, ...string) ([]byte, error) {
+			gitCalls++
+			return nil, errors.New("unexpected git call")
+		},
+	}, req, run)
+	if err == nil || ClassifyFailure(err) != FailureTerminal {
+		t.Fatalf("Live error = %v kind %v, want terminal repository binding failure", err, ClassifyFailure(err))
+	}
+	if gitCalls != 0 {
+		t.Fatalf("Git calls = %d, want zero before trust binding", gitCalls)
+	}
+}
+
+func TestLiveClassifiesUnsafeFetchRefAsTerminal(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.pr.Base.Ref = "main"
+	run := allocateLiveRun(t, store, provider, req, "terminal-ref")
+	_, err := liveForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:    store,
+		Layout:   statepaths.NewLayout(t.TempDir(), t.TempDir()),
+	}, req, run)
+	if err == nil || ClassifyFailure(err) != FailureTerminal {
+		t.Fatalf("Live error = %v kind %v, want terminal unsafe-ref failure", err, ClassifyFailure(err))
+	}
+}
+
+func TestBuildPlanClassifiesActionIDFailureTerminalAcrossPaths(t *testing.T) {
+	wantErr := errors.New("action ID unavailable")
+	opts := Options{
+		Now: fixedNow,
+		NewActionID: func(reviewplan.ActionKind) (string, error) {
+			return "", wantErr
+		},
+	}
+	req := Request{
+		ProfileName:     "home",
+		PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+	}
+	pr := gitprovider.PR{Head: gitprovider.PRBranchRef{SHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+	tests := []struct {
+		name    string
+		noDiff  bool
+		rollup  review.Rollup
+		sources []agents.SourceInfo
+	}{
+		{name: "no diff", noDiff: true},
+		{name: "repo guidance unavailable", sources: []agents.SourceInfo{{Kind: agents.SourceRepo, Status: agents.SourceStatusMissing}}},
+		{name: "normal review", rollup: review.Rollup{ReviewEvent: review.ReviewEventComment}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := opts.buildPlan(req, pr, reviewplan.PostModeLive, reviewplan.ProviderCaps{}, reviewplan.Diff{}, nil, tt.rollup, nil, tt.noDiff, false, planRunInputs{repoSources: tt.sources})
+			if !errors.Is(err, wantErr) || ClassifyFailure(err) != FailureTerminal {
+				t.Fatalf("buildPlan error = %v kind %v, want terminal action-ID failure", err, ClassifyFailure(err))
+			}
+		})
+	}
+}
+
 func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -267,7 +411,7 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	assertFileContains(t, result.Artifacts.DiffPatch, "diff --git a/main.go b/main.go")
 	assertFileContains(t, result.Artifacts.FindingsJSON, `"severity": "major"`)
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
-	assertFileContains(t, result.Artifacts.WorkbenchMetadataPath(), `"schema_version": 1`)
+	assertFileContains(t, result.Artifacts.WorkbenchMetadataPath(), `"schema_version": 2`)
 	assertFileContains(t, result.Artifacts.WorkbenchMetadataPath(), `"repo_path":`)
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "pr-intent.md"), "Document the checkout-native review contract.")
@@ -1095,13 +1239,14 @@ func TestSelectionOnlyCapsMaxAgents(t *testing.T) {
 		"reasoning": "too many"
 	}`, 10, 2))
 
+	selectionReq := selectionRequestFromReview(req, t.TempDir())
+	selectionReq.MaxAgents = 1
 	result, err := selectionOnlyForTest(ctx, Options{
-		Provider:  provider,
-		Adapter:   adapter,
-		Now:       fixedNow,
-		MaxAgents: 1,
-		Warnings:  &warnings,
-	}, selectionRequestFromReview(req, t.TempDir()))
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+		Warnings: &warnings,
+	}, selectionReq)
 	if err != nil {
 		t.Fatalf("SelectionOnly: %v", err)
 	}
@@ -1781,8 +1926,8 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
-	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeIncomplete {
-		t.Fatalf("run outcome = %#v, want incomplete after rollup task failure", stored.Outcome)
+	if stored.Outcome != nil {
+		t.Fatalf("run outcome = %#v, want pipeline to leave live outcome ownership to reviewrun", stored.Outcome)
 	}
 	selectionMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(ArtifactPathsFromDir(run.ArtifactPath)), orchestratorSelectionStage)
 	if err != nil || !ok || selectionMeta.Status != llmTaskStatusSucceeded {
@@ -3327,12 +3472,16 @@ func TestLiveMarksRunIncompleteAfterBlockingLLMTaskError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no queued result") {
 		t.Fatalf("Live error = %v, want fake LLM planning error", err)
 	}
+	plannerErr := err
 	storedRun, err := store.GetRun(ctx, run.RunID)
 	if err != nil {
 		t.Fatalf("GetRun: %v", err)
 	}
-	if storedRun.Outcome == nil || *storedRun.Outcome != ledger.OutcomeIncomplete {
-		t.Fatalf("stored outcome = %#v, want incomplete", storedRun.Outcome)
+	if storedRun.Outcome != nil {
+		t.Fatalf("stored outcome = %#v, want pipeline to leave live outcome ownership to reviewrun", storedRun.Outcome)
+	}
+	if got := ClassifyFailure(plannerErr); got != FailureDurableBlocking {
+		t.Fatalf("failure kind = %v, want durable blocking", got)
 	}
 }
 
@@ -4791,16 +4940,17 @@ func configureWorkbenchFixtureForTest(_ context.Context, opts *Options, ref gitp
 		}
 	}
 	if opts.GitCommand == nil {
-		opts.GitCommand = workbenchGitCommandForTest(ref)
+		opts.GitCommand = workbenchGitCommandForTest(ref, repoDir)
 	}
 }
 
-func workbenchGitCommandForTest(ref gitprovider.PRRef) func(context.Context, string, ...string) ([]byte, error) {
+func workbenchGitCommandForTest(ref gitprovider.PRRef, repoDir string) func(context.Context, string, ...string) ([]byte, error) {
 	return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
-		if len(args) == 3 && args[0] == "remote" && args[1] == "get-url" && args[2] == "origin" {
-			return []byte(fmt.Sprintf("https://%s/%s/%s.git\n", ref.Host, ref.Owner, ref.Repo)), nil
+		cmdArgs := append([]string(nil), args...)
+		if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" && cmdArgs[2] == fmt.Sprintf("https://%s/%s/%s.git", ref.Host, ref.Owner, ref.Repo) {
+			cmdArgs[2] = repoDir
 		}
-		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}
@@ -4813,7 +4963,7 @@ func workbenchGitCommandForTest(ref gitprovider.PRRef) func(context.Context, str
 			if message == "" {
 				message = err.Error()
 			}
-			return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), message)
+			return nil, fmt.Errorf("git %s: %s", strings.Join(cmdArgs, " "), message)
 		}
 		return out, nil
 	}

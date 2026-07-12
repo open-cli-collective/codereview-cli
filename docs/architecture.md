@@ -75,6 +75,19 @@ This keeps markers, retries, reconciliation, idempotency, and resume behavior in
 one place. New commands such as `cr respond` should produce planned thread
 actions and let the reviewplan/ledger/outbox flow perform provider writes.
 
+## Authenticated Git Reads
+
+`internal/gitexec` is the narrow transport adapter for non-interactive Git
+commands. The application composition roots construct it from the configured
+repository/read provider's refreshable token source and inject its command
+function into review and selection pipelines. Authentication is host-scoped
+and process-only; posting/reviewer credentials are not checkout credentials.
+
+The pipeline validates the requested, fetched, base, and head repository
+identities before invoking Git. `internal/workbench.RunPreparer` then owns only
+run-workbench creation, exact-commit fetching, validation, reuse, and metadata.
+It does not inspect the caller's current directory or local Git origin.
+
 ## Command And Review Harness Guardrails
 
 Command packages should stay thin: parse args and flags, load runtime
@@ -85,10 +98,10 @@ packages; shared command infrastructure belongs in packages such as
 `internal/cmd/root`. Command-independent helpers used to compose review and
 response application runtimes, such as retention-policy conversion and
 repository-root resolution, belong in `internal/appruntime` rather than
-`internal/cmd/cmdruntime`. Review lifecycle runtime assembly belongs in
-`internal/reviewruntime`; `cr review` and `cr respond` command packages should
-construct `reviewruntime.OpenRequest` values and keep CLI-only validation,
-rendering, config-path selection, and error mapping at the command boundary.
+`internal/cmd/cmdruntime`. Production review lifecycle assembly belongs in
+`internal/app`; `cr review` and `cr respond` command packages should construct
+`app.OpenRequest` values and keep CLI-only validation, rendering, config-path
+selection, and error mapping at the command boundary.
 
 Application packages outside `internal/cmd` and `internal/view` should not
 depend on Cobra, command packages, or view packages. Those packages should

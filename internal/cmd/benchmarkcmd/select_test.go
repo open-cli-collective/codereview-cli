@@ -486,14 +486,19 @@ func withBenchmarkSelectSeams(
 	t.Helper()
 	oldNow := benchmarkNow
 	oldOpener := openSelectionRuntime
-	oldRunner := runSelectionOnly
 	benchmarkNow = func() time.Time { return fixedBenchmarkTime() }
-	openSelectionRuntime = runtimeOpener
-	runSelectionOnly = runner
+	openSelectionRuntime = func(ctx context.Context, backend string, changed bool, cfg config.File, profile config.Profile, ref gitprovider.PRRef) (app.SelectionRuntime, error) {
+		runtime, err := runtimeOpener(ctx, backend, changed, cfg, profile, ref)
+		if err == nil {
+			runtime.Select = func(ctx context.Context, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+				return runner(ctx, pipeline.Options{MaxAgents: req.MaxAgents}, req)
+			}
+		}
+		return runtime, err
+	}
 	t.Cleanup(func() {
 		benchmarkNow = oldNow
 		openSelectionRuntime = oldOpener
-		runSelectionOnly = oldRunner
 	})
 }
 

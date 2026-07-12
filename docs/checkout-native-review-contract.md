@@ -86,11 +86,10 @@ Notes:
 The workbench is run-owned, not cache-owned. Shared clone or fetch caches are a
 possible future optimization but are not part of the correctness contract.
 
-`workbench/metadata.json` is a versioned durable artifact. Schema version `1`
+`workbench/metadata.json` is a versioned durable artifact. Schema version `2`
 records:
 
 - `schema_version`
-- `source_repo_root`
 - `checkout_mode`
 - normalized PR identity under `pr`
 - pinned base and head refs
@@ -103,13 +102,19 @@ records:
 downstream tasks can fingerprint workbench semantics without re-deriving them
 from the checkout tree ad hoc.
 
+Schema version `1` remains readable for exact-byte workbench reuse. Its legacy
+`source_repo_root` field is ignored because the invocation checkout is not a
+workbench input; a valid reused v1 metadata file is not rewritten, preserving
+durable task fingerprints.
+
 `SelectionOnly` and benchmark callers still own their artifact directory choice.
 Checkout-native additions must work with caller-owned artifact roots instead of
 assuming that every selector run is ledger-backed.
 
-Pinned review entrypoints require base and head refs that can be fetched from
-the same repository remote. Fork-backed heads need explicit fetch and
-authentication handling before pinned review can accept them.
+Normal review entrypoints derive credential-free HTTPS remotes from the
+validated PR identity and fetch the exact base and head commits. Same-host fork
+heads are supported; cross-host heads are rejected before authenticated Git is
+invoked. Pinned dry-run entrypoints retain their stricter same-repository rule.
 
 ## Reviewer-Facing Context
 

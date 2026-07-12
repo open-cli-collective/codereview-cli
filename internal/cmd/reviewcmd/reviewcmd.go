@@ -280,7 +280,6 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
 		Retention:                         appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
-		ResolveRepoRoot:                   appruntime.ResolveRepoRoot,
 	}
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(ctx, runtimeReq)

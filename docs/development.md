@@ -13,15 +13,16 @@ data lifecycle commands.
 
 The current Go code is a Cobra command tree in `internal/cmd/*` with a thin
 `cmd/cr` entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and
-version plumbing in `internal/version`. Command-independent helpers used to
-compose review and response application runtimes live in `internal/appruntime`;
-command packages keep CLI composition, rendering, config-path selection, and
-error mapping. Review orchestration is split across `internal/reviewruntime`,
+version plumbing in `internal/version`. Production review and response runtime
+assembly lives in `internal/app`; `internal/appruntime` contains only small
+command-independent helpers such as retention conversion and invocation-root
+resolution. Command packages keep CLI composition, rendering, config-path
+selection, and error mapping. Review orchestration is split across
 `internal/pipeline`, `internal/reviewrun`,
 `internal/threadrespond`, `internal/reviewplan`, `internal/outbox`,
 `internal/gate`, and `internal/gateio`. Command packages construct typed
-runtime requests, while `internal/reviewruntime` owns the reusable provider,
-ledger, adapter, pipeline, live-run, and response-run assembly.
+runtime requests, while `internal/app` owns the reusable provider, ledger,
+adapter, pipeline, live-run, and response-run assembly.
 
 Architecture guardrails for LLM execution, model resolution, Git provider
 writes, command and review harness boundaries, inline thread lifecycle, and
@@ -42,6 +43,12 @@ Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 `SelectionOnly` runs just the selection phase with caller-owned artifact paths
 and no ledger or posting side effects so benchmark tooling can reuse the real
 selector implementation.
+
+Review workbench preparation is location-independent. Runtime composition
+constructs the authenticated Git command adapter from the repository/read
+credential and injects it into the pipeline; workbench code derives remotes
+from the validated PR identity and must not resolve or inspect the invocation
+checkout.
 
 Structured LLM calls in the review pipeline are durable per-task units. See
 `docs/llm-task-artifacts.md` for the artifact schema, status taxonomy, and
@@ -98,12 +105,12 @@ make clean   # remove build artifacts
 - Current distribution status: GitHub release archives plus standard package
   channels declared in `packaging/identity.yml`.
 - Application package layering follows the active codereview implementation:
-  command glue in `internal/cmd/*`, review/response app runtime helpers in
-  `internal/appruntime`, presentation in `internal/view`,
+  command glue in `internal/cmd/*`, production review/response composition in
+  `internal/app`, small runtime helpers in `internal/appruntime`, presentation in `internal/view`,
   state/config adapters in `internal/config`, `internal/ledger`, and
   `internal/statepaths`, provider/LLM adapters in their owning packages, and
-  review runtime assembly in `internal/reviewruntime`, review posting/gating in
-  `internal/outbox`, `internal/gate`, and `internal/gateio`, and response-only
+  review posting/gating in `internal/outbox`, `internal/gate`, and
+  `internal/gateio`, and response-only
   inline discussion handling in
   `internal/threadrespond`.
 
