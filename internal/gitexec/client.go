@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strings"
 )
@@ -42,7 +43,7 @@ func New(host string, tokens TokenSource) (*Client, error) {
 func (c *Client) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	header := ""
 	token := ""
-	if requiresAuthentication(args) {
+	if requiresAuthentication(c.host, args) {
 		var err error
 		token, err = c.tokens.AccessToken(ctx)
 		if err != nil {
@@ -70,21 +71,27 @@ func (c *Client) Run(ctx context.Context, dir string, args ...string) ([]byte, e
 	if detail == "" {
 		detail = runErr.Error()
 	}
-	detail = strings.ReplaceAll(detail, token, "[REDACTED]")
-	detail = strings.ReplaceAll(detail, header, "[REDACTED]")
+	if token != "" {
+		detail = strings.ReplaceAll(detail, token, "[REDACTED]")
+	}
+	if header != "" {
+		detail = strings.ReplaceAll(detail, header, "[REDACTED]")
+	}
 	return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), detail)
 }
 
-func requiresAuthentication(args []string) bool {
-	if len(args) == 0 {
+func requiresAuthentication(host string, args []string) bool {
+	if len(args) < 2 || args[0] != "fetch" {
 		return false
 	}
-	switch args[0] {
-	case "clone", "fetch", "ls-remote", "pull", "push":
-		return true
-	default:
-		return false
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		remote, err := url.Parse(arg)
+		return err == nil && remote.Scheme == "https" && strings.EqualFold(remote.Host, host)
 	}
+	return false
 }
 
 func gitEnvironment(base []string, host, header string) []string {

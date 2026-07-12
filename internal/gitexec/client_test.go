@@ -27,7 +27,7 @@ func (s *rotatingTokens) AccessToken(context.Context) (string, error) {
 	return value, nil
 }
 
-func TestClientLocalCommandDoesNotReadToken(t *testing.T) {
+func TestClientLocalCommandsDoNotReadToken(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "git")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
@@ -42,11 +42,33 @@ func TestClientLocalCommandDoesNotReadToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := client.Run(context.Background(), dir, "status", "--porcelain"); err != nil {
-		t.Fatalf("local Run: %v", err)
+	for _, args := range [][]string{{"status", "--porcelain"}, {"clone", dir, filepath.Join(dir, "clone")}} {
+		if _, err := client.Run(context.Background(), "", args...); err != nil {
+			t.Fatalf("local Run %v: %v", args, err)
+		}
 	}
 	if tokens.calls != 0 {
 		t.Fatalf("token calls = %d, want none for local Git", tokens.calls)
+	}
+}
+
+func TestClientPreservesFailingLocalCommandDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "git")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'local failure' >&2\nexit 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(script, 0o700); err != nil { // #nosec G302 -- executable test fixture.
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	client, err := New("github.example.com", &rotatingTokens{err: errors.New("refresh unavailable")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = client.Run(context.Background(), dir, "status")
+	if err == nil || !strings.Contains(err.Error(), "local failure") {
+		t.Fatalf("Run error = %v, want intact local diagnostic", err)
 	}
 }
 

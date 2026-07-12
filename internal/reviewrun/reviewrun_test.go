@@ -21,9 +21,11 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gateio"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -548,6 +550,34 @@ func TestRunAfterCanceledPlanningResumesSameRun(t *testing.T) {
 	}
 	if planner.calls != 2 {
 		t.Fatalf("planner calls = %d, want interrupted attempt plus resumed attempt", planner.calls)
+	}
+}
+
+func TestRunMarksResumedRealPipelineTerminalFailureFailed(t *testing.T) {
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "real-terminal", testBaseSHA)
+	fixture.req.Profile.Git.Host = "git.example.com"
+	planner := pipelinePlanner{opts: pipeline.Options{
+		Provider:        fixture.provider,
+		Adapter:         &llm.FakeAdapter{NameValue: "fake-llm"},
+		Store:           fixture.store,
+		Layout:          fixture.layout,
+		ResolveRepoRoot: func(context.Context) (string, error) { return "", reporoot.ErrUnavailable },
+		GitCommand: func(context.Context, string, ...string) ([]byte, error) {
+			t.Fatal("Git called before terminal repository binding failure")
+			return nil, nil
+		},
+	}}
+
+	result, err := Run(context.Background(), fixture.opts(planner), Request{Pipeline: fixture.req})
+	if err == nil || pipeline.ClassifyFailure(err) != pipeline.FailureTerminal {
+		t.Fatalf("Run error = %v kind %v, want terminal pipeline failure", err, pipeline.ClassifyFailure(err))
+	}
+	if result.Run.RunID != run.RunID {
+		t.Fatalf("result run ID = %q, want resumed %q", result.Run.RunID, run.RunID)
+	}
+	if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("result outcome = %#v, want failed", result.Run.Outcome)
 	}
 }
 
@@ -1184,6 +1214,12 @@ type fakePlanner struct {
 	calls          int
 	runs           []ledger.Run
 	requests       []pipeline.Request
+}
+
+type pipelinePlanner struct{ opts pipeline.Options }
+
+func (p pipelinePlanner) Live(ctx context.Context, req pipeline.Request, run ledger.Run) (pipeline.Result, error) {
+	return pipeline.Live(ctx, p.opts, req, run)
 }
 
 type retentionProvider struct {

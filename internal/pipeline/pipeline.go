@@ -491,6 +491,9 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 
 func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
 	if err := validate(opts, req); err != nil {
+		if mode.live {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	invocationRoot, err := resolveInvocationRootForSafety(ctx, opts)
@@ -498,6 +501,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	if err := agents.RequireSafeProfileSources(req.Profile.AgentSources, invocationRoot); err != nil {
+		if mode.live {
+			return Result{}, Failure(FailureTerminal, err)
+		}
 		return Result{}, err
 	}
 	completed := false
@@ -600,7 +606,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ChangedFiles: prepared.changedFiles,
 		Artifacts:    prepared.artifacts,
 	}); err != nil {
-		if errors.Is(err, workbench.ErrUnsafeFetchRef) {
+		if errors.Is(err, workbench.ErrUnsafeFetchRef) || errors.Is(err, workbench.ErrInvalidRepositoryIdentity) {
 			return Result{}, Failure(FailureTerminal, err)
 		}
 		return Result{}, err
@@ -662,7 +668,7 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 			startedAt:   now,
 		})
 		if err != nil {
-			return nil, false, err
+			return nil, false, Failure(FailureTerminal, err)
 		}
 		result.Plan = plan
 		return nil, false, nil
@@ -673,7 +679,7 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 func executeLLMPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, repoSources []agents.SourceInfo, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
 	if err != nil {
@@ -721,15 +727,15 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 
 	rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
 	if err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
 	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings, reviewerFailures, reviewerCoverage)
 	if err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
-		return nil, false, err
+		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
 	if err != nil {
@@ -1083,7 +1089,7 @@ func resolveReviewPRContext(ctx context.Context, provider ReadProvider, ref gitp
 func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequest) (llm.Selection, sessionDraft, ledger.Session, error) {
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
-		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
@@ -1100,10 +1106,10 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	selectionPrompt, err := buildSelectionPrompt(req.Catalog, promptInput, req.MaxAgents, req.SelectionPromptInstructions)
 	if err != nil {
-		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
-		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
+		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	selectionLog, err := req.Artifacts.AgentLog(orchestratorSelectionStage)
 	if err != nil {
@@ -1305,17 +1311,17 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string) (llm.Findings, sessionDraft, ledger.Session, *ReviewerFailure, error) {
 	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := patchPaths(parsed.Patches)
 	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	if err := opts.checkPromptBudget("reviewer", agent.ID, model, strings.Join(selected.Files, ","), prompt); err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	logPath, err := artifacts.AgentLog(agent.ID)
 	if err != nil {

@@ -31,6 +31,9 @@ const (
 // ErrUnsafeFetchRef marks a provider ref that cannot be passed to Git safely.
 var ErrUnsafeFetchRef = errors.New("workbench: unsafe fetch ref")
 
+// ErrInvalidRepositoryIdentity marks repository coordinates that cannot form a safe remote.
+var ErrInvalidRepositoryIdentity = errors.New("workbench: invalid repository identity")
+
 // Deps contains the injected repository operations used to prepare workspaces.
 type Deps struct {
 	GitCommand func(context.Context, string, ...string) ([]byte, error)
@@ -214,7 +217,7 @@ func branchRemoteURL(branch gitprovider.PRBranchRef) (string, error) {
 	owner := strings.Trim(strings.TrimSpace(branch.Owner), "/")
 	repo := strings.TrimSuffix(strings.Trim(strings.TrimSpace(branch.Repo), "/"), ".git")
 	if host == "" || owner == "" || repo == "" || strings.Contains(host, "://") || strings.Contains(owner, "/") || strings.Contains(repo, "/") {
-		return "", fmt.Errorf("pipeline: invalid repository identity %s/%s on %s", owner, repo, host)
+		return "", fmt.Errorf("%w %s/%s on %s", ErrInvalidRepositoryIdentity, owner, repo, host)
 	}
 	return (&url.URL{Scheme: "https", Host: host, Path: "/" + owner + "/" + repo + ".git"}).String(), nil
 }

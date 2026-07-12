@@ -442,11 +442,17 @@ func noLeakGitOutput(t *testing.T, dir string, args ...string) string {
 
 func noLeakGitCommand(ref gitprovider.PRRef, repoDir string, run func(context.Context, string, ...string) ([]byte, error)) func(context.Context, string, ...string) ([]byte, error) {
 	return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
-		cmdArgs := append([]string(nil), args...)
-		if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" && cmdArgs[2] == fmt.Sprintf("https://%s/%s/%s.git", ref.Host, ref.Owner, ref.Repo) {
-			cmdArgs[2] = repoDir
+		out, err := run(ctx, dir, args...)
+		if err != nil {
+			return nil, err
 		}
-		return run(ctx, dir, cmdArgs...)
+		remoteURL := fmt.Sprintf("https://%s/%s/%s.git", ref.Host, ref.Owner, ref.Repo)
+		if len(args) == 4 && args[0] == "remote" && args[1] == "add" && args[3] == remoteURL {
+			if _, err := run(ctx, dir, "config", "url."+repoDir+".insteadOf", remoteURL); err != nil {
+				return nil, err
+			}
+		}
+		return out, nil
 	}
 }
 

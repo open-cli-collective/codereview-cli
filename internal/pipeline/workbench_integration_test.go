@@ -11,6 +11,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/workbench"
 )
@@ -30,13 +31,11 @@ func TestSelectionOnlyPreparesWorkbenchInCallerOwnedArtifacts(t *testing.T) {
 	artifactDir := t.TempDir()
 
 	result, err := selectionOnlyForTest(ctx, Options{
-		Provider:   provider,
-		Adapter:    adapter,
-		Now:        fixedNow,
-		GitCommand: workbenchGitCommandForTest(req.PRRef, fixture.repoDir),
-		ResolveRepoRoot: func(context.Context) (string, error) {
-			return fixture.repoDir, nil
-		},
+		Provider:        provider,
+		Adapter:         adapter,
+		Now:             fixedNow,
+		GitCommand:      workbenchGitCommandForTest(req.PRRef, fixture.repoDir),
+		ResolveRepoRoot: func(context.Context) (string, error) { return "", reporoot.ErrUnavailable },
 	}, selectionRequestFromReview(req, artifactDir))
 	if err != nil {
 		t.Fatalf("SelectionOnly: %v", err)
@@ -85,7 +84,7 @@ func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
 		Now:        fixedNow,
 		GitCommand: workbenchGitCommandForTest(req.PRRef, fixture.repoDir),
 		ResolveRepoRoot: func(context.Context) (string, error) {
-			return fixture.repoDir, nil
+			return invocationDir, nil
 		},
 		NewRunID:        func() string { return "run-workbench" },
 		NewSessionRowID: sequence("session"),
