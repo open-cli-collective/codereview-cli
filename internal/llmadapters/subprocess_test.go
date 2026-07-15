@@ -1815,3 +1815,29 @@ func eventually(t *testing.T, timeout time.Duration, condition func() bool) {
 	}
 	t.Fatalf("condition was not met within %s", timeout)
 }
+
+func TestSubprocessAdapterDefaultsTaskTimeout(t *testing.T) {
+	// Without a bound, one hung CLI worker or never-terminal background job
+	// hangs the entire review indefinitely — the caller in app/runtime.go sets
+	// no Timeout, so the constructor must default it.
+	a := NewClaudeCLIAdapter(SubprocessOptions{})
+	if a.timeout != defaultLLMTaskTimeout {
+		t.Fatalf("timeout = %v, want default %v", a.timeout, defaultLLMTaskTimeout)
+	}
+
+	explicit := NewCodexCLIAdapter(SubprocessOptions{Timeout: 3 * time.Minute})
+	if explicit.timeout != 3*time.Minute {
+		t.Fatalf("explicit timeout = %v, want 3m", explicit.timeout)
+	}
+
+	// Negative opts out: LaunchProcess only applies a deadline when timeout > 0.
+	unbounded := NewClaudeCLIAdapter(SubprocessOptions{Timeout: -1})
+	if unbounded.timeout >= 0 {
+		t.Fatalf("negative timeout should be preserved as opt-out, got %v", unbounded.timeout)
+	}
+
+	pi := NewPiRPCAdapter(PiRPCOptions{})
+	if pi.timeout != defaultLLMTaskTimeout {
+		t.Fatalf("pi timeout = %v, want default %v", pi.timeout, defaultLLMTaskTimeout)
+	}
+}
