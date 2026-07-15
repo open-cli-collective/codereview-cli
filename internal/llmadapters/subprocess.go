@@ -29,14 +29,26 @@ var (
 
 // SubprocessOptions configures subprocess LLM adapters.
 type SubprocessOptions struct {
-	Command                string
-	Env                    []string
+	Command string
+	Env     []string
+	// Timeout bounds a single LLM task (one subprocess run, or one background
+	// job launch + result wait). Zero applies defaultLLMTaskTimeout — without a
+	// deadline, one hung CLI worker or never-terminal background job hangs the
+	// entire review until something external kills it. Negative disables the
+	// bound explicitly.
 	Timeout                time.Duration
 	ScratchDirFactory      ScratchDirFactory
 	AllowBestEffortNoTools bool
 	FastModeModels         []string
 	commandArgsPrefix      []string
 }
+
+// defaultLLMTaskTimeout bounds a single LLM task when the caller does not set
+// SubprocessOptions.Timeout. Healthy reviewer tasks finish in a few minutes;
+// ten is generous headroom for slow models while still converting "one worker
+// hung" from an indefinite review stall into a timely, clearly-attributed task
+// failure. Mirrors defaultAPIClientTimeout on the API adapter.
+const defaultLLMTaskTimeout = 10 * time.Minute
 
 type subprocessKind string
 
@@ -104,12 +116,16 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 	if factory == nil {
 		factory = defaultScratchDir
 	}
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = defaultLLMTaskTimeout
+	}
 	return &SubprocessAdapter{
 		kind:                   kind,
 		command:                command,
 		commandArgsPrefix:      append([]string(nil), opts.commandArgsPrefix...),
 		env:                    append([]string(nil), opts.Env...),
-		timeout:                opts.Timeout,
+		timeout:                timeout,
 		scratchDirFactory:      factory,
 		allowBestEffortNoTools: opts.AllowBestEffortNoTools,
 		fastModeModels:         append([]string(nil), opts.FastModeModels...),

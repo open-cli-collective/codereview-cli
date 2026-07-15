@@ -52,11 +52,17 @@ func NewPiRPCAdapter(opts PiRPCOptions) *PiRPCAdapter {
 	if factory == nil {
 		factory = defaultScratchDir
 	}
+	// Same defaulting as the subprocess adapters: an unbounded task can hang a
+	// whole review on one stuck worker. Negative disables the bound explicitly.
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = defaultLLMTaskTimeout
+	}
 	return &PiRPCAdapter{
 		command:           command,
 		commandArgsPrefix: append([]string(nil), opts.commandArgsPrefix...),
 		env:               append([]string(nil), opts.Env...),
-		timeout:           opts.Timeout,
+		timeout:           timeout,
 		scratchDirFactory: factory,
 		fastModeModels:    append([]string(nil), opts.FastModeModels...),
 	}
