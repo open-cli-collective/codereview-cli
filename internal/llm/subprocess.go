@@ -25,6 +25,14 @@ type LaunchedProcess struct {
 	processGroup *processGroup
 }
 
+// subprocessWaitDelay is the grace, after the process context ends (task
+// timeout, abort, or normal completion), before stdout/stderr are force-closed.
+// A claude worker that escapes the process group (it becomes its own group
+// leader) survives cmd.Cancel's group kill and keeps a pipe open; a consumer's
+// synchronous read then blocks forever and cmd.Wait never runs — the run wedges
+// at 0% CPU holding the ledger. A var (not const) so tests can shorten it.
+var subprocessWaitDelay = 10 * time.Second
+
 // LaunchProcess starts an adapter subprocess with shared cancellation, logging,
 // and platform-specific process-group handling.
 func LaunchProcess(ctx context.Context, command string, args []string, dir string, env []string, timeout time.Duration, logPath string, cleanup func() error, withStdin bool) (*LaunchedProcess, error) {
@@ -48,6 +56,9 @@ func LaunchProcess(ctx context.Context, command string, args []string, dir strin
 		return nil, err
 	}
 	cmd.Cancel = func() error { return procGroup.kill(cmd) }
+	// Backstop for cmd.Wait if the pipes are held open by a worker that escaped
+	// the group after the process exits.
+	cmd.WaitDelay = subprocessWaitDelay
 
 	var stdin io.WriteCloser
 	if withStdin {
@@ -102,6 +113,16 @@ func LaunchProcess(ctx context.Context, command string, args []string, dir strin
 		process.Abort(cleanup)
 		return nil, err
 	}
+	// If a worker escapes the process group and holds stdout/stderr open, a
+	// consumer's synchronous read blocks forever and cmd.Wait never runs. When
+	// the context ends, give the pipes a grace to EOF cleanly, then force them
+	// closed so any pending read unblocks and the task fails instead of wedging.
+	go func() {
+		<-procCtx.Done()
+		time.Sleep(subprocessWaitDelay)
+		_ = stdout.Close()
+		_ = stderr.Close()
+	}()
 	return process, nil
 }
 
