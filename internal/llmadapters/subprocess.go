@@ -397,6 +397,25 @@ type claudeForegroundOutput struct {
 	Result    string `json:"result"`
 }
 
+// parseClaudeForegroundOutput extracts the print-mode result document from
+// captured stdout. The CLI may print banners or warnings before the trailing
+// JSON, so scan lines from the end and take the last one that parses as a JSON
+// object — never a leading '{' from unrelated preamble.
+func parseClaudeForegroundOutput(out []byte) (claudeForegroundOutput, bool) {
+	lines := bytes.Split(out, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var parsed claudeForegroundOutput
+		if err := json.Unmarshal(line, &parsed); err == nil {
+			return parsed, true
+		}
+	}
+	return claudeForegroundOutput{}, false
+}
+
 func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader, scratch string) {
 	stderrDone := make(chan bytes.Buffer, 1)
 	go func() {
@@ -442,9 +461,11 @@ func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cm
 	s.CloseProcessGroup()
 
 	if result.err == nil {
-		var parsed claudeForegroundOutput
-		if idx := bytes.IndexByte(outBytes, '{'); idx >= 0 {
-			_ = json.Unmarshal(outBytes[idx:], &parsed)
+		parsed, ok := parseClaudeForegroundOutput(outBytes)
+		if !ok {
+			// The session id is only needed for resume, so a parse failure must
+			// not fail the task — but it must be diagnosable in the task log.
+			s.WriteLog([]byte("llm subprocess: could not parse Claude foreground output JSON\n"))
 		}
 		if parsed.SessionID != "" {
 			s.SetSessionID(parsed.SessionID)
