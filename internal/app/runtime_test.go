@@ -21,6 +21,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitexec"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
@@ -43,7 +44,7 @@ func TestOpenCanInstantiateWithoutCobra(t *testing.T) {
 		Profile: cfg.Profiles["home"],
 		PRRef:   testPRRef(),
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
 			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
@@ -82,7 +83,7 @@ func TestOpenUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
 
 	deps := testDependencies(t,
-		func(git config.GitConfig, _ credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		func(git config.GitConfig, _ credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			providerCalls = append(providerCalls, git)
 			if git.Credential.Name == "codereview/home-reviewer" {
 				return reviewerProvider, gitprovider.Credential{Type: "pat", Token: "reviewer-token"}, nil
@@ -99,7 +100,7 @@ func TestOpenUsesReviewerCredentialsAsRuntimeProvider(t *testing.T) {
 			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
 		},
 	)
-	deps.NewGitCommand = func(host string, tokens gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error) {
+	deps.NewGitCommand = func(host string, tokens gitexec.TokenSource, _ string) (func(context.Context, string, ...string) ([]byte, error), error) {
 		if host != "github.com" {
 			t.Fatalf("Git host = %q, want github.com", host)
 		}
@@ -179,7 +180,7 @@ func TestOpenWarnsAndContinuesWhenOpinionatedReviewAuthorityIsIneligible(t *test
 		RequireOpinionatedReviewAuthority: true,
 		Warnings:                          &stderr,
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
 			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
@@ -211,7 +212,7 @@ func TestOpenAbortsWhenOpinionatedReviewAuthorityProbeIsCanceled(t *testing.T) {
 		PRRef:                             testPRRef(),
 		RequireOpinionatedReviewAuthority: true,
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
 			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
@@ -232,7 +233,7 @@ func TestOpenClosesCredentialStoresWhenRuntimeLayoutFails(t *testing.T) {
 	layoutErr := errors.New("layout failed")
 	var readers []credentials.Reader
 	deps := testDependencies(t,
-		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		func(_ config.GitConfig, tokenStore credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			readers = append(readers, tokenStore)
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		},
@@ -260,7 +261,7 @@ func TestOpenClosesCredentialStoresWhenLedgerOpenFails(t *testing.T) {
 	ledgerErr := errors.New("ledger open failed")
 	var readers []credentials.Reader
 	deps := testDependencies(t,
-		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		func(_ config.GitConfig, tokenStore credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			readers = append(readers, tokenStore)
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		},
@@ -289,7 +290,7 @@ func TestOpenClosesCredentialStoresAndLedgerWhenLimiterCreationFails(t *testing.
 	var readers []credentials.Reader
 	var ledgerStore *ledger.Store
 	deps := testDependencies(t,
-		func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		func(_ config.GitConfig, tokenStore credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			readers = append(readers, tokenStore)
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		},
@@ -376,9 +377,9 @@ func TestOpenPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T) {
 				Profile: cfg.Profiles["home"],
 				PRRef:   testPRRef(),
 				Dependencies: testDependencies(t,
-					func(_ config.GitConfig, _ credentials.Reader, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-						gotLookup = opts.InstallationLookup
-						gotInstallationID = opts.InstallationID
+					func(_ config.GitConfig, _ credentials.Reader, opts gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+						gotLookup = opts.GitHub.InstallationLookup
+						gotInstallationID = opts.GitHub.InstallationID
 						return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token"}, nil
 					},
 					func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
@@ -460,9 +461,9 @@ func TestOpenSelectionPassesGitHubAppInstallationLookupAndPinnedID(t *testing.T)
 				Profile: cfg.Profiles["home"],
 				PRRef:   testPRRef(),
 				Dependencies: Dependencies{
-					NewGitProvider: func(_ config.GitConfig, _ credentials.Reader, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-						gotLookup = opts.InstallationLookup
-						gotInstallationID = opts.InstallationID
+					NewGitProvider: func(_ config.GitConfig, _ credentials.Reader, opts gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+						gotLookup = opts.GitHub.InstallationLookup
+						gotInstallationID = opts.GitHub.InstallationID
 						return &gitprovider.Fake{}, gitprovider.Credential{Type: "github_app", Token: "installation-token"}, nil
 					},
 					NewAdapter: func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
@@ -528,10 +529,10 @@ func TestOpenSelectionReturnsExecutableSelectionRuntime(t *testing.T) {
 	runtime, err := OpenSelection(ctx, SelectionOpenRequest{
 		Config: cfg, Profile: profile, PRRef: ref,
 		Dependencies: Dependencies{
-			NewGitProvider: func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			NewGitProvider: func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return provider, gitprovider.Credential{Type: "pat", Token: "repo-token"}, nil
 			},
-			NewGitCommand: func(_ string, tokens gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error) {
+			NewGitCommand: func(_ string, tokens gitexec.TokenSource, _ string) (func(context.Context, string, ...string) ([]byte, error), error) {
 				return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
 					cmdArgs := append([]string(nil), args...)
 					if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" {
@@ -634,7 +635,7 @@ func TestOpenSelectionUsesNamedSecretsStoreWithoutBackendOverride(t *testing.T) 
 		Config:  cfg,
 		Profile: cfg.Profiles["home"],
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				token, err := tokenStore.Get("home", credentials.GitTokenKey)
 				if err != nil {
 					t.Fatalf("tokenStore.Get(home, git_token): %v", err)
@@ -666,7 +667,7 @@ func TestOpenSelectionClosesCredentialStoresWhenProviderCreationFails(t *testing
 		Config:  cfg,
 		Profile: cfg.Profiles["home"],
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				readers = append(readers, tokenStore)
 				return nil, gitprovider.Credential{}, providerErr
 			},
@@ -691,7 +692,7 @@ func TestOpenSelectionClosesCredentialStoresWhenAdapterCreationFails(t *testing.
 		Config:  cfg,
 		Profile: profile,
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			NewGitProvider: func(_ config.GitConfig, tokenStore credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				readers = append(readers, tokenStore)
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
@@ -725,7 +726,7 @@ func TestOpenInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 		Profile: profile,
 		PRRef:   testPRRef(),
 		Dependencies: testDependencies(t,
-			func(git config.GitConfig, reader credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(git config.GitConfig, reader credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				if git.Credential.Name == "codereview/home" && providerReader == nil {
 					providerReader = reader
 				} else {
@@ -782,7 +783,7 @@ func TestOpenSelectionInjectsCachedReaderIntoProviderAndAdapter(t *testing.T) {
 		Profile: profile,
 		PRRef:   testPRRef(),
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, reader credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			NewGitProvider: func(_ config.GitConfig, reader credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				providerReader = reader
 				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
@@ -835,7 +836,7 @@ func TestOpenSelectionCachedReaderReturnsStoreClosedAfterCleanupForCachedKey(t *
 		Profile: profile,
 		PRRef:   testPRRef(),
 		Dependencies: Dependencies{
-			NewGitProvider: func(_ config.GitConfig, reader credentials.Reader, _ githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			NewGitProvider: func(_ config.GitConfig, reader credentials.Reader, _ gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				providerReader = reader
 				token, err := reader.Get("home", credentials.GitTokenKey)
 				if err != nil {
@@ -887,7 +888,7 @@ func TestOpenLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 		Profile: profile,
 		PRRef:   ref,
 		Dependencies: testDependencies(t,
-			func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 			},
 			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
@@ -976,7 +977,7 @@ func TestAdapterConstructorsCoverLLMRuntimeSpecs(t *testing.T) {
 func testDependencies(t *testing.T, provider GitProviderFactory, identity PostingIdentityResolver, adapter AdapterFactory) Dependencies {
 	t.Helper()
 	if provider == nil {
-		provider = func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+		provider = func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
 		}
 	}

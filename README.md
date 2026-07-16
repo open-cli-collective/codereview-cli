@@ -101,8 +101,9 @@ retention conventions, see [docs/review-guidance.md](docs/review-guidance.md).
 
 ## Authentication And Setup
 
-`cr` v1 supports GitHub personal access token authentication for Git-host
-operations. The credential key for GitHub PATs is `git_token`.
+`cr` supports GitHub (personal access token or GitHub App) and GitLab
+(personal access token) authentication for Git-host operations. The credential
+key for Git-host PATs is `git_token`.
 
 Quick setup with adapter-managed LLM credentials:
 
@@ -255,6 +256,52 @@ by `--stdin` or `--from-env` during setup and credential writes; it does not
 read runtime tokens directly from arbitrary environment variables. Reviewer
 credentials use a separate credential name that also stores key `git_token`;
 keep it distinct from the user Git credential in the same store.
+
+### GitLab
+
+GitLab merge requests (gitlab.com and self-managed instances) are reviewed
+with the same commands as GitHub pull requests. A GitLab profile sets
+`git.provider: gitlab` and authenticates with a personal access token holding
+the `api` scope, stored under the same `git_token` credential key:
+
+```yaml
+profiles:
+  gitlab-work:
+    git:
+      provider: gitlab
+      host: gitlab.example.com
+      auth_mode: pat
+      credential:
+        store: local-os
+        name: codereview/gitlab-work
+```
+
+```bash
+printf '%s' "$GITLAB_TOKEN" | cr set-credential \
+  --store local-os \
+  --name codereview/gitlab-work \
+  --key git_token \
+  --stdin
+
+cr review https://gitlab.example.com/group/subgroup/project/-/merge_requests/42
+```
+
+`git.provider` defaults to `github` when omitted, so existing configs are
+unaffected. GitLab specifics worth knowing:
+
+- Inline findings post as diff discussions and thread resolution uses the
+  discussions API, so `resolve_threads` works as on GitHub.
+- GitLab has no review-object equivalent of a GitHub review: an `approve`
+  verdict calls the approvals API and the review summary posts as a
+  merge-request note; `request_changes` revokes any active approval by the
+  posting identity before posting the summary.
+- `pat` is the only supported `auth_mode` for GitLab; there is no GitHub App
+  equivalent.
+- The `cr init` wizard does not offer GitLab yet — add the profile to
+  `config.yml` directly (validated on load) and store the token with
+  `cr set-credential`.
+- Reading merge-request diffs requires GitLab 15.7 or newer for the raw diff
+  endpoint; older instances fall back to per-file diff reconstruction.
 
 ### Org Deployment / MDM
 
@@ -1043,8 +1090,9 @@ provenance, and trust note when repo-local agents are considered.
 cr review <PR> [flags]
 ```
 
-Runs the automated review pipeline for a GitHub pull request URL. The PR host
-must match the active profile's `git.host`.
+Runs the automated review pipeline for a GitHub pull request URL or a GitLab
+merge request URL. The PR host must match the active profile's `git.host`, and
+the URL's provider family must match the profile's `git.provider`.
 
 Modes:
 

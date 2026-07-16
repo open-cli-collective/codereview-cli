@@ -18,7 +18,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
-	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -34,7 +34,7 @@ type commandFlags struct {
 
 // Register attaches the agents command tree to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
-	RegisterWithFactory(rootCmd, opts, newGitHubProvider)
+	RegisterWithFactory(rootCmd, opts, newConfiguredProvider)
 }
 
 // RegisterWithFactory attaches the agents command tree with an injected provider factory.
@@ -118,11 +118,12 @@ func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, f
 		return agents.Catalog{}, cmderr.Config(err)
 	}
 	var ref gitprovider.PRRef
+	var urlProvider prref.Provider
 	profile := config.Profile{}
 	hasPR := strings.TrimSpace(prArg) != ""
 	if hasPR {
 		var err error
-		ref, err = prref.ParseGitHubPullURL(prArg)
+		ref, urlProvider, err = prref.ParsePullURL(prArg)
 		if err != nil {
 			return agents.Catalog{}, exitcode.Usage(err)
 		}
@@ -156,6 +157,9 @@ func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, f
 		loadOptions.SafeProfileSourceRoot = invocationRoot
 		if !prref.SameHost(ref.Host, profile.Git.Host) {
 			return agents.Catalog{}, exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host))
+		}
+		if err := prref.MatchProvider(urlProvider, string(profile.Git.ProviderKind())); err != nil {
+			return agents.Catalog{}, exitcode.Usage(err)
 		}
 		provider, cleanup, err := factory(cmd, opts, cfg, profile)
 		if err != nil {
@@ -194,12 +198,12 @@ func mapLoadError(err error) error {
 	}
 }
 
-func newGitHubProvider(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
+func newConfiguredProvider(cmd *cobra.Command, opts *root.Options, cfg config.File, profile config.Profile) (gitprovider.GitProvider, func(), error) {
 	store, err := credentials.OpenStore(opts.Backend, cmderr.BackendFlagChanged(cmd), cfg)
 	if err != nil {
 		return nil, nil, cmderr.Credential(err)
 	}
-	client, _, err := githubprovider.NewFromGitConfig(profile.Git, store, githubprovider.Options{})
+	client, _, err := gitproviders.New(profile.Git, store, gitproviders.Options{})
 	if err != nil {
 		_ = store.Close()
 		if errors.Is(err, config.ErrUnsupported) {

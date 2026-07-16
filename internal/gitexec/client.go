@@ -21,14 +21,26 @@ type TokenSourceFunc func(context.Context) (string, error)
 // AccessToken returns the current token.
 func (f TokenSourceFunc) AccessToken(ctx context.Context) (string, error) { return f(ctx) }
 
+// defaultBasicAuthUsername is the GitHub HTTPS transport convention.
+const defaultBasicAuthUsername = "x-access-token"
+
 // Client runs Git with host-scoped HTTPS authentication.
 type Client struct {
-	host   string
-	tokens TokenSource
+	host     string
+	tokens   TokenSource
+	username string
 }
 
-// New constructs an authenticated Git client.
+// New constructs an authenticated Git client using the GitHub HTTPS username
+// convention.
 func New(host string, tokens TokenSource) (*Client, error) {
+	return NewWithUsername(host, tokens, defaultBasicAuthUsername)
+}
+
+// NewWithUsername constructs an authenticated Git client whose HTTPS basic
+// auth pairs the given username with the token (for example GitLab expects
+// "oauth2").
+func NewWithUsername(host string, tokens TokenSource, username string) (*Client, error) {
 	host = strings.TrimSpace(strings.TrimSuffix(host, "/"))
 	if host == "" || strings.Contains(host, "://") || strings.Contains(host, "/") {
 		return nil, fmt.Errorf("gitexec: valid host is required")
@@ -36,7 +48,11 @@ func New(host string, tokens TokenSource) (*Client, error) {
 	if tokens == nil {
 		return nil, fmt.Errorf("gitexec: token source is required")
 	}
-	return &Client{host: host, tokens: tokens}, nil
+	username = strings.TrimSpace(username)
+	if username == "" || strings.Contains(username, ":") {
+		return nil, fmt.Errorf("gitexec: valid basic auth username is required")
+	}
+	return &Client{host: host, tokens: tokens, username: username}, nil
 }
 
 // Run executes Git in dir, or the current directory when dir is empty.
@@ -53,7 +69,7 @@ func (c *Client) Run(ctx context.Context, dir string, args ...string) ([]byte, e
 		if token == "" {
 			return nil, fmt.Errorf("gitexec: access token is empty")
 		}
-		header = "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+		header = "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte(c.username+":"+token))
 	}
 	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- fixed git binary with structured arguments.
 	if strings.TrimSpace(dir) != "" {

@@ -148,7 +148,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		if irrelevant(actions[i]) {
 			continue
 		}
-		match, err := reconcileAction(req, actions, actions[i], state)
+		match, err := reconcileAction(req, opts.Provider.Capabilities(), actions, actions[i], state)
 		if err != nil {
 			// Reconciliation is best-effort; dispatch planning below performs the
 			// authoritative local validation and terminal state update.
@@ -251,7 +251,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 				}
 				return summarize(actions, ledger.OutcomeIncomplete, exitUpstream, false), readErr
 			}
-			match, matchErr := reconcileAction(req, actions, actions[i], refetched)
+			match, matchErr := reconcileAction(req, opts.Provider.Capabilities(), actions, actions[i], refetched)
 			if matchErr == nil && match.ok {
 				now := opts.Now().UTC()
 				actions[i].Status = ledger.PlannedActionPosted
@@ -364,7 +364,7 @@ type reconcileMatch struct {
 	upstreamID string
 }
 
-func reconcileAction(req Request, actions []ledger.PlannedAction, action ledger.PlannedAction, state hostState) (reconcileMatch, error) {
+func reconcileAction(req Request, caps gitprovider.ProviderCaps, actions []ledger.PlannedAction, action ledger.PlannedAction, state hostState) (reconcileMatch, error) {
 	switch action.Kind {
 	case ledger.PlannedActionInlineComment:
 		return reconcileInline(req, action, state), nil
@@ -377,7 +377,7 @@ func reconcileAction(req Request, actions []ledger.PlannedAction, action ledger.
 	case ledger.PlannedActionRollupComment:
 		return reconcileRollup(req, action, state), nil
 	case ledger.PlannedActionSubmitReview:
-		return reconcileSubmitReview(req, action, state), nil
+		return reconcileSubmitReview(req, caps, action, state), nil
 	case ledger.PlannedActionResolveThread:
 		if _, err := typedPayload(action, action.ResolveThread); err != nil {
 			return reconcileMatch{}, err
@@ -442,7 +442,20 @@ func reconcileRollup(req Request, action ledger.PlannedAction, state hostState) 
 	return reconcileMatch{}
 }
 
-func reconcileSubmitReview(req Request, action ledger.PlannedAction, state hostState) reconcileMatch {
+func reconcileSubmitReview(req Request, caps gitprovider.ProviderCaps, action ledger.PlannedAction, state hostState) reconcileMatch {
+	if caps.ReviewSummaryAsComment {
+		// Hosts without first-class review objects post the review summary as
+		// a plain comment, so that is where an already-posted marker lives.
+		for _, comment := range state.issueComments {
+			if !comment.Author.Same(req.PostingIdentity) {
+				continue
+			}
+			if actionMarkerMatches(req, action, marker.ActionKindSubmitReview, "", comment.Body) {
+				return reconcileMatch{ok: true, upstreamID: string(comment.ID)}
+			}
+		}
+		return reconcileMatch{}
+	}
 	for _, review := range state.reviews {
 		if !review.Author.Same(req.PostingIdentity) {
 			continue

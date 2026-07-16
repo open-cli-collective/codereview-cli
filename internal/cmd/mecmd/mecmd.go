@@ -19,7 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
-	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
@@ -30,7 +30,7 @@ type IdentityResolverFactory func(cmd *cobra.Command, opts *root.Options, cfg co
 
 // Register attaches the me command to rootCmd.
 func Register(rootCmd *cobra.Command, opts *root.Options) {
-	RegisterWithFactory(rootCmd, opts, newGitHubResolver)
+	RegisterWithFactory(rootCmd, opts, newProviderResolver)
 }
 
 // RegisterWithFactory attaches the me command with an injected resolver factory.
@@ -191,8 +191,8 @@ func mapRunError(err error) error {
 	return err
 }
 
-func newGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-	return &githubResolver{
+func newProviderResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
+	return &providerResolver{
 		cfg:                cfg,
 		backend:            opts.Backend,
 		backendFlagChanged: cmderr.BackendFlagChanged(cmd),
@@ -201,21 +201,21 @@ func newGitHubResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) 
 	}, nil, nil
 }
 
-type githubResolver struct {
+type providerResolver struct {
 	cfg                config.File
 	backend            string
 	backendFlagChanged bool
-	options            githubprovider.Options
+	options            gitproviders.Options
 	warnings           io.Writer
 	logger             *progress.Logger
-	NewClient          func(config.GitConfig, credentials.Reader, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error)
+	NewClient          func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error)
 }
 
-// ResolveIdentity resolves one configured GitHub identity.
-func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string, git config.GitConfig) (gitprovider.Identity, error) {
+// ResolveIdentity resolves one configured git-host identity.
+func (r *providerResolver) ResolveIdentity(ctx context.Context, profileName string, git config.GitConfig) (gitprovider.Identity, error) {
 	newClient := r.NewClient
 	if newClient == nil {
-		newClient = githubprovider.NewFromGitConfig
+		newClient = gitproviders.New
 	}
 	resolvedSecretsStore, err := credentials.ResolveSecretsStoreForRef(r.cfg, git.Credential.Name, profileName)
 	if err != nil {
@@ -228,7 +228,7 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 	defer store.Close()
 	options := r.options
 	if installationID := config.PinnedGitHubAppInstallationIDForGit(r.cfg.Profiles[profileName], git); installationID != "" {
-		options.InstallationID = installationID
+		options.GitHub.InstallationID = installationID
 	} else if git.AuthMode == config.GitAuthModeGitHubApp {
 		cached := strings.TrimSpace(git.IdentityCache)
 		if cached == "" {
@@ -247,4 +247,4 @@ func (r *githubResolver) ResolveIdentity(ctx context.Context, profileName string
 	return client.WhoAmI(ctx, credential)
 }
 
-var _ identity.Resolver = (*githubResolver)(nil)
+var _ identity.Resolver = (*providerResolver)(nil)

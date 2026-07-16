@@ -118,7 +118,7 @@ func (e inProcessExecutor) Execute(ctx context.Context, req reviewExecutionReque
 		result.Stderr = append([]byte(nil), stderr.Bytes()...)
 	}()
 
-	ref, err := prref.ParseGitHubPullURL(req.Case.PR)
+	ref, urlProvider, err := prref.ParsePullURL(req.Case.PR)
 	if err != nil {
 		return inProcessReviewFailure(exitcode.Usage(err), &stderr)
 	}
@@ -128,6 +128,9 @@ func (e inProcessExecutor) Execute(ctx context.Context, req reviewExecutionReque
 	}
 	if !prref.SameHost(ref.Host, profile.Git.Host) {
 		return inProcessReviewFailure(exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host)), &stderr)
+	}
+	if err := prref.MatchProvider(urlProvider, string(profile.Git.ProviderKind())); err != nil {
+		return inProcessReviewFailure(exitcode.Usage(err), &stderr)
 	}
 	selectionPrompt, err := loadSelectionPromptInstructions(req.SuiteDir, req.Candidate.Stages.Selection.Prompt)
 	if err != nil {

@@ -245,7 +245,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	_ = configSpan.End(nil)
 	parseSpan := logger.Start("review", "parse_pr", "pr")
-	ref, err := prref.ParseGitHubPullURL(prArg)
+	ref, urlProvider, err := prref.ParsePullURL(prArg)
 	if err != nil {
 		return exitcode.Usage(parseSpan.End(err))
 	}
@@ -261,6 +261,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if !prref.SameHost(ref.Host, profile.Git.Host) {
 		return exitcode.Usage(profileSpan.End(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, profile.Git.Host)))
+	}
+	if err := prref.MatchProvider(urlProvider, string(profile.Git.ProviderKind())); err != nil {
+		return exitcode.Usage(profileSpan.End(err))
 	}
 	_ = profileSpan.End(nil)
 

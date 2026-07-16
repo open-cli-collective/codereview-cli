@@ -232,11 +232,21 @@ func (p Profile) MarshalYAML() (any, error) {
 
 // GitConfig identifies the user's git-host credentials.
 type GitConfig struct {
+	Provider      GitProviderKind    `yaml:"provider,omitempty" json:"provider,omitempty"`
 	Host          string             `yaml:"host" json:"host"`
 	AuthMode      GitAuthMode        `yaml:"auth_mode" json:"auth_mode"`
 	Credential    CredentialLocation `yaml:"credential" json:"credential"`
 	GitHubApp     *GitHubAppConfig   `yaml:"github_app,omitempty" json:"github_app,omitempty"`
 	IdentityCache string             `yaml:"identity_cache,omitempty" json:"identity_cache,omitempty"`
+}
+
+// ProviderKind returns the effective git provider, defaulting to GitHub when
+// the config omits the field.
+func (g GitConfig) ProviderKind() GitProviderKind {
+	if g.Provider == "" {
+		return GitProviderGitHub
+	}
+	return g.Provider
 }
 
 // GitHubAppConfig stores non-secret GitHub App identifiers.
@@ -405,6 +415,27 @@ type DataConfig struct {
 type RetentionConfig struct {
 	MaxAgeDays  *int                 `yaml:"max_age_days,omitempty" json:"max_age_days"`
 	Enforcement RetentionEnforcement `yaml:"enforcement,omitempty" json:"enforcement"`
+}
+
+// GitProviderKind identifies which git-host API family a git config targets.
+type GitProviderKind string
+
+// Git provider kinds. An empty value means GitHub for backward compatibility
+// with configs written before the field existed.
+const (
+	GitProviderGitHub GitProviderKind = "github"
+	GitProviderGitLab GitProviderKind = "gitlab"
+)
+
+// Valid reports whether k is a known git provider kind. The empty value is
+// valid and means GitHub.
+func (k GitProviderKind) Valid() bool {
+	switch k {
+	case "", GitProviderGitHub, GitProviderGitLab:
+		return true
+	default:
+		return false
+	}
 }
 
 // GitAuthMode identifies how git-host credentials are obtained.
@@ -1418,6 +1449,9 @@ func validateRepositoryAccess(secrets SecretsConfig, name string, access Reposit
 }
 
 func validateGitConfig(path string, git GitConfig) error {
+	if !git.Provider.Valid() {
+		return invalid("%s.provider %q is invalid: valid values are github, gitlab", path, git.Provider)
+	}
 	if strings.TrimSpace(git.Host) == "" {
 		return invalid("%s.host is required", path)
 	}
@@ -1426,6 +1460,9 @@ func validateGitConfig(path string, git GitConfig) error {
 	}
 	if !git.AuthMode.Supported() {
 		return fmt.Errorf("%w: %s.auth_mode %q", ErrUnsupported, path, git.AuthMode)
+	}
+	if git.ProviderKind() == GitProviderGitLab && git.AuthMode != GitAuthModePAT {
+		return fmt.Errorf("%w: %s.auth_mode %q is not supported for provider gitlab; use pat", ErrUnsupported, path, git.AuthMode)
 	}
 	if err := validateCredentialLocation(path+".credential", git.Credential); err != nil {
 		return err
@@ -2126,6 +2163,7 @@ func (i ProfileReviewerGitHubAppInstallation) normalized() ProfileReviewerGitHub
 }
 
 func (g GitConfig) normalized() GitConfig {
+	g.Provider = GitProviderKind(strings.ToLower(strings.TrimSpace(string(g.Provider))))
 	g.Host = normalizeConfigHost(g.Host)
 	g.AuthMode = GitAuthMode(strings.TrimSpace(string(g.AuthMode)))
 	g.Credential = g.Credential.normalized()
@@ -2135,7 +2173,8 @@ func (g GitConfig) normalized() GitConfig {
 
 func (g GitConfig) empty() bool {
 	g = g.normalized()
-	return g.Host == "" &&
+	return g.Provider == "" &&
+		g.Host == "" &&
 		g.AuthMode == "" &&
 		g.Credential.empty() &&
 		g.GitHubApp == nil &&
