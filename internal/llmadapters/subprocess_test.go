@@ -1366,6 +1366,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		runClaudeBGHelper(os.Getenv("LLM_HELPER_MODE"), args)
 		os.Exit(0)
 	}
+	if containsFlag(args, "-p") && flagValue(args, "--output-format") == "json" {
+		runClaudeForegroundHelper(os.Getenv("LLM_HELPER_MODE"), args)
+		os.Exit(0)
+	}
 	switch os.Getenv("LLM_HELPER_MODE") {
 	case "success":
 		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
@@ -1839,5 +1843,188 @@ func TestSubprocessAdapterDefaultsTaskTimeout(t *testing.T) {
 	pi := NewPiRPCAdapter(PiRPCOptions{})
 	if pi.timeout != defaultLLMTaskTimeout {
 		t.Fatalf("pi timeout = %v, want default %v", pi.timeout, defaultLLMTaskTimeout)
+	}
+}
+
+func runClaudeForegroundHelper(mode string, args []string) {
+	scratch := flagValue(args, "--add-dir")
+	switch mode {
+	case "foreground-success":
+		if scratch != "" {
+			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
+		}
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1"}`)
+	case "foreground-no-result":
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"forgot the file","session_id":"fg-session-2"}`)
+	case "foreground-fail":
+		fmt.Fprintln(os.Stderr, "model is overloaded_error")
+		os.Exit(1)
+	case "foreground-preamble":
+		fmt.Println("Warning: some banner text before the payload")
+		fmt.Println(`{"unrelated": true} trailing junk that must not parse`)
+		if scratch != "" {
+			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
+		}
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"fg-session-3"}`)
+	}
+}
+
+func TestSubprocessClaudeForegroundMode(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapterWithEnv(
+		"foreground-success", recordPath, configDir, 5*time.Second, "CR_CLAUDE_FOREGROUND=1")
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:   "claude-sonnet-5",
+		Effort:  "high",
+		Prompt:  "prompt",
+		LogPath: filepath.Join(tempDir, "events.log"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %s", response.StructuredOutput)
+	}
+	if stream.SessionID() != "fg-session-1" {
+		t.Fatalf("SessionID = %q, want fg-session-1", stream.SessionID())
+	}
+
+	records := readHelperRecords(t, recordPath)
+	record := records[0]
+	if containsFlag(record.AdapterArgs, "--bg") {
+		t.Fatalf("args = %#v, foreground mode must not pass --bg", record.AdapterArgs)
+	}
+	if !containsFlag(record.AdapterArgs, "-p") || flagValue(record.AdapterArgs, "--output-format") != "json" {
+		t.Fatalf("args = %#v, want -p --output-format json", record.AdapterArgs)
+	}
+	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-5")
+	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
+}
+
+func TestSubprocessClaudeForegroundNoResultFileErrors(t *testing.T) {
+	tempDir := t.TempDir()
+	adapter := newClaudeHelperAdapterWithEnv(
+		"foreground-no-result", filepath.Join(tempDir, "records.jsonl"),
+		filepath.Join(tempDir, "claude"), 5*time.Second, "CR_CLAUDE_FOREGROUND=1")
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err == nil {
+		t.Fatal("Wait should fail when no result file was written")
+	}
+}
+
+func TestSubprocessClaudeForegroundTransientFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	adapter := newClaudeHelperAdapterWithEnv(
+		"foreground-fail", filepath.Join(tempDir, "records.jsonl"),
+		filepath.Join(tempDir, "claude"), 5*time.Second, "CR_CLAUDE_FOREGROUND=1")
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, err = stream.Wait(context.Background())
+	if err == nil || !errors.Is(err, ErrTransient) {
+		t.Fatalf("Wait err = %v, want ErrTransient (overloaded stderr detail)", err)
+	}
+}
+
+func TestClaudeForegroundDisabledByDefault(t *testing.T) {
+	if claudeForegroundEnabled(nil) && os.Getenv("CR_CLAUDE_FOREGROUND") == "" {
+		t.Fatal("foreground must be opt-in")
+	}
+	if !claudeForegroundEnabled([]string{"CR_CLAUDE_FOREGROUND=1"}) {
+		t.Fatal("env slice should enable foreground")
+	}
+	if claudeForegroundEnabled([]string{"CR_CLAUDE_FOREGROUND=0"}) {
+		t.Fatal("explicit 0 should disable")
+	}
+}
+
+func TestSubprocessClaudeForegroundResume(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	adapter := newClaudeHelperAdapterWithEnv(
+		"foreground-success", recordPath, filepath.Join(tempDir, "claude"),
+		5*time.Second, "CR_CLAUDE_FOREGROUND=1")
+
+	stream, err := adapter.Resume(context.Background(), "prior-session", Request{
+		Model:  "claude-sonnet-5",
+		Prompt: "resume prompt",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	record := readHelperRecords(t, recordPath)[0]
+	if containsFlag(record.AdapterArgs, "--bg") {
+		t.Fatalf("args = %#v, foreground resume must not fall back to --bg", record.AdapterArgs)
+	}
+	if !containsFlag(record.AdapterArgs, "-p") {
+		t.Fatalf("args = %#v, want -p for foreground resume", record.AdapterArgs)
+	}
+	assertFlagValue(t, record.AdapterArgs, "--resume", "prior-session")
+}
+
+func TestSubprocessClaudeForegroundPreambleParsing(t *testing.T) {
+	tempDir := t.TempDir()
+	adapter := newClaudeHelperAdapterWithEnv(
+		"foreground-preamble", filepath.Join(tempDir, "records.jsonl"),
+		filepath.Join(tempDir, "claude"), 5*time.Second, "CR_CLAUDE_FOREGROUND=1")
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %s", response.StructuredOutput)
+	}
+	if stream.SessionID() != "fg-session-3" {
+		t.Fatalf("SessionID = %q, want fg-session-3 (parsed from trailing JSON, not preamble)", stream.SessionID())
+	}
+}
+
+func TestClaudeTransportXORValidation(t *testing.T) {
+	scratch := t.TempDir()
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
+	base := []string{
+		"--tools", "Read,Write",
+		"--permission-mode", "acceptEdits",
+		"--add-dir", scratch,
+		"--", "positional prompt",
+	}
+	cases := []struct {
+		name    string
+		prefix  []string
+		wantErr bool
+	}{
+		{"bg only", []string{"--bg"}, false},
+		{"foreground only", []string{"-p", "--output-format", "json"}, false},
+		{"both transports", []string{"--bg", "-p", "--output-format", "json"}, true},
+		{"neither transport", nil, true},
+	}
+	for _, tc := range cases {
+		args := append(append([]string(nil), tc.prefix...), base...)
+		err := adapter.validateArgs(args, scratch, Request{})
+		if tc.wantErr && !errors.Is(err, ErrUnsafeSubprocessConfig) {
+			t.Fatalf("%s: err = %v, want ErrUnsafeSubprocessConfig", tc.name, err)
+		}
+		if !tc.wantErr && err != nil {
+			t.Fatalf("%s: err = %v, want nil", tc.name, err)
+		}
 	}
 }
