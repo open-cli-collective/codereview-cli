@@ -169,6 +169,9 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 		return nil, err
 	}
 	if a.kind == subprocessClaude {
+		if claudeForegroundEnabled(a.env) {
+			return a.startClaudeForeground(ctx, req, "")
+		}
 		return a.startClaudeBG(ctx, req, "")
 	}
 	if a.kind == subprocessCodex && !a.allowBestEffortNoTools {
@@ -279,6 +282,196 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 	return stream, nil
 }
 
+// claudeForegroundEnabled reports whether Claude tasks should run in foreground
+// print mode instead of --bg. Background mode depends on the Claude CLI's
+// job-service layer (detached daemon, job state files, result polling), which
+// has proven fragile in production: sessions intermittently die mid-turn
+// without ever writing their state file, starving the review until its task
+// deadline. Foreground mode is a plain child process — its lifetime, output,
+// and teardown are fully owned by cr (bounded by the task timeout, cleaned up
+// by the process-group kill and pipe-close teardown).
+func claudeForegroundEnabled(env []string) bool {
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], "CR_CLAUDE_FOREGROUND=") {
+			return isTruthyEnvValue(strings.TrimPrefix(env[i], "CR_CLAUDE_FOREGROUND="))
+		}
+	}
+	return isTruthyEnvValue(os.Getenv("CR_CLAUDE_FOREGROUND"))
+}
+
+func isTruthyEnvValue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// buildClaudeForegroundArgs mirrors the Claude background args with the job
+// service swapped for headless print mode. The prompt-file/result-file
+// contract is unchanged: the model writes its structured result to
+// cr-result.json in the scratch dir.
+func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID string) []string {
+	tools := "Read,Write"
+	if req.ReviewerWorkspace != nil {
+		tools = "Read,Write,Bash"
+	}
+	args := []string{
+		"-p",
+		"--output-format", "json",
+		"--tools", tools,
+		"--permission-mode", "acceptEdits",
+		"--add-dir", scratch,
+	}
+	if workspace := req.ReviewerWorkspace; workspace != nil {
+		args = append(args, "--add-dir", workspace.RepoDir)
+	}
+	if resumeSessionID != "" {
+		args = append(args, "--resume", resumeSessionID)
+	}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+	}
+	if req.Effort != "" {
+		args = append(args, "--effort", req.Effort)
+	}
+	if req.Fast {
+		args = append(args, "--settings", `{"fastMode":true}`)
+	}
+	return append(args, "--", claudeBGPositionalPrompt(scratch))
+}
+
+// startClaudeForeground runs a Claude task as a plain foreground child in
+// headless print mode. Same scratch, prompt-file, env, and result-file
+// contract as background mode — only the transport differs.
+func (a *SubprocessAdapter) startClaudeForeground(ctx context.Context, req Request, resumeSessionID string) (Stream, error) {
+	scratch, cleanup, err := a.invocationScratchDir(req)
+	if err != nil {
+		return nil, err
+	}
+	if cleanup == nil {
+		cleanup = func() error { return nil }
+	}
+	scratch, err = validateScratchDir(scratch)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	if err := writeClaudeBGPromptFile(req.Prompt, scratch); err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	args := buildClaudeForegroundArgs(req, scratch, resumeSessionID)
+	if err := a.validateArgs(args, scratch, req); err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	workDir, err := claudeBGWorkingDir(a.env)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
+	env, err := a.processEnv(req, scratch)
+	if err != nil {
+		_ = cleanup()
+		return nil, err
+	}
+	process, err := launchProcess(ctx, a.command, execArgs, workDir, env, a.timeout, req.LogPath, cleanup, false)
+	if err != nil {
+		return nil, err
+	}
+	stream := &subprocessStream{
+		baseStream:   llm.NewProcessStream(process, cleanup),
+		logBytesLeft: reviewerWorkspaceLogBytes(req),
+	}
+	go stream.runClaudeForeground(process.Context(), process.Command(), process.Stdout(), process.Stderr(), scratch)
+	return stream, nil
+}
+
+// claudeForegroundOutput is the trailing JSON document `claude -p
+// --output-format json` prints on exit.
+type claudeForegroundOutput struct {
+	SessionID string `json:"session_id"`
+	IsError   bool   `json:"is_error"`
+	Result    string `json:"result"`
+}
+
+func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader, scratch string) {
+	stderrDone := make(chan bytes.Buffer, 1)
+	go func() {
+		var stderrBuf bytes.Buffer
+		if s.HasLog() {
+			_, _ = io.Copy(io.MultiWriter(subprocessLogWriter{stream: s}, &stderrBuf), stderr)
+		} else {
+			_, _ = io.Copy(&stderrBuf, stderr)
+		}
+		stderrDone <- stderrBuf
+	}()
+
+	outBytes, readErr := io.ReadAll(stdout)
+	if len(outBytes) > 0 {
+		s.WriteLog(outBytes)
+	}
+	waitErr := cmd.Wait()
+	stderrBuf := <-stderrDone
+
+	result := subprocessResult{}
+	switch {
+	case readErr != nil:
+		result.err = readErr
+	case ctx.Err() != nil:
+		result.err = fmt.Errorf("llm subprocess: Claude foreground task timed out: %w", ctx.Err())
+	case waitErr != nil:
+		detail := strings.TrimSpace(stderrBuf.String())
+		if detail == "" {
+			detail = strings.TrimSpace(string(outBytes))
+		}
+		if detail != "" {
+			runErr := fmt.Errorf("llm subprocess: Claude foreground task failed: %w: %s", waitErr, detail)
+			if isTransientCLIDetail(detail) {
+				result.err = fmt.Errorf("%w: %w", ErrTransient, runErr)
+			} else {
+				result.err = runErr
+			}
+		} else {
+			result.err = waitErr
+		}
+	}
+
+	s.CloseProcessGroup()
+
+	if result.err == nil {
+		var parsed claudeForegroundOutput
+		if idx := bytes.IndexByte(outBytes, '{'); idx >= 0 {
+			_ = json.Unmarshal(outBytes[idx:], &parsed)
+		}
+		if parsed.SessionID != "" {
+			s.SetSessionID(parsed.SessionID)
+		}
+		output, err := readFirstNonEmptyFile([]string{filepath.Join(scratch, claudeBGResultFilename)})
+		switch {
+		case err == nil:
+			result.response = Response{StructuredOutput: output}
+		case parsed.IsError:
+			detail := strings.TrimSpace(parsed.Result)
+			runErr := fmt.Errorf("llm subprocess: Claude foreground task errored: %s", detail)
+			if isTransientCLIDetail(detail) {
+				result.err = fmt.Errorf("%w: %w", ErrTransient, runErr)
+			} else {
+				result.err = runErr
+			}
+		default:
+			result.err = fmt.Errorf("llm subprocess: Claude foreground task completed without a result file: %w", err)
+		}
+	}
+
+	s.Cancel()
+	s.CloseLog()
+	s.runCleanup()
+	s.Finish(result.response, result.err)
+}
+
 func (a *SubprocessAdapter) processEnv(req Request, scratch string) ([]string, error) {
 	env := append(os.Environ(), a.env...)
 	if req.ReviewerWorkspace == nil {
@@ -347,6 +540,9 @@ func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Re
 			// A blank session id is treated as a fresh start so callers can pass
 			// through optional resume state without special-casing the first run.
 			return a.Start(ctx, req)
+		}
+		if claudeForegroundEnabled(a.env) {
+			return a.startClaudeForeground(ctx, req, sessionID)
 		}
 		return a.startClaudeBG(ctx, req, sessionID)
 	case subprocessCodex:
@@ -469,6 +665,8 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		}
 		if err := validateAllowedFlags("claude_cli", checkedArgs, map[string]bool{
 			"--bg":              false,
+			"-p":                false,
+			"--output-format":   true,
 			"--tools":           true,
 			"--permission-mode": true,
 			"--add-dir":         true,
@@ -479,8 +677,11 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		}); err != nil {
 			return err
 		}
-		if !containsFlag(checkedArgs, "--bg") {
-			return fmt.Errorf("%w: claude_cli must use background jobs", ErrUnsafeSubprocessConfig)
+		// Exactly one transport: the detached job service (--bg) or headless
+		// foreground print mode (-p, see claudeForegroundEnabled).
+		if containsFlag(checkedArgs, "--bg") == containsFlag(checkedArgs, "-p") {
+			return fmt.Errorf(
+				"%w: claude_cli must use exactly one of --bg or -p", ErrUnsafeSubprocessConfig)
 		}
 		requiredTools := "Read,Write"
 		if req.ReviewerWorkspace != nil {
