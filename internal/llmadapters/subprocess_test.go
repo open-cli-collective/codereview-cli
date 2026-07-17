@@ -191,6 +191,7 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--resume", "prior-session")
 	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
+	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "auto")
 	if record.StdinBytes != 0 {
 		t.Fatalf("stdin bytes = %d, want empty stdin for resumed Claude bg prompt", record.StdinBytes)
 	}
