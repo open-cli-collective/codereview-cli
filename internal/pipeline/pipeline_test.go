@@ -37,9 +37,6 @@ import (
 
 func dryRunForTest(ctx context.Context, opts Options, req Request) (Result, error) {
 	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
-	if opts.Adapter != nil {
-		opts.Adapter = repoGuidanceFixtureAdapter{Adapter: opts.Adapter}
-	}
 	return DryRun(ctx, opts, req)
 }
 
@@ -50,33 +47,7 @@ func selectionOnlyForTest(ctx context.Context, opts Options, req SelectionReques
 
 func liveForTest(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
 	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
-	if opts.Adapter != nil {
-		opts.Adapter = repoGuidanceFixtureAdapter{Adapter: opts.Adapter}
-	}
 	return Live(ctx, opts, req, run)
-}
-
-type repoGuidanceFixtureAdapter struct {
-	llm.Adapter
-}
-
-func (a repoGuidanceFixtureAdapter) ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode {
-	if capable, ok := a.Adapter.(interface {
-		ReviewerWorkspaceMode() llm.ReviewerWorkspaceMode
-	}); ok {
-		return capable.ReviewerWorkspaceMode()
-	}
-	return llm.ReviewerWorkspaceNone
-}
-
-func (a repoGuidanceFixtureAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	if req.ReviewerWorkspace != nil && strings.Contains(req.Prompt, `"id": "repo:guidance"`) {
-		return staticStream{
-			sessionID: "repo-reviewer-session",
-			output:    coverageOnlyJSON("repo:guidance", []string{"main.go"}, nil),
-		}, nil
-	}
-	return a.Adapter.Start(ctx, req)
 }
 
 func TestResolveInvocationRootForSafetyTreatsUnavailableAsUnknownAndOtherErrorsAsFatal(t *testing.T) {
@@ -365,8 +336,8 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
 		t.Fatalf("findings = %#v", result.Findings)
 	}
-	if len(result.Sessions) != 4 {
-		t.Fatalf("sessions len = %d, want selection/two reviewers/rollup", len(result.Sessions))
+	if len(result.Sessions) != 3 {
+		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(result.Sessions))
 	}
 	requests := adapter.Requests()
 	if len(requests) != 4 {
@@ -663,7 +634,7 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	}
 	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
 	successMetadata := map[string]llmlifecycle.Metadata{}
-	for _, taskID := range []string{orchestratorSelectionStage, reviewerTaskID("harness:reviewer"), reviewerTaskID("repo:guidance")} {
+	for _, taskID := range []string{orchestratorSelectionStage, reviewerTaskID("harness:reviewer")} {
 		meta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(artifacts), taskID)
 		if err != nil || !ok || meta.Status != llmTaskStatusSucceeded {
 			t.Fatalf("task %s metadata = %#v ok %v err %v, want succeeded", taskID, meta, ok, err)
@@ -874,12 +845,10 @@ func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
 		t.Fatalf("outcome = %q, want comment despite approve rollup", result.Plan.Outcome)
 	}
 	coverage := result.Plan.Summary.Run.ReviewerCoverage
-	if len(coverage) != 2 ||
+	if len(coverage) != 1 ||
 		coverage[0].AgentID != "harness:reviewer" ||
 		coverage[0].Status != reviewerCoverageIncompleteSkipped ||
-		!reflect.DeepEqual(coverage[0].SkippedFiles, []string{"main.go"}) ||
-		coverage[1].AgentID != "repo:guidance" ||
-		coverage[1].Status != reviewerCoverageCompleteBroad {
+		!reflect.DeepEqual(coverage[0].SkippedFiles, []string{"main.go"}) {
 		t.Fatalf("coverage = %#v, want incomplete skipped reviewer coverage", coverage)
 	}
 	if !strings.Contains(result.Plan.RollupMarkdown, "### Reviewer Coverage") {
@@ -951,7 +920,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	provider.files[fileKey{gitRef: reviewBaseSHA, path: "main.go"}] = []byte("package main\nvar changed = false\n")
 	provider.files[fileKey{gitRef: reviewHeadSHA, path: "main.go"}] = []byte("package main\nvar changed = true\n")
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForAgents("main.go", "harness:reviewer", "repo:guidance"), 10, 2))
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
 	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
@@ -1250,10 +1219,9 @@ func TestSelectionOnlyRequiresPostingIdentity(t *testing.T) {
 	}
 }
 
-func TestSelectionOnlyExplicitMaxCannotOmitRepoAgents(t *testing.T) {
+func TestSelectionOnlyExplicitMaxAllowsApplicableRepoSetBeforeCap(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
-	addRepoAgentFixture(provider)
 	rulesPath := ".codereview/agents/repo/rules"
 	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"}] = append(provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"}], gitprovider.TreeEntry{Path: rulesPath, Type: "tree"})
 	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: rulesPath + "/index.yaml"}] = []byte("name: rules\ndescription: repo rules desc\nmodel_tier: medium\neffort: medium\n")
@@ -1266,10 +1234,11 @@ func TestSelectionOnlyExplicitMaxCannotOmitRepoAgents(t *testing.T) {
 	adapter.Queue(fakeLLMResult("selection-session", `{
 		"schema_version": 1,
 		"selected_agents": [
-			{"agent_id":"repo:guidance","rationale":"repo","files":["main.go"]}
+			{"agent_id":"repo:guidance","rationale":"repo","files":["main.go"]},
+			{"agent_id":"repo:rules","rationale":"repo","files":["main.go"]}
 		],
 		"thread_actions": [],
-		"reasoning": "selected the highest-priority reviewer within the cap"
+		"reasoning": "too many"
 	}`, 10, 2))
 
 	selectionReq := selectionRequestFromReview(req, t.TempDir())
@@ -1286,15 +1255,14 @@ func TestSelectionOnlyExplicitMaxCannotOmitRepoAgents(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("adapter requests = %#v, want one selection request", requests)
 	}
-	if !strings.Contains(requests[0].Prompt, `"max_selected_agents": 1`) {
-		t.Fatalf("selection prompt = %q, want max_selected_agents", requests[0].Prompt)
+	if !strings.Contains(requests[0].Prompt, `"max_selected_agents": 2`) {
+		t.Fatalf("selection prompt = %q, want room for all potentially required reviewers", requests[0].Prompt)
 	}
 }
 
 func TestSelectionOnlyDefaultCapKeepsRepoAgentsPlusFiveShared(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
-	addRepoAgentFixture(provider)
 	dir := t.TempDir()
 	for _, name := range []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"} {
 		writeAgent(t, dir, "harness", name, name+" desc", "Review "+name+" files.")
@@ -1350,7 +1318,7 @@ func TestRequiredOnMatchAgentIsInjectedWhenOrchestratorOmitsIt(t *testing.T) {
 		Reasoning:      "Selected optional reviewer.",
 	}
 
-	got := ensureRequiredAgents(selection, catalog, []string{"main.go", "internal/app/main.go"})
+	got := ensureRequiredOnMatchAgents(selection, catalog, []string{"main.go", "internal/app/main.go"})
 	if len(got.SelectedAgents) != 2 {
 		t.Fatalf("selected agents = %#v, want injected required reviewer", got.SelectedAgents)
 	}
@@ -1370,7 +1338,7 @@ func TestRequiredOnMatchAgentsHaveCapPriorityAndCannotBeTruncated(t *testing.T) 
 		{ID: "shared:go", FileGlobs: []string{"**/*.go"}, RequiredOnMatch: true, Provenance: agents.Provenance{Kind: agents.SourceProfile}},
 		{ID: "shared:all-go", FileGlobs: []string{"*.go"}, RequiredOnMatch: true, Provenance: agents.Provenance{Kind: agents.SourceFlag}},
 	}}
-	selection := ensureRequiredAgents(llm.Selection{
+	selection := ensureRequiredOnMatchAgents(llm.Selection{
 		SelectedAgents: []llm.SelectedAgent{{AgentID: "shared:optional", Files: []string{"main.go"}}},
 	}, catalog, []string{"main.go"})
 
@@ -1882,7 +1850,7 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 
 			requests := adapter.Requests()
 			if len(requests) != 3 {
-				t.Fatalf("requests len = %d, want delegated selection/reviewer/rollup", len(requests))
+				t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
 			}
 			for i, request := range requests {
 				if request.Model != tt.wantModels[i] || request.Effort != tt.wantEfforts[i] {
@@ -1893,14 +1861,12 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListSessionsForRun: %v", err)
 			}
-			if len(sessions) != 4 {
-				t.Fatalf("sessions len = %d, want selection/two reviewers/rollup", len(sessions))
+			if len(sessions) != 3 {
+				t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
 			}
-			wantSessionModels := []string{tt.wantModels[0], "claude-sonnet-4-6", tt.wantModels[1], tt.wantModels[2]}
-			wantSessionEfforts := []string{tt.wantEfforts[0], "medium", tt.wantEfforts[1], tt.wantEfforts[2]}
 			for i, session := range sessions {
-				if session.Model != wantSessionModels[i] || session.Effort == nil || *session.Effort != wantSessionEfforts[i] {
-					t.Fatalf("session[%d] = model:%q effort:%v, want %s/%s", i, session.Model, session.Effort, wantSessionModels[i], wantSessionEfforts[i])
+				if session.Model != tt.wantModels[i] || session.Effort == nil || *session.Effort != tt.wantEfforts[i] {
+					t.Fatalf("session[%d] = model:%q effort:%v, want %s/%s", i, session.Model, session.Effort, tt.wantModels[i], tt.wantEfforts[i])
 				}
 			}
 			data, err := os.ReadFile(result.Artifacts.AgentSourcesJSON) // #nosec G304 -- test reads artifact paths returned by the pipeline under t.TempDir.
@@ -1943,14 +1909,12 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-4-6", "bench-reviewer-model", "bench-reviewer-model", "claude-sonnet-4-6"}
-	wantEfforts := []string{"medium", "low", "low", "medium"}
-	wantRequestModels := []string{"claude-sonnet-4-6", "bench-reviewer-model", "claude-sonnet-4-6"}
-	wantRequestEfforts := []string{"medium", "low", "medium"}
+	wantModels := []string{"claude-sonnet-4-6", "bench-reviewer-model", "claude-sonnet-4-6"}
+	wantEfforts := []string{"medium", "low", "medium"}
 	requests := adapter.Requests()
 	for i, request := range requests {
-		if request.Model != wantRequestModels[i] || request.Effort != wantRequestEfforts[i] {
-			t.Fatalf("request[%d] = model:%q effort:%q, want %s/%s", i, request.Model, request.Effort, wantRequestModels[i], wantRequestEfforts[i])
+		if request.Model != wantModels[i] || request.Effort != wantEfforts[i] {
+			t.Fatalf("request[%d] = model:%q effort:%q, want %s/%s", i, request.Model, request.Effort, wantModels[i], wantEfforts[i])
 		}
 	}
 	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
@@ -1995,8 +1959,8 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].AgentID != "harness:beta" {
 		t.Fatalf("reviewer failures = %#v findings = %#v, want isolated beta failure", result.ReviewerFailures, result.Findings)
 	}
-	if len(result.Sessions) != 6 {
-		t.Fatalf("sessions len = %d, want selection, four reviewers, beta retry, and rollup", len(result.Sessions))
+	if len(result.Sessions) != 5 {
+		t.Fatalf("sessions len = %d, want selection, alpha, beta retry, gamma, rollup", len(result.Sessions))
 	}
 	betaMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), reviewerTaskID("harness:beta"))
 	if err != nil || !ok {
@@ -2518,12 +2482,10 @@ func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessionsForRun: %v", err)
 	}
-	modelCounts := map[string]int{}
-	for _, session := range sessions {
-		modelCounts[session.Model]++
-	}
-	if !reflect.DeepEqual(modelCounts, map[string]int{"claude-sonnet-4-6": 3, "agent-provider-model": 1}) {
-		t.Fatalf("session model counts = %#v, want three default and one agent-specific", modelCounts)
+	for i, session := range sessions {
+		if session.Model != wantModels[i] {
+			t.Fatalf("session[%d].Model = %q, want %q", i, session.Model, wantModels[i])
+		}
 	}
 	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
 		Mode:          "exact_model",
@@ -2928,8 +2890,8 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListSessionsForRun: %v", err)
 	}
-	if len(sessions) != 4 {
-		t.Fatalf("sessions len = %d, want selection/two reviewers/rollup", len(sessions))
+	if len(sessions) != 3 {
+		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
 	}
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
@@ -4005,11 +3967,11 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 	for _, workstream := range summary.Run.Workstreams {
 		workstreamNames = append(workstreamNames, workstream.Name)
 	}
-	wantNames := []string{"orchestrator-selection", "harness:alpha", "harness:beta", "repo:guidance", "orchestrator-rollup"}
+	wantNames := []string{"orchestrator-selection", "harness:alpha", "harness:beta", "orchestrator-rollup"}
 	if !reflect.DeepEqual(workstreamNames, wantNames) {
 		t.Fatalf("workstream names = %#v, want %#v", workstreamNames, wantNames)
 	}
-	if !reflect.DeepEqual(summary.Run.SelectedReviewers, []string{"harness:alpha", "harness:beta", "repo:guidance"}) {
+	if !reflect.DeepEqual(summary.Run.SelectedReviewers, []string{"harness:alpha", "harness:beta"}) {
 		t.Fatalf("selected reviewers = %#v", summary.Run.SelectedReviewers)
 	}
 	if summary.Run.ToolVersion != "0.0.0-test" || summary.Run.PostingIdentity == "" {

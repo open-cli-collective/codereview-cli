@@ -233,15 +233,16 @@ func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, ma
 }
 
 func selectionPromptMaxAgents(candidates []agents.Agent, changedFiles []string, maxAgents int) int {
-	if maxAgents > 0 {
-		return maxAgents
-	}
-	limit := defaultMaxAgents
+	required := 0
 	for _, candidate := range candidates {
 		if candidate.Provenance.Kind == agents.SourceRepo || len(requiredOnMatchFiles(candidate, changedFiles)) > 0 {
-			limit++
+			required++
 		}
 	}
+	if maxAgents > 0 {
+		return max(maxAgents, required)
+	}
+	limit := defaultMaxAgents + required
 	if limit > len(candidates) {
 		return len(candidates)
 	}

@@ -1207,7 +1207,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 		return llm.Selection{}, selectionSession, ledgerSession, err
 	}
 	changed := patchPaths(req.ParsedDiff.Patches)
-	selection = ensureRequiredAgents(selection, req.Catalog, changed)
+	selection = ensureRequiredOnMatchAgents(selection, req.Catalog, changed)
 	selection, err = opts.capSelectionAgents(selection, req.Catalog, changed, req.MaxAgents)
 	if err != nil {
 		return llm.Selection{}, selectionSession, ledgerSession, Failure(FailureTerminal, err)
@@ -1282,40 +1282,28 @@ func catalogAgentIsRequired(catalog agents.Catalog, agentID string, changedFiles
 	return false
 }
 
-func ensureRequiredAgents(selection llm.Selection, catalog agents.Catalog, changedFiles []string) llm.Selection {
+func ensureRequiredOnMatchAgents(selection llm.Selection, catalog agents.Catalog, changedFiles []string) llm.Selection {
 	for _, candidate := range catalog.Agents {
 		matched := requiredOnMatchFiles(candidate, changedFiles)
-		forceScope := len(matched) > 0
-		rationale := "required_on_match matched changed files"
-		if !forceScope {
-			if candidate.Provenance.Kind != agents.SourceRepo {
-				continue
-			}
-			matched = append([]string(nil), changedFiles...)
-			rationale = "repo-local reviewer required for this change"
+		if len(matched) == 0 {
+			continue
 		}
 		found := false
 		for i := range selection.SelectedAgents {
 			if selection.SelectedAgents[i].AgentID != candidate.ID {
 				continue
 			}
-			if forceScope {
-				selection.SelectedAgents[i].Files = append([]string(nil), matched...)
-				selection.SelectedAgents[i].AllowedFiles = append([]string(nil), matched...)
-			}
+			selection.SelectedAgents[i].Files = append([]string(nil), matched...)
+			selection.SelectedAgents[i].AllowedFiles = append([]string(nil), matched...)
 			found = true
 			break
 		}
 		if !found {
-			var allowedFiles []string
-			if forceScope {
-				allowedFiles = append([]string(nil), matched...)
-			}
 			selection.SelectedAgents = append(selection.SelectedAgents, llm.SelectedAgent{
 				AgentID:      candidate.ID,
-				Rationale:    rationale,
+				Rationale:    "required_on_match matched changed files",
 				Files:        append([]string(nil), matched...),
-				AllowedFiles: allowedFiles,
+				AllowedFiles: append([]string(nil), matched...),
 			})
 		}
 	}

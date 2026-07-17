@@ -24,8 +24,9 @@ from the shared profile and flag pool.
 
 Any source may set `required_on_match: true` with `file_globs`. Those reviewers
 are added deterministically whenever a glob matches a changed file, even if the
-orchestrator omits them. An explicit maximum smaller than the matched required
-set fails instead of silently dropping required coverage.
+orchestrator omits them. An explicit maximum smaller than the combined set of
+applicable repo-local and matching `required_on_match` reviewers fails instead
+of silently dropping required coverage.
 
 `cr review` does not load repo guidance from the PR head for the same review
 run. It reads `.codereview/agents/` from the PR base branch, pins that source
@@ -57,8 +58,9 @@ review behavior that could not be honored.
 Without an explicit positive `--max-agents`, all applicable repo-local reviewers
 and all matching `required_on_match` reviewers run, and the orchestrator may
 select up to five optional shared reviewers. A positive `--max-agents` is a hard
-total cap, with both mandatory sets taking priority. A non-empty change with no
-viable merged reviewers fails without posting a synthetic review.
+total cap; a value below that combined required set fails, and otherwise
+optional shared reviewers fill the remaining capacity. A non-empty change with
+no viable merged reviewers fails without posting a synthetic review.
 
 ## Reviewer-Facing Context
 
