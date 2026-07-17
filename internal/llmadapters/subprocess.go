@@ -596,7 +596,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		args := []string{
 			"--bg",
 			"--tools", tools,
-			"--permission-mode", "acceptEdits",
+			"--permission-mode", "auto",
 			"--add-dir", scratch,
 		}
 		if workspace := req.ReviewerWorkspace; workspace != nil {
@@ -708,9 +708,13 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		if req.ReviewerWorkspace != nil {
 			requiredTools = "Read,Write,Bash"
 		}
+		requiredPermissionMode := "acceptEdits"
+		if containsFlag(checkedArgs, "--bg") {
+			requiredPermissionMode = "auto"
+		}
 		required := map[string]string{
 			"--tools":           requiredTools,
-			"--permission-mode": "acceptEdits",
+			"--permission-mode": requiredPermissionMode,
 		}
 		for flag, value := range required {
 			got, ok := flagValueOK(checkedArgs, flag)
