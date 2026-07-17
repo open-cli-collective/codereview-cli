@@ -1069,7 +1069,7 @@ Review selection and execution flags:
 | Flag | Semantics |
 |------|-----------|
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
-| `--max-agents <n>` | Set a hard total reviewer limit. Omit the flag or pass `0` to run all applicable repo-local reviewers plus up to 5 shared reviewers. Negative values are rejected. |
+| `--max-agents <n>` | Set a hard total reviewer limit. Omit the flag or pass `0` to run all applicable repo-local reviewers and all matching `required_on_match` reviewers, plus up to 5 optional shared reviewers. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--selection-model <model>` | Exact provider model ID passthrough for the selection stage only. Bypasses the default medium-tier selection model resolution. Requires `--dry-run` or `--no-post`. |
 | `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |

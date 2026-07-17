@@ -54,11 +54,11 @@ profile or flag agents. Unreadable or invalid repo guidance remains blocking
 because it indicates that maintainers attempted to declare authoritative
 review behavior that could not be honored.
 
-Without an explicit positive `--max-agents`, all applicable repo-local
-reviewers run and the orchestrator may select up to five additional shared
-reviewers. A positive `--max-agents` is a hard total cap, with applicable
-repo-local reviewers taking priority. A non-empty change with no viable merged
-reviewers fails without posting a synthetic review.
+Without an explicit positive `--max-agents`, all applicable repo-local reviewers
+and all matching `required_on_match` reviewers run, and the orchestrator may
+select up to five optional shared reviewers. A positive `--max-agents` is a hard
+total cap, with both mandatory sets taking priority. A non-empty change with no
+viable merged reviewers fails without posting a synthetic review.
 
 ## Reviewer-Facing Context
 
