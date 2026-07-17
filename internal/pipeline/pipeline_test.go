@@ -1222,19 +1222,21 @@ func TestSelectionOnlyRequiresPostingIdentity(t *testing.T) {
 func TestSelectionOnlyExplicitMaxPrioritizesRepoAgents(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	rulesPath := ".codereview/agents/repo/rules"
+	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"}] = append(provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"}], gitprovider.TreeEntry{Path: rulesPath, Type: "tree"})
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: rulesPath + "/index.yaml"}] = []byte("name: rules\ndescription: repo rules desc\nmodel_tier: medium\neffort: medium\n")
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: rulesPath + "/prompt.md"}] = []byte("Review repository rules.")
 	dir := t.TempDir()
 	writeAgent(t, dir, "harness", "alpha", "alpha desc", "Review alpha files.")
-	writeAgent(t, dir, "harness", "beta", "beta desc", "Review beta files.")
 	trustCurrentTempFixtures(t)
 	req.Profile.AgentSources = []string{dir}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	var warnings bytes.Buffer
 	adapter.Queue(fakeLLMResult("selection-session", `{
 		"schema_version": 1,
 		"selected_agents": [
-			{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]},
-			{"agent_id":"harness:beta","rationale":"main","files":["main.go"]},
-			{"agent_id":"repo:guidance","rationale":"repo","files":["main.go"]}
+			{"agent_id":"repo:guidance","rationale":"repo","files":["main.go"]},
+			{"agent_id":"repo:rules","rationale":"repo","files":["main.go"]},
+			{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]}
 		],
 		"thread_actions": [],
 		"reasoning": "too many"
@@ -1242,20 +1244,13 @@ func TestSelectionOnlyExplicitMaxPrioritizesRepoAgents(t *testing.T) {
 
 	selectionReq := selectionRequestFromReview(req, t.TempDir())
 	selectionReq.MaxAgents = 1
-	result, err := selectionOnlyForTest(ctx, Options{
+	_, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
-		Warnings: &warnings,
 	}, selectionReq)
-	if err != nil {
-		t.Fatalf("SelectionOnly: %v", err)
-	}
-	if len(result.Selection.SelectedAgents) != 1 || result.Selection.SelectedAgents[0].AgentID != "repo:guidance" {
-		t.Fatalf("selected agents = %#v, want repo agent prioritized", result.Selection.SelectedAgents)
-	}
-	if got := warnings.String(); !strings.Contains(got, "orchestrator selected 3 agents; using first 1 due to max-agents") {
-		t.Fatalf("warnings = %q, want max-agent cap warning", got)
+	if err == nil || !strings.Contains(err.Error(), "smaller than the 2 required reviewers") {
+		t.Fatalf("SelectionOnly error = %v, want required reviewer cap error", err)
 	}
 	requests := adapter.Requests()
 	if len(requests) != 1 {
@@ -1357,7 +1352,7 @@ func TestRequiredOnMatchAgentsHaveCapPriorityAndCannotBeTruncated(t *testing.T) 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("capped agents = %#v, want required agents %#v", got, want)
 	}
-	if _, err := (Options{}).capSelectionAgents(selection, catalog, []string{"main.go"}, 1); err == nil || !strings.Contains(err.Error(), "smaller than the 2 required_on_match reviewers") {
+	if _, err := (Options{}).capSelectionAgents(selection, catalog, []string{"main.go"}, 1); err == nil || !strings.Contains(err.Error(), "smaller than the 2 required reviewers") {
 		t.Fatalf("cap error = %v, want required reviewer conflict", err)
 	}
 }

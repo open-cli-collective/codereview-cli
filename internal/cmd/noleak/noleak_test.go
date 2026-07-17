@@ -784,11 +784,12 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 		cleanup()
 		return app.Runtime{}, err
 	}
-	adapter, err := llmadapters.NewAPIAdapterFromConfig(profile.LLM, store, llmadapters.APIOptions{BaseURL: h.llmURL})
+	apiAdapter, err := llmadapters.NewAPIAdapterFromConfig(profile.LLM, store, llmadapters.APIOptions{BaseURL: h.llmURL})
 	if err != nil {
 		cleanup()
 		return app.Runtime{}, err
 	}
+	adapter := noLeakReviewerAdapter{APIAdapter: apiAdapter}
 	ledgerStore, err := ledger.Open(ctx, h.layout.LedgerDB())
 	if err != nil {
 		cleanup()
@@ -1248,6 +1249,14 @@ var _ identity.Resolver = realIdentityResolver{}
 type realReviewRunner struct {
 	pipeline pipeline.Options
 	live     reviewrun.Options
+}
+
+type noLeakReviewerAdapter struct {
+	*llmadapters.APIAdapter
+}
+
+func (noLeakReviewerAdapter) ReviewerWorkspaceMode() llmadapters.ReviewerWorkspaceMode {
+	return llmadapters.ReviewerWorkspacePermissionBounded
 }
 
 func (r realReviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {

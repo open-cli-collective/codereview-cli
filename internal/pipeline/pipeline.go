@@ -1254,9 +1254,8 @@ func (opts Options) capSelectionAgents(selection llm.Selection, catalog agents.C
 		}
 	}
 	if maxAgents > 0 {
-		requiredCount := requiredOnMatchCount(catalog, changedFiles)
-		if requiredCount > maxAgents {
-			return llm.Selection{}, fmt.Errorf("pipeline: --max-agents %d is smaller than the %d required_on_match reviewers for this change", maxAgents, requiredCount)
+		if len(required) > maxAgents {
+			return llm.Selection{}, fmt.Errorf("pipeline: --max-agents %d is smaller than the %d required reviewers for this change", maxAgents, len(required))
 		}
 		if len(selection.SelectedAgents) <= maxAgents {
 			return selection, nil
@@ -1309,16 +1308,6 @@ func ensureRequiredOnMatchAgents(selection llm.Selection, catalog agents.Catalog
 		}
 	}
 	return selection
-}
-
-func requiredOnMatchCount(catalog agents.Catalog, changedFiles []string) int {
-	count := 0
-	for _, candidate := range catalog.Agents {
-		if len(requiredOnMatchFiles(candidate, changedFiles)) > 0 {
-			count++
-		}
-	}
-	return count
 }
 
 func (opts Options) emitReviewerCatalog(catalog agents.Catalog, changedFiles []string) {
