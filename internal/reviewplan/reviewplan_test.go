@@ -487,7 +487,7 @@ func TestBuildForcesRequestChangesWhenRepoGuidanceUnavailable(t *testing.T) {
 		Summary:  "will be ignored",
 	}}
 	req.RepoGuidanceUnavailable = true
-	req.RepoGuidanceUnavailableReason = "Base branch `.codereview/agents/` was not present for this review."
+	req.RepoGuidanceUnavailableReason = "Base branch `.codereview/agents/` could not be read as trusted review guidance."
 
 	plan, err := Build(req)
 	if err != nil {
@@ -520,7 +520,7 @@ func TestBuildNoDiffTakesPrecedenceOverRepoGuidanceUnavailable(t *testing.T) {
 	req.Findings = nil
 	req.Rollup = review.Rollup{}
 	req.RepoGuidanceUnavailable = true
-	req.RepoGuidanceUnavailableReason = "Base branch `.codereview/agents/` was not present for this review."
+	req.RepoGuidanceUnavailableReason = "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance."
 
 	plan, err := Build(req)
 	if err != nil {

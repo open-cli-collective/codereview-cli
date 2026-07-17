@@ -49,6 +49,7 @@ type AgentDetail struct {
 	Effort               string            `json:"effort,omitempty"`
 	FileGlobs            []string          `json:"file_globs,omitempty"`
 	AppliesWhen          []string          `json:"applies_when,omitempty"`
+	RequiredOnMatch      bool              `json:"required_on_match"`
 	NeedsFullFileContent bool              `json:"needs_full_file_content"`
 	Prompt               string            `json:"prompt"`
 	Provenance           string            `json:"provenance"`
@@ -89,6 +90,7 @@ func NewAgentsShow(agent agents.Agent, catalog agents.Catalog) AgentsShow {
 			Effort:               agent.Effort,
 			FileGlobs:            append([]string(nil), agent.FileGlobs...),
 			AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
+			RequiredOnMatch:      agent.RequiredOnMatch,
 			NeedsFullFileContent: agent.NeedsFullFileContent,
 			Prompt:               agent.Prompt,
 			Provenance:           agent.Provenance.String(),
@@ -176,6 +178,9 @@ func RenderAgentsShowText(w io.Writer, result AgentsShow) error {
 		return err
 	}
 	if err := writeKV(w, "  Needs full file content", fmt.Sprint(agent.NeedsFullFileContent)); err != nil {
+		return err
+	}
+	if err := writeKV(w, "  Required on match", fmt.Sprint(agent.RequiredOnMatch)); err != nil {
 		return err
 	}
 	if err := renderList(w, "File globs", agent.FileGlobs); err != nil {

@@ -1176,7 +1176,7 @@ func RepoGuidanceUnavailableReason(sources []agents.SourceInfo) string {
 	case agents.SourceStatusAvailable:
 		return ""
 	case agents.SourceStatusMissing:
-		reason = "Base branch `.codereview/agents/` was not present for this review."
+		return ""
 	case agents.SourceStatusUnreadable:
 		reason = "Base branch `.codereview/agents/` could not be read as trusted review guidance."
 	case agents.SourceStatusInvalid:

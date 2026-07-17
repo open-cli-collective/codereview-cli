@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gobwas/glob"
 	"gopkg.in/yaml.v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
@@ -145,6 +146,7 @@ type Agent struct {
 	Effort               string     `json:"effort,omitempty"`
 	FileGlobs            []string   `json:"file_globs,omitempty"`
 	AppliesWhen          []string   `json:"applies_when,omitempty"`
+	RequiredOnMatch      bool       `json:"required_on_match,omitempty"`
 	NeedsFullFileContent bool       `json:"needs_full_file_content"`
 	Prompt               string     `json:"prompt,omitempty"`
 	Provenance           Provenance `json:"provenance"`
@@ -347,6 +349,7 @@ type agentYAML struct {
 	Effort               string   `yaml:"effort"`
 	FileGlobs            []string `yaml:"file_globs"`
 	AppliesWhen          []string `yaml:"applies_when"`
+	RequiredOnMatch      bool     `yaml:"required_on_match"`
 	NeedsFullFileContent bool     `yaml:"needs_full_file_content"`
 }
 
@@ -602,6 +605,7 @@ func newAgent(category Category, name string, index agentYAML, prompt string, pr
 		Effort:               strings.TrimSpace(index.Effort),
 		FileGlobs:            append([]string(nil), index.FileGlobs...),
 		AppliesWhen:          append([]string(nil), index.AppliesWhen...),
+		RequiredOnMatch:      index.RequiredOnMatch,
 		NeedsFullFileContent: index.NeedsFullFileContent,
 		Prompt:               prompt,
 		Provenance:           provenance,
@@ -628,6 +632,16 @@ func validateAgentYAML(categoryName, agentName string, index agentYAML) error {
 	}
 	if !modelprefs.Effort(effort).Valid() {
 		return fmt.Errorf("%w: agent %s:%s effort %q is invalid", ErrInvalid, categoryName, agentName, effort)
+	}
+	if index.RequiredOnMatch {
+		if len(index.FileGlobs) == 0 {
+			return fmt.Errorf("%w: agent %s:%s required_on_match requires file_globs", ErrInvalid, categoryName, agentName)
+		}
+		for _, pattern := range index.FileGlobs {
+			if _, err := glob.Compile(pattern, '/'); err != nil {
+				return fmt.Errorf("%w: agent %s:%s file_glob %q is invalid: %v", ErrInvalid, categoryName, agentName, pattern, err)
+			}
+		}
 	}
 	return nil
 }

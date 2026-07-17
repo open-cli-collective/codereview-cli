@@ -91,6 +91,9 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	if !containsFlag(record.AdapterArgs, "--bg") {
 		t.Fatalf("args = %#v, want --bg", record.AdapterArgs)
 	}
+	if !containsFlag(record.AdapterArgs, "--enable-auto-mode") {
+		t.Fatalf("args = %#v, want --enable-auto-mode", record.AdapterArgs)
+	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", "Read,Write")
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "auto")
 	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
@@ -1828,6 +1831,9 @@ func TestSubprocessAdapterDefaultsTaskTimeout(t *testing.T) {
 	a := NewClaudeCLIAdapter(SubprocessOptions{})
 	if a.timeout != defaultLLMTaskTimeout {
 		t.Fatalf("timeout = %v, want default %v", a.timeout, defaultLLMTaskTimeout)
+	}
+	if a.timeout != 14*time.Minute {
+		t.Fatalf("timeout = %v, want 14m", a.timeout)
 	}
 
 	explicit := NewCodexCLIAdapter(SubprocessOptions{Timeout: 3 * time.Minute})

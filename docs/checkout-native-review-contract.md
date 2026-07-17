@@ -27,7 +27,8 @@ The runtime sequence for checkout-native review is:
    - clean pinned workbench
    - durable discussion summary
    - final dossier artifacts
-4. Run orchestrator selection from dossier/workbench inputs.
+4. Run orchestrator selection from dossier/workbench inputs, selecting every
+   applicable repo-local reviewer before optional shared reviewers.
 5. Run specialist reviewers against per-reviewer disposable workspaces.
 6. Run rollup from findings, reviewer failures, and inspected coverage.
 
@@ -238,6 +239,15 @@ Assignments may include:
 - rationale
 - suggested starting files or symbols
 - optional `allowed_files`
+
+The merged catalog preserves profile, repo-local, then explicit `--agents-dir`
+precedence. A winning repo-local definition is marked
+`required_if_applicable`; missing repo-local guidance falls back to the shared
+catalog, while unreadable or invalid repo-local guidance blocks review.
+
+Without a positive `--max-agents`, the orchestrator selects every applicable
+required reviewer plus up to five shared reviewers. A positive value is a hard
+total cap, with required reviewers retained before shared reviewers.
 
 `allowed_files` semantics are:
 

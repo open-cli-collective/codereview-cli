@@ -5,14 +5,27 @@ generated review context, and cleanup behavior in `cr review`.
 
 ## Repo Review Guidance
 
-Today, repo-owned review guidance lives in trusted repo-local agent definitions
-under `.codereview/agents/`.
+Repo-owned review guidance may live in trusted repo-local agent definitions
+under `.codereview/agents/`. Shared profile agent sources provide organization-
+or developer-managed reviewers without requiring repositories to duplicate
+them.
 
 Those agent definitions can shape review behavior by:
 
 - adding repository-specific reviewers
 - narrowing which file patterns a reviewer applies to
 - carrying repository-specific prompt guidance for those reviewers
+
+Agent source precedence is profile sources, repo-local base-branch agents, then
+explicit `--agents-dir` sources. Later definitions override matching agent IDs.
+Repo-local definitions that remain after merging are required when applicable;
+the orchestrator selects every applicable repo-local reviewer before choosing
+from the shared profile and flag pool.
+
+Any source may set `required_on_match: true` with `file_globs`. Those reviewers
+are added deterministically whenever a glob matches a changed file, even if the
+orchestrator omits them. An explicit maximum smaller than the matched required
+set fails instead of silently dropping required coverage.
 
 `cr review` does not load repo guidance from the PR head for the same review
 run. It reads `.codereview/agents/` from the PR base branch, pins that source
@@ -36,10 +49,16 @@ artifact directory. The file `dossier/final/repo-guidance.md` records:
 This file is intended for reviewers and operators who need to understand which
 repo guidance influenced a review without reading pipeline code.
 
-When trusted base-branch guidance is missing, unreadable, or invalid, `cr review`
-does not continue with degraded repo guidance. It short-circuits normal reviewer
-execution and submits a `request_changes` review explaining that the trusted
-repo-local guidance could not be used.
+Missing base-branch guidance is normal: `cr review` falls back to viable shared
+profile or flag agents. Unreadable or invalid repo guidance remains blocking
+because it indicates that maintainers attempted to declare authoritative
+review behavior that could not be honored.
+
+Without an explicit positive `--max-agents`, all applicable repo-local
+reviewers run and the orchestrator may select up to five additional shared
+reviewers. A positive `--max-agents` is a hard total cap, with applicable
+repo-local reviewers taking priority. A non-empty change with no viable merged
+reviewers fails without posting a synthetic review.
 
 ## Reviewer-Facing Context
 
