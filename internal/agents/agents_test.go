@@ -63,6 +63,21 @@ func TestLoadFilesystemSourceParsesProviderSpecificModelID(t *testing.T) {
 	}
 }
 
+func TestLoadFilesystemSourceParsesRequiredOnMatch(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "harness", "architecture", "Reviews architecture.", "medium", "medium", "Prompt text.\n")
+	indexPath := filepath.Join(root, "harness", "architecture", "index.yaml")
+	appendFile(t, indexPath, "required_on_match: true\n")
+
+	catalog, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 1 || !catalog.Agents[0].RequiredOnMatch {
+		t.Fatalf("agents = %#v, want required_on_match agent", catalog.Agents)
+	}
+}
+
 func TestLoadRejectsInvalidAgentModelMetadata(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -98,6 +113,16 @@ func TestLoadRejectsInvalidAgentModelMetadata(t *testing.T) {
 			name:  "legacy model field",
 			index: "name: reviewer\ndescription: desc\nmodel: sonnet\neffort: medium\n",
 			want:  "field model not found",
+		},
+		{
+			name:  "required without globs",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: medium\nrequired_on_match: true\n",
+			want:  "required_on_match requires file_globs",
+		},
+		{
+			name:  "required with invalid glob",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '[bad'\nrequired_on_match: true\n",
+			want:  `file_glob "[bad" is invalid`,
 		},
 	}
 

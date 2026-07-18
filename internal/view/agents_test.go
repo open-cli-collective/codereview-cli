@@ -96,6 +96,7 @@ func TestRenderAgentsShowTextIncludesPrompt(t *testing.T) {
 	for _, want := range []string{
 		"Agent: harness:architecture",
 		"Category:",
+		"Required on match: true",
 		"File globs:",
 		"Applies when:",
 		"Prompt:",
@@ -123,6 +124,9 @@ func TestRenderAgentsShowJSON(t *testing.T) {
 	if decoded.Agent.ID != "harness:architecture" || decoded.Agent.Prompt == "" {
 		t.Fatalf("agent = %#v, want detail with prompt", decoded.Agent)
 	}
+	if !decoded.Agent.RequiredOnMatch {
+		t.Fatalf("required_on_match = false, want true")
+	}
 	if decoded.Agent.Provenance != "repo@refs/heads/main:abc123456789" {
 		t.Fatalf("provenance = %q, want repo@refs/heads/main:abc123456789", decoded.Agent.Provenance)
 	}
@@ -139,6 +143,7 @@ func testAgentsCatalog() agents.Catalog {
 			Effort:      "medium",
 			FileGlobs:   []string{"**/*.go"},
 			AppliesWhen: []string{"Go files changed"},
+			RequiredOnMatch: true,
 			Prompt:      "Read the diff carefully.\n",
 			Provenance:  agents.Provenance{Kind: agents.SourceRepo, Ref: "refs/heads/main", SHA: "abc123456789"},
 		}},

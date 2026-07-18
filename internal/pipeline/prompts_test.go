@@ -244,6 +244,84 @@ func TestSelectionPromptIncludesMaxSelectedAgentsContract(t *testing.T) {
 	}
 }
 
+func TestSelectionPromptMarksRepoAgentsRequiredAndUsesDefaultSharedBudget(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "shared-1"},
+		{ID: "shared-2"},
+		{ID: "shared-3"},
+		{ID: "shared-4"},
+		{ID: "shared-5"},
+		{ID: "shared-6"},
+		{ID: "repo", Provenance: agents.Provenance{Kind: agents.SourceRepo}},
+	}}
+	prompt, err := buildSelectionPrompt(catalog, selectionPromptInput{ChangedFiles: []string{"main.go"}}, 0, "")
+	if err != nil {
+		t.Fatalf("buildSelectionPrompt: %v", err)
+	}
+	var payload struct {
+		MaxSelectedAgents int                    `json:"max_selected_agents"`
+		Agents            []selectionAgentPrompt `json:"agents"`
+		OutputContract    struct {
+			Instructions  []string       `json:"instructions"`
+			AllowedValues map[string]any `json:"allowed_values"`
+		} `json:"output_contract"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("Unmarshal prompt: %v", err)
+	}
+	if payload.MaxSelectedAgents != 6 {
+		t.Fatalf("max_selected_agents = %d, want one repo agent plus five shared agents", payload.MaxSelectedAgents)
+	}
+	if got := payload.OutputContract.AllowedValues["max_shared_agents"]; got != float64(5) {
+		t.Fatalf("max_shared_agents = %#v, want 5", got)
+	}
+	required := map[string]bool{}
+	for _, agent := range payload.Agents {
+		required[agent.ID] = agent.RequiredIfApplicable
+	}
+	if !required["repo"] || required["shared-1"] {
+		t.Fatalf("required_if_applicable = %#v, want repo only", required)
+	}
+	instructions := strings.Join(payload.OutputContract.Instructions, "\n")
+	if !strings.Contains(instructions, "Select every agent with required_if_applicable=true") || !strings.Contains(instructions, "at most max_shared_agents optional agents") {
+		t.Fatalf("instructions = %#v, want required repo plus shared budget guidance", payload.OutputContract.Instructions)
+	}
+}
+
+func TestRequiredOnMatchFilesMatchesRootAndNestedGoFilesOnly(t *testing.T) {
+	agent := agents.Agent{RequiredOnMatch: true, FileGlobs: []string{"**/*.go"}}
+	got := requiredOnMatchFiles(agent, []string{"main.go", "internal/app/main.go", "docs/readme.md"})
+	want := []string{"main.go", "internal/app/main.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("required files = %#v, want %#v", got, want)
+	}
+	if got := requiredOnMatchFiles(agent, []string{"README.md", "docs/review.md"}); len(got) != 0 {
+		t.Fatalf("docs-only required files = %#v, want none", got)
+	}
+}
+
+func TestSelectionPromptMarksMatchingProfileAgentRequired(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID:              "shared:go",
+		FileGlobs:       []string{"**/*.go"},
+		RequiredOnMatch: true,
+		Provenance:      agents.Provenance{Kind: agents.SourceProfile},
+	}}}
+	prompt, err := buildSelectionPrompt(catalog, selectionPromptInput{ChangedFiles: []string{"main.go"}}, 0, "")
+	if err != nil {
+		t.Fatalf("buildSelectionPrompt: %v", err)
+	}
+	var payload struct {
+		Agents []selectionAgentPrompt `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("Unmarshal prompt: %v", err)
+	}
+	if len(payload.Agents) != 1 || !payload.Agents[0].RequiredIfApplicable || !reflect.DeepEqual(payload.Agents[0].RequiredFiles, []string{"main.go"}) {
+		t.Fatalf("agents = %#v, want matching profile agent required for main.go", payload.Agents)
+	}
+}
+
 func TestSelectionOutputContractExampleOmitsAllowedFilesForBroadReviewer(t *testing.T) {
 	contract := selectionOutputContract([]agents.Agent{{ID: "agent-1"}}, []string{"main.go"}, nil, 3)
 	example, ok := contract.Example.(map[string]any)

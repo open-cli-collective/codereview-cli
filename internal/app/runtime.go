@@ -402,6 +402,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 		Layout:              layout,
 		Warnings:            warnings,
 		TaskProgress:        taskProgress,
+		ReviewProgress:      newPipelineReviewerProgress(logger, command),
 		MaxAgents:           req.MaxAgents,
 		MaxConcurrency:      req.MaxConcurrency,
 		Retention:           req.Retention,

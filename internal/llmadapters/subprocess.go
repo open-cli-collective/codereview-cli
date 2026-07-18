@@ -45,10 +45,10 @@ type SubprocessOptions struct {
 
 // defaultLLMTaskTimeout bounds a single LLM task when the caller does not set
 // SubprocessOptions.Timeout. Healthy reviewer tasks finish in a few minutes;
-// ten is generous headroom for slow models while still converting "one worker
+// fourteen is generous headroom for slow models while still converting "one worker
 // hung" from an indefinite review stall into a timely, clearly-attributed task
 // failure. Mirrors defaultAPIClientTimeout on the API adapter.
-const defaultLLMTaskTimeout = 10 * time.Minute
+const defaultLLMTaskTimeout = 14 * time.Minute
 
 type subprocessKind string
 
@@ -595,6 +595,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		}
 		args := []string{
 			"--bg",
+			"--enable-auto-mode",
 			"--tools", tools,
 			"--permission-mode", "auto",
 			"--add-dir", scratch,
@@ -685,16 +686,17 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 			return fmt.Errorf("%w: claude_cli must receive a positional background prompt", ErrUnsafeSubprocessConfig)
 		}
 		if err := validateAllowedFlags("claude_cli", checkedArgs, map[string]bool{
-			"--bg":              false,
-			"-p":                false,
-			"--output-format":   true,
-			"--tools":           true,
-			"--permission-mode": true,
-			"--add-dir":         true,
-			"--resume":          true,
-			"--model":           true,
-			"--effort":          true,
-			"--settings":        true,
+			"--bg":               false,
+			"--enable-auto-mode": false,
+			"-p":                 false,
+			"--output-format":    true,
+			"--tools":            true,
+			"--permission-mode":  true,
+			"--add-dir":          true,
+			"--resume":           true,
+			"--model":            true,
+			"--effort":           true,
+			"--settings":         true,
 		}); err != nil {
 			return err
 		}

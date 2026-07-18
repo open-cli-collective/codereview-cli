@@ -98,6 +98,42 @@ type LLMTaskProgressEvent = llmlifecycle.ProgressEvent
 // LLMTaskProgressResult describes the outcome of one task execution or reload.
 type LLMTaskProgressResult = llmlifecycle.ProgressResult
 
+// ReviewerProgress observes resolved reviewer catalogs and final assignments.
+type ReviewerProgress interface {
+	ReviewersResolved(ReviewerCatalogProgress)
+	ReviewersSelected(ReviewerSelectionProgress)
+}
+
+// ReviewerCatalogProgress describes the final merged reviewer catalog.
+type ReviewerCatalogProgress struct {
+	RepoStatus   string
+	TotalCount   int
+	OfferedCount int
+	Reviewers    []ReviewerProgressAgent
+}
+
+// ReviewerProgressAgent describes one reviewer and its winning source.
+type ReviewerProgressAgent struct {
+	AgentID              string
+	Provenance           string
+	SourceKind           string
+	RequiredIfApplicable bool
+}
+
+// ReviewerSelectionProgress describes the authoritative selected assignments.
+type ReviewerSelectionProgress struct {
+	Reasoning string
+	Reviewers []ReviewerAssignmentProgress
+}
+
+// ReviewerAssignmentProgress describes one selected reviewer assignment.
+type ReviewerAssignmentProgress struct {
+	ReviewerProgressAgent
+	Rationale    string
+	Files        []string
+	AllowedFiles []string
+}
+
 // ContextBudget limits prompt size. A negative MaxPromptBytes disables checks.
 type ContextBudget struct {
 	MaxPromptBytes int
@@ -105,13 +141,14 @@ type ContextBudget struct {
 
 // Options contains dry-run pipeline dependencies.
 type Options struct {
-	Provider      ReadProvider
-	Adapter       llm.Adapter
-	Store         Store
-	NamedSessions NamedSessionStore
-	Layout        statepaths.Layout
-	Warnings      io.Writer
-	TaskProgress  LLMTaskProgress
+	Provider       ReadProvider
+	Adapter        llm.Adapter
+	Store          Store
+	NamedSessions  NamedSessionStore
+	Layout         statepaths.Layout
+	Warnings       io.Writer
+	TaskProgress   LLMTaskProgress
+	ReviewProgress ReviewerProgress
 
 	Now             func() time.Time
 	NewRunID        func() string
@@ -471,6 +508,9 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	if len(prepared.parsed.Patches) == 0 {
 		return result, nil
 	}
+	if len(prepared.catalog.Agents) == 0 {
+		return result, fmt.Errorf("pipeline: no reviewer agents available from profile, repo, or --agents-dir sources")
+	}
 
 	selection, session, _, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
 		Profile:                     req.Profile,
@@ -483,7 +523,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		Threads:                     prepared.threads,
 		ThreadContext:               prepared.threadContext,
 		Artifacts:                   prepared.artifacts,
-		MaxAgents:                   selectionMaxAgents(req.MaxAgents, opts.maxAgents()),
+		MaxAgents:                   selectionMaxAgents(req.MaxAgents, opts.MaxAgents),
 	})
 	result.SelectionSession = selectionSessionFromDraft(session)
 	if err != nil {
@@ -520,8 +560,8 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	completed := false
 	failureOutcome := ledger.OutcomeFailed
 	now := opts.now()
-	maxAgents := opts.maxAgents()
-	maxConcurrency := opts.maxConcurrency(maxAgents)
+	maxAgents := opts.MaxAgents
+	maxConcurrency := opts.maxConcurrency(opts.maxAgents())
 	runID := ""
 	if mode.live {
 		runID = mode.run.RunID
@@ -683,6 +723,9 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 		}
 		result.Plan = plan
 		return nil, false, nil
+	}
+	if len(prepared.catalog.Agents) == 0 {
+		return nil, false, Failure(FailureTerminal, fmt.Errorf("pipeline: no reviewer agents available from profile, repo, or --agents-dir sources"))
 	}
 	return executeLLMPhases(ctx, opts, req, mode, run, prepared, repoSources, now, maxAgents, maxConcurrency, result)
 }
@@ -1024,6 +1067,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 	if err != nil {
 		return preparedSelectionContext{}, err
 	}
+	opts.emitReviewerCatalog(catalog, patchPaths(parsed.Patches))
 	if err := validateReviewerFastMode(req.ReviewRequest, catalog); err != nil {
 		return preparedSelectionContext{}, err
 	}
@@ -1162,7 +1206,13 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, selectionSession, ledgerSession, err
 	}
-	selection = opts.capSelectionAgents(selection, req.MaxAgents)
+	changed := patchPaths(req.ParsedDiff.Patches)
+	selection = ensureRequiredOnMatchAgents(selection, req.Catalog, changed)
+	selection, err = opts.capSelectionAgents(selection, req.Catalog, changed, req.MaxAgents)
+	if err != nil {
+		return llm.Selection{}, selectionSession, ledgerSession, Failure(FailureTerminal, err)
+	}
+	opts.emitReviewerSelection(req.Catalog, selection)
 	return selection, selectionSession, ledgerSession, nil
 }
 
@@ -1194,13 +1244,125 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 	return threadanalysis.ResponseActions(results), nil
 }
 
-func (opts Options) capSelectionAgents(selection llm.Selection, maxAgents int) llm.Selection {
-	if maxAgents <= 0 || len(selection.SelectedAgents) <= maxAgents {
-		return selection
+func (opts Options) capSelectionAgents(selection llm.Selection, catalog agents.Catalog, changedFiles []string, maxAgents int) (llm.Selection, error) {
+	var required, shared []llm.SelectedAgent
+	for _, selected := range selection.SelectedAgents {
+		if catalogAgentIsRequired(catalog, selected.AgentID, changedFiles) {
+			required = append(required, selected)
+		} else {
+			shared = append(shared, selected)
+		}
 	}
-	opts.emitWarning(fmt.Sprintf("orchestrator selected %d agents; using first %d due to max-agents", len(selection.SelectedAgents), maxAgents))
-	selection.SelectedAgents = append([]llm.SelectedAgent(nil), selection.SelectedAgents[:maxAgents]...)
+	if maxAgents > 0 {
+		if len(required) > maxAgents {
+			return llm.Selection{}, fmt.Errorf("pipeline: --max-agents %d is smaller than the %d required reviewers for this change", maxAgents, len(required))
+		}
+		if len(selection.SelectedAgents) <= maxAgents {
+			return selection, nil
+		}
+		opts.emitWarning(fmt.Sprintf("orchestrator selected %d agents; using first %d due to max-agents", len(selection.SelectedAgents), maxAgents))
+		selected := append(required, shared...)
+		selection.SelectedAgents = append([]llm.SelectedAgent(nil), selected[:maxAgents]...)
+		return selection, nil
+	}
+	if len(shared) <= defaultMaxAgents {
+		return selection, nil
+	}
+	opts.emitWarning(fmt.Sprintf("orchestrator selected %d shared agents; using first %d due to default shared-agent limit", len(shared), defaultMaxAgents))
+	selection.SelectedAgents = append(append([]llm.SelectedAgent(nil), required...), shared[:defaultMaxAgents]...)
+	return selection, nil
+}
+
+func catalogAgentIsRequired(catalog agents.Catalog, agentID string, changedFiles []string) bool {
+	for _, candidate := range catalog.Agents {
+		if candidate.ID == agentID {
+			return candidate.Provenance.Kind == agents.SourceRepo || len(requiredOnMatchFiles(candidate, changedFiles)) > 0
+		}
+	}
+	return false
+}
+
+func ensureRequiredOnMatchAgents(selection llm.Selection, catalog agents.Catalog, changedFiles []string) llm.Selection {
+	for _, candidate := range catalog.Agents {
+		matched := requiredOnMatchFiles(candidate, changedFiles)
+		if len(matched) == 0 {
+			continue
+		}
+		found := false
+		for i := range selection.SelectedAgents {
+			if selection.SelectedAgents[i].AgentID != candidate.ID {
+				continue
+			}
+			selection.SelectedAgents[i].Files = append([]string(nil), matched...)
+			selection.SelectedAgents[i].AllowedFiles = append([]string(nil), matched...)
+			found = true
+			break
+		}
+		if !found {
+			selection.SelectedAgents = append(selection.SelectedAgents, llm.SelectedAgent{
+				AgentID:      candidate.ID,
+				Rationale:    "required_on_match matched changed files",
+				Files:        append([]string(nil), matched...),
+				AllowedFiles: append([]string(nil), matched...),
+			})
+		}
+	}
 	return selection
+}
+
+func (opts Options) emitReviewerCatalog(catalog agents.Catalog, changedFiles []string) {
+	if opts.ReviewProgress == nil {
+		return
+	}
+	event := ReviewerCatalogProgress{
+		TotalCount:   len(catalog.Agents),
+		OfferedCount: len(catalog.Agents),
+		Reviewers:    make([]ReviewerProgressAgent, 0, len(catalog.Agents)),
+	}
+	for _, source := range catalog.Sources {
+		if source.Kind == agents.SourceRepo {
+			event.RepoStatus = string(source.Status)
+			break
+		}
+	}
+	for _, candidate := range catalog.Agents {
+		event.Reviewers = append(event.Reviewers, reviewerProgressAgent(candidate, changedFiles))
+	}
+	opts.ReviewProgress.ReviewersResolved(event)
+}
+
+func (opts Options) emitReviewerSelection(catalog agents.Catalog, selection llm.Selection) {
+	if opts.ReviewProgress == nil {
+		return
+	}
+	event := ReviewerSelectionProgress{
+		Reasoning: selection.Reasoning,
+		Reviewers: make([]ReviewerAssignmentProgress, 0, len(selection.SelectedAgents)),
+	}
+	for _, selected := range selection.SelectedAgents {
+		assignment := ReviewerAssignmentProgress{
+			Rationale:    selected.Rationale,
+			Files:        append([]string(nil), selected.Files...),
+			AllowedFiles: append([]string(nil), selected.AllowedFiles...),
+		}
+		for _, candidate := range catalog.Agents {
+			if candidate.ID == selected.AgentID {
+				assignment.ReviewerProgressAgent = reviewerProgressAgent(candidate, selected.Files)
+				break
+			}
+		}
+		event.Reviewers = append(event.Reviewers, assignment)
+	}
+	opts.ReviewProgress.ReviewersSelected(event)
+}
+
+func reviewerProgressAgent(candidate agents.Agent, changedFiles []string) ReviewerProgressAgent {
+	return ReviewerProgressAgent{
+		AgentID:              candidate.ID,
+		Provenance:           candidate.Provenance.String(),
+		SourceKind:           string(candidate.Provenance.Kind),
+		RequiredIfApplicable: candidate.Provenance.Kind == agents.SourceRepo || len(requiredOnMatchFiles(candidate, changedFiles)) > 0,
+	}
 }
 
 func getReviewDiff(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, baseSHA, headSHA string, pinned bool) (gitprovider.UnifiedDiff, error) {
