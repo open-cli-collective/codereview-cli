@@ -487,7 +487,12 @@ func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	if len(reviews) != 1 || reviews[0].Event != review.ReviewEventApprove {
 		t.Fatalf("recorded reviews = %#v, want one approve review", reviews)
 	}
-	action := actionByID(t, fixture.store, result.Run.RunID, result.Run.RunID+"-"+approvalOverrideSubmitReviewActionID)
+	actionID := result.Run.RunID + "-" + approvalOverrideSubmitReviewActionID
+	markers := marker.FindActions(reviews[0].Body)
+	if len(markers) != 1 || markers[0].RunID != result.Run.RunID || markers[0].ActionID != actionID || markers[0].Kind != marker.ActionKindSubmitReview {
+		t.Fatalf("review markers = %#v, want approval override submit marker", markers)
+	}
+	action := actionByID(t, fixture.store, result.Run.RunID, actionID)
 	if action.Status != ledger.PlannedActionPosted || !action.Required {
 		t.Fatalf("override action = %#v, want posted required submit_review", action)
 	}
@@ -979,6 +984,38 @@ func TestEvaluatePartialRepairCleansUpRecoveryRunWhenActionInsertFails(t *testin
 	}
 	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
 		t.Fatalf("review writes = %d, want none", len(got))
+	}
+}
+
+func TestSpecialSubmitReviewActionIDsAreRunScoped(t *testing.T) {
+	tests := []struct {
+		name   string
+		suffix string
+		insert func(context.Context, Options, string) error
+	}{
+		{name: "approval override", suffix: approvalOverrideSubmitReviewActionID, insert: insertApprovalOverrideSubmitReview},
+		{
+			name:   "repair",
+			suffix: repairSubmitReviewActionID,
+			insert: func(ctx context.Context, opts Options, runID string) error {
+				return insertRepairSubmitReview(ctx, opts, runID, review.ReviewEventApprove)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			for _, runID := range []string{"first-run", "second-run"} {
+				fixture.allocateRun(t, runID, testOldBase, ledger.PostModeLive)
+				if err := tt.insert(context.Background(), fixture.opts(), runID); err != nil {
+					t.Fatalf("insert %s: %v", runID, err)
+				}
+				action := actionByID(t, fixture.store, runID, runID+"-"+tt.suffix)
+				if action.RunID != runID {
+					t.Fatalf("action run = %q, want %q", action.RunID, runID)
+				}
+			}
+		})
 	}
 }
 
