@@ -448,6 +448,12 @@ func TestEvaluateSameTimestampChangesRequestedPreventsActiveApprovalExit(t *test
 
 func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	fixture := newFixture(t)
+	legacy := fixture.allocateRun(t, "legacy-override", testOldBase, ledger.PostModeLive)
+	insertAction(t, fixture.store, submitReviewAction(t, legacy.RunID, approvalOverrideSubmitReviewActionID, ledger.PlannedActionPosted, true, review.ReviewEventApprove))
+	legacyAction := actionByID(t, fixture.store, legacy.RunID, approvalOverrideSubmitReviewActionID)
+	if err := fixture.store.CompleteRun(context.Background(), legacy.RunID, ledger.OutcomeApproved, testNow.Add(-time.Hour)); err != nil {
+		t.Fatalf("CompleteRun legacy override: %v", err)
+	}
 	rollup := mustRenderAction(t, marker.ActionMarker{
 		RunID:    "prior-run",
 		ActionID: "rollup-1",
@@ -481,9 +487,17 @@ func TestEvaluateAuthorOverrideAfterLatestMarkerApproves(t *testing.T) {
 	if len(reviews) != 1 || reviews[0].Event != review.ReviewEventApprove {
 		t.Fatalf("recorded reviews = %#v, want one approve review", reviews)
 	}
-	action := actionByID(t, fixture.store, result.Run.RunID, approvalOverrideSubmitReviewActionID)
+	actionID := result.Run.RunID + "-" + approvalOverrideSubmitReviewActionID
+	markers := marker.FindActions(reviews[0].Body)
+	if len(markers) != 1 || markers[0].RunID != result.Run.RunID || markers[0].ActionID != actionID || markers[0].Kind != marker.ActionKindSubmitReview {
+		t.Fatalf("review markers = %#v, want approval override submit marker", markers)
+	}
+	action := actionByID(t, fixture.store, result.Run.RunID, actionID)
 	if action.Status != ledger.PlannedActionPosted || !action.Required {
 		t.Fatalf("override action = %#v, want posted required submit_review", action)
+	}
+	if got := actionByID(t, fixture.store, legacy.RunID, approvalOverrideSubmitReviewActionID); !reflect.DeepEqual(got, legacyAction) {
+		t.Fatalf("legacy override action changed: got %#v want %#v", got, legacyAction)
 	}
 }
 
@@ -898,6 +912,12 @@ func TestEvaluateSkipsOverrideClassifierWhenRequestIsNotNewerThanMarker(t *testi
 
 func TestEvaluatePartialRepairPostsSingleReview(t *testing.T) {
 	fixture := newFixture(t)
+	legacy := fixture.allocateRun(t, "legacy-repair", testOldBase, ledger.PostModeLive)
+	insertAction(t, fixture.store, submitReviewAction(t, legacy.RunID, repairSubmitReviewActionID, ledger.PlannedActionPosted, true, review.ReviewEventApprove))
+	legacyAction := actionByID(t, fixture.store, legacy.RunID, repairSubmitReviewActionID)
+	if err := fixture.store.CompleteRun(context.Background(), legacy.RunID, ledger.OutcomeApproved, testNow.Add(-time.Hour)); err != nil {
+		t.Fatalf("CompleteRun legacy repair: %v", err)
+	}
 	setPartialRollup(t, fixture, "run-repair", marker.RollupOutcomeApproved)
 
 	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
@@ -921,7 +941,8 @@ func TestEvaluatePartialRepairPostsSingleReview(t *testing.T) {
 		t.Fatalf("review event = %q, want approve", reviews[0].Event)
 	}
 	markers := marker.FindActions(reviews[0].Body)
-	if len(markers) != 1 || markers[0].RunID != "run-repair" || markers[0].ActionID != repairSubmitReviewActionID || markers[0].Kind != marker.ActionKindSubmitReview {
+	actionID := "run-repair-" + repairSubmitReviewActionID
+	if len(markers) != 1 || markers[0].RunID != "run-repair" || markers[0].ActionID != actionID || markers[0].Kind != marker.ActionKindSubmitReview {
 		t.Fatalf("review markers = %#v, want repair submit marker", markers)
 	}
 	run, err := fixture.store.GetRun(context.Background(), "run-repair")
@@ -931,7 +952,7 @@ func TestEvaluatePartialRepairPostsSingleReview(t *testing.T) {
 	if run.Outcome == nil || *run.Outcome != ledger.OutcomeApproved {
 		t.Fatalf("repair run outcome = %v, want approved", run.Outcome)
 	}
-	action := actionByID(t, fixture.store, "run-repair", repairSubmitReviewActionID)
+	action := actionByID(t, fixture.store, "run-repair", actionID)
 	if action.Kind != ledger.PlannedActionSubmitReview || !action.Required || action.Status != ledger.PlannedActionPosted {
 		t.Fatalf("repair action = %#v, want posted required submit_review", action)
 	}
@@ -940,6 +961,9 @@ func TestEvaluatePartialRepairPostsSingleReview(t *testing.T) {
 	}
 	if action.SubmitReview.Body != repairSubmitReviewBody || action.SubmitReview.Event != review.ReviewEventApprove {
 		t.Fatalf("repair payload = %#v, want pinned body/event", action.SubmitReview)
+	}
+	if got := actionByID(t, fixture.store, legacy.RunID, repairSubmitReviewActionID); !reflect.DeepEqual(got, legacyAction) {
+		t.Fatalf("legacy repair action changed: got %#v want %#v", got, legacyAction)
 	}
 }
 
@@ -960,6 +984,38 @@ func TestEvaluatePartialRepairCleansUpRecoveryRunWhenActionInsertFails(t *testin
 	}
 	if got := fixture.provider.RecordedReviews(fixture.req.PRRef); len(got) != 0 {
 		t.Fatalf("review writes = %d, want none", len(got))
+	}
+}
+
+func TestSpecialSubmitReviewActionIDsAreRunScoped(t *testing.T) {
+	tests := []struct {
+		name   string
+		suffix string
+		insert func(context.Context, Options, string) error
+	}{
+		{name: "approval override", suffix: approvalOverrideSubmitReviewActionID, insert: insertApprovalOverrideSubmitReview},
+		{
+			name:   "repair",
+			suffix: repairSubmitReviewActionID,
+			insert: func(ctx context.Context, opts Options, runID string) error {
+				return insertRepairSubmitReview(ctx, opts, runID, review.ReviewEventApprove)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			for _, runID := range []string{"first-run", "second-run"} {
+				fixture.allocateRun(t, runID, testOldBase, ledger.PostModeLive)
+				if err := tt.insert(context.Background(), fixture.opts(), runID); err != nil {
+					t.Fatalf("insert %s: %v", runID, err)
+				}
+				action := actionByID(t, fixture.store, runID, runID+"-"+tt.suffix)
+				if action.RunID != runID {
+					t.Fatalf("action run = %q, want %q", action.RunID, runID)
+				}
+			}
+		})
 	}
 }
 
@@ -1515,7 +1571,7 @@ func TestEvaluateOutboxErrorsReturnExecutionResultAndDurableState(t *testing.T) 
 		if run.Outcome != nil {
 			t.Fatalf("repair outcome = %v, want nil after outbox read failure", run.Outcome)
 		}
-		action := actionByID(t, fixture.store, "run-repair", repairSubmitReviewActionID)
+		action := actionByID(t, fixture.store, "run-repair", "run-repair-"+repairSubmitReviewActionID)
 		if action.Status != ledger.PlannedActionPending || action.Error != nil || action.Attempts != 0 {
 			t.Fatalf("repair action after outbox read failure = %#v, want untouched pending", action)
 		}
