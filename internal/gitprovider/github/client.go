@@ -20,6 +20,11 @@ const (
 	credentialTypePAT       = "pat"
 	credentialTypeGitHubApp = "github_app" // #nosec G101 -- credential type label, not a secret.
 	gitHubAppInitTimeout    = 30 * time.Second
+	// defaultHTTPTimeout bounds every REST/GraphQL request made with the
+	// default client. All responses here are JSON payloads, so two minutes is
+	// generous — the bound exists because an unbounded client parks the whole
+	// run indefinitely on a connection the server's edge silently abandoned.
+	defaultHTTPTimeout = 2 * time.Minute
 	gitHubAppRefreshSkew    = 5 * time.Minute
 	gitHubAppJWTBackdate    = 60 * time.Second
 	gitHubAppJWTLifetime    = 9 * time.Minute
@@ -135,7 +140,7 @@ func New(opts Options) (*Client, error) {
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	return &Client{
 		host:       normalizedHost,
