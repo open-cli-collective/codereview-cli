@@ -70,7 +70,7 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store credentia
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+		httpClient = defaultBoundedHTTPClient()
 	}
 	now := opts.Now
 	if now == nil {

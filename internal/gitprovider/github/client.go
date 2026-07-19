@@ -140,7 +140,7 @@ func New(opts Options) (*Client, error) {
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+		httpClient = defaultBoundedHTTPClient()
 	}
 	return &Client{
 		host:       normalizedHost,
@@ -149,6 +149,14 @@ func New(opts Options) (*Client, error) {
 		baseURL:    baseURL,
 		graphQLURL: graphQLURL,
 	}, nil
+}
+
+// defaultBoundedHTTPClient is the fallback for construction paths where the
+// caller supplies no HTTPClient. Never http.DefaultClient: it has no timeout,
+// so a connection the server's edge silently abandons would park the request
+// — and the whole run — indefinitely.
+func defaultBoundedHTTPClient() *http.Client {
+	return &http.Client{Timeout: defaultHTTPTimeout}
 }
 
 // Host returns the normalized host this client is bound to.
