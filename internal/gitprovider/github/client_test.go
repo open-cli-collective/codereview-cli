@@ -31,6 +31,23 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
+func TestDefaultHTTPClientIsBounded(t *testing.T) {
+	// A stalled connection must never park a run indefinitely: the fallback
+	// client (used by both the PAT and GitHub-App construction paths whenever
+	// the caller doesn't supply one) needs a timeout.
+	fallback := defaultBoundedHTTPClient()
+	if fallback.Timeout <= 0 {
+		t.Fatalf("default HTTP client has no timeout; a silently dropped connection would hang forever")
+	}
+	if fallback == http.DefaultClient {
+		t.Fatalf("default HTTP client must not be http.DefaultClient (shared, unbounded)")
+	}
+	client := mustClient(t, Options{Token: "token"})
+	if client.httpClient.Timeout <= 0 {
+		t.Fatalf("NewClient without an explicit HTTPClient must use the bounded fallback")
+	}
+}
+
 func TestNewFromGitConfigBuildsPATClientAndCredential(t *testing.T) {
 	store := tokenStore{"work": {credentials.GitTokenKey: "token"}}
 	client, credential, err := NewFromGitConfig(config.GitConfig{
