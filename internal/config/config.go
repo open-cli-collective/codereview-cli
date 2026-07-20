@@ -1244,6 +1244,9 @@ func validateProfile(cfg File, name string, profile Profile) error {
 		if sameCredentialLocation(entity.Credential, profile.Git.Credential) {
 			return invalid("profiles.%s.reviewer.entity %q credential must differ from git.credential when store and name match", name, profile.Reviewer.Entity)
 		}
+		if profile.Git.ProviderKind() == GitProviderGitLab && entity.AuthMode != GitAuthModePAT {
+			return fmt.Errorf("%w: profiles.%s.reviewer.entity %q auth_mode %q is not supported for provider gitlab; use pat", ErrUnsupported, name, profile.Reviewer.Entity, entity.AuthMode)
+		}
 		if err := validateProfileReviewerInstallation(name, profile.Reviewer, entity); err != nil {
 			return err
 		}

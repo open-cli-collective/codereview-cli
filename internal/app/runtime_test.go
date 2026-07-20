@@ -197,7 +197,7 @@ func TestOpenWarnsAndContinuesWhenOpinionatedReviewAuthorityIsIneligible(t *test
 	if runtime.Cleanup != nil {
 		runtime.Cleanup()
 	}
-	if !strings.Contains(stderr.String(), `warning: posting identity "review-bot" may not create GitHub reviews`) {
+	if !strings.Contains(stderr.String(), `warning: posting identity "review-bot" may not create reviews that count toward PR approval state`) {
 		t.Fatalf("stderr = %q, want advisory review authority warning", stderr.String())
 	}
 }

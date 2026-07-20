@@ -80,3 +80,20 @@ func TestNormalizeLowercasesGitProvider(t *testing.T) {
 		t.Fatalf("normalized provider = %q, want %q", got, GitProviderGitLab)
 	}
 }
+
+func TestValidateRejectsGitLabProviderWithGitHubAppReviewerEntity(t *testing.T) {
+	cfg := validFile()
+	entity := cfg.ReviewerEntities["work-reviewer"]
+	entity.AuthMode = GitAuthModeGitHubApp
+	entity.GitHubApp = &GitHubAppConfig{AppID: "12345"}
+	cfg.ReviewerEntities["work-reviewer"] = entity
+	profile := cfg.Profiles["work"]
+	profile.Git.Provider = GitProviderGitLab
+	profile.Reviewer.GitHubAppInstallation = &ProfileReviewerGitHubAppInstallation{
+		Mode: ProfileReviewerGitHubAppInstallationDiscoverFromRepository,
+	}
+	cfg.Profiles["work"] = profile
+	if err := Validate(cfg); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("Validate error = %v, want ErrUnsupported", err)
+	}
+}

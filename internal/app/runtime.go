@@ -273,7 +273,7 @@ func writeReviewAuthorityWarning(warnings io.Writer, postingIdentity gitprovider
 		return
 	}
 	repo := fmt.Sprintf("%s/%s", ref.Owner, ref.Repo)
-	_, _ = fmt.Fprintf(warnings, "warning: posting identity %q may not create GitHub reviews that count toward PR approval state for %s (%s); continuing because the review can still be posted\n", postingIdentity.Login, repo, detail)
+	_, _ = fmt.Fprintf(warnings, "warning: posting identity %q may not create reviews that count toward PR approval state for %s on %s (%s); continuing because the review can still be posted\n", postingIdentity.Login, repo, ref.Host, detail)
 }
 
 func commandName(command string) string {
