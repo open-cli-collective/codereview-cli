@@ -69,7 +69,11 @@ Non-review CLI progress now flows through one reusable component in
 - JSON and text result payloads stay on stdout
 - `--quiet` suppresses progress only
 - lines are single-line structured records:
-  `cr progress event=<start|finish|error> command="..." op="..." target="..." ...`
+  `cr progress event=<start|finish|error|info> command="..." op="..." target="..." ...`
+
+Review progress includes instant catalog-resolution, final selection, and
+per-reviewer assignment records. These expose IDs, winning provenance,
+selection reasoning, and assigned paths without logging prompt bodies.
 
 Current command coverage is `benchmark run`, `benchmark select`,
 `benchmark compare`, `data prune`, `data purge`, `config clear`, `me`, and

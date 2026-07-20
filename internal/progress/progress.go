@@ -72,6 +72,17 @@ func (l *Logger) StartFields(command, op, target string, fields ...Field) *Span 
 	return span
 }
 
+// InfoFields writes one instantaneous structured progress record.
+func (l *Logger) InfoFields(command, op, target string, fields ...Field) {
+	l.writeLine(progressLine{
+		event:   "info",
+		command: command,
+		op:      op,
+		target:  target,
+		fields:  cloneFields(fields),
+	})
+}
+
 // End writes a finish or error line and returns err. It is a no-op for disabled
 // loggers or a span that has already ended.
 func (s *Span) End(err error) error {

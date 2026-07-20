@@ -430,6 +430,7 @@ file_globs:
   - "**/*.go"
 applies_when:
   - Go files changed
+required_on_match: true
 needs_full_file_content: false
 ```
 
@@ -442,6 +443,12 @@ provider-specific model. `effort` is independent and must be one of
 `applies_when` is the selector's routing contract. Keep it focused on when the
 agent should be chosen for a change. Reviewer execution instructions belong in
 `prompt.md` and are not sent to the selector.
+
+Set `required_on_match: true` when an agent must run whenever `file_globs`
+matches a changed file. This applies to profile, repo, and `--agents-dir`
+sources; invalid globs fail catalog loading, and an explicit `--max-agents`
+smaller than the combined set of applicable repo-local and matching
+`required_on_match` reviewers fails rather than dropping reviewers.
 
 Legacy agent files that use `model: sonnet` or another provider-specific
 `model` value must be updated. Replace portable intent with `model_tier`
@@ -1081,7 +1088,8 @@ cr agents show <name> [PR] [--agents-dir <path> ...] [--json]
 ```
 
 Shows one agent, including category metadata, `model_tier` or `model_id`,
-effort, file globs, `applies_when`, `needs_full_file_content`, prompt,
+effort, file globs, `applies_when`, `required_on_match`,
+`needs_full_file_content`, prompt,
 provenance, and trust note when repo-local agents are considered.
 
 ### `cr review`
@@ -1110,7 +1118,7 @@ Review selection and execution flags:
 | Flag | Semantics |
 |------|-----------|
 | `--agents-dir <path>` | Additional trusted agents directory. Repeatable. |
-| `--max-agents <n>` | Limit selected reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
+| `--max-agents <n>` | Set a hard total reviewer limit. Omit the flag or pass `0` to run all applicable repo-local reviewers and all matching `required_on_match` reviewers, plus up to 5 optional shared reviewers. A positive value below that combined required set fails. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--selection-model <model>` | Exact provider model ID passthrough for the selection stage only. Bypasses the default medium-tier selection model resolution. Requires `--dry-run` or `--no-post`. |
 | `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
@@ -1121,6 +1129,10 @@ Review selection and execution flags:
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Override the default PR/profile/posting-identity scope with a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
+
+Review progress on stderr reports the merged reviewer catalog, final selected
+IDs and reasoning, and each reviewer assignment with winning provenance and
+file scope. `--quiet` suppresses these records.
 
 Policy and output flags:
 

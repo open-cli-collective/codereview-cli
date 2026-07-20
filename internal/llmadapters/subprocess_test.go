@@ -91,8 +91,11 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	if !containsFlag(record.AdapterArgs, "--bg") {
 		t.Fatalf("args = %#v, want --bg", record.AdapterArgs)
 	}
+	if !containsFlag(record.AdapterArgs, "--enable-auto-mode") {
+		t.Fatalf("args = %#v, want --enable-auto-mode", record.AdapterArgs)
+	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", "Read,Write")
-	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
+	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "auto")
 	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
 	if containsFlag(record.AdapterArgs, "--settings") {
@@ -191,6 +194,7 @@ func TestSubprocessClaudeBackgroundResume(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--resume", "prior-session")
 	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
 	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
+	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "auto")
 	if record.StdinBytes != 0 {
 		t.Fatalf("stdin bytes = %d, want empty stdin for resumed Claude bg prompt", record.StdinBytes)
 	}
@@ -1828,6 +1832,9 @@ func TestSubprocessAdapterDefaultsTaskTimeout(t *testing.T) {
 	if a.timeout != defaultLLMTaskTimeout {
 		t.Fatalf("timeout = %v, want default %v", a.timeout, defaultLLMTaskTimeout)
 	}
+	if a.timeout != 14*time.Minute {
+		t.Fatalf("timeout = %v, want 14m", a.timeout)
+	}
 
 	explicit := NewCodexCLIAdapter(SubprocessOptions{Timeout: 3 * time.Minute})
 	if explicit.timeout != 3*time.Minute {
@@ -2003,22 +2010,25 @@ func TestClaudeTransportXORValidation(t *testing.T) {
 	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
 	base := []string{
 		"--tools", "Read,Write",
-		"--permission-mode", "acceptEdits",
 		"--add-dir", scratch,
 		"--", "positional prompt",
 	}
 	cases := []struct {
-		name    string
-		prefix  []string
-		wantErr bool
+		name           string
+		prefix         []string
+		permissionMode string
+		wantErr        bool
 	}{
-		{"bg only", []string{"--bg"}, false},
-		{"foreground only", []string{"-p", "--output-format", "json"}, false},
-		{"both transports", []string{"--bg", "-p", "--output-format", "json"}, true},
-		{"neither transport", nil, true},
+		{"bg only", []string{"--bg"}, "auto", false},
+		{"foreground only", []string{"-p", "--output-format", "json"}, "acceptEdits", false},
+		{"acceptEdits with bg", []string{"--bg"}, "acceptEdits", true},
+		{"auto with foreground", []string{"-p", "--output-format", "json"}, "auto", true},
+		{"both transports", []string{"--bg", "-p", "--output-format", "json"}, "auto", true},
+		{"neither transport", nil, "acceptEdits", true},
 	}
 	for _, tc := range cases {
-		args := append(append([]string(nil), tc.prefix...), base...)
+		args := append(append([]string(nil), tc.prefix...), "--permission-mode", tc.permissionMode)
+		args = append(args, base...)
 		err := adapter.validateArgs(args, scratch, Request{})
 		if tc.wantErr && !errors.Is(err, ErrUnsafeSubprocessConfig) {
 			t.Fatalf("%s: err = %v, want ErrUnsafeSubprocessConfig", tc.name, err)

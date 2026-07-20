@@ -236,7 +236,47 @@ func httpStatusError(status int, body []byte) error {
 	if len(body) == 0 {
 		return fmt.Errorf("github: status %d", status)
 	}
+	if detail := safeErrorDetail(body); detail != "" {
+		return fmt.Errorf("github: status %d (%s)", status, detail)
+	}
 	return fmt.Errorf("github: status %d (response body redacted)", status)
+}
+
+// safeErrorDetail extracts only GitHub's structured error identifiers: each
+// error's resource/field/code triple. These are schema enums, never free text.
+// The top-level message and raw body are deliberately excluded — both can echo
+// request content or secret material (the no-leak canary tests enforce this).
+// Without the triples a 4xx is undiagnosable ("response body redacted") even
+// though GitHub named exactly which field it rejected.
+func safeErrorDetail(body []byte) string {
+	var payload struct {
+		Errors []struct {
+			Resource string `json:"resource"`
+			Field    string `json:"field"`
+			Code     string `json:"code"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(payload.Errors))
+	for _, entry := range payload.Errors {
+		fields := make([]string, 0, 3)
+		for _, value := range []string{entry.Resource, entry.Field, entry.Code} {
+			if value = strings.TrimSpace(value); value != "" {
+				fields = append(fields, value)
+			}
+		}
+		if len(fields) > 0 {
+			parts = append(parts, strings.Join(fields, "."))
+		}
+	}
+	const maxDetail = 200
+	detail := strings.Join(parts, "; ")
+	if len(detail) > maxDetail {
+		detail = detail[:maxDetail] + "…"
+	}
+	return detail
 }
 
 func restURL(base *url.URL, parts ...string) string {

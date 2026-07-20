@@ -689,7 +689,7 @@ func allocateRepair(ctx context.Context, opts Options, req Request, runID string
 func insertRepairSubmitReview(ctx context.Context, opts Options, runID string, event review.ReviewEvent) error {
 	return opts.Store.InsertPlannedAction(ctx, ledger.PlannedAction{
 		Action: plannedactions.Action{
-			ActionID:     repairSubmitReviewActionID,
+			ActionID:     runID + "-" + repairSubmitReviewActionID,
 			Kind:         ledger.PlannedActionSubmitReview,
 			PlannedAt:    opts.now(),
 			Status:       ledger.PlannedActionPending,
@@ -703,7 +703,7 @@ func insertRepairSubmitReview(ctx context.Context, opts Options, runID string, e
 func insertApprovalOverrideSubmitReview(ctx context.Context, opts Options, runID string) error {
 	return opts.Store.InsertPlannedAction(ctx, ledger.PlannedAction{
 		Action: plannedactions.Action{
-			ActionID:     approvalOverrideSubmitReviewActionID,
+			ActionID:     runID + "-" + approvalOverrideSubmitReviewActionID,
 			Kind:         ledger.PlannedActionSubmitReview,
 			PlannedAt:    opts.now(),
 			Status:       ledger.PlannedActionPending,

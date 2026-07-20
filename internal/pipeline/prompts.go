@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/gobwas/glob"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -51,6 +54,8 @@ type selectionAgentPrompt struct {
 	FileGlobs            []string `json:"file_globs,omitempty"`
 	AppliesWhen          []string `json:"applies_when,omitempty"`
 	NeedsFullFileContent bool     `json:"needs_full_file_content"`
+	RequiredIfApplicable bool     `json:"required_if_applicable"`
+	RequiredFiles        []string `json:"required_files,omitempty"`
 }
 
 type selectionPromptDossier struct {
@@ -107,7 +112,8 @@ func promptPRFromPR(pr gitprovider.PR) promptPR {
 	}
 }
 
-func selectionAgentPromptFromAgent(agent agents.Agent) selectionAgentPrompt {
+func selectionAgentPromptFromAgent(agent agents.Agent, changedFiles []string) selectionAgentPrompt {
+	requiredFiles := requiredOnMatchFiles(agent, changedFiles)
 	return selectionAgentPrompt{
 		ID:                   agent.ID,
 		Name:                 agent.Name,
@@ -115,15 +121,40 @@ func selectionAgentPromptFromAgent(agent agents.Agent) selectionAgentPrompt {
 		FileGlobs:            append([]string(nil), agent.FileGlobs...),
 		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
 		NeedsFullFileContent: agent.NeedsFullFileContent,
+		RequiredIfApplicable: agent.Provenance.Kind == agents.SourceRepo || len(requiredFiles) > 0,
+		RequiredFiles:        requiredFiles,
 	}
 }
 
-func selectionAgentPromptsFromCatalog(catalog agents.Catalog) []selectionAgentPrompt {
+func selectionAgentPromptsFromCatalog(catalog agents.Catalog, changedFiles []string) []selectionAgentPrompt {
 	out := make([]selectionAgentPrompt, 0, len(catalog.Agents))
 	for _, agent := range catalog.Agents {
-		out = append(out, selectionAgentPromptFromAgent(agent))
+		out = append(out, selectionAgentPromptFromAgent(agent, changedFiles))
 	}
 	return out
+}
+
+func requiredOnMatchFiles(agent agents.Agent, changedFiles []string) []string {
+	if !agent.RequiredOnMatch {
+		return nil
+	}
+	var matched []string
+	for _, pattern := range agent.FileGlobs {
+		matcher, err := glob.Compile(pattern, '/')
+		if err != nil {
+			continue
+		}
+		var rootMatcher glob.Glob
+		if strings.HasPrefix(pattern, "**/") {
+			rootMatcher, _ = glob.Compile(strings.TrimPrefix(pattern, "**/"), '/')
+		}
+		for _, file := range changedFiles {
+			if (matcher.Match(file) || rootMatcher != nil && rootMatcher.Match(file)) && !slices.Contains(matched, file) {
+				matched = append(matched, file)
+			}
+		}
+	}
+	return matched
 }
 
 type reviewerAgentPrompt struct {
@@ -179,12 +210,13 @@ func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, ma
 	for _, thread := range input.Threads {
 		threadIDs = append(threadIDs, thread.ThreadID)
 	}
+	effectiveMaxAgents := selectionPromptMaxAgents(catalog.Agents, input.ChangedFiles, maxAgents)
 	payload := map[string]any{
 		"task":                defaultSelectionTask,
 		"output_contract":     selectionOutputContract(catalog.Agents, input.ChangedFiles, threadIDs, maxAgents),
 		"schema":              "selection",
-		"max_selected_agents": maxAgents,
-		"agents":              selectionAgentPromptsFromCatalog(catalog),
+		"max_selected_agents": effectiveMaxAgents,
+		"agents":              selectionAgentPromptsFromCatalog(catalog, input.ChangedFiles),
 		"changed_files":       append([]string(nil), input.ChangedFiles...),
 		"dossier":             input.Dossier,
 		"workbench":           input.Workbench,
@@ -198,6 +230,23 @@ func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, ma
 		return "", fmt.Errorf("pipeline: build selection prompt: %w", err)
 	}
 	return string(body), nil
+}
+
+func selectionPromptMaxAgents(candidates []agents.Agent, changedFiles []string, maxAgents int) int {
+	required := 0
+	for _, candidate := range candidates {
+		if candidate.Provenance.Kind == agents.SourceRepo || len(requiredOnMatchFiles(candidate, changedFiles)) > 0 {
+			required++
+		}
+	}
+	if maxAgents > 0 {
+		return max(maxAgents, required)
+	}
+	limit := defaultMaxAgents + required
+	if limit > len(candidates) {
+		return len(candidates)
+	}
+	return limit
 }
 
 type dossierPromptCore struct {
@@ -538,11 +587,43 @@ type outputContract struct {
 	Example        any      `json:"example"`
 }
 
-func selectionOutputContract(agents []agents.Agent, changedFiles []string, threadIDs []string, maxAgents int) outputContract {
-	agentIDs := make([]string, 0, len(agents))
-	for _, agent := range agents {
+func selectionOutputContract(candidates []agents.Agent, changedFiles []string, threadIDs []string, maxAgents int) outputContract {
+	agentIDs := make([]string, 0, len(candidates))
+	for _, agent := range candidates {
 		agentIDs = append(agentIDs, agent.ID)
 	}
+	effectiveMaxAgents := selectionPromptMaxAgents(candidates, changedFiles, maxAgents)
+	instructions := []string{
+		"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
+		"Use only the keys shown in response_schema. Unknown keys are rejected.",
+		"allowed_values is context only; do not include allowed_values keys in the response.",
+		"schema_version must be 1.",
+		"selected_agents[].agent_id must be one of the allowed_agent_ids.",
+		"selected_agents[].files must contain only paths from changed_files.",
+		"selected_agents[].allowed_files must contain only paths from changed_files when present.",
+	}
+	allowedValues := map[string]any{
+		"allowed_agent_ids":   agentIDs,
+		"changed_files":       changedFiles,
+		"known_thread_ids":    threadIDs,
+		"max_selected_agents": effectiveMaxAgents,
+	}
+	if maxAgents > 0 {
+		instructions = append(instructions,
+			"Select applicable agents with required_if_applicable=true before optional agents.",
+			"selected_agents must contain at most max_selected_agents entries, ordered from highest to lowest review value within required and optional groups.",
+		)
+	} else {
+		instructions = append(instructions,
+			"Select every agent with required_if_applicable=true that applies to this change.",
+			"After required agents, select at most max_shared_agents optional agents, ordered from highest to lowest review value.",
+			"selected_agents must contain at most max_selected_agents entries.",
+		)
+		allowedValues["max_shared_agents"] = defaultMaxAgents
+	}
+	instructions = append(instructions,
+		"thread_actions must always be an empty array. Thread lifecycle replies and resolution are handled by the thread_analysis stage.",
+	)
 	example := map[string]any{
 		"schema_version":  1,
 		"selected_agents": selectionExampleAgents(agentIDs, changedFiles),
@@ -553,30 +634,15 @@ func selectionOutputContract(agents []agents.Agent, changedFiles []string, threa
 		example["reasoning"] = "No reviewer agents are available."
 	}
 	return outputContract{
-		Instructions: []string{
-			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
-			"Use only the keys shown in response_schema. Unknown keys are rejected.",
-			"allowed_values is context only; do not include allowed_values keys in the response.",
-			"schema_version must be 1.",
-			"selected_agents[].agent_id must be one of the allowed_agent_ids.",
-			"selected_agents[].files must contain only paths from changed_files.",
-			"selected_agents[].allowed_files must contain only paths from changed_files when present.",
-			"selected_agents must contain at most max_selected_agents entries, ordered from highest to lowest review value.",
-			"thread_actions must always be an empty array. Thread lifecycle replies and resolution are handled by the thread_analysis stage.",
-		},
+		Instructions: instructions,
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
 			"selected_agents": "array of {agent_id: string, rationale: string, files: string[], allowed_files?: string[]}",
 			"thread_actions":  "empty array, required",
 			"reasoning":       "string",
 		},
-		AllowedValues: map[string]any{
-			"allowed_agent_ids":   agentIDs,
-			"changed_files":       changedFiles,
-			"known_thread_ids":    threadIDs,
-			"max_selected_agents": maxAgents,
-		},
-		Example: example,
+		AllowedValues: allowedValues,
+		Example:       example,
 	}
 }
 

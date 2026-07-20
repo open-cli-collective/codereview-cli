@@ -1219,21 +1219,23 @@ func TestSelectionOnlyRequiresPostingIdentity(t *testing.T) {
 	}
 }
 
-func TestSelectionOnlyCapsMaxAgents(t *testing.T) {
+func TestSelectionOnlyExplicitMaxAllowsApplicableRepoSetBeforeCap(t *testing.T) {
 	ctx := context.Background()
 	provider, req := dryRunHarness(t)
+	rulesPath := ".codereview/agents/repo/rules"
+	provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"}] = append(provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: ".codereview/agents/repo"}], gitprovider.TreeEntry{Path: rulesPath, Type: "tree"})
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: rulesPath + "/index.yaml"}] = []byte("name: rules\ndescription: repo rules desc\nmodel_tier: medium\neffort: medium\n")
+	provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: rulesPath + "/prompt.md"}] = []byte("Review repository rules.")
 	dir := t.TempDir()
 	writeAgent(t, dir, "harness", "alpha", "alpha desc", "Review alpha files.")
-	writeAgent(t, dir, "harness", "beta", "beta desc", "Review beta files.")
 	trustCurrentTempFixtures(t)
 	req.Profile.AgentSources = []string{dir}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	var warnings bytes.Buffer
 	adapter.Queue(fakeLLMResult("selection-session", `{
 		"schema_version": 1,
 		"selected_agents": [
-			{"agent_id":"harness:alpha","rationale":"main","files":["main.go"]},
-			{"agent_id":"harness:beta","rationale":"main","files":["main.go"]}
+			{"agent_id":"repo:guidance","rationale":"repo","files":["main.go"]},
+			{"agent_id":"repo:rules","rationale":"repo","files":["main.go"]}
 		],
 		"thread_actions": [],
 		"reasoning": "too many"
@@ -1241,28 +1243,162 @@ func TestSelectionOnlyCapsMaxAgents(t *testing.T) {
 
 	selectionReq := selectionRequestFromReview(req, t.TempDir())
 	selectionReq.MaxAgents = 1
-	result, err := selectionOnlyForTest(ctx, Options{
+	_, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
-		Warnings: &warnings,
 	}, selectionReq)
-	if err != nil {
-		t.Fatalf("SelectionOnly: %v", err)
-	}
-	if len(result.Selection.SelectedAgents) != 1 || result.Selection.SelectedAgents[0].AgentID != "harness:alpha" {
-		t.Fatalf("selected agents = %#v, want first selected agent only", result.Selection.SelectedAgents)
-	}
-	if got := warnings.String(); !strings.Contains(got, "orchestrator selected 2 agents; using first 1 due to max-agents") {
-		t.Fatalf("warnings = %q, want max-agent cap warning", got)
+	if err == nil || !strings.Contains(err.Error(), "smaller than the 2 required reviewers") {
+		t.Fatalf("SelectionOnly error = %v, want required reviewer cap error", err)
 	}
 	requests := adapter.Requests()
 	if len(requests) != 1 {
 		t.Fatalf("adapter requests = %#v, want one selection request", requests)
 	}
-	if !strings.Contains(requests[0].Prompt, `"max_selected_agents": 1`) {
-		t.Fatalf("selection prompt = %q, want max_selected_agents", requests[0].Prompt)
+	if !strings.Contains(requests[0].Prompt, `"max_selected_agents": 2`) {
+		t.Fatalf("selection prompt = %q, want room for all potentially required reviewers", requests[0].Prompt)
 	}
+}
+
+func TestSelectionOnlyDefaultCapKeepsRepoAgentsPlusFiveShared(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	dir := t.TempDir()
+	for _, name := range []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta"} {
+		writeAgent(t, dir, "harness", name, name+" desc", "Review "+name+" files.")
+	}
+	trustCurrentTempFixtures(t)
+	req.Profile.AgentSources = []string{dir}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	var warnings bytes.Buffer
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForAgents(
+		"main.go",
+		"harness:alpha",
+		"harness:beta",
+		"harness:gamma",
+		"harness:delta",
+		"harness:epsilon",
+		"harness:zeta",
+		"repo:guidance",
+	), 10, 2))
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+		Warnings: &warnings,
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	var got []string
+	for _, selected := range result.Selection.SelectedAgents {
+		got = append(got, selected.AgentID)
+	}
+	want := []string{"repo:guidance", "harness:alpha", "harness:beta", "harness:gamma", "harness:delta", "harness:epsilon"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selected agents = %#v, want %#v", got, want)
+	}
+	if got := warnings.String(); !strings.Contains(got, "orchestrator selected 6 shared agents; using first 5 due to default shared-agent limit") {
+		t.Fatalf("warnings = %q, want default shared-agent cap warning", got)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !strings.Contains(requests[0].Prompt, `"max_selected_agents": 6`) || !strings.Contains(requests[0].Prompt, `"required_if_applicable": true`) {
+		t.Fatalf("selection prompt = %#v, want repo-required metadata and repo-plus-shared ceiling", requests)
+	}
+}
+
+func TestRequiredOnMatchAgentIsInjectedWhenOrchestratorOmitsIt(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "shared:optional", Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+		{ID: "shared:go", FileGlobs: []string{"**/*.go"}, RequiredOnMatch: true, Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+	}}
+	selection := llm.Selection{
+		SelectedAgents: []llm.SelectedAgent{{AgentID: "shared:optional", Rationale: "optional", Files: []string{"main.go"}}},
+		Reasoning:      "Selected optional reviewer.",
+	}
+
+	got := ensureRequiredOnMatchAgents(selection, catalog, []string{"main.go", "internal/app/main.go"})
+	if len(got.SelectedAgents) != 2 {
+		t.Fatalf("selected agents = %#v, want injected required reviewer", got.SelectedAgents)
+	}
+	required := got.SelectedAgents[1]
+	if required.AgentID != "shared:go" || required.Rationale != "required_on_match matched changed files" {
+		t.Fatalf("required reviewer = %#v", required)
+	}
+	wantFiles := []string{"main.go", "internal/app/main.go"}
+	if !reflect.DeepEqual(required.Files, wantFiles) || !reflect.DeepEqual(required.AllowedFiles, wantFiles) {
+		t.Fatalf("required assignment = %#v, want matched files %#v", required, wantFiles)
+	}
+}
+
+func TestRequiredOnMatchAgentsHaveCapPriorityAndCannotBeTruncated(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "shared:optional", Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+		{ID: "shared:go", FileGlobs: []string{"**/*.go"}, RequiredOnMatch: true, Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+		{ID: "shared:all-go", FileGlobs: []string{"*.go"}, RequiredOnMatch: true, Provenance: agents.Provenance{Kind: agents.SourceFlag}},
+	}}
+	selection := ensureRequiredOnMatchAgents(llm.Selection{
+		SelectedAgents: []llm.SelectedAgent{{AgentID: "shared:optional", Files: []string{"main.go"}}},
+	}, catalog, []string{"main.go"})
+
+	capped, err := (Options{}).capSelectionAgents(selection, catalog, []string{"main.go"}, 2)
+	if err != nil {
+		t.Fatalf("capSelectionAgents: %v", err)
+	}
+	got := []string{capped.SelectedAgents[0].AgentID, capped.SelectedAgents[1].AgentID}
+	want := []string{"shared:go", "shared:all-go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("capped agents = %#v, want required agents %#v", got, want)
+	}
+	if _, err := (Options{}).capSelectionAgents(selection, catalog, []string{"main.go"}, 1); err == nil || !strings.Contains(err.Error(), "smaller than the 2 required reviewers") {
+		t.Fatalf("cap error = %v, want required reviewer conflict", err)
+	}
+}
+
+func TestReviewerProgressReportsWinningSourcesAndFinalAssignments(t *testing.T) {
+	recorder := &reviewerProgressRecorder{}
+	opts := Options{ReviewProgress: recorder}
+	catalog := agents.Catalog{
+		Agents: []agents.Agent{
+			{ID: "shared:go", FileGlobs: []string{"**/*.go"}, RequiredOnMatch: true, Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+			{ID: "repo:rules", Provenance: agents.Provenance{Kind: agents.SourceRepo, Ref: "refs/heads/main", SHA: "abc123"}},
+		},
+		Sources: []agents.SourceInfo{{Kind: agents.SourceRepo, Status: agents.SourceStatusAvailable}},
+	}
+	opts.emitReviewerCatalog(catalog, []string{"main.go"})
+	opts.emitReviewerSelection(catalog, llm.Selection{
+		SelectedAgents: []llm.SelectedAgent{{
+			AgentID: "shared:go", Rationale: "required_on_match matched changed files", Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+		}},
+		Reasoning: "Go reviewer is required.",
+	})
+
+	if len(recorder.catalogs) != 1 || recorder.catalogs[0].RepoStatus != string(agents.SourceStatusAvailable) || recorder.catalogs[0].OfferedCount != 2 {
+		t.Fatalf("catalog progress = %#v", recorder.catalogs)
+	}
+	if !recorder.catalogs[0].Reviewers[0].RequiredIfApplicable || recorder.catalogs[0].Reviewers[0].SourceKind != string(agents.SourceProfile) {
+		t.Fatalf("profile required reviewer progress = %#v", recorder.catalogs[0].Reviewers[0])
+	}
+	if len(recorder.selections) != 1 || recorder.selections[0].Reasoning != "Go reviewer is required." || len(recorder.selections[0].Reviewers) != 1 {
+		t.Fatalf("selection progress = %#v", recorder.selections)
+	}
+	if got := recorder.selections[0].Reviewers[0]; got.AgentID != "shared:go" || got.Rationale != "required_on_match matched changed files" || !reflect.DeepEqual(got.AllowedFiles, []string{"main.go"}) {
+		t.Fatalf("assignment progress = %#v", got)
+	}
+}
+
+type reviewerProgressRecorder struct {
+	catalogs   []ReviewerCatalogProgress
+	selections []ReviewerSelectionProgress
+}
+
+func (r *reviewerProgressRecorder) ReviewersResolved(event ReviewerCatalogProgress) {
+	r.catalogs = append(r.catalogs, event)
+}
+
+func (r *reviewerProgressRecorder) ReviewersSelected(event ReviewerSelectionProgress) {
+	r.selections = append(r.selections, event)
 }
 
 func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
@@ -1480,22 +1616,80 @@ func TestDryRunReviewerBaselineTierRaisesReviewerModelFloor(t *testing.T) {
 	})
 }
 
-func TestDryRunRepoGuidanceFailuresForceRequestChangesWithoutReviewerExecution(t *testing.T) {
+func TestDryRunMissingRepoGuidanceFallsBackToProfileAgents(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-missing-repo-guidance" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	source, ok := repoGuidanceSource(result.Catalog.Sources)
+	if !ok || source.Status != agents.SourceStatusMissing {
+		t.Fatalf("repo source = %#v, want missing provenance", result.Catalog.Sources)
+	}
+	if len(result.Selection.SelectedAgents) != 1 || result.Selection.SelectedAgents[0].AgentID != "harness:reviewer" {
+		t.Fatalf("selection = %#v, want profile fallback reviewer", result.Selection)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeComment {
+		t.Fatalf("outcome = %q, want normal rollup comment", result.Plan.Outcome)
+	}
+}
+
+func TestDryRunEmptyMergedCatalogFailsWithoutReviewerExecution(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+	req.Profile.AgentSources = nil
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+	_, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-empty-catalog" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err == nil || !strings.Contains(err.Error(), "no reviewer agents available") {
+		t.Fatalf("DryRun error = %v, want empty catalog error", err)
+	}
+	if len(adapter.Requests()) != 0 {
+		t.Fatalf("adapter requests = %#v, want no LLM execution", adapter.Requests())
+	}
+}
+
+func TestDryRunInvalidOrUnreadableRepoGuidanceForcesRequestChangesWithoutReviewerExecution(t *testing.T) {
 	tests := []struct {
 		name      string
 		setupRepo func(t *testing.T, provider *readOnlyProvider)
 		wantText  string
 		wantState agents.SourceStatus
 	}{
-		{
-			name: "missing",
-			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
-				t.Helper()
-				removeRepoAgentFixture(provider)
-			},
-			wantText:  "Base branch `.codereview/agents/` was not present for this review.",
-			wantState: agents.SourceStatusMissing,
-		},
 		{
 			name: "unreadable",
 			setupRepo: func(t *testing.T, provider *readOnlyProvider) {

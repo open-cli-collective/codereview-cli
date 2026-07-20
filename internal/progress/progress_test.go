@@ -87,9 +87,28 @@ func TestDisabledLoggerWritesNothing(t *testing.T) {
 
 	span := logger.Start("sessions.delete", "delete", "session")
 	_ = span.End(nil)
+	logger.InfoFields("review", "select_reviewers", "reviewers", Field{Key: "selected_count", Value: "2"})
 
 	if out.Len() != 0 {
 		t.Fatalf("output = %q, want empty", out.String())
+	}
+}
+
+func TestLoggerInfoFieldsWritesInstantRecord(t *testing.T) {
+	var out bytes.Buffer
+	logger := New(&out, false, time.Now)
+
+	logger.InfoFields("review", "select_reviewers", "reviewers",
+		Field{Key: "selected_ids", Value: "repo:rules,shared:dotnet"},
+		Field{Key: "selected_count", Value: "2"},
+	)
+
+	got := out.String()
+	if !strings.Contains(got, `cr progress event=info command="review" op="select_reviewers" target="reviewers" selected_count="2" selected_ids="repo:rules,shared:dotnet"`) {
+		t.Fatalf("info line = %q", got)
+	}
+	if strings.Contains(got, "duration_ms=") || strings.Contains(got, "status=") {
+		t.Fatalf("instant record contains span fields: %q", got)
 	}
 }
 

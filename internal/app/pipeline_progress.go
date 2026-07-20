@@ -38,6 +38,58 @@ func newPipelineTaskProgress(logger *progress.Logger, command string, dispatcher
 	return pipelineTaskProgress{logger: logger, command: command, hooks: dispatcher}
 }
 
+func newPipelineReviewerProgress(logger *progress.Logger, command string) pipeline.ReviewerProgress {
+	if logger == nil {
+		return nil
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = "review"
+	}
+	return pipelineTaskProgress{logger: logger, command: command}
+}
+
+func (p pipelineTaskProgress) ReviewersResolved(event pipeline.ReviewerCatalogProgress) {
+	offered := make([]string, 0, len(event.Reviewers))
+	required := make([]string, 0, len(event.Reviewers))
+	for _, reviewer := range event.Reviewers {
+		offered = append(offered, reviewer.AgentID+"@"+reviewer.Provenance)
+		if reviewer.RequiredIfApplicable {
+			required = append(required, reviewer.AgentID)
+		}
+	}
+	p.logger.InfoFields(p.command, "resolve_reviewers", "reviewers",
+		progress.Field{Key: "offered_count", Value: strconv.Itoa(event.OfferedCount)},
+		progress.Field{Key: "offered_reviewers", Value: strings.Join(offered, ",")},
+		progress.Field{Key: "repo_status", Value: event.RepoStatus},
+		progress.Field{Key: "required_if_applicable", Value: strings.Join(required, ",")},
+		progress.Field{Key: "total_count", Value: strconv.Itoa(event.TotalCount)},
+	)
+}
+
+func (p pipelineTaskProgress) ReviewersSelected(event pipeline.ReviewerSelectionProgress) {
+	selected := make([]string, 0, len(event.Reviewers))
+	for _, reviewer := range event.Reviewers {
+		selected = append(selected, reviewer.AgentID)
+	}
+	p.logger.InfoFields(p.command, "select_reviewers", "reviewers",
+		progress.Field{Key: "reasoning", Value: event.Reasoning},
+		progress.Field{Key: "selected_count", Value: strconv.Itoa(len(event.Reviewers))},
+		progress.Field{Key: "selected_ids", Value: strings.Join(selected, ",")},
+	)
+	for _, reviewer := range event.Reviewers {
+		p.logger.InfoFields(p.command, "assign_reviewer", "reviewer",
+			progress.Field{Key: "agent_id", Value: reviewer.AgentID},
+			progress.Field{Key: "allowed_files", Value: strings.Join(reviewer.AllowedFiles, ",")},
+			progress.Field{Key: "files", Value: strings.Join(reviewer.Files, ",")},
+			progress.Field{Key: "provenance", Value: reviewer.Provenance},
+			progress.Field{Key: "rationale", Value: reviewer.Rationale},
+			progress.Field{Key: "required_if_applicable", Value: strconv.FormatBool(reviewer.RequiredIfApplicable)},
+			progress.Field{Key: "source_kind", Value: reviewer.SourceKind},
+		)
+	}
+}
+
 func (p pipelineTaskProgress) StartLLMTask(event pipeline.LLMTaskProgressEvent) pipeline.LLMTaskProgressSpan {
 	var span *progress.Span
 	if p.logger != nil {
