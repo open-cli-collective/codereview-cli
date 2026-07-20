@@ -1349,6 +1349,9 @@ func validateEffectiveProfile(name string, profile Profile) error {
 		if !profile.ReviewerCredentials.AuthMode.Supported() {
 			return fmt.Errorf("%w: %s.reviewer_credentials.auth_mode %q", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
 		}
+		if profile.Git.ProviderKind() == GitProviderGitLab && profile.ReviewerCredentials.AuthMode != GitAuthModePAT {
+			return fmt.Errorf("%w: %s.reviewer_credentials.auth_mode %q is not supported for provider gitlab; use pat", ErrUnsupported, name, profile.ReviewerCredentials.AuthMode)
+		}
 		if err := validateCredentialLocation(name+".reviewer_credentials.credential", profile.ReviewerCredentials.Credential); err != nil {
 			return err
 		}

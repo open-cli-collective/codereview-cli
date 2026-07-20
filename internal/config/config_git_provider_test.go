@@ -97,3 +97,17 @@ func TestValidateRejectsGitLabProviderWithGitHubAppReviewerEntity(t *testing.T) 
 		t.Fatalf("Validate error = %v, want ErrUnsupported", err)
 	}
 }
+
+func TestCredentialRefsRejectsGitLabProviderWithGitHubAppReviewerCredentials(t *testing.T) {
+	cfg := Normalize(validFile())
+	profile := cfg.Profiles["home"]
+	profile.Git.Provider = GitProviderGitLab
+	profile.ReviewerCredentials = &ReviewerCredentials{
+		AuthMode:   GitAuthModeGitHubApp,
+		Credential: CredentialLocation{Store: LocalOSCredentialStoreID, Name: "codereview/reviewer"},
+		GitHubApp:  &GitHubAppConfig{AppID: "12345"},
+	}
+	if _, err := CredentialRefs(profile); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("CredentialRefs error = %v, want ErrUnsupported", err)
+	}
+}
