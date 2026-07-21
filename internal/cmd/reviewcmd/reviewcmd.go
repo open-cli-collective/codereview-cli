@@ -270,11 +270,10 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	_ = profileSpan.End(nil)
 	reviewerFast := profile.Fast
-	if flags.fast {
-		reviewerFast = true
-	}
-	if flags.noFast {
-		reviewerFast = false
+	if cmd.Flags().Changed("fast") {
+		reviewerFast = flags.fast
+	} else if cmd.Flags().Changed("no-fast") {
+		reviewerFast = !flags.noFast
 	}
 	if reviewerFast && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("fast mode cannot be used with --retry-posts"))

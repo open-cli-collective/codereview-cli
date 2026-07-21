@@ -936,7 +936,9 @@ func TestReviewFastPreferencePrecedence(t *testing.T) {
 		{name: "default off"},
 		{name: "profile default", profileFast: true, want: true},
 		{name: "flag enables", flags: []string{"--fast"}, want: true},
+		{name: "explicit fast false overrides profile", profileFast: true, flags: []string{"--fast=false"}},
 		{name: "no-fast overrides profile", profileFast: true, flags: []string{"--no-fast"}},
+		{name: "explicit no-fast false enables", flags: []string{"--no-fast=false"}, want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testConfig()

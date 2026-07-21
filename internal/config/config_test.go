@@ -236,6 +236,17 @@ profiles:
 	if !profile.Fast {
 		t.Fatal("Fast = false, want true")
 	}
+	savedPath := filepath.Join(t.TempDir(), "saved.yml")
+	if err := Save(savedPath, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	saved, err := Load(savedPath)
+	if err != nil {
+		t.Fatalf("reload saved config: %v", err)
+	}
+	if !saved.Profiles["codex"].Fast {
+		t.Fatal("saved Fast = false, want true")
+	}
 	if profile.LLM.Provider != LLMProviderOpenAI || profile.LLM.Adapter != LLMAdapterCodexCLI {
 		t.Fatalf("LLM = %#v, want openai/codex_cli", profile.LLM)
 	}

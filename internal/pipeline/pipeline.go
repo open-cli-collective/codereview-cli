@@ -2574,16 +2574,17 @@ func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string,
 	}
 	spec, ok := config.FindLLMRuntimeSpec(req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	runtimeName := fmt.Sprintf("%s/%s/%s", req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
+	warning := ""
 	for _, agent := range catalog.Agents {
 		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 		if err != nil {
 			return false, "", err
 		}
-		if !ok || !spec.SupportsFastMode(runtimeConfig.model) {
-			return false, fmt.Sprintf("warning: fast mode is unsupported for %s model %s; continuing at normal speed", runtimeName, runtimeConfig.model), nil
+		if warning == "" && (!ok || !spec.SupportsFastMode(runtimeConfig.model)) {
+			warning = fmt.Sprintf("warning: fast mode is unsupported for %s model %s; continuing at normal speed", runtimeName, runtimeConfig.model)
 		}
 	}
-	return true, "", nil
+	return warning == "", warning, nil
 }
 
 func resolveAgentModel(profile config.Profile, baselineOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {
