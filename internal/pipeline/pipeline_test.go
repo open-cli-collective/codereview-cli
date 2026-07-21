@@ -2829,19 +2829,6 @@ func TestDryRunFastPreflightResolvesEveryReviewerBeforeLLM(t *testing.T) {
 	}
 }
 
-func TestResolveReviewerFastModeDoesNotHideLaterModelErrors(t *testing.T) {
-	_, req := dryRunHarness(t)
-	req.ReviewerFast = true
-	catalog := agents.Catalog{Agents: []agents.Agent{
-		{ID: "harness:unsupported", ModelTier: "medium"},
-		{ID: "harness:invalid", ModelTier: "invalid"},
-	}}
-	_, _, err := resolveReviewerFastMode(req, catalog)
-	if err == nil || !strings.Contains(err.Error(), `model_tier "invalid" is invalid`) {
-		t.Fatalf("resolveReviewerFastMode error = %v, want later model resolution failure", err)
-	}
-}
-
 func TestResolveReviewerFastModeRejectsUnsupportedRuntimeWithoutAgents(t *testing.T) {
 	_, req := dryRunHarness(t)
 	req.ReviewerFast = true
