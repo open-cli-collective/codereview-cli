@@ -1853,6 +1853,16 @@ func TestSubprocessAdapterDefaultsTaskTimeout(t *testing.T) {
 	}
 }
 
+func assertIntPtr(t *testing.T, name string, got *int, want int) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("%s = nil, want %d", name, want)
+	}
+	if *got != want {
+		t.Fatalf("%s = %d, want %d", name, *got, want)
+	}
+}
+
 func runClaudeForegroundHelper(mode string, args []string) {
 	scratch := flagValue(args, "--add-dir")
 	switch mode {
@@ -1860,7 +1870,7 @@ func runClaudeForegroundHelper(mode string, args []string) {
 		if scratch != "" {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
-		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1"}`)
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"speed":"standard"}}`)
 	case "foreground-no-result":
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"forgot the file","session_id":"fg-session-2"}`)
 	case "foreground-fail":
@@ -1901,6 +1911,18 @@ func TestSubprocessClaudeForegroundMode(t *testing.T) {
 	}
 	if stream.SessionID() != "fg-session-1" {
 		t.Fatalf("SessionID = %q, want fg-session-1", stream.SessionID())
+	}
+	// Usage/cost must be recovered from the print-mode envelope; otherwise the
+	// review footer reports "unavailable" for every foreground review.
+	assertIntPtr(t, "Usage.TokensIn", response.Usage.TokensIn, 11)
+	assertIntPtr(t, "Usage.TokensOut", response.Usage.TokensOut, 22)
+	assertIntPtr(t, "Usage.CacheRead", response.Usage.CacheRead, 33)
+	assertIntPtr(t, "Usage.CacheCreate", response.Usage.CacheCreate, 44)
+	if response.Usage.CostUSD == nil || *response.Usage.CostUSD != 0.1234 {
+		t.Fatalf("Usage.CostUSD = %v, want 0.1234", response.Usage.CostUSD)
+	}
+	if response.Usage.Speed != "standard" {
+		t.Fatalf("Usage.Speed = %q, want standard", response.Usage.Speed)
 	}
 
 	records := readHelperRecords(t, recordPath)

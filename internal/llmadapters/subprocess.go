@@ -392,9 +392,39 @@ func (a *SubprocessAdapter) startClaudeForeground(ctx context.Context, req Reque
 // claudeForegroundOutput is the trailing JSON document `claude -p
 // --output-format json` prints on exit.
 type claudeForegroundOutput struct {
-	SessionID string `json:"session_id"`
-	IsError   bool   `json:"is_error"`
-	Result    string `json:"result"`
+	SessionID    string                        `json:"session_id"`
+	IsError      bool                          `json:"is_error"`
+	Result       string                        `json:"result"`
+	TotalCostUSD *float64                      `json:"total_cost_usd"`
+	Usage        *claudeForegroundUsagePayload `json:"usage"`
+}
+
+// claudeForegroundUsagePayload mirrors the `usage` object in the print-mode
+// result envelope. All token counts are nullable so a field the CLI omits
+// stays unavailable rather than being recorded as a real zero.
+type claudeForegroundUsagePayload struct {
+	InputTokens         *int   `json:"input_tokens"`
+	OutputTokens        *int   `json:"output_tokens"`
+	CacheReadTokens     *int   `json:"cache_read_input_tokens"`
+	CacheCreationTokens *int   `json:"cache_creation_input_tokens"`
+	Speed               string `json:"speed"`
+}
+
+// usage projects the print-mode result envelope onto the adapter Usage type.
+// The bg transport recovered this from the session transcript; the foreground
+// transport gets it directly from the envelope claude prints on exit. Without
+// it, every foreground session records empty token/cost columns and the review
+// footer reads "unavailable".
+func (o claudeForegroundOutput) usage() Usage {
+	u := Usage{CostUSD: o.TotalCostUSD}
+	if o.Usage != nil {
+		u.TokensIn = o.Usage.InputTokens
+		u.TokensOut = o.Usage.OutputTokens
+		u.CacheRead = o.Usage.CacheReadTokens
+		u.CacheCreate = o.Usage.CacheCreationTokens
+		u.Speed = o.Usage.Speed
+	}
+	return u
 }
 
 // parseClaudeForegroundOutput extracts the print-mode result document from
@@ -473,7 +503,7 @@ func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cm
 		output, err := readFirstNonEmptyFile([]string{filepath.Join(scratch, claudeBGResultFilename)})
 		switch {
 		case err == nil:
-			result.response = Response{StructuredOutput: output}
+			result.response = Response{StructuredOutput: output, Usage: parsed.usage()}
 		case parsed.IsError:
 			detail := strings.TrimSpace(parsed.Result)
 			runErr := fmt.Errorf("llm subprocess: Claude foreground task errored: %s", detail)
