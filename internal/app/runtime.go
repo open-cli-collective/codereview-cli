@@ -21,6 +21,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitexec"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/hooks"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -91,7 +92,7 @@ type SelectionOpenRequest struct {
 
 // GitProviderFactory builds a provider and the credential used to authenticate
 // it.
-type GitProviderFactory func(config.GitConfig, credentials.Reader, githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error)
+type GitProviderFactory func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error)
 
 // PostingIdentityResolver resolves the identity used for live review writes.
 type PostingIdentityResolver func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error)
@@ -103,7 +104,7 @@ type AdapterFactory func(config.LLMConfig, credentials.Reader) (llm.Adapter, err
 // defaults.
 type Dependencies struct {
 	NewGitProvider         GitProviderFactory
-	NewGitCommand          func(string, gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error)
+	NewGitCommand          func(string, gitexec.TokenSource, string) (func(context.Context, string, ...string) ([]byte, error), error)
 	ResolveRepoRoot        func(context.Context) (string, error)
 	ResolvePostingIdentity PostingIdentityResolver
 	NewAdapter             AdapterFactory
@@ -114,16 +115,14 @@ type Dependencies struct {
 
 func (d Dependencies) withDefaults() Dependencies {
 	if d.NewGitProvider == nil {
-		d.NewGitProvider = func(git config.GitConfig, store credentials.Reader, opts githubprovider.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-			return githubprovider.NewFromGitConfig(git, store, opts)
-		}
+		d.NewGitProvider = gitproviders.New
 	}
 	if d.ResolvePostingIdentity == nil {
 		d.ResolvePostingIdentity = resolvePostingIdentity
 	}
 	if d.NewGitCommand == nil {
-		d.NewGitCommand = func(host string, tokens gitexec.TokenSource) (func(context.Context, string, ...string) ([]byte, error), error) {
-			client, err := gitexec.New(host, tokens)
+		d.NewGitCommand = func(host string, tokens gitexec.TokenSource, username string) (func(context.Context, string, ...string) ([]byte, error), error) {
+			client, err := gitexec.NewWithUsername(host, tokens, username)
 			if err != nil {
 				return nil, err
 			}
@@ -169,7 +168,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		cleanup()
 		return Runtime{}, err
 	}
-	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(repoProvider, repoCredential))
+	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(repoProvider, repoCredential), gitproviders.GitBasicAuthUsername(profile.Git.ProviderKind()))
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
@@ -274,7 +273,7 @@ func writeReviewAuthorityWarning(warnings io.Writer, postingIdentity gitprovider
 		return
 	}
 	repo := fmt.Sprintf("%s/%s", ref.Owner, ref.Repo)
-	_, _ = fmt.Fprintf(warnings, "warning: posting identity %q may not create GitHub reviews that count toward PR approval state for %s (%s); continuing because the review can still be posted\n", postingIdentity.Login, repo, detail)
+	_, _ = fmt.Fprintf(warnings, "warning: posting identity %q may not create reviews that count toward PR approval state for %s on %s (%s); continuing because the review can still be posted\n", postingIdentity.Login, repo, ref.Host, detail)
 }
 
 func commandName(command string) string {
@@ -295,6 +294,7 @@ func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 		githubApp = &app
 	}
 	return config.GitConfig{
+		Provider:      profile.Git.Provider,
 		Host:          profile.Git.Host,
 		AuthMode:      profile.ReviewerCredentials.AuthMode,
 		Credential:    profile.ReviewerCredentials.Credential,
@@ -362,14 +362,17 @@ func normalizeRuntimeProfile(profile config.Profile) config.Profile {
 	}).Profiles["runtime"]
 }
 
-func gitProviderOptions(profile config.Profile, git config.GitConfig, ref gitprovider.PRRef) githubprovider.Options {
-	opts := githubprovider.Options{}
+func gitProviderOptions(profile config.Profile, git config.GitConfig, ref gitprovider.PRRef) gitproviders.Options {
+	opts := gitproviders.Options{}
+	if git.ProviderKind() != config.GitProviderGitHub {
+		return opts
+	}
 	if installationID := config.PinnedGitHubAppInstallationIDForGit(profile, git); installationID != "" {
-		opts.InstallationID = installationID
+		opts.GitHub.InstallationID = installationID
 		return opts
 	}
 	if strings.TrimSpace(ref.Owner) != "" && strings.TrimSpace(ref.Repo) != "" {
-		opts.InstallationLookup = &githubprovider.InstallationLookup{
+		opts.GitHub.InstallationLookup = &githubprovider.InstallationLookup{
 			Owner: ref.Owner,
 			Repo:  ref.Repo,
 		}

@@ -5249,7 +5249,7 @@ func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
 	case 3:
 		repos = append(repos, parts[2])
 	default:
-		return configedit.RepositoryRouteSpec{}, fmt.Errorf("route %q must be host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a GitHub PR URL", raw)
+		return configedit.RepositoryRouteSpec{}, fmt.Errorf("route %q must be host/namespace, host/namespace/repo, host/namespace [repo1, repo2], or a PR/MR URL", raw)
 	}
 	return configedit.NormalizeRepositoryRouteSpec(configedit.RepositoryRouteSpec{
 		Host:      parts[0],
@@ -5260,14 +5260,15 @@ func parseInitRouteSpec(raw string) (configedit.RepositoryRouteSpec, error) {
 
 func parseInitRoutePRURL(raw string) (gitprovider.PRRef, error) {
 	trimmed := strings.TrimSpace(raw)
-	ref, err := prref.ParseGitHubPullURL(trimmed)
+	ref, _, err := prref.ParsePullURL(trimmed)
 	if err == nil {
 		return ref, nil
 	}
 	if strings.Contains(trimmed, "://") {
 		return gitprovider.PRRef{}, err
 	}
-	return prref.ParseGitHubPullURL("https://" + strings.TrimPrefix(trimmed, "//"))
+	ref, _, err = prref.ParsePullURL("https://" + strings.TrimPrefix(trimmed, "//"))
+	return ref, err
 }
 
 func collectInteractiveInitRetentionConfig(opts *root.Options, deps initDeps, cfg config.File) (config.File, error) {

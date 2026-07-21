@@ -122,7 +122,19 @@ type ProviderCaps struct {
 	NativeFileLevelComments bool
 	ThreadResolution        bool
 	BundleInlineOnSubmit    bool
+	// ReviewSummaryAsComment indicates SubmitReview posts its summary as a
+	// plain pull-request comment instead of a first-class review object, so
+	// posted-review reconciliation must scan issue comments.
+	ReviewSummaryAsComment bool
+	// HeadRefNamespace is the host's virtual ref namespace that serves
+	// pull-request head commits (refs/<namespace>/<number>/head). Empty
+	// means the GitHub "pull" namespace.
+	HeadRefNamespace string
 }
+
+// PullHeadRefNamespace is the default virtual ref namespace for pull-request
+// heads when a provider does not advertise one.
+const PullHeadRefNamespace = "pull"
 
 type (
 	// CommentID identifies a provider comment.

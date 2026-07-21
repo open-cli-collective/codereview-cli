@@ -584,7 +584,7 @@ func validateCases(cases []Case) error {
 			return fmt.Errorf("%w: duplicate case id %q", ErrInvalid, benchCase.ID)
 		}
 		seen[benchCase.ID] = true
-		if _, err := prref.ParseGitHubPullURL(benchCase.PR); err != nil {
+		if _, _, err := prref.ParsePullURL(benchCase.PR); err != nil {
 			return fmt.Errorf("%w: case %q invalid PR URL: %w", ErrInvalid, benchCase.ID, err)
 		}
 		if err := validateOptionalSHA("review_base_sha", benchCase.ID, benchCase.ReviewBaseSHA, benchCase.reviewBaseSHASet); err != nil {
@@ -642,7 +642,7 @@ func validateCandidateCaseHosts(candidates []Candidate, cases []Case, cfg config
 		profile := cfg.Profiles[candidate.Profile]
 		for i, benchCase := range cases {
 			if !parsed[i] {
-				ref, err := prref.ParseGitHubPullURL(benchCase.PR)
+				ref, _, err := prref.ParsePullURL(benchCase.PR)
 				if err != nil {
 					return fmt.Errorf("%w: case %q invalid PR URL: %w", ErrInvalid, benchCase.ID, err)
 				}

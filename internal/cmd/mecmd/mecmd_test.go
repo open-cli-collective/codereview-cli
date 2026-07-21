@@ -29,6 +29,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -67,12 +68,12 @@ func TestMeJSONDoesNotLeakTokenMaterial(t *testing.T) {
 	}))
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-		return &githubResolver{
+		return &providerResolver{
 			cfg: cfg,
-			options: githubprovider.Options{
+			options: gitproviders.Options{GitHub: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
-			},
+			}},
 		}, nil, nil
 	})
 
@@ -115,12 +116,12 @@ func TestMeUsesNamedSecretsStoreWithoutBackendOverride(t *testing.T) {
 	}))
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-		return &githubResolver{
+		return &providerResolver{
 			cfg: cfg,
-			options: githubprovider.Options{
+			options: gitproviders.Options{GitHub: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
-			},
+			}},
 		}, nil, nil
 	})
 
@@ -198,12 +199,12 @@ func TestMeReviewerCredentialsTakePrecedenceOverGitHubAppRepositoryAccess(t *tes
 	}))
 	defer server.Close()
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, _ *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-		return &githubResolver{
+		return &providerResolver{
 			cfg: cfg,
-			options: githubprovider.Options{
+			options: gitproviders.Options{GitHub: githubprovider.Options{
 				BaseURL:    server.URL,
 				GraphQLURL: server.URL + "/graphql",
-			},
+			}},
 		}, nil, nil
 	})
 
@@ -517,10 +518,10 @@ profiles:
     llm_runtime: claude-cli
 `)
 	cmd, out := newTestCommandWithFactory(path, func(_ *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-		return &githubResolver{
+		return &providerResolver{
 			cfg:      cfg,
 			warnings: opts.Stderr,
-			NewClient: func(config.GitConfig, credentials.Reader, githubprovider.Options) (*githubprovider.Client, gitprovider.Credential, error) {
+			NewClient: func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
 				t.Fatal("GitHub client should not be opened for discovery-mode app identity without PR context")
 				return nil, gitprovider.Credential{}, nil
 			},
@@ -804,12 +805,12 @@ func TestGitHubResolverUsesCR08FactoryAndCredentialStore(t *testing.T) {
 
 	resolverCfg := fileBackendConfig(t)
 	resolverCfg.Profiles = map[string]config.Profile{"work": resolverCfg.Profiles["work"]}
-	resolver := &githubResolver{
+	resolver := &providerResolver{
 		cfg: resolverCfg,
-		options: githubprovider.Options{
+		options: gitproviders.Options{GitHub: githubprovider.Options{
 			BaseURL:    server.URL,
 			GraphQLURL: server.URL + "/graphql",
-		},
+		}},
 	}
 	gitIdentity, err := resolver.ResolveIdentity(context.Background(), "work", config.GitConfig{
 		Host:       "github.com",
@@ -1011,13 +1012,13 @@ func runOrgDeploymentCommand(t *testing.T, path string, stdin *strings.Reader, f
 
 func orgDeploymentFactory(serverURL string) IdentityResolverFactory {
 	return func(_ *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
-		return &githubResolver{
+		return &providerResolver{
 			cfg:     cfg,
 			backend: opts.Backend,
-			options: githubprovider.Options{
+			options: gitproviders.Options{GitHub: githubprovider.Options{
 				BaseURL:    serverURL,
 				GraphQLURL: serverURL + "/graphql",
-			},
+			}},
 		}, nil, nil
 	}
 }

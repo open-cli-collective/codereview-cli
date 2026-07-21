@@ -249,7 +249,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 		Short: "Preview which profile a PR URL would resolve to",
 		Args:  exitcode.ExactArgs(1, "config resolve-profile requires <PR_URL>"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ref, err := prref.ParseGitHubPullURL(args[0])
+			ref, urlProvider, err := prref.ParsePullURL(args[0])
 			if err != nil {
 				return exitcode.Usage(err)
 			}
@@ -267,6 +267,9 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			}
 			if !prref.SameHost(ref.Host, resolution.Profile.Git.Host) {
 				return exitcode.Usage(fmt.Errorf("PR host %q must match configured git host %q", ref.Host, resolution.Profile.Git.Host))
+			}
+			if err := prref.MatchProvider(urlProvider, string(resolution.Profile.Git.ProviderKind())); err != nil {
+				return exitcode.Usage(err)
 			}
 			result := configResolveProfileView(args[0], resolution)
 			return view.Render(opts.Stdout, resolveProfileJSON, result, func(w io.Writer) error {

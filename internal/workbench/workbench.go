@@ -53,6 +53,10 @@ type Request struct {
 	ReviewPR     gitprovider.PR
 	ChangedFiles []string
 	Artifacts    runartifact.Paths
+	// HeadRefNamespace is the host's virtual ref namespace serving
+	// pull-request heads (gitprovider.ProviderCaps.HeadRefNamespace). Empty
+	// means the GitHub "pull" namespace.
+	HeadRefNamespace string
 }
 
 type metadataArtifact struct {
@@ -129,7 +133,7 @@ func (p *RunPreparer) Prepare(ctx context.Context, req Request) error {
 		return err
 	}
 	if !sameBranchRepo(req.ReviewPR.Base, req.ReviewPR.Head) {
-		if err := ensurePullRequestHead(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.PRRef.Number, req.ReviewPR.Head, baseRemoteURL); err != nil {
+		if err := ensurePullRequestHead(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.PRRef.Number, req.HeadRefNamespace, req.ReviewPR.Head, baseRemoteURL); err != nil {
 			return err
 		}
 	} else if err := ensureCommit(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head, baseRemoteURL); err != nil {
@@ -213,10 +217,21 @@ func branchRemoteURL(branch gitprovider.PRBranchRef) (string, error) {
 	host := strings.TrimSpace(branch.Host)
 	owner := strings.Trim(strings.TrimSpace(branch.Owner), "/")
 	repo := strings.TrimSuffix(strings.Trim(strings.TrimSpace(branch.Repo), "/"), ".git")
-	if host == "" || owner == "" || repo == "" || strings.Contains(host, "://") || strings.Contains(owner, "/") || strings.Contains(repo, "/") {
+	// Owners may span nested namespaces on hosts like GitLab, so slashes are
+	// allowed there but every segment must still be a plain path element.
+	if host == "" || owner == "" || repo == "" || strings.Contains(host, "://") || !validRepoPathSegments(owner) || strings.Contains(repo, "/") || !validRepoPathSegments(repo) {
 		return "", fmt.Errorf("%w %s/%s on %s", ErrInvalidRepositoryIdentity, owner, repo, host)
 	}
 	return (&url.URL{Scheme: "https", Host: host, Path: "/" + owner + "/" + repo + ".git"}).String(), nil
+}
+
+func validRepoPathSegments(value string) bool {
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." || segment == "-" {
+			return false
+		}
+	}
+	return true
 }
 
 func ensureCommit(ctx context.Context, deps Deps, repoDir string, branch gitprovider.PRBranchRef, remoteURL string) error {
@@ -238,12 +253,28 @@ func ensureCommit(ctx context.Context, deps Deps, repoDir string, branch gitprov
 	return fmt.Errorf("pipeline: fetch commit %s for %s/%s from %q", prref.ShortSHA(branch.SHA), branch.Owner, branch.Repo, remoteURL)
 }
 
-func ensurePullRequestHead(ctx context.Context, deps Deps, repoDir string, number int, head gitprovider.PRBranchRef, remoteURL string) error {
-	ref := fmt.Sprintf("refs/pull/%d/head", number)
+func ensurePullRequestHead(ctx context.Context, deps Deps, repoDir string, number int, headRefNamespace string, head gitprovider.PRBranchRef, remoteURL string) error {
+	ref, err := pullHeadRef(headRefNamespace, number)
+	if err != nil {
+		return err
+	}
 	if _, err := deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, ref); err == nil && commitPresent(ctx, deps, repoDir, head.SHA) {
 		return nil
 	}
 	return fmt.Errorf("pipeline: fetch PR head commit %s from %q ref %q", prref.ShortSHA(head.SHA), remoteURL, ref)
+}
+
+func pullHeadRef(namespace string, number int) (string, error) {
+	namespace = strings.TrimSpace(namespace)
+	if namespace == "" {
+		namespace = gitprovider.PullHeadRefNamespace
+	}
+	for _, r := range namespace {
+		if r != '-' && r != '_' && (r < 'a' || r > 'z') {
+			return "", fmt.Errorf("%w refs/%s/%d/head", ErrUnsafeFetchRef, namespace, number)
+		}
+	}
+	return fmt.Sprintf("refs/%s/%d/head", namespace, number), nil
 }
 
 func validateFetchRef(ref string) error {

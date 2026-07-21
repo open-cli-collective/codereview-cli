@@ -258,7 +258,7 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		return finalized, runSpan.End(finalizeErr)
 	}
 	parseSpan := logger.Start("benchmark.select", "parse_pr", runID)
-	ref, err := prref.ParseGitHubPullURL(benchCase.PR)
+	ref, _, err := prref.ParsePullURL(benchCase.PR)
 	if err != nil {
 		_ = parseSpan.End(err)
 		return fail(err)

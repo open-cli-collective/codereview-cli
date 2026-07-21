@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 )
 
@@ -38,7 +39,7 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 		cleanup()
 		return SelectionRuntime{}, err
 	}
-	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(provider, credential))
+	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(provider, credential), gitproviders.GitBasicAuthUsername(profile.Git.ProviderKind()))
 	if err != nil {
 		cleanup()
 		return SelectionRuntime{}, err

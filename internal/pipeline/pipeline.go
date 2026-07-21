@@ -490,10 +490,11 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}
 	result := prepared.selectionResult()
 	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
-		PRRef:        req.PRRef,
-		ReviewPR:     prepared.reviewPR,
-		ChangedFiles: prepared.changedFiles,
-		Artifacts:    prepared.artifacts,
+		PRRef:            req.PRRef,
+		ReviewPR:         prepared.reviewPR,
+		ChangedFiles:     prepared.changedFiles,
+		Artifacts:        prepared.artifacts,
+		HeadRefNamespace: opts.Provider.Capabilities().HeadRefNamespace,
 	}); err != nil {
 		return SelectionResult{}, err
 	}
@@ -652,10 +653,11 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	result.Run = run
 
 	if err := workbench.Prepare(ctx, workbenchDeps(opts), workbench.Request{
-		PRRef:        req.PRRef,
-		ReviewPR:     prepared.reviewPR,
-		ChangedFiles: prepared.changedFiles,
-		Artifacts:    prepared.artifacts,
+		PRRef:            req.PRRef,
+		ReviewPR:         prepared.reviewPR,
+		ChangedFiles:     prepared.changedFiles,
+		Artifacts:        prepared.artifacts,
+		HeadRefNamespace: opts.Provider.Capabilities().HeadRefNamespace,
 	}); err != nil {
 		if errors.Is(err, workbench.ErrUnsafeFetchRef) || errors.Is(err, workbench.ErrInvalidRepositoryIdentity) {
 			return Result{}, Failure(FailureTerminal, err)
