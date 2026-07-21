@@ -355,7 +355,6 @@ type selectionSetupRequest struct {
 	Profile          config.Profile
 	PostingIdentity  gitprovider.Identity
 	AgentDirs        []string
-	ReviewRequest    Request
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
 	NoResolveThreads bool
@@ -386,6 +385,8 @@ type preparedSelectionContext struct {
 	currentHeadSHA   string
 	reviewBaseSHA    string
 	reviewHeadSHA    string
+	fastRequested    bool
+	fastIgnored      bool
 }
 
 type selectionPhaseRequest struct {
@@ -599,7 +600,6 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		Profile:          req.Profile,
 		PostingIdentity:  req.PostingIdentity,
 		AgentDirs:        req.AgentDirs,
-		ReviewRequest:    req,
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: req.NoResolveThreads,
@@ -618,6 +618,14 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	if err != nil {
 		return Result{}, err
 	}
+	prepared.fastRequested = req.ReviewerFast
+	effectiveFast, warning, err := resolveReviewerFastMode(req, prepared.catalog)
+	if err != nil {
+		return Result{}, err
+	}
+	prepared.fastIgnored = req.ReviewerFast && !effectiveFast
+	req.ReviewerFast = effectiveFast
+	opts.emitWarning(warning)
 
 	result := prepared.reviewResult()
 	run := mode.run
@@ -776,7 +784,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 	result.Findings = findings
 	result.ReviewerFailures = reviewerFailures
-	result.reviewerFastDelivered = reviewerFastDelivery(req.ReviewerFast, reviewerSessions)
+	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerSessions)
 	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles)
 	result.ReviewerCoverage = reviewerCoverage
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
@@ -876,7 +884,7 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 		return err
 	}
 	result.PlannedActions = plannedActions
-	return writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered))
+	return writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored))
 }
 
 func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitprovider.PR) (ledger.Run, bool, error) {
@@ -1070,10 +1078,6 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		return preparedSelectionContext{}, err
 	}
 	opts.emitReviewerCatalog(catalog, patchPaths(parsed.Patches))
-	if err := validateReviewerFastMode(req.ReviewRequest, catalog); err != nil {
-		return preparedSelectionContext{}, err
-	}
-
 	out := preparedSelectionContext{
 		pr:               pr,
 		reviewPR:         reviewPR,
@@ -2562,28 +2566,26 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, resolved.ResolvedModel, agent.Effort), nil
 }
 
-func validateReviewerFastMode(req Request, catalog agents.Catalog) error {
+func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string, error) {
 	if !req.ReviewerFast {
-		return nil
+		return false, "", nil
 	}
 	spec, ok := config.FindLLMRuntimeSpec(req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	runtimeName := fmt.Sprintf("%s/%s/%s", req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
-	if !ok {
-		return fmt.Errorf("pipeline: --fast is unsupported for runtime %s: runtime is not registered", runtimeName)
-	}
-	if len(spec.FastModeModels) == 0 {
-		return fmt.Errorf("pipeline: --fast is unsupported for runtime %s: adapter has no fast-mode mechanism", runtimeName)
+	warning := ""
+	if !ok || len(spec.FastModeModels) == 0 {
+		warning = fmt.Sprintf("warning: fast mode is unsupported for %s; continuing at normal speed", runtimeName)
 	}
 	for _, agent := range catalog.Agents {
 		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 		if err != nil {
-			return err
+			return false, "", err
 		}
-		if !spec.SupportsFastMode(runtimeConfig.model) {
-			return fmt.Errorf("pipeline: --fast is unsupported for runtime %s: reviewer %q resolves to model %q; supported models: %s", runtimeName, agent.ID, runtimeConfig.model, strings.Join(spec.FastModeModels, ", "))
+		if warning == "" && (!ok || !spec.SupportsFastMode(runtimeConfig.model)) {
+			warning = fmt.Sprintf("warning: fast mode is unsupported for %s model %s; continuing at normal speed", runtimeName, runtimeConfig.model)
 		}
 	}
-	return nil
+	return warning == "", warning, nil
 }
 
 func resolveAgentModel(profile config.Profile, baselineOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {

@@ -146,6 +146,7 @@ type Profile struct {
 	Git              GitConfig       `yaml:"-" json:"-"`
 	Reviewer         ProfileReviewer `yaml:"reviewer" json:"reviewer"`
 	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
+	Fast             bool            `yaml:"fast,omitempty" json:"fast,omitempty"`
 	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 	Hooks            []Hook          `yaml:"hooks,omitempty" json:"hooks,omitempty"`
@@ -163,6 +164,7 @@ type profileYAML struct {
 	Git              GitConfig       `yaml:"git,omitempty" json:"git,omitempty"`
 	Reviewer         ProfileReviewer `yaml:"reviewer" json:"reviewer"`
 	LLMRuntime       string          `yaml:"llm_runtime" json:"llm_runtime"`
+	Fast             bool            `yaml:"fast,omitempty" json:"fast,omitempty"`
 	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 	Hooks            []Hook          `yaml:"hooks,omitempty" json:"hooks,omitempty"`
@@ -210,6 +212,7 @@ func (p *Profile) UnmarshalYAML(value *yaml.Node) error {
 		Git:              raw.Git,
 		Reviewer:         raw.Reviewer,
 		LLMRuntime:       raw.LLMRuntime,
+		Fast:             raw.Fast,
 		AgentSources:     raw.AgentSources,
 		ReviewPolicy:     raw.ReviewPolicy,
 		Hooks:            raw.Hooks,
@@ -224,6 +227,7 @@ func (p Profile) MarshalYAML() (any, error) {
 		RepositoryAccess: p.RepositoryAccess,
 		Reviewer:         p.Reviewer,
 		LLMRuntime:       p.LLMRuntime,
+		Fast:             p.Fast,
 		AgentSources:     p.AgentSources,
 		ReviewPolicy:     p.ReviewPolicy,
 		Hooks:            p.Hooks,
@@ -561,6 +565,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 			string(ModelTierMedium): "gpt-5.4",
 			string(ModelTierLarge):  "gpt-5.5",
 		},
+		FastModeModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 	},
 	{
 		Provider:      LLMProviderOpenAI,

@@ -125,17 +125,17 @@ func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map
 	return artifact
 }
 
-func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.Selection, fastDelivered string) map[string]reviewerRuntimeResolution {
-	if req.ReviewerFast && fastDelivered != "fast" && fastDelivered != "standard" {
+func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.Selection, fastDelivered string, fastRequested, fastIgnored bool) map[string]reviewerRuntimeResolution {
+	if fastRequested && fastDelivered != "fast" && fastDelivered != "standard" {
 		fastDelivered = "unknown"
 	}
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
-		if !req.ReviewerFast {
+		if !fastRequested {
 			return nil
 		}
 		out := make(map[string]reviewerRuntimeResolution, len(selection.SelectedAgents))
 		for _, selected := range selection.SelectedAgents {
-			out[selected.AgentID] = reviewerRuntimeResolution{Mode: "override", ResolvedModel: strings.TrimSpace(req.ReviewerModelOverride), Fast: true, FastDelivered: fastDelivered}
+			out[selected.AgentID] = reviewerRuntimeResolution{Mode: "override", ResolvedModel: strings.TrimSpace(req.ReviewerModelOverride), Fast: true, FastIgnored: fastIgnored, FastDelivered: fastDelivered}
 		}
 		return out
 	}
@@ -156,8 +156,9 @@ func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.
 		if err != nil {
 			continue
 		}
-		resolution.Fast = req.ReviewerFast
-		if req.ReviewerFast {
+		resolution.Fast = fastRequested
+		resolution.FastIgnored = fastIgnored
+		if fastRequested {
 			resolution.FastDelivered = fastDelivered
 		}
 		out[selected.AgentID] = resolution

@@ -659,6 +659,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		if req.Effort != "" {
 			args = append(args, "-c", "model_reasoning_effort="+req.Effort)
 		}
+		if req.Fast {
+			args = append(args, "-c", `service_tier="fast"`)
+		}
 		if resumeSessionID != "" {
 			args = subprocessCodexResumeArgs()
 			if req.Model != "" {
@@ -666,6 +669,9 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			}
 			if req.Effort != "" {
 				args = append(args, "-c", "model_reasoning_effort="+req.Effort)
+			}
+			if req.Fast {
+				args = append(args, "-c", `service_tier="fast"`)
 			}
 			args = append(args, resumeSessionID)
 		}

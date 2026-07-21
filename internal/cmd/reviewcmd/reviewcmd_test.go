@@ -926,6 +926,69 @@ func TestReviewFastPropagatesToPipelineRequest(t *testing.T) {
 	}
 }
 
+func TestReviewFastPreferencePrecedence(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		profileFast bool
+		flags       []string
+		want        bool
+	}{
+		{name: "default off"},
+		{name: "profile default", profileFast: true, want: true},
+		{name: "flag enables", flags: []string{"--fast"}, want: true},
+		{name: "explicit fast false overrides profile", profileFast: true, flags: []string{"--fast=false"}},
+		{name: "no-fast overrides profile", profileFast: true, flags: []string{"--no-fast"}},
+		{name: "explicit no-fast false enables", flags: []string{"--no-fast=false"}, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			profile := cfg.Profiles["home"]
+			profile.Fast = tt.profileFast
+			cfg.Profiles["home"] = profile
+			runner := &fakeRunner{result: testPipelineResult(false)}
+			cmd, _ := newTestCommand(t, cfg, fakeFactory(runner))
+			args := []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}
+			args = append(args, tt.flags...)
+			if err := root.Execute(cmd, args); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if len(runner.requests) != 1 || runner.requests[0].ReviewerFast != tt.want {
+				t.Fatalf("requests = %#v, want ReviewerFast=%t", runner.requests, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewRetryPostsUsesEffectiveFastPreference(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.Fast = true
+	cfg.Profiles["home"] = profile
+
+	t.Run("profile fast rejects before runtime construction", func(t *testing.T) {
+		factoryCalled := false
+		cmd, _ := newTestCommand(t, cfg, func(context.Context, app.OpenRequest) (app.Runtime, error) {
+			factoryCalled = true
+			return app.Runtime{}, nil
+		})
+		err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts"})
+		if exitcode.FromError(err) != exitcode.UsageError || factoryCalled {
+			t.Fatalf("Execute error = %v, factory called = %t, want usage before runtime", err, factoryCalled)
+		}
+	})
+
+	t.Run("no-fast permits retry", func(t *testing.T) {
+		runner := &fakeRunner{liveResult: testLiveResult(false)}
+		cmd, _ := newTestCommand(t, cfg, fakeFactory(runner))
+		if err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--no-fast"}); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if len(runner.liveRequests) != 1 || runner.liveRequests[0].ReviewerFast {
+			t.Fatalf("live requests = %#v, want standard-speed retry", runner.liveRequests)
+		}
+	})
+}
+
 func TestReviewLiveSessionPassesNamedSession(t *testing.T) {
 	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
@@ -973,6 +1036,7 @@ func TestReviewRejectsInvalidInputs(t *testing.T) {
 		{name: "session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--session", "daily"}},
 		{name: "fresh session retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--fresh-session"}},
 		{name: "fast retry posts", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--retry-posts", "--fast"}},
+		{name: "fast flag conflict", args: []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--fast", "--no-fast"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

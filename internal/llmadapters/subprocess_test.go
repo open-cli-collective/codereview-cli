@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
 
 type trackedAfterFuncContext struct {
@@ -764,6 +766,9 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			}
 		}
 		assertFlagValue(t, record.AdapterArgs, "--sandbox", "read-only")
+		if got := strings.Join(flagValues(record.AdapterArgs, "-c"), ","); got != "model_reasoning_effort=high" {
+			t.Fatalf("Codex config overrides = %q, want standard-speed reasoning only", got)
+		}
 		if cd := flagValue(record.AdapterArgs, "--cd"); !samePath(t, cd, record.Cwd) {
 			t.Fatalf("flagValue(--cd) = %q, helper cwd = %q, want same path", cd, record.Cwd)
 		}
@@ -828,6 +833,9 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		}
 		assertFlagValue(t, record.AdapterArgs, "--model", "gpt-5.5")
 		assertFlagValue(t, record.AdapterArgs, "-c", "model_reasoning_effort=high")
+		if got := strings.Join(flagValues(record.AdapterArgs, "-c"), ","); got != "model_reasoning_effort=high" {
+			t.Fatalf("Codex resume config overrides = %q, want standard-speed reasoning only", got)
+		}
 		promptIndex := len(argsBeforePrompt(record.AdapterArgs))
 		if promptIndex+2 != len(record.AdapterArgs) || record.AdapterArgs[promptIndex] != "--" || record.AdapterArgs[promptIndex+1] != "resume prompt" {
 			t.Fatalf("args = %#v, want -- separated resumed prompt", record.AdapterArgs)
@@ -836,6 +844,36 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			t.Fatalf("resume session arg = %q in %#v, want prior-session immediately before prompt separator", got, record.AdapterArgs)
 		}
 	})
+
+	for _, tt := range []struct {
+		name      string
+		sessionID string
+	}{
+		{name: "fresh"},
+		{name: "resume", sessionID: "prior-session"},
+	} {
+		t.Run("fast "+tt.name+" uses service tier", func(t *testing.T) {
+			recordPath := filepath.Join(t.TempDir(), "records.jsonl")
+			adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+			req := Request{Model: "gpt-5.5", Effort: "high", Prompt: "prompt", Fast: true}
+			var stream llm.Stream
+			var err error
+			if tt.sessionID == "" {
+				stream, err = adapter.Start(context.Background(), req)
+			} else {
+				stream, err = adapter.Resume(context.Background(), tt.sessionID, req)
+			}
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			if _, err := stream.Wait(context.Background()); err != nil {
+				t.Fatalf("Wait: %v", err)
+			}
+			if got := strings.Join(flagValues(readHelperRecord(t, recordPath).AdapterArgs, "-c"), ","); got != `model_reasoning_effort=high,service_tier="fast"` {
+				t.Fatalf("Codex config overrides = %q, want fast service tier", got)
+			}
+		})
+	}
 
 	t.Run("resume reviewer workspace is rejected", func(t *testing.T) {
 		tempDir := t.TempDir()
@@ -1469,6 +1507,7 @@ func newCodexHelperAdapter(mode string, recordPath string, timeout time.Duration
 		Env:                    append(helperEnv(mode, recordPath), extraEnv...),
 		Timeout:                timeout,
 		AllowBestEffortNoTools: true,
+		FastModeModels:         []string{"gpt-5.5"},
 	})
 }
 
