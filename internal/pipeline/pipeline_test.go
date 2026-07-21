@@ -2760,6 +2760,16 @@ func TestResolveReviewerFastModeDoesNotHideLaterModelErrors(t *testing.T) {
 	}
 }
 
+func TestResolveReviewerFastModeRejectsUnsupportedRuntimeWithoutAgents(t *testing.T) {
+	_, req := dryRunHarness(t)
+	req.ReviewerFast = true
+	req.Profile.LLM = config.LLMConfig{Provider: config.LLMProviderPi, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterPiRPC}
+	effective, warning, err := resolveReviewerFastMode(req, agents.Catalog{})
+	if err != nil || effective || warning != "warning: fast mode is unsupported for pi/subscription/pi_rpc; continuing at normal speed" {
+		t.Fatalf("resolveReviewerFastMode = (%t, %q, %v), want unsupported runtime fallback", effective, warning, err)
+	}
+}
+
 func TestDryRunPrunesConfiguredRetentionBeforeFetch(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

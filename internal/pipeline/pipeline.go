@@ -355,7 +355,6 @@ type selectionSetupRequest struct {
 	Profile          config.Profile
 	PostingIdentity  gitprovider.Identity
 	AgentDirs        []string
-	ReviewRequest    Request
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
 	NoResolveThreads bool
@@ -601,7 +600,6 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		Profile:          req.Profile,
 		PostingIdentity:  req.PostingIdentity,
 		AgentDirs:        req.AgentDirs,
-		ReviewRequest:    req,
 		ReviewBaseSHA:    req.ReviewBaseSHA,
 		ReviewHeadSHA:    req.ReviewHeadSHA,
 		NoResolveThreads: req.NoResolveThreads,
@@ -2575,6 +2573,9 @@ func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string,
 	spec, ok := config.FindLLMRuntimeSpec(req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	runtimeName := fmt.Sprintf("%s/%s/%s", req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	warning := ""
+	if !ok || len(spec.FastModeModels) == 0 {
+		warning = fmt.Sprintf("warning: fast mode is unsupported for %s; continuing at normal speed", runtimeName)
+	}
 	for _, agent := range catalog.Agents {
 		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 		if err != nil {
