@@ -43,8 +43,9 @@ including after pushes and across dry-run/live invocations. --session selects
 a named live-review session instead; --fresh-session starts a fresh provider
 conversation for this invocation.
 
---fast requests fast execution for reviewer agents only. The configured
-adapter and every possible reviewer model must support it.
+--fast requests fast execution for reviewer agents only; --no-fast disables it.
+CLI flags override the profile default. Unsupported runtimes or reviewer models
+emit a warning and continue at normal speed.
 
 If no existing approval is present and a prior codereview marker exists from
 the posting identity, cr can fast-path approval when the PR author posts an
@@ -66,6 +67,7 @@ type commandFlags struct {
 	retryPosts        bool
 	freshSession      bool
 	fast              bool
+	noFast            bool
 	agentsDirs        []string
 	failOn            string
 	sessionName       string
@@ -108,6 +110,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review or checking approval overrides")
 	cmd.Flags().BoolVar(&flags.freshSession, "fresh-session", false, "Start a fresh provider conversation without changing local review gates")
 	cmd.Flags().BoolVar(&flags.fast, "fast", false, "Request fast execution for supported reviewer runtimes and models")
+	cmd.Flags().BoolVar(&flags.noFast, "no-fast", false, "Disable fast execution for reviewer agents")
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
 	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Override the PR's default LLM session with a named live-review session")
@@ -129,6 +132,9 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 }
 
 func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags commandFlags, prArg string) error {
+	if cmd.Flags().Changed("fast") && cmd.Flags().Changed("no-fast") {
+		return exitcode.Usage(fmt.Errorf("--fast and --no-fast are mutually exclusive"))
+	}
 	if flags.noPost {
 		flags.dryRun = true
 	}
@@ -207,9 +213,6 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if flags.freshSession && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("--fresh-session cannot be used with --retry-posts"))
 	}
-	if flags.fast && flags.retryPosts {
-		return exitcode.Usage(fmt.Errorf("--fast cannot be used with --retry-posts"))
-	}
 	if flags.maxAgents < 0 {
 		return exitcode.Usage(fmt.Errorf("--max-agents must be non-negative"))
 	}
@@ -266,6 +269,16 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.Usage(profileSpan.End(err))
 	}
 	_ = profileSpan.End(nil)
+	reviewerFast := profile.Fast
+	if flags.fast {
+		reviewerFast = true
+	}
+	if flags.noFast {
+		reviewerFast = false
+	}
+	if reviewerFast && flags.retryPosts {
+		return exitcode.Usage(fmt.Errorf("fast mode cannot be used with --retry-posts"))
+	}
 
 	runtimeReq := app.OpenRequest{
 		Config:                            cfg,
@@ -316,7 +329,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ReviewerModelOverride:       reviewerModel,
 		ReviewerModelTierOverride:   reviewerModelTier,
 		ReviewerEffortOverride:      reviewerEffort,
-		ReviewerFast:                flags.fast,
+		ReviewerFast:                reviewerFast,
 		ReviewBaseSHA:               reviewBaseSHA,
 		ReviewHeadSHA:               reviewHeadSHA,
 		Rerun:                       flags.rerun,

@@ -546,6 +546,7 @@ Run `cr config show` to inspect the active profile and credential status.
 ```yaml
 profiles:
   default:
+    fast: false
     git:
       host: github.com
       auth_mode: pat
@@ -1111,7 +1112,8 @@ Modes:
 | `--rerun` | Bypass existing local approval, approval-override, resume, and marker gates and start a new live review while retaining provider-session reuse. Mutually exclusive with `--retry-posts`. |
 | `--retry-posts` | Retry missing or failed required posts for an existing run without rerunning LLM planning or checking approval overrides. Mutually exclusive with `--rerun` and incompatible with `--session`. |
 | `--fresh-session` | Start a fresh provider conversation for this invocation without changing local review gates. Incompatible with `--retry-posts`, which does not run LLM planning. |
-| `--fast` | Request fast execution for reviewer agents. Incompatible with `--retry-posts`; unsupported runtime/model combinations fail before LLM planning. |
+| `--fast` | Enable fast execution for reviewer agents, overriding the profile default. Incompatible with `--retry-posts`. |
+| `--no-fast` | Disable fast execution for reviewer agents, overriding the profile default. Mutually exclusive with `--fast`. |
 
 Review selection and execution flags:
 
@@ -1144,18 +1146,24 @@ Policy and output flags:
 | `--no-resolve-threads` | Do not plan thread-resolution actions. Also implied by profile `resolve_threads: never`. |
 | `--json` | Emit JSON. |
 
-Fast mode currently supports `claude_cli` and `anthropic_api` with
-`claude-opus-4-8` or `claude-opus-4-7`; Anthropic has deprecated Opus 4.7 fast
-mode and plans to remove it on July 24, 2026. Claude CLI receives a per-session
-`fastMode` setting, while Anthropic API requests use its fast-mode beta. Fast
-mode has premium pricing and applies only to reviewer agents, not selection,
-synthesis, approval-override classification, or `cr respond` thread analysis.
+Fast mode defaults off; set `fast: true` on a profile to enable it by default.
+`--fast` and `--no-fast` override the profile. Unsupported runtime/model
+combinations warn and continue at normal speed. Fast mode supports `claude_cli`
+and `anthropic_api` with `claude-opus-4-8` or `claude-opus-4-7`, and `codex_cli`
+with `gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`.
+Anthropic has deprecated Opus 4.7 fast mode and plans to remove it on July 24,
+2026. Claude CLI receives a per-session `fastMode` setting, Anthropic API
+requests use its fast-mode beta, and Codex CLI receives `service_tier="fast"`.
+Fast mode has premium pricing and applies only to reviewer agents, not
+selection, synthesis, approval-override classification, or `cr respond` thread
+analysis.
 Anthropic API fast mode is a research preview that requires account access;
 requests without access fail as upstream errors during the run. Subscription
 fast mode bills usage credits, requires owner enablement on Team and Enterprise,
 and can silently degrade to standard speed when credits or fast capacity are
-unavailable. Reviewer runtime artifacts therefore record both the fast request
-and the speed actually reported by the provider, or `unknown` when unavailable.
+unavailable. Reviewer runtime artifacts therefore record the fast request,
+whether it was ignored as unsupported, and the speed actually reported by the
+provider, or `unknown` when unavailable.
 
 Local run state and provider session state are independent. By default, each
 PR/profile/posting-identity tuple gets one durable provider session shared by

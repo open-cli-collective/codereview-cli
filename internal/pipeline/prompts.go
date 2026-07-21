@@ -577,6 +577,7 @@ type reviewerRuntimeResolution struct {
 	ResolvedModel  string                `json:"resolved_model"`
 	ModelMapSource config.ModelMapSource `json:"model_map_source,omitempty"`
 	Fast           bool                  `json:"fast,omitempty"`
+	FastIgnored    bool                  `json:"fast_ignored,omitempty"`
 	FastDelivered  string                `json:"fast_delivered,omitempty"`
 }
 

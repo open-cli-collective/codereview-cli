@@ -2549,7 +2549,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 			{AgentID: "harness:reviewer", Files: []string{"main.go"}},
 			{AgentID: "harness:senior", Files: []string{"main.go"}},
 		},
-	}, "")
+	}, "", false, false)
 	if got == nil {
 		t.Fatal("reviewerRuntimeArtifact = nil, want selected reviewer runtime metadata")
 	}
@@ -2683,52 +2683,67 @@ func TestReviewerFastDeliveryDegradesConservatively(t *testing.T) {
 	}
 }
 
-func TestDryRunFastRejectsUnsupportedRuntimeBeforeLLM(t *testing.T) {
-	tests := []struct {
-		name string
-		llm  config.LLMConfig
-		want string
-	}{
-		{
-			name: "adapter",
-			llm:  config.LLMConfig{Provider: config.LLMProviderOpenAI, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterCodexCLI},
-			want: "pipeline: --fast is unsupported for runtime openai/subscription/codex_cli: adapter has no fast-mode mechanism",
-		},
-		{
-			name: "model",
-			llm:  config.LLMConfig{Provider: config.LLMProviderAnthropic, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterClaudeCLI},
-			want: `pipeline: --fast is unsupported for runtime anthropic/subscription/claude_cli: reviewer "harness:reviewer" resolves to model "claude-sonnet-4-6"; supported models: claude-opus-4-8, claude-opus-4-7`,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			store := openPipelineStore(t)
-			defer closeStore(t, store)
-			provider, req := dryRunHarness(t)
-			req.Profile.LLM = tt.llm
-			req.ReviewerFast = true
-			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.ReviewerFast = true
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	var warnings bytes.Buffer
 
-			_, err := dryRunForTest(ctx, Options{
-				Provider:        provider,
-				Adapter:         adapter,
-				Store:           store,
-				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
-				Now:             fixedNow,
-				NewRunID:        func() string { return "run-fast-unsupported" },
-				NewSessionRowID: sequence("session"),
-				NewFindingID:    findingSequence("finding"),
-				NewActionID:     actionSequence(),
-				MaxConcurrency:  1,
-			}, req)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("DryRun error = %v, want %q", err, tt.want)
-			}
-			if len(adapter.Requests()) != 0 {
-				t.Fatalf("LLM requests = %#v, want none", adapter.Requests())
-			}
-		})
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Warnings:        &warnings,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-fast-unsupported" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	wantWarning := "warning: fast mode is unsupported for anthropic/subscription/claude_cli model claude-sonnet-4-6; continuing at normal speed\n"
+	if warnings.String() != wantWarning {
+		t.Fatalf("warnings = %q, want %q", warnings.String(), wantWarning)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 3 || requests[0].Fast || requests[1].Fast || requests[2].Fast {
+		t.Fatalf("requests = %#v, want normal-speed fallback", requests)
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:           "tier_floor",
+		FloorTier:      "medium",
+		BaselineTier:   "small",
+		EffectiveTier:  "medium",
+		ResolvedModel:  "claude-sonnet-4-6",
+		ModelMapSource: config.ModelMapSourceBuiltIn,
+		Fast:           true,
+		FastIgnored:    true,
+		FastDelivered:  "unknown",
+	})
+	meta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), reviewerTaskID("harness:reviewer"))
+	if err != nil || !ok {
+		t.Fatalf("reviewer metadata = %#v ok %t err %v", meta, ok, err)
+	}
+	agent := result.Catalog.Agents[0]
+	selected := result.Selection.SelectedAgents[0]
+	prompt, promptDeps, err := buildReviewerPrompt(result.Artifacts, result.PR, selected, agent, []string{"main.go"})
+	if err != nil {
+		t.Fatalf("buildReviewerPrompt: %v", err)
+	}
+	deps := append([]string{orchestratorSelectionStage}, promptDeps...)
+	wantFingerprint := llmlifecycle.Fingerprint(adapter.Name(), reviewerTaskID(agent.ID), "reviewer", requests[1].Model, requests[1].Effort, prompt, deps)
+	if meta.InputFingerprint != wantFingerprint {
+		t.Fatalf("reviewer fingerprint = %q, want standard-speed %q", meta.InputFingerprint, wantFingerprint)
 	}
 }
 
