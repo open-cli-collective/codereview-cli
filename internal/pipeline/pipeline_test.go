@@ -2655,6 +2655,7 @@ func TestDryRunFastAppliesOnlyToReviewerAndRecordsArtifact(t *testing.T) {
 		Mode:          "override",
 		ResolvedModel: "claude-opus-4-8",
 		Fast:          true,
+		FastIgnored:   false,
 		FastDelivered: "standard",
 	})
 }
@@ -2744,6 +2745,87 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	wantFingerprint := llmlifecycle.Fingerprint(adapter.Name(), reviewerTaskID(agent.ID), "reviewer", requests[1].Model, requests[1].Effort, prompt, deps)
 	if meta.InputFingerprint != wantFingerprint {
 		t.Fatalf("reviewer fingerprint = %q, want standard-speed %q", meta.InputFingerprint, wantFingerprint)
+	}
+}
+
+func TestDryRunFastFallsBackForUnsupportedRuntime(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.Profile.LLM = config.LLMConfig{
+		Provider: config.LLMProviderPi,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterPiRPC,
+		ModelMap: config.ModelMap{"medium": "pi-model"},
+	}
+	req.ReviewerModelOverride = "pi-model"
+	req.ReviewerFast = true
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+	var warnings bytes.Buffer
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Warnings:        &warnings,
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-fast-unsupported-runtime" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	wantWarning := "warning: fast mode is unsupported for pi/subscription/pi_rpc; continuing at normal speed\n"
+	if warnings.String() != wantWarning {
+		t.Fatalf("warnings = %q, want %q", warnings.String(), wantWarning)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 3 || requests[0].Fast || requests[1].Fast || requests[2].Fast {
+		t.Fatalf("requests = %#v, want normal-speed fallback", requests)
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:          "override",
+		ResolvedModel: "pi-model",
+		Fast:          true,
+		FastIgnored:   true,
+		FastDelivered: "unknown",
+	})
+}
+
+func TestDryRunFastPreflightResolvesEveryReviewerBeforeLLM(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	writeAgentWithModelTier(t, req.Profile.AgentSources[0], "harness", "unmapped", "small")
+	req.ReviewerFast = true
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+
+	_, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-fast-preflight" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err == nil || !strings.Contains(err.Error(), `model_tier "small" is not mapped`) {
+		t.Fatalf("DryRun error = %v, want later reviewer model resolution failure", err)
+	}
+	if len(adapter.Requests()) != 0 {
+		t.Fatalf("LLM requests = %#v, want preflight failure before selection", adapter.Requests())
 	}
 }
 
