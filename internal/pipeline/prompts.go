@@ -139,22 +139,33 @@ func requiredOnMatchFiles(agent agents.Agent, changedFiles []string) []string {
 		return nil
 	}
 	var matched []string
-	for _, pattern := range agent.FileGlobs {
+	for _, file := range changedFiles {
+		if globsMatchFile(agent.FileGlobs, file) && !slices.Contains(matched, file) {
+			matched = append(matched, file)
+		}
+	}
+	return matched
+}
+
+// globsMatchFile reports whether any of the agent file glob patterns match
+// the file. A "**/"-prefixed pattern also matches at the repository root,
+// mirroring gitignore-style expectations.
+func globsMatchFile(patterns []string, file string) bool {
+	for _, pattern := range patterns {
 		matcher, err := glob.Compile(pattern, '/')
 		if err != nil {
 			continue
 		}
-		var rootMatcher glob.Glob
-		if strings.HasPrefix(pattern, "**/") {
-			rootMatcher, _ = glob.Compile(strings.TrimPrefix(pattern, "**/"), '/')
+		if matcher.Match(file) {
+			return true
 		}
-		for _, file := range changedFiles {
-			if (matcher.Match(file) || rootMatcher != nil && rootMatcher.Match(file)) && !slices.Contains(matched, file) {
-				matched = append(matched, file)
+		if strings.HasPrefix(pattern, "**/") {
+			if rootMatcher, err := glob.Compile(strings.TrimPrefix(pattern, "**/"), '/'); err == nil && rootMatcher.Match(file) {
+				return true
 			}
 		}
 	}
-	return matched
+	return false
 }
 
 type reviewerAgentPrompt struct {

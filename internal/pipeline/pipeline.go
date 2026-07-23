@@ -1218,6 +1218,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, selectionSession, ledgerSession, Failure(FailureTerminal, err)
 	}
+	selection = ensureSelectedGlobCoverage(selection, req.Catalog, changed)
 	opts.emitReviewerSelection(req.Catalog, selection)
 	return selection, selectionSession, ledgerSession, nil
 }
@@ -1311,6 +1312,50 @@ func ensureRequiredOnMatchAgents(selection llm.Selection, catalog agents.Catalog
 				Files:        append([]string(nil), matched...),
 				AllowedFiles: append([]string(nil), matched...),
 			})
+		}
+	}
+	return selection
+}
+
+// ensureSelectedGlobCoverage assigns every changed file that no selected
+// agent's scope covers to each selected agent whose file globs match it. The
+// orchestrator proposes assignments, but a resumed selection session can
+// anchor on assignments from an earlier pass and ignore updated agent
+// definitions (#526); without this backstop such files land in the
+// unassigned coverage bucket, and hasIncompleteReviewerCoverage then blocks
+// approval on every subsequent pass. Agents whose scope is already all
+// changed files (no explicit Files/AllowedFiles) need no widening, and
+// AllowedFiles is only extended when it is what defines the agent's scope.
+func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog, changedFiles []string) llm.Selection {
+	if len(selection.SelectedAgents) == 0 {
+		return selection
+	}
+	agentByID := make(map[string]agents.Agent, len(catalog.Agents))
+	for _, candidate := range catalog.Agents {
+		agentByID[candidate.ID] = candidate
+	}
+	covered := map[string]bool{}
+	for _, selected := range selection.SelectedAgents {
+		for _, file := range reviewerAssignmentScope(selected, changedFiles) {
+			covered[file] = true
+		}
+	}
+	for _, file := range changedFiles {
+		if covered[file] {
+			continue
+		}
+		for i := range selection.SelectedAgents {
+			selected := &selection.SelectedAgents[i]
+			candidate, ok := agentByID[selected.AgentID]
+			if !ok || !globsMatchFile(candidate.FileGlobs, file) {
+				continue
+			}
+			if len(selected.AllowedFiles) > 0 {
+				selected.AllowedFiles = append(selected.AllowedFiles, file)
+			}
+			if len(selected.Files) > 0 {
+				selected.Files = append(selected.Files, file)
+			}
 		}
 	}
 	return selection
