@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1353,6 +1354,62 @@ func TestRequiredOnMatchAgentsHaveCapPriorityAndCannotBeTruncated(t *testing.T) 
 	}
 	if _, err := (Options{}).capSelectionAgents(selection, catalog, []string{"main.go"}, 1); err == nil || !strings.Contains(err.Error(), "smaller than the 2 required reviewers") {
 		t.Fatalf("cap error = %v, want required reviewer conflict", err)
+	}
+}
+
+func TestEnsureSelectedGlobCoverageAssignsUncoveredMatchingFiles(t *testing.T) {
+	// Regression for #526: a resumed selection session anchored on stale
+	// assignments and omitted files its agents' updated globs now match,
+	// leaving them in the unassigned coverage bucket.
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "shared:go", FileGlobs: []string{"**/*.go", "**/testdata/**", "CHANGELOG.md"}},
+		{ID: "shared:docs", FileGlobs: []string{"README*", "CHANGELOG.md"}},
+		{ID: "shared:unrelated", FileGlobs: []string{"*.rs"}},
+	}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{
+		{AgentID: "shared:go", Files: []string{"main.go"}},
+		{AgentID: "shared:docs", Files: []string{"README.md"}, AllowedFiles: []string{"README.md"}},
+		{AgentID: "shared:unrelated", Files: []string{"main.rs"}},
+	}}
+	changed := []string{"main.go", "README.md", "main.rs", "CHANGELOG.md", "api/testdata/fixture.json", "README.rst", "LICENSE"}
+
+	got := ensureSelectedGlobCoverage(selection, catalog, changed)
+
+	// Each uncovered file gains exactly one owner — the first selected agent
+	// whose globs match — so a single file cannot obligate several agents.
+	wantGo := []string{"main.go", "CHANGELOG.md", "api/testdata/fixture.json"}
+	if !reflect.DeepEqual(got.SelectedAgents[0].Files, wantGo) {
+		t.Fatalf("go files = %#v, want %#v", got.SelectedAgents[0].Files, wantGo)
+	}
+	if len(got.SelectedAgents[0].AllowedFiles) != 0 {
+		t.Fatalf("go allowed files = %#v, want empty so scope stays Files-driven", got.SelectedAgents[0].AllowedFiles)
+	}
+	// README.rst matches only the docs agent, whose scope is AllowedFiles-
+	// driven, so both lists widen together.
+	wantDocs := []string{"README.md", "README.rst"}
+	if !reflect.DeepEqual(got.SelectedAgents[1].Files, wantDocs) || !reflect.DeepEqual(got.SelectedAgents[1].AllowedFiles, wantDocs) {
+		t.Fatalf("docs assignment = %#v, want CHANGELOG.md owned by shared:go only and README.rst here, files %#v", got.SelectedAgents[1], wantDocs)
+	}
+	if !reflect.DeepEqual(got.SelectedAgents[2].Files, []string{"main.rs"}) {
+		t.Fatalf("unrelated files = %#v, want unchanged", got.SelectedAgents[2].Files)
+	}
+	// LICENSE matches no selected agent's globs and must stay unassigned so
+	// the coverage gate still reports genuinely uncovered files.
+	for _, selected := range got.SelectedAgents {
+		if slices.Contains(selected.Files, "LICENSE") || slices.Contains(selected.AllowedFiles, "LICENSE") {
+			t.Fatalf("LICENSE assigned to %s, want unassigned", selected.AgentID)
+		}
+	}
+}
+
+func TestEnsureSelectedGlobCoverageLeavesFullScopeAgentsAlone(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:all", FileGlobs: []string{"**"}}}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{AgentID: "shared:all"}}}
+
+	got := ensureSelectedGlobCoverage(selection, catalog, []string{"a.go", "b.md"})
+
+	if len(got.SelectedAgents[0].Files) != 0 || len(got.SelectedAgents[0].AllowedFiles) != 0 {
+		t.Fatalf("full-scope agent = %#v, want untouched (scope already covers all changed files)", got.SelectedAgents[0])
 	}
 }
 
