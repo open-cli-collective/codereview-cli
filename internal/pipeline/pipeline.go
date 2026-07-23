@@ -1318,14 +1318,18 @@ func ensureRequiredOnMatchAgents(selection llm.Selection, catalog agents.Catalog
 }
 
 // ensureSelectedGlobCoverage assigns every changed file that no selected
-// agent's scope covers to each selected agent whose file globs match it. The
-// orchestrator proposes assignments, but a resumed selection session can
-// anchor on assignments from an earlier pass and ignore updated agent
+// agent's scope covers to the first selected agent whose file globs match
+// it. The orchestrator proposes assignments, but a resumed selection session
+// can anchor on assignments from an earlier pass and ignore updated agent
 // definitions (#526); without this backstop such files land in the
 // unassigned coverage bucket, and hasIncompleteReviewerCoverage then blocks
-// approval on every subsequent pass. Agents whose scope is already all
-// changed files (no explicit Files/AllowedFiles) need no widening, and
-// AllowedFiles is only extended when it is what defines the agent's scope.
+// approval on every subsequent pass. Exactly one owner is chosen because a
+// file in an agent's scope obligates that agent to inspect-or-skip it —
+// fanning out to every glob match would multiply that obligation and let
+// any one economizing reviewer downgrade coverage to incomplete_skipped.
+// Agents whose scope is already all changed files (no explicit
+// Files/AllowedFiles) need no widening, and AllowedFiles is only extended
+// when it is what defines the agent's scope.
 func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog, changedFiles []string) llm.Selection {
 	if len(selection.SelectedAgents) == 0 {
 		return selection
@@ -1356,6 +1360,7 @@ func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog,
 			if len(selected.Files) > 0 {
 				selected.Files = append(selected.Files, file)
 			}
+			break
 		}
 	}
 	return selection

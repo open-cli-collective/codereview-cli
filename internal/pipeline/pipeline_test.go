@@ -1371,10 +1371,12 @@ func TestEnsureSelectedGlobCoverageAssignsUncoveredMatchingFiles(t *testing.T) {
 		{AgentID: "shared:docs", Files: []string{"README.md"}, AllowedFiles: []string{"README.md"}},
 		{AgentID: "shared:unrelated", Files: []string{"main.rs"}},
 	}}
-	changed := []string{"main.go", "README.md", "main.rs", "CHANGELOG.md", "api/testdata/fixture.json", "LICENSE"}
+	changed := []string{"main.go", "README.md", "main.rs", "CHANGELOG.md", "api/testdata/fixture.json", "README.rst", "LICENSE"}
 
 	got := ensureSelectedGlobCoverage(selection, catalog, changed)
 
+	// Each uncovered file gains exactly one owner — the first selected agent
+	// whose globs match — so a single file cannot obligate several agents.
 	wantGo := []string{"main.go", "CHANGELOG.md", "api/testdata/fixture.json"}
 	if !reflect.DeepEqual(got.SelectedAgents[0].Files, wantGo) {
 		t.Fatalf("go files = %#v, want %#v", got.SelectedAgents[0].Files, wantGo)
@@ -1382,9 +1384,11 @@ func TestEnsureSelectedGlobCoverageAssignsUncoveredMatchingFiles(t *testing.T) {
 	if len(got.SelectedAgents[0].AllowedFiles) != 0 {
 		t.Fatalf("go allowed files = %#v, want empty so scope stays Files-driven", got.SelectedAgents[0].AllowedFiles)
 	}
-	wantDocs := []string{"README.md", "CHANGELOG.md"}
+	// README.rst matches only the docs agent, whose scope is AllowedFiles-
+	// driven, so both lists widen together.
+	wantDocs := []string{"README.md", "README.rst"}
 	if !reflect.DeepEqual(got.SelectedAgents[1].Files, wantDocs) || !reflect.DeepEqual(got.SelectedAgents[1].AllowedFiles, wantDocs) {
-		t.Fatalf("docs assignment = %#v, want files and allowed files %#v", got.SelectedAgents[1], wantDocs)
+		t.Fatalf("docs assignment = %#v, want CHANGELOG.md owned by shared:go only and README.rst here, files %#v", got.SelectedAgents[1], wantDocs)
 	}
 	if !reflect.DeepEqual(got.SelectedAgents[2].Files, []string{"main.rs"}) {
 		t.Fatalf("unrelated files = %#v, want unchanged", got.SelectedAgents[2].Files)
