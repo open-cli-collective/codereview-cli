@@ -163,7 +163,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 	var precheckedReviews []gitprovider.Review
 	reviewsLoaded := false
 	if normalLiveFastPathEnabled(req.Flags) {
-		reviews, earlyExit, err := fetchReviewsUnlessApproved(ctx, opts.Provider, req.PRRef, precheckedReviews, reviewsLoaded, req.PostingIdentity)
+		reviews, earlyExit, err := fetchReviewsUnlessApproved(ctx, opts.Provider, req.PRRef, precheckedReviews, reviewsLoaded, req.PostingIdentity, req.PR.Head.SHA)
 		if err != nil {
 			return Result{}, err
 		}
@@ -194,7 +194,7 @@ func Evaluate(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 		var host *gateHostState
 		if normalLiveFastPathEnabled(req.Flags) {
-			reviews, earlyExit, err := fetchReviewsUnlessApproved(ctx, opts.Provider, req.PRRef, precheckedReviews, reviewsLoaded, req.PostingIdentity)
+			reviews, earlyExit, err := fetchReviewsUnlessApproved(ctx, opts.Provider, req.PRRef, precheckedReviews, reviewsLoaded, req.PostingIdentity, req.PR.Head.SHA)
 			if err != nil {
 				return Result{}, err
 			}
@@ -871,7 +871,7 @@ func summarizeStaleCandidate(opts Options, req Request, run ledger.Run, summary 
 	}, nil, nil
 }
 
-func fetchReviewsUnlessApproved(ctx context.Context, provider outbox.LiveProvider, ref gitprovider.PRRef, reviews []gitprovider.Review, loaded bool, posting gitprovider.Identity) ([]gitprovider.Review, *Result, error) {
+func fetchReviewsUnlessApproved(ctx context.Context, provider outbox.LiveProvider, ref gitprovider.PRRef, reviews []gitprovider.Review, loaded bool, posting gitprovider.Identity, headSHA string) ([]gitprovider.Review, *Result, error) {
 	if !loaded {
 		var err error
 		reviews, err = provider.ListReviews(ctx, ref)
@@ -879,7 +879,7 @@ func fetchReviewsUnlessApproved(ctx context.Context, provider outbox.LiveProvide
 			return nil, nil, err
 		}
 	}
-	if !activeApprovalByPostingIdentity(reviews, posting) {
+	if !activeApprovalByPostingIdentity(reviews, posting, headSHA) {
 		return reviews, nil, nil
 	}
 	return nil, &Result{
@@ -989,7 +989,7 @@ func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) 
 	return latest, found
 }
 
-func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) bool {
+func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity, headSHA string) bool {
 	var (
 		selected gitprovider.Review
 		found    bool
@@ -1013,7 +1013,7 @@ func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitpr
 			found = true
 		}
 	}
-	return found && selected.State == gitprovider.ReviewStateApproved
+	return found && selected.State == gitprovider.ReviewStateApproved && selected.CommitSHA == headSHA
 }
 
 func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request, host *gateHostState) (Result, bool, error) {

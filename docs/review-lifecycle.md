@@ -21,6 +21,11 @@ stores its agent ID, broad or scoped assignment, runtime compatibility fields,
 and latest provider session ID. The explicit `--session` flag never changes the
 reviewer cohort's PR scope.
 
+Before the pipeline starts, a normal live review checks approvals from the
+configured posting identity. It exits early only when an approval is explicitly
+bound to the current PR head. An approval bound to an older head, or with no
+revision binding, is stale and the normal command reviews the current head.
+
 ## First run
 
 1. Resolve the PR, changed files, discussion, reviewer catalog, and runtime.

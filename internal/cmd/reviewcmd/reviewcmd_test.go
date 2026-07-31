@@ -364,7 +364,7 @@ func TestReviewExplicitProfileHostMismatch(t *testing.T) {
 	}
 }
 
-func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
+func TestReviewHelpDocumentsCurrentHeadApprovalFastPath(t *testing.T) {
 	cmd, out := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 		t.Fatal("runtime factory should not be called for help")
 		return app.Runtime{}, nil
@@ -375,8 +375,9 @@ func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"already approved the PR",
-		"--rerun to bypass these local gates",
+		"already approved the current PR head",
+		"approval on an older head is stale",
+		"normal command reviews the current head",
 		"--rerun reuse the PR's original reviewer cohort",
 		"--session scopes only the orchestrator conversation",
 		"--fresh-session",

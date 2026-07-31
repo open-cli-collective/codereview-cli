@@ -256,6 +256,7 @@ func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testin
 		ID:          "review-approved",
 		Author:      fixture.req.PostingIdentity,
 		State:       gitprovider.ReviewStateApproved,
+		CommitSHA:   testHeadSHA,
 		SubmittedAt: testNow.Add(-time.Hour),
 	}})
 	setIssueComments(t, fixture, []gitprovider.IssueComment{{
@@ -274,6 +275,26 @@ func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testin
 	}
 	if provider.reviews != 1 || provider.issueComments != 0 || provider.threads != 0 {
 		t.Fatalf("reads = reviews:%d issueComments:%d threads:%d, want reviews only before lock/local state", provider.reviews, provider.issueComments, provider.threads)
+	}
+}
+
+func TestEvaluateStalePostingIdentityApprovalReviewsCurrentHead(t *testing.T) {
+	fixture := newFixture(t)
+	setReviews(t, fixture, []gitprovider.Review{{
+		ID:          "review-approved",
+		Author:      fixture.req.PostingIdentity,
+		State:       gitprovider.ReviewStateApproved,
+		CommitSHA:   testOldBase,
+		SubmittedAt: testNow.Add(-time.Hour),
+	}})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review for stale approval", result)
 	}
 }
 

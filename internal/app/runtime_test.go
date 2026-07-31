@@ -878,6 +878,7 @@ func TestOpenLiveApprovedFastPathDoesNotInitializeAdapter(t *testing.T) {
 		ID:          "review-approved",
 		Author:      identity,
 		State:       gitprovider.ReviewStateApproved,
+		CommitSHA:   pr.Head.SHA,
 		SubmittedAt: time.Now().UTC(),
 	}}); err != nil {
 		t.Fatalf("SetReviews: %v", err)
