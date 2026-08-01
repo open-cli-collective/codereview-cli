@@ -40,6 +40,18 @@ func TestSessionsListText(t *testing.T) {
 	}
 }
 
+func TestSessionsHelpDistinguishesReviewerCohorts(t *testing.T) {
+	cmd, out := newTestCommand()
+	if err := root.Execute(cmd, []string{"sessions", "--help"}); err != nil {
+		t.Fatalf("Execute help: %v", err)
+	}
+	for _, want := range []string{"named orchestrator sessions", "reviewer cohorts are reused automatically", "--fresh-session"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("help = %q, want %q", out.String(), want)
+		}
+	}
+}
+
 func TestSessionsListJSONEmpty(t *testing.T) {
 	statedirtest.Hermetic(t)
 	layout := mustDefaultLayoutNoCreate(t)

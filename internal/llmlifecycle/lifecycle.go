@@ -293,6 +293,7 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	request.Effort = req.Effort
 	request.Prompt = req.Prompt
 	request.LogPath = req.LogPath
+	request.DurableSession = request.DurableSession || req.Adapter.SupportsResume()
 	structured, runErr := llm.RunStructuredWithSessionResume(ctx, req.Adapter, resumeSessionID, request, decode)
 	completed := now()
 	draft := SessionDraft{
@@ -537,6 +538,40 @@ func ReadMetadata(paths Paths, taskID string) (Metadata, bool, error) {
 		"llmlifecycle: read task %q metadata: %w",
 		"llmlifecycle: decode task %q metadata: %w",
 	)
+}
+
+// ListMetadata lists committed task metadata in stable task-directory order.
+func ListMetadata(paths Paths) ([]Metadata, error) {
+	if strings.TrimSpace(paths.LLMTasksDir) == "" {
+		return nil, fmt.Errorf("llmlifecycle: task directory is required")
+	}
+	entries, err := os.ReadDir(paths.LLMTasksDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("llmlifecycle: list task metadata: %w", err)
+	}
+	metadata := make([]Metadata, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(paths.LLMTasksDir, entry.Name(), "metadata.json")
+		data, err := os.ReadFile(path) // #nosec G304 -- path is contained under the caller-owned task root.
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("llmlifecycle: read task metadata %q: %w", entry.Name(), err)
+		}
+		var meta Metadata
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return nil, fmt.Errorf("llmlifecycle: decode task metadata %q: %w", entry.Name(), err)
+		}
+		metadata = append(metadata, meta)
+	}
+	return metadata, nil
 }
 
 func readMetadata(paths Paths, taskID, readError, decodeError string) (Metadata, bool, error) {

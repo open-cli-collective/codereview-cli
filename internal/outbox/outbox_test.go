@@ -142,6 +142,60 @@ func TestPostEmbedsMarkersAndPostsInCanonicalOrder(t *testing.T) {
 	}
 }
 
+func TestPostCheckpointVerifiesPremisesPostsReplyBeforeResolveAndLeavesRunOpen(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	ref := testPRRef()
+	if err := provider.SetPR(ref, gitprovider.PR{Ref: ref, Head: gitprovider.PRBranchRef{SHA: run.SHA}, Base: gitprovider.PRBranchRef{SHA: run.BaseSHA}}); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	insertAction(t, store, plannedAction(run.RunID, "resolve-1", ledger.PlannedActionResolveThread, true, "thread-1", ResolveThreadPayload{}))
+	insertAction(t, store, plannedAction(run.RunID, "reply-1", ledger.PlannedActionThreadReply, true, "thread-1", ThreadReplyPayload{Body: "summary", Summary: true}))
+
+	result, err := PostCheckpoint(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("PostCheckpoint: %v", err)
+	}
+	if !reflect.DeepEqual(provider.writes, []string{"ReplyToThread", "ResolveThread"}) {
+		t.Fatalf("checkpoint writes = %#v, want reply then resolve", provider.writes)
+	}
+	if result.Posted != 2 || result.Outcome != ledger.OutcomeIncomplete {
+		t.Fatalf("PostCheckpoint result = %#v, want two posted and incomplete", result)
+	}
+	stored, err := store.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.CompletedAt != nil || stored.Outcome != nil {
+		t.Fatalf("checkpoint completed run = %#v, want open run", stored)
+	}
+}
+
+func TestPostCheckpointPreservesPostingFailureAsPending(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	provider := newRecordingProvider()
+	ref := testPRRef()
+	if err := provider.SetPR(ref, gitprovider.PR{Ref: ref, Head: gitprovider.PRBranchRef{SHA: run.SHA}, Base: gitprovider.PRBranchRef{SHA: run.BaseSHA}}); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	provider.SetError(gitprovider.OperationReplyToThread, errors.New("temporary posting failure"))
+	insertAction(t, store, plannedAction(run.RunID, "reply-1", ledger.PlannedActionThreadReply, true, "thread-1", ThreadReplyPayload{Body: "summary", Summary: true}))
+
+	result, err := PostCheckpoint(context.Background(), Options{Store: store, Provider: provider, Limiter: noopLimiter{}, Now: fixedClock()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("PostCheckpoint: %v", err)
+	}
+	action := actionByID(t, store, run.RunID, "reply-1")
+	if action.Status != ledger.PlannedActionPending || action.Attempts != 1 || action.Error == nil {
+		t.Fatalf("checkpoint action = %#v, want pending attempted failure", action)
+	}
+	if result.Pending != 1 || result.Outcome != ledger.OutcomeIncomplete {
+		t.Fatalf("PostCheckpoint result = %#v, want pending incomplete", result)
+	}
+}
+
 func TestPostTreatsGitHubAppResolveThreadLimitationAsAdvisory(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, ledger.PostModeLive)

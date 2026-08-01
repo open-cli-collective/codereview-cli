@@ -8,8 +8,8 @@ Collective standards and automation remain canonical in their own repositories.
 codereview-cli is the Open CLI Collective code-review CLI and ships the `cr`
 binary. It provides configuration and credential commands, trusted-agent
 inspection, dry-run and live pull-request review orchestration, inline thread
-response handling through `cr respond`, named LLM session management, and local
-data lifecycle commands.
+response handling through `cr respond`, named orchestrator sessions, automatic
+PR-scoped reviewer cohorts, and local data lifecycle commands.
 
 The current Go code is a Cobra command tree in `internal/cmd/*` with a thin
 `cmd/cr` entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and
@@ -28,6 +28,8 @@ Architecture guardrails for LLM execution, model resolution, Git provider
 writes, command and review harness boundaries, inline thread lifecycle, and
 retention live in
 [`docs/architecture.md`](architecture.md).
+The canonical first-run, rerun, fresh-session, checkpoint, and recovery sequence
+lives in [`docs/review-lifecycle.md`](review-lifecycle.md).
 
 The temporary architecture refactor workstream context for issue #420 lives in
 [`docs/architecture-refactor-workstream.md`](architecture-refactor-workstream.md).

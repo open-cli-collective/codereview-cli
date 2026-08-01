@@ -27,6 +27,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
@@ -34,6 +35,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
 func dryRunForTest(ctx context.Context, opts Options, req Request) (Result, error) {
@@ -700,6 +702,143 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	}
 	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeDryRun {
 		t.Fatalf("second run outcome = %#v, want dry_run", stored.Outcome)
+	}
+}
+
+func TestLiveResumeRecoversPostedThreadSummaryForReviewerPrompt(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	provider.threads = []gitprovider.InlineThread{markedReviewThread(t, "thread-1", "main.go", 2, req.PostingIdentity, human)}
+	provider.caps.ThreadResolution = true
+	run := allocateLiveRun(t, store, provider, req, "run-thread-checkpoint-resume")
+	var checkpointCalls, posts, reconciles int
+	threadCheckpoint := func(ctx context.Context, run ledger.Run, _ Request) error {
+		checkpointCalls++
+		actions, err := store.ListPlannedActions(ctx, run.RunID)
+		if err != nil {
+			return err
+		}
+		for _, action := range actions {
+			if action.Kind != ledger.PlannedActionThreadReply || action.Status != ledger.PlannedActionPending {
+				continue
+			}
+			if provider.threads[0].Comments[len(provider.threads[0].Comments)-1].ID == "thread-1-summary" {
+				now := fixedNow()
+				action.Status = ledger.PlannedActionPosted
+				action.PostedAt = &now
+				upstreamID := "thread-1-summary"
+				action.UpstreamID = &upstreamID
+				if err := store.UpdatePlannedAction(ctx, action); err != nil {
+					return err
+				}
+				reconciles++
+				continue
+			}
+			markerText, err := marker.RenderThreadSummary(marker.ThreadSummaryMarker{RunID: run.RunID, ActionID: action.ActionID})
+			if err != nil {
+				return err
+			}
+			postedAt := fixedNow().Add(2 * time.Minute)
+			provider.threads[0].Comments = append(provider.threads[0].Comments, gitprovider.ThreadComment{
+				ID: "thread-1-summary", ThreadID: "thread-1", Body: markerText + "\n\nHuman clarified null handling.",
+				Author: req.PostingIdentity, CommitSHA: provider.pr.Head.SHA, Path: "main.go", Side: review.DiffSideRight,
+				Line: 2, SubjectType: review.AnchorKindLine, CreatedAt: postedAt, UpdatedAt: postedAt,
+			})
+			posts++
+			return context.Canceled
+		}
+		return nil
+	}
+
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
+	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	firstAdapter.Queue(fakeLLMResult("thread-session", `{
+		"schema_version": 1,
+		"thread_id": "thread-1",
+		"decision": "summarize",
+		"summary": "Human clarified null handling.",
+		"resolve": true,
+		"rationale": "settled"
+	}`, 1, 1))
+	_, err := liveForTest(ctx, Options{
+		Provider: provider, Adapter: firstAdapter, Store: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(),
+		MaxConcurrency: 1, ThreadCheckpoint: threadCheckpoint,
+	}, req, run)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Live error = %v, want checkpoint interruption", err)
+	}
+	if posts != 1 || checkpointCalls != 1 {
+		t.Fatalf("first checkpoint calls/posts = %d/%d, want 1/1", checkpointCalls, posts)
+	}
+	metadataPath, err := lifecyclePaths(ArtifactPathsFromDir(run.ArtifactPath)).Metadata("thread-analysis-thread-1")
+	if err != nil {
+		t.Fatalf("thread metadata path: %v", err)
+	}
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatalf("remove thread metadata: %v", err)
+	}
+
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	secondAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 1, 1))
+	secondAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 1, 1))
+	_, err = liveForTest(ctx, Options{
+		Provider: provider, Adapter: secondAdapter, Store: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("resume-session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(),
+		MaxConcurrency: 1, ThreadCheckpoint: threadCheckpoint,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("second Live: %v", err)
+	}
+	if posts != 1 || reconciles != 1 || checkpointCalls != 2 {
+		t.Fatalf("checkpoint calls/posts/reconciles = %d/%d/%d, want 2/1/1", checkpointCalls, posts, reconciles)
+	}
+	requests := secondAdapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("second adapter requests = %d, want reviewer and rollup only", len(requests))
+	}
+	var reviewerPrompt string
+	for _, request := range requests {
+		if strings.Contains(request.Prompt, "Use schema_version 1 and fields: thread_id") {
+			t.Fatalf("resumed pipeline repeated thread analysis:\n%s", request.Prompt)
+		}
+		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+			reviewerPrompt = request.Prompt
+		}
+	}
+	if reviewerPrompt == "" {
+		t.Fatal("resumed reviewer prompt not found")
+	}
+	for _, want := range []string{`"discussion_outcomes"`, `"thread_id": "thread-1"`, `"post_status": "posted"`, "Human clarified null handling."} {
+		if !strings.Contains(reviewerPrompt, want) {
+			t.Fatalf("resumed reviewer prompt missing %q:\n%s", want, reviewerPrompt)
+		}
+	}
+}
+
+func TestRecoverCheckpointThreadResponsesUsesAuthoritativeMarkerWithoutLocalState(t *testing.T) {
+	bot := gitprovider.Identity{Login: "review-bot", ID: "review-bot-id"}
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	threads, err := threadcontext.Normalize([]gitprovider.InlineThread{
+		crSettledReviewThread(t, "thread-1", "main.go", 2, bot, human, "Marker-only durable summary."),
+	}, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	responses, actions := recoverCheckpointThreadResponses(nil, threads, nil)
+	if len(responses) != 1 || responses[0].Body != "Marker-only durable summary." || responses[0].Kind != review.ThreadResponseSummaryReply {
+		t.Fatalf("recovered responses = %#v, want authoritative marker summary", responses)
+	}
+	outcomes := reviewerDiscussionOutcomes(reviewerDiscussionCheckpoint{responses: responses, actions: actions})
+	if len(outcomes) != 1 || outcomes[0].Body != "Marker-only durable summary." || outcomes[0].PostStatus != ledger.PlannedActionPosted.String() {
+		t.Fatalf("discussion outcomes = %#v, want marker summary with posted status", outcomes)
 	}
 }
 
@@ -2269,6 +2408,40 @@ func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestRunStructuredTaskStartsDurableOrchestratorAndResumesExactSession(t *testing.T) {
+	ctx := context.Background()
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("rollup-session", `{"ok":true}`, 1, 1))
+	adapter.Queue(fakeLLMResult("continued-session", `{"ok":true}`, 1, 1))
+	opts := Options{Adapter: adapter, Now: fixedNow, NewSessionRowID: sequence("session")}
+	first := llmTaskSpec{
+		taskID: "orchestrator-rollup-first", phase: "rollup", allowNoRunCache: true,
+		inputFingerprint: "first", artifacts: ArtifactPathsFromDir(t.TempDir()), role: ledger.SessionRoleOrchestrator,
+		model: "model", effort: "medium", prompt: "prompt",
+	}
+
+	_, firstSession, _, err := runStructuredTask(ctx, opts, first, func(data []byte) (bool, error) { return len(data) > 0, nil })
+	if err != nil {
+		t.Fatalf("first runStructuredTask: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requests[0].DurableSession {
+		t.Fatalf("fresh orchestrator requests = %#v, want durable start", requests)
+	}
+	second := first
+	second.taskID = "orchestrator-rollup-second"
+	second.inputFingerprint = "second"
+	second.artifacts = ArtifactPathsFromDir(t.TempDir())
+	second.resumeSessionID = firstSession.ProviderReportedSessionID
+	if _, _, _, err := runStructuredTask(ctx, opts, second, func(data []byte) (bool, error) { return len(data) > 0, nil }); err != nil {
+		t.Fatalf("second runStructuredTask: %v", err)
+	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "rollup-session" {
+		t.Fatalf("orchestrator resumes = %#v, want exact rollup-session", resumes)
+	}
+}
+
 func TestRunStructuredTaskRejectsDependencyTaskIDMismatchBeforeRetry(t *testing.T) {
 	ctx := context.Background()
 	artifacts := ArtifactPathsFromDir(t.TempDir())
@@ -2803,6 +2976,18 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	if meta.InputFingerprint != wantFingerprint {
 		t.Fatalf("reviewer fingerprint = %q, want standard-speed %q", meta.InputFingerprint, wantFingerprint)
 	}
+	checkpointPrompt, _, err := buildReviewerPrompt(result.Artifacts, result.PR, selected, agent, []string{"main.go"}, reviewerDiscussionCheckpoint{
+		responses: []review.ThreadResponseAction{{Kind: review.ThreadResponseSummaryReply, ThreadID: "thread-1", Body: "Human clarified null handling.", Resolve: true, Rationale: "settled"}},
+		actions:   []ledger.PlannedAction{{Action: plannedactions.Action{Kind: ledger.PlannedActionThreadReply, ThreadID: "thread-1", Status: ledger.PlannedActionPosted}}},
+	})
+	if err != nil {
+		t.Fatalf("buildReviewerPrompt checkpoint: %v", err)
+	}
+	for _, want := range []string{`"discussion_outcomes"`, `"thread_id": "thread-1"`, `"post_status": "posted"`, "Human clarified null handling."} {
+		if !strings.Contains(checkpointPrompt, want) {
+			t.Fatalf("checkpoint prompt missing %q:\n%s", want, checkpointPrompt)
+		}
+	}
 }
 
 func TestDryRunFastFallsBackForUnsupportedRuntime(t *testing.T) {
@@ -3125,7 +3310,7 @@ func TestDefaultSessionNameUsesPRProfileAndPostingIdentityOnly(t *testing.T) {
 	}
 }
 
-func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
+func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -3153,6 +3338,15 @@ func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
+	var durableReviewerStart bool
+	for _, request := range dryAdapter.Requests() {
+		if request.ReviewerWorkspace != nil {
+			durableReviewerStart = request.DurableSession
+		}
+	}
+	if !durableReviewerStart {
+		t.Fatal("initial reviewer request was not durable for resume-capable adapter")
+	}
 	if dryResult.NamedSessionCandidate == nil {
 		t.Fatal("dry-run candidate = nil")
 	}
@@ -3166,8 +3360,10 @@ func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
 
 	req.Rerun = true
 	run := allocateLiveRun(t, store, provider, req, "run-default-live")
-	liveAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
-	liveAdapter.Queue(fakeLLMResult("selection-live", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	liveAdapter := &reviewerWorkspaceResumeAdapter{
+		FakeAdapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
+		reviewerSessionID: "reviewer-dry",
+	}
 	liveAdapter.Queue(fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	liveAdapter.Queue(fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6))
 
@@ -3187,8 +3383,14 @@ func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
 		t.Fatalf("Live: %v", err)
 	}
 	resumes := liveAdapter.Resumes()
-	if len(resumes) != 2 || resumes[0].SessionID != "rollup-dry" || resumes[1].SessionID != "selection-live" {
-		t.Fatalf("live resumes = %#v, want persisted dry-run session then within-run selection", resumes)
+	if len(resumes) != 2 || resumes[0].SessionID != "reviewer-dry" || resumes[1].SessionID != "rollup-dry" {
+		t.Fatalf("live resumes = %#v, want exact reviewer and orchestrator sessions", resumes)
+	}
+	if len(liveAdapter.Requests()) != 0 {
+		t.Fatalf("live starts = %#v, want cohort reuse without selection or fresh provider calls", liveAdapter.Requests())
+	}
+	if err := liveAdapter.BoundaryError(); err != nil {
+		t.Fatalf("reviewer resume workspace boundary: %v", err)
 	}
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
@@ -3211,6 +3413,14 @@ func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
 	}
 	req.FreshSession = true
 	run := allocateLiveRun(t, store, provider, req, "run-default-fresh")
+	if err := store.ReplaceReviewerCohort(ctx, ledger.ReviewerCohort{
+		Scope:   ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)},
+		Adapter: "fake-llm", CreatedAt: fixedNow().Add(-time.Hour), Members: []ledger.ReviewerCohortMember{{
+			AgentID: "harness:reviewer", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"main.go"}, Model: "claude-sonnet-4-6", Effort: "medium", ProviderSessionID: "old-reviewer-session",
+		}},
+	}); err != nil {
+		t.Fatalf("ReplaceReviewerCohort: %v", err)
+	}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("selection-fresh", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-fresh", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
@@ -3241,8 +3451,15 @@ func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNamedSession: %v", err)
 	}
-	if gotStored.ProviderSessionID != "stored-session" {
-		t.Fatalf("stored provider session = %q, want unchanged until caller commits candidate", gotStored.ProviderSessionID)
+	if gotStored.ProviderSessionID != "rollup-fresh" {
+		t.Fatalf("stored provider session = %q, want immediate fresh rollup checkpoint", gotStored.ProviderSessionID)
+	}
+	cohort, err := store.GetReviewerCohort(ctx, ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)})
+	if err != nil {
+		t.Fatalf("GetReviewerCohort: %v", err)
+	}
+	if len(cohort.Members) != 1 || cohort.Members[0].ProviderSessionID != "reviewer-fresh" {
+		t.Fatalf("fresh cohort = %#v, want replacement reviewer session", cohort)
 	}
 }
 
@@ -3265,6 +3482,15 @@ func TestFreshSessionSkipsStoredNamedSession(t *testing.T) {
 	}
 	if state.active.Name != "daily" || state.resumeID() != "" {
 		t.Fatalf("fresh named state = %#v resume %q, want daily without stored resume", state, state.resumeID())
+	}
+	if _, err := store.GetNamedSession(ctx, "daily"); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetNamedSession after fresh reset error = %v, want ErrNotFound", err)
+	}
+	if _, err := prepareNamedSession(ctx, Options{
+		Adapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
+		NamedSessions: store,
+	}, req, true, "claude-sonnet-4-6", fixedNow()); err != nil {
+		t.Fatalf("prepareNamedSession missing fresh row: %v", err)
 	}
 }
 
@@ -3327,8 +3553,8 @@ func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T
 	if err != nil {
 		t.Fatalf("GetNamedSession: %v", err)
 	}
-	if gotStored.ProviderSessionID != "stored-session" {
-		t.Fatalf("stored provider session = %q, want unchanged stored-session", gotStored.ProviderSessionID)
+	if gotStored.ProviderSessionID != "rollup-new" {
+		t.Fatalf("stored provider session = %q, want immediate rollup checkpoint", gotStored.ProviderSessionID)
 	}
 }
 
@@ -3364,12 +3590,13 @@ func TestLiveNamedSessionMissingRowStartsFreshAndReturnsCandidate(t *testing.T) 
 		t.Fatalf("resumes = %#v, want rollup resume from fresh selection", resumes)
 	}
 	requests := adapter.Requests()
-	if len(requests) < 1 || !requests[0].DurableSession {
-		t.Fatalf("requests = %#v, want durable selection start on first named-session run", requests)
+	if len(requests) != 2 {
+		t.Fatalf("requests = %#v, want selection and reviewer starts", requests)
 	}
-	for i := 1; i < len(requests); i++ {
-		if requests[i].DurableSession {
-			t.Fatalf("requests[%d] = %#v, do not want durable non-selection requests", i, requests[i])
+	for i, request := range requests {
+		wantDurable := i == 0 || request.ReviewerWorkspace != nil
+		if request.DurableSession != wantDurable {
+			t.Fatalf("requests[%d] = %#v, DurableSession = %t, want %t for selection/reviewer starts only", i, request, request.DurableSession, wantDurable)
 		}
 	}
 	if result.NamedSessionCandidate == nil {
@@ -3379,8 +3606,55 @@ func TestLiveNamedSessionMissingRowStartsFreshAndReturnsCandidate(t *testing.T) 
 	if !reflect.DeepEqual(*result.NamedSessionCandidate, wantCandidate) {
 		t.Fatalf("candidate = %#v, want %#v", *result.NamedSessionCandidate, wantCandidate)
 	}
-	if _, err := store.GetNamedSession(ctx, req.SessionName); !errors.Is(err, ledger.ErrNotFound) {
-		t.Fatalf("GetNamedSession error = %v, want pipeline not to persist candidate", err)
+	if stored, err := store.GetNamedSession(ctx, req.SessionName); err != nil || stored.ProviderSessionID != "rollup-new" {
+		t.Fatalf("stored named session = %#v, err = %v, want immediate rollup checkpoint", stored, err)
+	}
+}
+
+func TestLiveNamedSessionPersistsProviderSessionFromSelectionFailure(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	run := allocateLiveRun(t, store, provider, req, "run-live-selection-failure")
+	providerErr := errors.New("selection provider failed")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(llm.FakeResult{SessionID: "selection-failed", WaitErr: providerErr})
+
+	_, err := liveForTest(ctx, Options{
+		Provider: provider, Adapter: adapter, Store: store, NamedSessions: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(), MaxConcurrency: 1,
+	}, req, run)
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("Live error = %v, want selection provider failure", err)
+	}
+	stored, err := store.GetNamedSession(ctx, req.SessionName)
+	if err != nil || stored.ProviderSessionID != "selection-failed" {
+		t.Fatalf("stored named session = %#v, err = %v, want failed selection session", stored, err)
+	}
+}
+
+func TestLiveNamedSessionCheckpointPersistenceFailureStopsPipeline(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	run := allocateLiveRun(t, store, provider, req, "run-live-checkpoint-failure")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-new", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	checkpointErr := errors.New("checkpoint write failed")
+
+	_, err := liveForTest(ctx, Options{
+		Provider: provider, Adapter: adapter, Store: store,
+		NamedSessions: failingNamedSessionStore{Store: store, upsertErr: checkpointErr},
+		Layout:        statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(), MaxConcurrency: 1,
+	}, req, run)
+	if !errors.Is(err, checkpointErr) {
+		t.Fatalf("Live error = %v, want named-session checkpoint failure", err)
 	}
 }
 
@@ -4656,6 +4930,158 @@ func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	}
 }
 
+func TestRebaseReviewerCohortKeepsOrderAndDropsEmptyScopeCalls(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}},
+		{ID: "repo:docs", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"docs/**"}},
+	}}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{
+		{AgentID: "repo:docs", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"docs/old.md"}, AllowedFiles: []string{"docs/old.md"}, Model: "claude-sonnet-4-6", Effort: "medium"},
+		{AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"old.go"}, AllowedFiles: []string{"old.go"}, Model: "claude-sonnet-4-6", Effort: "medium", ProviderSessionID: "go-session"},
+	}}
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []llm.SelectedAgent{{AgentID: "repo:go", Rationale: "reused reviewer cohort", Files: []string{"main.go"}, AllowedFiles: []string{"main.go"}}}
+	if !reflect.DeepEqual(selection.SelectedAgents, want) {
+		t.Fatalf("selected agents = %#v, want %#v", selection.SelectedAgents, want)
+	}
+	if !reflect.DeepEqual(resumes, map[string]string{"repo:go": "go-session"}) {
+		t.Fatalf("reviewer resumes = %#v, want exact saved session", resumes)
+	}
+}
+
+func TestRebaseReviewerCohortAssignsNewFilesToPersistedBroadMember(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad, Files: []string{"old.go"}, Model: "claude-sonnet-4-6", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:general", ModelTier: "medium", Effort: "medium"}}}
+
+	selection, _, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go", "schema.sql"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []string{"main.go", "schema.sql"}
+	if len(selection.SelectedAgents) != 1 || !reflect.DeepEqual(selection.SelectedAgents[0].Files, want) || len(selection.SelectedAgents[0].AllowedFiles) != 0 {
+		t.Fatalf("broad rebased selection = %#v, want files %#v without access constraint", selection.SelectedAgents, want)
+	}
+}
+
+func TestPersistReviewerCohortTreatsFilesOnlyAssignmentAsScoped(t *testing.T) {
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	run := allocateLiveRun(t, store, provider, req, "run-files-only-scope")
+	scope := ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}}}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{AgentID: "repo:go", Files: []string{"main.go"}}}}
+
+	if err := persistReviewerCohort(ctx, Options{Store: store, Adapter: &llm.FakeAdapter{NameValue: "fake-llm"}}, req, scope, catalog, selection, fixedNow()); err != nil {
+		t.Fatalf("persistReviewerCohort: %v", err)
+	}
+	cohort, err := store.GetReviewerCohort(ctx, scope)
+	if err != nil {
+		t.Fatalf("GetReviewerCohort: %v", err)
+	}
+	if len(cohort.Members) != 1 || cohort.Members[0].AssignmentMode != ledger.ReviewerAssignmentScoped {
+		t.Fatalf("cohort members = %#v, want files-only scoped assignment", cohort.Members)
+	}
+	rebased, _, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	if len(rebased.SelectedAgents) != 1 || !reflect.DeepEqual(rebased.SelectedAgents[0].AllowedFiles, []string{"main.go"}) {
+		t.Fatalf("rebased selection = %#v, want scoped Files fallback", rebased.SelectedAgents)
+	}
+}
+
+func TestRestoreOrchestratorSessionFromInterruptedRunUsesLatestChainSession(t *testing.T) {
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	run := allocateLiveRun(t, store, provider, req, "interrupted-orchestrator")
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
+	for _, session := range []ledger.Session{
+		{SessionRowID: "selection", RunID: run.RunID, ProviderSessionID: "selection-session", Role: ledger.SessionRoleOrchestrator, Adapter: "fake", Model: "model", StartedAt: fixedNow()},
+		{SessionRowID: "dossier", RunID: run.RunID, ProviderSessionID: "dossier-session", Role: ledger.SessionRoleOrchestrator, Adapter: "fake", Model: "model", StartedAt: fixedNow().Add(time.Second)},
+	} {
+		if err := store.InsertSession(context.Background(), session); err != nil {
+			t.Fatalf("InsertSession: %v", err)
+		}
+	}
+	for _, meta := range []llmlifecycle.Metadata{
+		{TaskID: orchestratorSelectionStage, Phase: "selection", SessionRowID: "selection"},
+		{TaskID: dossierSummaryTaskID, Phase: "dossier", SessionRowID: "dossier"},
+	} {
+		if err := llmlifecycle.WriteMetadata(lifecyclePaths(artifacts), meta); err != nil {
+			t.Fatalf("WriteMetadata(%s): %v", meta.TaskID, err)
+		}
+	}
+	state := namedSessionState{enabled: true, supportsResume: true, currentProviderSessionID: "older-session"}
+	if err := restoreOrchestratorSessionFromRun(context.Background(), store, run.RunID, artifacts, &state); err != nil {
+		t.Fatalf("restoreOrchestratorSessionFromRun: %v", err)
+	}
+	if state.resumeID() != "selection-session" {
+		t.Fatalf("restored orchestrator session = %q, want selection session instead of newer dossier", state.resumeID())
+	}
+	if err := store.InsertSession(context.Background(), ledger.Session{
+		SessionRowID: "thread", RunID: run.RunID, ProviderSessionID: "thread-session", Role: ledger.SessionRoleOrchestrator,
+		Adapter: "fake", Model: "model", StartedAt: fixedNow().Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("InsertSession(thread): %v", err)
+	}
+	if err := llmlifecycle.WriteMetadata(lifecyclePaths(artifacts), llmlifecycle.Metadata{
+		TaskID: "thread-analysis-thread-1", Phase: string(stagemodel.StageThreadAnalysis), SessionRowID: "thread",
+	}); err != nil {
+		t.Fatalf("WriteMetadata(thread): %v", err)
+	}
+	if err := restoreOrchestratorSessionFromRun(context.Background(), store, run.RunID, artifacts, &state); err != nil {
+		t.Fatalf("restoreOrchestratorSessionFromRun after thread: %v", err)
+	}
+	if state.resumeID() != "thread-session" {
+		t.Fatalf("restored orchestrator session = %q, want latest thread session", state.resumeID())
+	}
+}
+
+func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "old-adapter", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Model: "claude-sonnet-4-6", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}}}}
+
+	for _, tc := range []struct {
+		name       string
+		adapter    string
+		files      []string
+		maxAgents  int
+		wantDetail string
+	}{
+		{name: "runtime", adapter: "new-adapter", files: []string{"main.go"}, wantDetail: "--fresh-session"},
+		{name: "uncovered", adapter: "old-adapter", files: []string{"schema.sql"}, wantDetail: "uncovered"},
+		{name: "max agents", adapter: "old-adapter", files: []string{"main.go"}, maxAgents: 0, wantDetail: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := cohort
+			if tc.name == "max agents" {
+				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-4-6", Effort: "medium"})
+				catalog.Agents = append(catalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
+				tc.maxAgents = 1
+				tc.wantDetail = "--max-agents"
+			}
+			_, _, err := rebaseReviewerCohort(req, catalog, candidate, tc.files, tc.maxAgents, tc.adapter)
+			if err == nil || !strings.Contains(err.Error(), tc.wantDetail) || !strings.Contains(err.Error(), "--fresh-session") {
+				t.Fatalf("rebaseReviewerCohort error = %v, want %q and fresh-session guidance", err, tc.wantDetail)
+			}
+		})
+	}
+}
+
 func TestBuildReviewerCoverageAllowsBroadReviewerSplitAssignments(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{
@@ -5824,6 +6250,59 @@ func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.Fa
 	}
 }
 
+type failingNamedSessionStore struct {
+	*ledger.Store
+	upsertErr error
+}
+
+type reviewerWorkspaceResumeAdapter struct {
+	*llm.FakeAdapter
+	mu                sync.Mutex
+	reviewerSessionID string
+	checked           bool
+	boundaryErr       error
+}
+
+func (a *reviewerWorkspaceResumeAdapter) Resume(ctx context.Context, sessionID string, req llm.Request) (llm.Stream, error) {
+	if sessionID == a.reviewerSessionID {
+		a.mu.Lock()
+		a.checked = true
+		switch {
+		case req.ReviewerWorkspace == nil:
+			a.boundaryErr = errors.New("reviewer workspace is missing")
+		case strings.TrimSpace(req.ReviewerWorkspace.RepoDir) == "":
+			a.boundaryErr = errors.New("reviewer workspace repo is missing")
+		case strings.TrimSpace(req.ReviewerWorkspace.ScratchDir) == "":
+			a.boundaryErr = errors.New("reviewer workspace scratch is missing")
+		default:
+			if info, err := os.Stat(req.ReviewerWorkspace.RepoDir); err != nil {
+				a.boundaryErr = fmt.Errorf("reviewer workspace repo unavailable: %w", err)
+			} else if !info.IsDir() {
+				a.boundaryErr = errors.New("reviewer workspace repo is not a directory")
+			} else if info, err := os.Stat(req.ReviewerWorkspace.ScratchDir); err != nil {
+				a.boundaryErr = fmt.Errorf("reviewer workspace scratch unavailable: %w", err)
+			} else if !info.IsDir() {
+				a.boundaryErr = errors.New("reviewer workspace scratch is not a directory")
+			}
+		}
+		a.mu.Unlock()
+	}
+	return a.FakeAdapter.Resume(ctx, sessionID, req)
+}
+
+func (a *reviewerWorkspaceResumeAdapter) BoundaryError() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.checked {
+		return errors.New("reviewer resume was not checked")
+	}
+	return a.boundaryErr
+}
+
+func (s failingNamedSessionStore) UpsertNamedSession(context.Context, ledger.NamedSession) error {
+	return s.upsertErr
+}
+
 type providerOriginUsageAdapter struct {
 	mu       sync.Mutex
 	name     string
@@ -6607,12 +7086,36 @@ func (noopStore) InsertPlanningResult(context.Context, []ledger.Finding, []ledge
 	return nil
 }
 
+func (noopStore) InsertPlannedActions(context.Context, []ledger.PlannedAction) error {
+	return nil
+}
+
+func (noopStore) MergePlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error {
+	return nil
+}
+
 func (noopStore) ListFindings(context.Context, string) ([]ledger.Finding, error) {
 	return nil, nil
 }
 
 func (noopStore) ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error) {
 	return nil, nil
+}
+
+func (noopStore) GetReviewerCohort(context.Context, ledger.ReviewerCohortScope) (ledger.ReviewerCohort, error) {
+	return ledger.ReviewerCohort{}, ledger.ErrNotFound
+}
+
+func (noopStore) ReplaceReviewerCohort(context.Context, ledger.ReviewerCohort) error {
+	return nil
+}
+
+func (noopStore) UpdateReviewerCohortSession(context.Context, ledger.ReviewerCohortScope, string, string, time.Time) error {
+	return nil
+}
+
+func (noopStore) DeleteReviewerCohort(context.Context, ledger.ReviewerCohortScope) error {
+	return nil
 }
 
 func (noopStore) CompleteRun(context.Context, string, ledger.Outcome, time.Time) error {

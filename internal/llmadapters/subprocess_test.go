@@ -875,8 +875,9 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		})
 	}
 
-	t.Run("resume reviewer workspace is rejected", func(t *testing.T) {
+	t.Run("resume reviewer workspace launches from new bounded workspace", func(t *testing.T) {
 		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
 		scratchRoot := filepath.Join(tempDir, "workbench-scratch")
 		if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
 			t.Fatalf("MkdirAll(scratchRoot): %v", err)
@@ -885,18 +886,72 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		if err := os.MkdirAll(repoRoot, 0o700); err != nil {
 			t.Fatalf("MkdirAll(repoRoot): %v", err)
 		}
-		adapter := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
-		_, err := adapter.Resume(context.Background(), "prior-session", Request{
-			Model:  "gpt-5.5",
-			Effort: "high",
-			Prompt: "resume prompt",
+		if err := os.WriteFile(filepath.Join(repoRoot, "main.go"), []byte("package main\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(repo): %v", err)
+		}
+		adapter := newCodexHelperAdapter("tool-success", recordPath, 5*time.Second, "CGO_CFLAGS=-O2", "CGO_CXXFLAGS=-stdlib=libc++")
+		request := Request{
+			Model:          "gpt-5.5",
+			Effort:         "high",
+			Prompt:         "initial prompt",
+			DurableSession: true,
 			ReviewerWorkspace: &ReviewerWorkspaceRequest{
 				RepoDir:    repoRoot,
 				ScratchDir: scratchRoot,
 			},
-		})
-		if !errors.Is(err, ErrUnsafeSubprocessConfig) {
-			t.Fatalf("Resume error = %v, want ErrUnsafeSubprocessConfig", err)
+		}
+		initialStream, err := adapter.Start(context.Background(), request)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := initialStream.Wait(context.Background()); err != nil {
+			t.Fatalf("initial Wait: %v", err)
+		}
+		if initialStream.SessionID() != "session-1" {
+			t.Fatalf("initial SessionID = %q, want session-1", initialStream.SessionID())
+		}
+		request.Prompt = "resume prompt"
+		stream, err := adapter.Resume(context.Background(), initialStream.SessionID(), request)
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		records := readHelperRecords(t, recordPath)
+		if len(records) != 2 {
+			t.Fatalf("helper records = %d, want durable start and resume", len(records))
+		}
+		initialRecord, record := records[0], records[1]
+		if containsFlag(initialRecord.AdapterArgs, "--ephemeral") {
+			t.Fatalf("initial args = %#v, durable reviewer must not use --ephemeral", initialRecord.AdapterArgs)
+		}
+		assertFlagValue(t, initialRecord.AdapterArgs, "--sandbox", "workspace-write")
+		assertFlagValue(t, initialRecord.AdapterArgs, "--cd", repoRoot)
+		if !samePath(t, record.Cwd, repoRoot) || record.CwdEntries != 1 {
+			t.Fatalf("resume cwd = %q entries = %d, want workspace %q with checkout", record.Cwd, record.CwdEntries, repoRoot)
+		}
+		if len(record.AdapterArgs) < 2 || record.AdapterArgs[0] != "exec" || record.AdapterArgs[1] != "resume" {
+			t.Fatalf("resume args = %#v, want codex exec resume", record.AdapterArgs)
+		}
+		for _, flag := range []string{"--sandbox", "--cd", "--add-dir"} {
+			if containsFlag(record.AdapterArgs, flag) {
+				t.Fatalf("resume args = %#v, do not want unsupported %s", record.AdapterArgs, flag)
+			}
+		}
+		promptIndex := len(argsBeforePrompt(record.AdapterArgs))
+		if promptIndex < 1 || record.AdapterArgs[promptIndex-1] != initialStream.SessionID() {
+			t.Fatalf("resume args = %#v, want exact session %q", record.AdapterArgs, initialStream.SessionID())
+		}
+		for name, path := range map[string]string{
+			"TMPDIR": record.TMPDir, "GOTMPDIR": record.GoTmpDir, "GOCACHE": record.GoCache, "XDG_CACHE_HOME": record.XDGCacheHome,
+		} {
+			if !pathUnderAnyRoot(path, []string{scratchRoot}) {
+				t.Fatalf("%s = %q, want invocation path under scratch root %q", name, path, scratchRoot)
+			}
+		}
+		if !strings.Contains(record.CGOCFlags, "-O2 -fmodules-cache-path="+scratchRoot) || !strings.Contains(record.CGOCXXFlags, "-stdlib=libc++ -fmodules-cache-path="+scratchRoot) {
+			t.Fatalf("compiler env = %q / %q, want preserved flags and scratch-scoped module cache", record.CGOCFlags, record.CGOCXXFlags)
 		}
 	})
 
@@ -1421,6 +1476,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		fmt.Println(`{"type":"thread.started","thread_id":"session-usage"}`)
 		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
 		fmt.Println(`{"type":"turn.completed","usage":{"input_tokens":25475,"cached_input_tokens":19712,"output_tokens":812,"reasoning_output_tokens":271}}`)
+	case "tool-success":
+		fmt.Println(`{"type":"tool_use","name":"Read"}`)
+		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
+		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
 	case "noisy-success":
 		fmt.Fprintln(os.Stderr, strings.Repeat("stderr-noise-", 32))
 		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)

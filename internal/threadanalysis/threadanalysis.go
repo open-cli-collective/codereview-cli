@@ -58,37 +58,44 @@ type Result struct {
 
 // Options are explicit call-site supplied dependencies for one analysis run.
 type Options struct {
-	Store          llmlifecycle.Store
-	RunID          string
-	Adapter        llm.Adapter
-	Model          string
-	Effort         string
-	LogPath        string
-	LifecyclePaths llmlifecycle.Paths
-	Progress       llmlifecycle.Progress
-	Now            func() time.Time
-	NewStepID      func() string
+	Store           llmlifecycle.Store
+	RunID           string
+	Adapter         llm.Adapter
+	Model           string
+	Effort          string
+	LogPath         string
+	LifecyclePaths  llmlifecycle.Paths
+	Progress        llmlifecycle.Progress
+	Now             func() time.Time
+	NewStepID       func() string
+	ResumeSessionID string
+	OnSessionID     func(string) error
 }
 
 // AnalyzeThread analyzes one normalized inline thread through the durable LLM lifecycle.
 func AnalyzeThread(ctx context.Context, opts Options, thread threadcontext.Thread) (Result, error) {
+	result, _, err := analyzeThread(ctx, opts, thread)
+	return result, err
+}
+
+func analyzeThread(ctx context.Context, opts Options, thread threadcontext.Thread) (Result, llmlifecycle.SessionDraft, error) {
 	var zero Result
 	if err := validateOptions(opts); err != nil {
-		return zero, err
+		return zero, llmlifecycle.SessionDraft{}, err
 	}
 	threadID := strings.TrimSpace(string(thread.ID))
 	if threadID == "" {
-		return zero, fmt.Errorf("threadanalysis: thread ID is required")
+		return zero, llmlifecycle.SessionDraft{}, fmt.Errorf("threadanalysis: thread ID is required")
 	}
 	request, err := lifecycleRequestForThread(opts, threadID, thread)
 	if err != nil {
-		return zero, err
+		return zero, llmlifecycle.SessionDraft{}, err
 	}
 	result, err := llmlifecycle.RunStructured(ctx, request, decodeResultForThread(threadID))
 	if err != nil {
-		return zero, err
+		return zero, result.Draft, err
 	}
-	return result.Value, nil
+	return result.Value, result.Draft, nil
 }
 
 // AnalyzeThreads analyzes normalized inline threads in order, using logPath to
@@ -107,7 +114,15 @@ func AnalyzeThreads(ctx context.Context, opts Options, threads []threadcontext.T
 		if err != nil {
 			return nil, err
 		}
-		result, err := AnalyzeThread(ctx, opts, thread)
+		result, draft, err := analyzeThread(ctx, opts, thread)
+		if sessionID := strings.TrimSpace(draft.ProviderReportedSessionID); sessionID != "" {
+			if opts.OnSessionID != nil {
+				if checkpointErr := opts.OnSessionID(sessionID); checkpointErr != nil {
+					return nil, checkpointErr
+				}
+			}
+			opts.ResumeSessionID = sessionID
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -160,6 +175,7 @@ func lifecycleRequestForThread(opts Options, threadID string, thread threadconte
 		Progress:        opts.Progress,
 		Now:             opts.Now,
 		NewSessionRowID: opts.NewStepID,
+		ResumeSessionID: opts.ResumeSessionID,
 	}, nil
 }
 

@@ -37,11 +37,11 @@ default, if the posting identity has already approved the PR, cr exits before
 any LLM classifier or reviewer work, even if newer commits made that approval
 stale. Use --rerun to bypass these local gates and force a new live review.
 
-Provider session reuse is independent of local review gates. Reviews reuse a
-durable session scoped to the PR, profile, and posting identity by default,
-including after pushes and across dry-run/live invocations. --session selects
-a named live-review session instead; --fresh-session starts a fresh provider
-conversation for this invocation.
+Session reuse is independent of local review gates. Plain follow-up reviews and
+--rerun reuse the PR's original reviewer cohort and each reviewer's provider
+session. --session scopes only the orchestrator conversation. --fresh-session
+reselects the reviewer cohort and starts fresh orchestrator and reviewer
+conversations without changing local review gates.
 
 --fast requests fast execution for reviewer agents only; --no-fast disables it.
 CLI flags override the profile default. Unsupported runtimes or reviewer models
@@ -106,14 +106,14 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	}
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false, "Plan review actions without posting")
 	cmd.Flags().BoolVar(&flags.noPost, "no-post", false, "Alias for --dry-run")
-	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass local approval/override, resume, and marker gates; reuse the LLM session")
+	cmd.Flags().BoolVar(&flags.rerun, "rerun", false, "Bypass local approval/override, resume, and marker gates; reuse reviewer and orchestrator sessions")
 	cmd.Flags().BoolVar(&flags.retryPosts, "retry-posts", false, "Retry missing or failed required posts without rerunning review or checking approval overrides")
-	cmd.Flags().BoolVar(&flags.freshSession, "fresh-session", false, "Start a fresh provider conversation without changing local review gates")
+	cmd.Flags().BoolVar(&flags.freshSession, "fresh-session", false, "Reselect reviewers and start fresh reviewer/orchestrator conversations without changing local review gates")
 	cmd.Flags().BoolVar(&flags.fast, "fast", false, "Request fast execution for supported reviewer runtimes and models")
 	cmd.Flags().BoolVar(&flags.noFast, "no-fast", false, "Disable fast execution for reviewer agents")
 	cmd.Flags().StringArrayVar(&flags.agentsDirs, "agents-dir", nil, "Additional trusted agents directory")
 	cmd.Flags().StringVar(&flags.failOn, "fail-on", "", "Exit 1 when a finding at or above severity exists")
-	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Override the PR's default LLM session with a named live-review session")
+	cmd.Flags().StringVar(&flags.sessionName, "session", "", "Override the PR's default orchestrator session with a named live-review session")
 	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	cmd.Flags().StringVar(&flags.selectionModel, "selection-model", "", "Override selection model for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionEffort, "selection-effort", "", "Override selection effort for dry-run review")

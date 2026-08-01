@@ -2,6 +2,7 @@ package threadanalysis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"go/parser"
 	"go/token"
@@ -137,6 +138,74 @@ func TestAnalyzeThreadsPreservesSingleThreadArtifactsAndOrder(t *testing.T) {
 		if string(batchOutput) != string(manualOutput) {
 			t.Fatalf("thread %s validated output differs: batch %q, single %q", thread.ID, batchOutput, manualOutput)
 		}
+	}
+}
+
+func TestAnalyzeThreadsChainsOneProviderSessionInOrder(t *testing.T) {
+	threads := []threadcontext.Thread{promptThreadWithID("thread-1", "first"), promptThreadWithID("thread-2", "second")}
+	adapter := &llm.FakeAdapter{NameValue: "fake", SupportsResumeValue: true}
+	adapter.Queue(llm.FakeResult{SessionID: "thread-session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
+	adapter.Queue(llm.FakeResult{SessionID: "thread-session-2", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-2"))}})
+	opts := testOptions(t, newFakeStore(), adapter)
+	opts.ResumeSessionID = "selection-session"
+	var checkpoints []string
+	opts.OnSessionID = func(sessionID string) error {
+		checkpoints = append(checkpoints, sessionID)
+		return nil
+	}
+
+	if _, err := AnalyzeThreads(context.Background(), opts, threads, func(thread threadcontext.Thread) (string, error) {
+		return string(thread.ID) + ".log", nil
+	}); err != nil {
+		t.Fatalf("AnalyzeThreads: %v", err)
+	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 2 || resumes[0].SessionID != "selection-session" || resumes[1].SessionID != "thread-session-1" {
+		t.Fatalf("thread resumes = %#v, want sequential orchestrator chain", resumes)
+	}
+	if !reflect.DeepEqual(checkpoints, []string{"thread-session-1", "thread-session-2"}) {
+		t.Fatalf("session checkpoints = %#v", checkpoints)
+	}
+}
+
+func TestAnalyzeThreadsCheckpointsProviderSessionBeforeReturningFailure(t *testing.T) {
+	adapter := &llm.FakeAdapter{NameValue: "fake", SupportsResumeValue: true}
+	providerErr := errors.New("provider failed")
+	adapter.Queue(llm.FakeResult{SessionID: "thread-session-failed", WaitErr: providerErr})
+	opts := testOptions(t, newFakeStore(), adapter)
+	var checkpoints []string
+	opts.OnSessionID = func(sessionID string) error {
+		checkpoints = append(checkpoints, sessionID)
+		return nil
+	}
+
+	_, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, func(threadcontext.Thread) (string, error) {
+		return "thread.log", nil
+	})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("AnalyzeThreads error = %v, want provider failure", err)
+	}
+	if !reflect.DeepEqual(checkpoints, []string{"thread-session-failed"}) {
+		t.Fatalf("session checkpoints = %#v, want failed provider session", checkpoints)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requests[0].DurableSession {
+		t.Fatalf("fresh thread-analysis requests = %#v, want durable start", requests)
+	}
+}
+
+func TestAnalyzeThreadsPropagatesSessionCheckpointFailure(t *testing.T) {
+	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	adapter.Queue(llm.FakeResult{SessionID: "thread-session", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
+	opts := testOptions(t, newFakeStore(), adapter)
+	checkpointErr := errors.New("persist checkpoint")
+	opts.OnSessionID = func(string) error { return checkpointErr }
+
+	_, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, func(threadcontext.Thread) (string, error) {
+		return "thread.log", nil
+	})
+	if !errors.Is(err, checkpointErr) {
+		t.Fatalf("AnalyzeThreads error = %v, want checkpoint failure", err)
 	}
 }
 

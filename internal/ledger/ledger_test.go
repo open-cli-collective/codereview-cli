@@ -33,7 +33,7 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 		t.Fatalf("PRAGMA busy_timeout = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
 	}
 
-	for _, table := range []string{"prs", "runs", "sessions", "findings", "planned_actions", "named_sessions"} {
+	for _, table := range []string{"prs", "runs", "sessions", "findings", "planned_actions", "named_sessions", "reviewer_cohorts", "reviewer_cohort_members"} {
 		if !tableExists(t, store.db, table) {
 			t.Fatalf("table %s does not exist", table)
 		}
@@ -49,6 +49,124 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
+	}
+}
+
+func TestReviewerCohortReplaceAndSessionUpdateAreAtomic(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	run := allocateRun(t, store, validAllocateRunParams())
+	scope := ReviewerCohortScope{PRKey: run.PRKey, Profile: run.Profile, PostingIdentity: run.PostingIdentity}
+	first := ReviewerCohort{
+		Scope: scope, Adapter: "codex_cli", CreatedAt: time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC),
+		Members: []ReviewerCohortMember{
+			{AgentID: "repo:go", AssignmentMode: ReviewerAssignmentScoped, Files: []string{"main.go"}, AllowedFiles: []string{"main.go"}, Model: "gpt-5.5", Effort: "high", ProviderSessionID: "go-1"},
+			{AgentID: "shared:security", AssignmentMode: ReviewerAssignmentBroad, Model: "gpt-5.5", Effort: "high", ProviderSessionID: "security-1"},
+		},
+	}
+	if err := store.ReplaceReviewerCohort(ctx, first); err != nil {
+		t.Fatalf("ReplaceReviewerCohort first: %v", err)
+	}
+
+	second := first
+	second.Members = []ReviewerCohortMember{{AgentID: "repo:docs", AssignmentMode: ReviewerAssignmentScoped, Files: []string{"README.md"}, AllowedFiles: []string{"README.md"}, Model: "gpt-5.5", Effort: "medium"}}
+	if err := store.ReplaceReviewerCohort(ctx, second); err != nil {
+		t.Fatalf("ReplaceReviewerCohort second: %v", err)
+	}
+	if err := store.UpdateReviewerCohortSession(ctx, scope, "repo:docs", "docs-2", time.Date(2026, 7, 31, 10, 5, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("UpdateReviewerCohortSession: %v", err)
+	}
+
+	got, err := store.GetReviewerCohort(ctx, scope)
+	if err != nil {
+		t.Fatalf("GetReviewerCohort: %v", err)
+	}
+	second.Members[0].ProviderSessionID = "docs-2"
+	second.UpdatedAt = time.Date(2026, 7, 31, 10, 5, 0, 0, time.UTC)
+	if !reflect.DeepEqual(got, second) {
+		t.Fatalf("GetReviewerCohort = %#v, want %#v", got, second)
+	}
+	if count := queryInt(t, store.db, "SELECT COUNT(*) FROM reviewer_cohort_members"); count != 1 {
+		t.Fatalf("reviewer cohort member count = %d, want atomic replacement count 1", count)
+	}
+}
+
+func TestReviewerCohortConcurrentSessionUpdatesDoNotClobberSiblings(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	run := allocateRun(t, store, validAllocateRunParams())
+	scope := ReviewerCohortScope{PRKey: run.PRKey, Profile: run.Profile, PostingIdentity: run.PostingIdentity}
+	cohort := ReviewerCohort{Scope: scope, Adapter: "codex_cli", CreatedAt: time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC), Members: []ReviewerCohortMember{
+		{AgentID: "repo:go", AssignmentMode: ReviewerAssignmentBroad, Model: "gpt-5.5", Effort: "high"},
+		{AgentID: "repo:test", AssignmentMode: ReviewerAssignmentBroad, Model: "gpt-5.5", Effort: "high"},
+	}}
+	if err := store.ReplaceReviewerCohort(ctx, cohort); err != nil {
+		t.Fatalf("ReplaceReviewerCohort: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for agent, session := range map[string]string{"repo:go": "go-session", "repo:test": "test-session"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := store.UpdateReviewerCohortSession(ctx, scope, agent, session, time.Date(2026, 7, 31, 10, 5, 0, 0, time.UTC)); err != nil {
+				t.Errorf("UpdateReviewerCohortSession(%s): %v", agent, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got, err := store.GetReviewerCohort(ctx, scope)
+	if err != nil {
+		t.Fatalf("GetReviewerCohort: %v", err)
+	}
+	if got.Members[0].ProviderSessionID != "go-session" || got.Members[1].ProviderSessionID != "test-session" {
+		t.Fatalf("reviewer sessions = %#v, want both concurrent updates", got.Members)
+	}
+}
+
+func TestMergePlanningResultPreservesCheckpointActionState(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, validAllocateRunParams())
+	session := validSession(run.RunID)
+	insertSession(t, store, session)
+	finding := validFinding(run.RunID, session.SessionRowID)
+	insertFinding(t, store, finding)
+	checkpoint := validPlannedAction(run.RunID)
+	checkpoint.ActionID = "thread-reply"
+	checkpoint.Kind = PlannedActionThreadReply
+	checkpoint.FindingID = ""
+	checkpoint.ThreadID = "thread-1"
+	checkpoint.RollupComment = nil
+	checkpoint.ThreadReply = &plannedactions.ThreadReplyPayload{Body: "summary", Summary: true}
+	checkpoint.Status = PlannedActionPosted
+	checkpoint.Attempts = 1
+	postedAt := time.Date(2026, 7, 31, 11, 0, 0, 0, time.UTC)
+	checkpoint.PostedAt = &postedAt
+	checkpoint.UpstreamID = strPtr("comment-1")
+	if err := store.InsertPlannedAction(context.Background(), checkpoint); err != nil {
+		t.Fatalf("InsertPlannedAction: %v", err)
+	}
+	final := validPlannedAction(run.RunID)
+	final.ActionID = "submit-review"
+	final.Kind = PlannedActionSubmitReview
+	final.FindingID = ""
+	final.RollupComment = nil
+	final.SubmitReview = &plannedactions.SubmitReviewPayload{Body: "review", Event: review.ReviewEventComment}
+
+	if err := store.MergePlanningResult(context.Background(), []Finding{finding}, []PlannedAction{checkpoint, final}); err != nil {
+		t.Fatalf("MergePlanningResult: %v", err)
+	}
+	findings, err := store.ListFindings(context.Background(), run.RunID)
+	if err != nil || len(findings) != 1 {
+		t.Fatalf("merged findings = %#v, err = %v, want one unchanged finding", findings, err)
+	}
+	actions, err := store.ListPlannedActions(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("ListPlannedActions: %v", err)
+	}
+	if len(actions) != 2 || actions[0].ActionID != "submit-review" || actions[1].Status != PlannedActionPosted || actions[1].Attempts != 1 {
+		t.Fatalf("merged actions = %#v, want final action plus unchanged posted checkpoint", actions)
 	}
 }
 

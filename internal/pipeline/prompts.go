@@ -24,7 +24,7 @@ import (
 
 const dossierFinalExcerptRunes = 240
 
-func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
+func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string, checkpoints ...reviewerDiscussionCheckpoint) (string, []string, error) {
 	input, deps, err := reviewerPromptInputFromArtifacts(paths, pr, selected, agent)
 	if err != nil {
 		return "", nil, err
@@ -40,11 +40,41 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 		"pr":              input.PR,
 		"schema":          "findings",
 	}
+	if len(checkpoints) > 0 && len(checkpoints[0].responses) > 0 {
+		payload["discussion_outcomes"] = reviewerDiscussionOutcomes(checkpoints[0])
+	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return "", nil, err
 	}
 	return string(body), deps, nil
+}
+
+type reviewerDiscussionOutcome struct {
+	ThreadID   string `json:"thread_id"`
+	Kind       string `json:"kind"`
+	Body       string `json:"body"`
+	Resolve    bool   `json:"resolve"`
+	Rationale  string `json:"rationale,omitempty"`
+	PostStatus string `json:"post_status"`
+}
+
+func reviewerDiscussionOutcomes(checkpoint reviewerDiscussionCheckpoint) []reviewerDiscussionOutcome {
+	out := make([]reviewerDiscussionOutcome, 0, len(checkpoint.responses))
+	for _, response := range checkpoint.responses {
+		status := "not_planned"
+		for _, action := range checkpoint.actions {
+			if action.Kind == reviewplan.ActionKindThreadReply && action.ThreadID == response.ThreadID {
+				status = action.Status.String()
+				break
+			}
+		}
+		out = append(out, reviewerDiscussionOutcome{
+			ThreadID: response.ThreadID, Kind: string(response.Kind), Body: response.Body,
+			Resolve: response.Resolve, Rationale: response.Rationale, PostStatus: status,
+		})
+	}
+	return out
 }
 
 type selectionAgentPrompt struct {

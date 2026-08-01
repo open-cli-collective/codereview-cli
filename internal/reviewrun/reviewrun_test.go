@@ -434,6 +434,25 @@ func TestRunDoesNotCommitNamedSessionCandidateAfterOutboxError(t *testing.T) {
 	}
 }
 
+func TestRunTreatsCheckpointPremiseMovementAsAborted(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	planner := &fakePlanner{store: fixture.store, err: gitprovider.ErrStaleSHA}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.ExitCode != exitUpstream || !result.Outbox.Aborted || result.Outbox.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("result = %#v, want checkpoint premise abort", result)
+	}
+	if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeAborted {
+		t.Fatalf("run outcome = %v, want aborted", result.Run.Outcome)
+	}
+}
+
 func TestRunResumeExistingActionsSkipsPlanner(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)
@@ -610,6 +629,33 @@ func TestRunResumeInvalidStoredActionsFailsRunWithRerunGuidance(t *testing.T) {
 	}
 	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeFailed {
 		t.Fatalf("run outcome = %#v, want failed", stored.Outcome)
+	}
+}
+
+func TestRunResumeThreadCheckpointActionsContinuesPlanner(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	run := fixture.allocateRun(t, "thread-checkpoint", testBaseSHA)
+	if err := fixture.store.InsertPlannedAction(ctx, ledger.PlannedAction{
+		Action: plannedactions.Action{
+			ActionID: "reply-early", Kind: ledger.PlannedActionThreadReply, ThreadID: "thread-1", PlannedAt: testNow(),
+			ThreadReply: &plannedactions.ThreadReplyPayload{Body: "summary", Summary: true}, Status: ledger.PlannedActionPending, Required: true,
+		},
+		RunID: run.RunID,
+	}); err != nil {
+		t.Fatalf("InsertPlannedAction: %v", err)
+	}
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment}
+
+	result, err := Run(ctx, fixture.opts(planner), Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if planner.calls != 1 {
+		t.Fatalf("planner calls = %d, want checkpoint resume to continue planning", planner.calls)
+	}
+	if result.Outbox.Outcome != ledger.OutcomeComment {
+		t.Fatalf("outbox outcome = %q, want comment", result.Outbox.Outcome)
 	}
 }
 

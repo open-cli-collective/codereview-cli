@@ -339,6 +339,33 @@ func TestRunStructuredSessionPersistenceFailureLeavesNoMetadata(t *testing.T) {
 	}
 }
 
+func TestRunStructuredFreshSessionDurabilityFollowsResumeSupport(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		supportsResume bool
+	}{
+		{name: "resumable", supportsResume: true},
+		{name: "non-resumable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: tt.supportsResume}
+			adapter.Queue(llm.FakeResult{
+				SessionID: "provider-session-1",
+				Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+			})
+			req := lifecycleRequest(t, newLifecycleStore(), adapter)
+
+			if _, err := RunStructured(context.Background(), req, decodeLifecyclePayload); err != nil {
+				t.Fatalf("RunStructured: %v", err)
+			}
+			requests := adapter.Requests()
+			if len(requests) != 1 || requests[0].DurableSession != tt.supportsResume {
+				t.Fatalf("requests = %#v, DurableSession want %t", requests, tt.supportsResume)
+			}
+		})
+	}
+}
+
 func TestRunStructuredRejectsStaleMetadataBeforeProviderCall(t *testing.T) {
 	ctx := context.Background()
 	store := newLifecycleStore()
