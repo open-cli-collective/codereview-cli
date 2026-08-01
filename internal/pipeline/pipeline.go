@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -79,10 +80,18 @@ type Store interface {
 	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
 
+type reviewerCohortStore interface {
+	GetReviewerCohort(context.Context, ledger.ReviewerCohortScope) (ledger.ReviewerCohort, error)
+	ReplaceReviewerCohort(context.Context, ledger.ReviewerCohort) error
+	UpdateReviewerCohortSession(context.Context, ledger.ReviewerCohortScope, string, string, time.Time) error
+	DeleteReviewerCohort(context.Context, ledger.ReviewerCohortScope) error
+}
+
 // NamedSessionStore persists cross-run LLM sessions.
 type NamedSessionStore interface {
 	GetNamedSession(context.Context, string) (ledger.NamedSession, error)
 	UpsertNamedSession(context.Context, ledger.NamedSession) error
+	DeleteNamedSession(context.Context, string) error
 }
 
 // LLMTaskProgress records task-aware LLM pipeline breadcrumbs without owning
@@ -141,14 +150,15 @@ type ContextBudget struct {
 
 // Options contains dry-run pipeline dependencies.
 type Options struct {
-	Provider       ReadProvider
-	Adapter        llm.Adapter
-	Store          Store
-	NamedSessions  NamedSessionStore
-	Layout         statepaths.Layout
-	Warnings       io.Writer
-	TaskProgress   LLMTaskProgress
-	ReviewProgress ReviewerProgress
+	Provider         ReadProvider
+	Adapter          llm.Adapter
+	Store            Store
+	NamedSessions    NamedSessionStore
+	Layout           statepaths.Layout
+	Warnings         io.Writer
+	TaskProgress     LLMTaskProgress
+	ReviewProgress   ReviewerProgress
+	ThreadCheckpoint func(context.Context, ledger.Run, Request) error
 
 	Now             func() time.Time
 	NewRunID        func() string
@@ -348,6 +358,7 @@ type namedSessionState struct {
 	supportsResume           bool
 	currentProviderSessionID string
 	createdAt                time.Time
+	store                    NamedSessionStore
 }
 
 type selectionSetupRequest struct {
@@ -750,35 +761,73 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return nil, false, err
 	}
 
-	selection, selectionSession, selectionLedgerSession, err := runSelectionPhase(ctx, opts, selectionPhaseRequest{
-		RunID:                       run.RunID,
-		DurableSession:              namedSession.enabled && namedSession.supportsResume,
-		Profile:                     req.Profile,
-		SelectionModelOverride:      req.SelectionModelOverride,
-		SelectionEffortOverride:     req.SelectionEffortOverride,
-		SelectionPromptInstructions: req.SelectionPromptInstructions,
-		ReviewPR:                    prepared.reviewPR,
-		Catalog:                     prepared.catalog,
-		ParsedDiff:                  prepared.parsed,
-		Threads:                     prepared.threads,
-		ThreadContext:               prepared.threadContext,
-		Artifacts:                   prepared.artifacts,
-		ResumeSessionID:             namedSession.resumeID(),
-		MaxAgents:                   maxAgents,
+	cohortScope := ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
+	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, prepared.changedFiles, maxAgents)
+	if err != nil {
+		return executionPhaseFailure(err)
+	}
+	if reusedCohort {
+		if err := restoreOrchestratorSessionFromRun(ctx, opts.Store, run.RunID, &namedSession); err != nil {
+			return nil, false, err
+		}
+	}
+	selectionInRun := false
+	if reusedCohort {
+		if _, selectionInRun, err = llmlifecycle.ReadMetadata(lifecyclePaths(prepared.artifacts), orchestratorSelectionStage); err != nil {
+			return nil, false, err
+		}
+	}
+	var selectionSession sessionDraft
+	var selectionLedgerSession ledger.Session
+	if !reusedCohort || selectionInRun {
+		selection, selectionSession, selectionLedgerSession, err = runSelectionPhase(ctx, opts, selectionPhaseRequest{
+			RunID:                       run.RunID,
+			DurableSession:              namedSession.enabled && namedSession.supportsResume,
+			Profile:                     req.Profile,
+			SelectionModelOverride:      req.SelectionModelOverride,
+			SelectionEffortOverride:     req.SelectionEffortOverride,
+			SelectionPromptInstructions: req.SelectionPromptInstructions,
+			ReviewPR:                    prepared.reviewPR,
+			Catalog:                     prepared.catalog,
+			ParsedDiff:                  prepared.parsed,
+			Threads:                     prepared.threads,
+			ThreadContext:               prepared.threadContext,
+			Artifacts:                   prepared.artifacts,
+			ResumeSessionID:             namedSession.resumeID(),
+			MaxAgents:                   maxAgents,
+		})
+		if checkpointErr := namedSession.checkpointSessionID(ctx, selectionSession, opts.now()); checkpointErr != nil {
+			return nil, false, checkpointErr
+		}
+		if err != nil {
+			return executionPhaseFailure(err)
+		}
+		if !reusedCohort {
+			if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
+				return nil, false, err
+			}
+		}
+	} else {
+		opts.emitReviewerSelection(prepared.catalog, selection)
+	}
+	result.Selection = selection
+	result.Sessions = appendSessionIfPresent(result.Sessions, selectionLedgerSession)
+
+	selectionTaskIDs := []string{orchestratorSelectionStage}
+	if reusedCohort && !selectionInRun {
+		selectionTaskIDs = nil
+	}
+	threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext, namedSession.resumeID(), func(sessionID string) error {
+		return namedSession.checkpointProviderSessionID(ctx, sessionID, opts.now())
 	})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
-	result.Selection = selection
-	result.Sessions = appendSessionIfPresent(result.Sessions, selectionLedgerSession)
-	namedSession.recordSessionID(selectionSession)
-
-	selectionTaskIDs := []string{orchestratorSelectionStage}
-	threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext)
+	checkpointActions, err := checkpointThreadResponses(ctx, opts, req, mode, run, result.EffectiveCaps, threadResponses)
 	if err != nil {
-		return executionPhaseFailure(err)
+		return nil, false, err
 	}
-	findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, findingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency)
+	findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, findingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, reviewerDiscussionCheckpoint{responses: threadResponses, actions: checkpointActions})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
@@ -827,6 +876,9 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 			MajorEventRequestsChanges: req.MajorRequestChanges,
 		})
 	})
+	if checkpointErr := namedSession.checkpointSessionID(ctx, rollupSession, opts.now()); checkpointErr != nil {
+		return nil, false, checkpointErr
+	}
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
@@ -853,6 +905,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, err
 	}
+	plan.Actions = preserveCheckpointActions(plan.Actions, checkpointActions)
 	result.Plan = plan
 	return findingSessions, false, nil
 }
@@ -874,12 +927,22 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 	for _, action := range result.Plan.Actions {
 		plannedActions = append(plannedActions, ledger.PlannedAction{Action: action.Action, RunID: run.RunID})
 	}
-	_, existingActions, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
+	_, _, hasPersistedPlanning, err := persistedPlanning(ctx, opts.Store, run.RunID)
 	if err != nil {
 		return err
 	}
 	if hasPersistedPlanning {
-		plannedActions = existingActions
+		store, ok := opts.Store.(checkpointPlanningStore)
+		if !ok {
+			return fmt.Errorf("pipeline: checkpoint planning store is required")
+		}
+		if err := store.MergePlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
+			return err
+		}
+		plannedActions, err = opts.Store.ListPlannedActions(ctx, run.RunID)
+		if err != nil {
+			return err
+		}
 	} else if err := opts.Store.InsertPlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
 		return err
 	}
@@ -1223,7 +1286,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	return selection, selectionSession, ledgerSession, nil
 }
 
-func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread) ([]review.ThreadResponseAction, error) {
+func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread, resumeSessionID string, onSessionID func(string) error) ([]review.ThreadResponseAction, error) {
 	eligible := threadcontext.PendingCRAuthoredFindingThreads(threads)
 	if len(eligible) == 0 {
 		return nil, nil
@@ -1233,15 +1296,17 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 		return nil, err
 	}
 	results, err := threadanalysis.AnalyzeThreads(ctx, threadanalysis.Options{
-		Store:          opts.Store,
-		RunID:          run.RunID,
-		Adapter:        opts.Adapter,
-		Model:          runtimeConfig.model,
-		Effort:         runtimeConfig.effort,
-		LifecyclePaths: lifecyclePaths(artifacts),
-		Progress:       opts.TaskProgress,
-		Now:            opts.now,
-		NewStepID:      opts.newSessionRowID,
+		Store:           opts.Store,
+		RunID:           run.RunID,
+		Adapter:         opts.Adapter,
+		Model:           runtimeConfig.model,
+		Effort:          runtimeConfig.effort,
+		LifecyclePaths:  lifecyclePaths(artifacts),
+		Progress:        opts.TaskProgress,
+		Now:             opts.now,
+		NewStepID:       opts.newSessionRowID,
+		ResumeSessionID: resumeSessionID,
+		OnSessionID:     onSessionID,
 	}, eligible, func(thread threadcontext.Thread) (string, error) {
 		return artifacts.AgentLog("thread-analysis-" + string(thread.ID))
 	})
@@ -1249,6 +1314,92 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 		return nil, pipelineTaskError(err)
 	}
 	return threadanalysis.ResponseActions(results), nil
+}
+
+type checkpointPlanningStore interface {
+	InsertPlannedActions(context.Context, []ledger.PlannedAction) error
+	MergePlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error
+}
+
+func checkpointThreadResponses(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, caps reviewplan.ProviderCaps, responses []review.ThreadResponseAction) ([]ledger.PlannedAction, error) {
+	if len(responses) == 0 {
+		return nil, nil
+	}
+	existing, err := opts.Store.ListPlannedActions(ctx, run.RunID)
+	if err != nil {
+		return nil, err
+	}
+	actions := checkpointActionsOnly(existing)
+	if len(actions) == 0 {
+		plan, err := reviewplan.BuildThreadResponses(reviewplan.ThreadResponseRequest{
+			PostMode:     mode.planPostMode,
+			ProviderCaps: caps,
+			Responses:    responses,
+			Now:          opts.now,
+			NewActionID:  opts.newActionID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		actions = make([]ledger.PlannedAction, 0, len(plan.Actions))
+		for _, action := range plan.Actions {
+			actions = append(actions, ledger.PlannedAction{Action: action.Action, RunID: run.RunID})
+		}
+		store, ok := opts.Store.(checkpointPlanningStore)
+		if !ok {
+			return nil, fmt.Errorf("pipeline: checkpoint planning store is required")
+		}
+		if err := store.InsertPlannedActions(ctx, actions); err != nil {
+			return nil, err
+		}
+	}
+	if mode.live && opts.ThreadCheckpoint != nil {
+		if err := opts.ThreadCheckpoint(ctx, run, req); err != nil {
+			if errors.Is(err, gitprovider.ErrStaleSHA) {
+				return nil, err
+			}
+			opts.emitWarning(fmt.Sprintf("thread response checkpoint posting failed; final posting will retry: %v", err))
+		}
+	}
+	stored, err := opts.Store.ListPlannedActions(ctx, run.RunID)
+	if err != nil {
+		return nil, err
+	}
+	return checkpointActionsOnly(stored), nil
+}
+
+func checkpointActionsOnly(actions []ledger.PlannedAction) []ledger.PlannedAction {
+	out := make([]ledger.PlannedAction, 0, len(actions))
+	for _, action := range actions {
+		if action.Kind == ledger.PlannedActionThreadReply || action.Kind == ledger.PlannedActionResolveThread {
+			out = append(out, action)
+		}
+	}
+	return out
+}
+
+func preserveCheckpointActions(actions []reviewplan.Action, checkpoint []ledger.PlannedAction) []reviewplan.Action {
+	if len(checkpoint) == 0 {
+		return actions
+	}
+	byKindThread := map[string][]ledger.PlannedAction{}
+	for _, action := range checkpoint {
+		key := action.Kind.String() + "\x00" + action.ThreadID
+		byKindThread[key] = append(byKindThread[key], action)
+	}
+	for i := range actions {
+		if actions[i].Kind != reviewplan.ActionKindThreadReply && actions[i].Kind != reviewplan.ActionKindResolveThread {
+			continue
+		}
+		key := actions[i].Kind.String() + "\x00" + actions[i].ThreadID
+		matches := byKindThread[key]
+		if len(matches) == 0 {
+			continue
+		}
+		actions[i].Action = matches[0].Action
+		byKindThread[key] = matches[1:]
+	}
+	return actions
 }
 
 func (opts Options) capSelectionAgents(selection llm.Selection, catalog agents.Catalog, changedFiles []string, maxAgents int) (llm.Selection, error) {
@@ -1366,6 +1517,182 @@ func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog,
 	return selection
 }
 
+func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.ReviewerCohort, changedFiles []string, maxAgents int, adapter string) (llm.Selection, map[string]string, error) {
+	freshError := func(format string, args ...any) (llm.Selection, map[string]string, error) {
+		return llm.Selection{}, nil, fmt.Errorf("pipeline: "+format+"; pass --fresh-session to select a new reviewer cohort", args...)
+	}
+	if cohort.Adapter != adapter {
+		return freshError("saved reviewer cohort adapter %q is incompatible with %q", cohort.Adapter, adapter)
+	}
+	if maxAgents > 0 && len(cohort.Members) > maxAgents {
+		return freshError("--max-agents %d is smaller than the saved reviewer cohort of %d", maxAgents, len(cohort.Members))
+	}
+
+	type candidate struct {
+		member ledger.ReviewerCohortMember
+		agent  agents.Agent
+		files  []string
+	}
+	candidates := make([]candidate, 0, len(cohort.Members))
+	changed := stringSet(changedFiles)
+	covered := map[string]bool{}
+	for _, member := range cohort.Members {
+		agent, ok := catalog.Find(member.AgentID)
+		if !ok {
+			return freshError("saved reviewer %q is missing from the current catalog", member.AgentID)
+		}
+		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
+		if err != nil {
+			return llm.Selection{}, nil, err
+		}
+		if runtimeConfig.model != member.Model || runtimeConfig.effort != member.Effort || req.ReviewerFast != member.Fast {
+			return freshError("saved reviewer %q runtime is incompatible with the current runtime", member.AgentID)
+		}
+		current := candidate{member: member, agent: agent}
+		persistedFiles := member.Files
+		if member.AssignmentMode == ledger.ReviewerAssignmentScoped {
+			if len(member.AllowedFiles) > 0 {
+				persistedFiles = member.AllowedFiles
+			}
+		}
+		for _, file := range persistedFiles {
+			if changed[file] && !slices.Contains(current.files, file) {
+				current.files = append(current.files, file)
+				covered[file] = true
+			}
+		}
+		candidates = append(candidates, current)
+	}
+	for _, file := range changedFiles {
+		if covered[file] {
+			continue
+		}
+		assigned := false
+		for i := range candidates {
+			if candidates[i].member.AssignmentMode != ledger.ReviewerAssignmentBroad && !globsMatchFile(candidates[i].agent.FileGlobs, file) {
+				continue
+			}
+			candidates[i].files = append(candidates[i].files, file)
+			covered[file] = true
+			assigned = true
+			break
+		}
+		if !assigned {
+			return freshError("saved reviewer cohort leaves changed file %q uncovered", file)
+		}
+	}
+
+	selection := llm.Selection{Reasoning: "reused reviewer cohort"}
+	resumes := map[string]string{}
+	for _, candidate := range candidates {
+		if len(candidate.files) == 0 {
+			continue
+		}
+		selected := llm.SelectedAgent{AgentID: candidate.member.AgentID, Rationale: "reused reviewer cohort"}
+		selected.Files = append([]string(nil), candidate.files...)
+		if candidate.member.AssignmentMode == ledger.ReviewerAssignmentScoped {
+			selected.AllowedFiles = append([]string(nil), candidate.files...)
+		}
+		selection.SelectedAgents = append(selection.SelectedAgents, selected)
+		if sessionID := strings.TrimSpace(candidate.member.ProviderSessionID); sessionID != "" {
+			resumes[candidate.member.AgentID] = sessionID
+		}
+	}
+	return selection, resumes, nil
+}
+
+func loadReviewerCohort(ctx context.Context, opts Options, req Request, scope ledger.ReviewerCohortScope, catalog agents.Catalog, changedFiles []string, maxAgents int) (llm.Selection, map[string]string, bool, error) {
+	store, ok := opts.Store.(reviewerCohortStore)
+	if !ok {
+		return llm.Selection{}, nil, false, fmt.Errorf("pipeline: reviewer cohort store is required")
+	}
+	if req.FreshSession {
+		if err := store.DeleteReviewerCohort(ctx, scope); err != nil && !errors.Is(err, ledger.ErrNotFound) {
+			return llm.Selection{}, nil, false, err
+		}
+		return llm.Selection{}, nil, false, nil
+	}
+	cohort, err := store.GetReviewerCohort(ctx, scope)
+	if errors.Is(err, ledger.ErrNotFound) {
+		return llm.Selection{}, nil, false, nil
+	}
+	if err != nil {
+		return llm.Selection{}, nil, false, err
+	}
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, changedFiles, maxAgents, opts.Adapter.Name())
+	if err != nil {
+		return llm.Selection{}, nil, false, Failure(FailureTerminal, err)
+	}
+	if !opts.Adapter.SupportsResume() {
+		resumes = nil
+	}
+	return selection, resumes, true, nil
+}
+
+func persistReviewerCohort(ctx context.Context, opts Options, req Request, scope ledger.ReviewerCohortScope, catalog agents.Catalog, selection llm.Selection, now time.Time) error {
+	if len(selection.SelectedAgents) == 0 {
+		return nil
+	}
+	store, ok := opts.Store.(reviewerCohortStore)
+	if !ok {
+		return fmt.Errorf("pipeline: reviewer cohort store is required")
+	}
+	cohort := ledger.ReviewerCohort{Scope: scope, Adapter: opts.Adapter.Name(), CreatedAt: now, UpdatedAt: now}
+	for _, selected := range selection.SelectedAgents {
+		agent, ok := catalog.Find(selected.AgentID)
+		if !ok {
+			return fmt.Errorf("pipeline: selected agent %q not found while saving reviewer cohort", selected.AgentID)
+		}
+		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
+		if err != nil {
+			return err
+		}
+		mode := ledger.ReviewerAssignmentScoped
+		if len(selected.Files) == 0 && len(selected.AllowedFiles) == 0 {
+			mode = ledger.ReviewerAssignmentBroad
+		}
+		cohort.Members = append(cohort.Members, ledger.ReviewerCohortMember{
+			AgentID:        selected.AgentID,
+			AssignmentMode: mode,
+			Files:          append([]string(nil), selected.Files...),
+			AllowedFiles:   append([]string(nil), selected.AllowedFiles...),
+			Model:          runtimeConfig.model,
+			Effort:         runtimeConfig.effort,
+			Fast:           req.ReviewerFast,
+		})
+	}
+	return store.ReplaceReviewerCohort(ctx, cohort)
+}
+
+type runSessionStore interface {
+	ListSessionsForRun(context.Context, string) ([]ledger.Session, error)
+}
+
+func restoreOrchestratorSessionFromRun(ctx context.Context, store Store, runID string, state *namedSessionState) error {
+	sessions, ok := store.(runSessionStore)
+	if !ok || state == nil || !state.supportsResume {
+		return nil
+	}
+	rows, err := sessions.ListSessionsForRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	var latest *ledger.Session
+	for i := range rows {
+		row := &rows[i]
+		if row.Role != ledger.SessionRoleOrchestrator || strings.TrimSpace(row.ProviderSessionID) == "" {
+			continue
+		}
+		if latest == nil || row.StartedAt.After(latest.StartedAt) {
+			latest = row
+		}
+	}
+	if latest != nil {
+		state.currentProviderSessionID = latest.ProviderSessionID
+	}
+	return nil
+}
+
 func (opts Options) emitReviewerCatalog(catalog agents.Catalog, changedFiles []string) {
 	if opts.ReviewProgress == nil {
 		return
@@ -1461,7 +1788,7 @@ func appendSessionsIfPresent(sessions []ledger.Session, more ...ledger.Session) 
 	return sessions
 }
 
-func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int) ([]review.Finding, []llm.Findings, []sessionDraft, []ledger.Session, map[review.FindingID]string, []ReviewerFailure, error) {
+func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int, cohortScope ledger.ReviewerCohortScope, reviewerResumeIDs map[string]string, discussion reviewerDiscussionCheckpoint) ([]review.Finding, []llm.Findings, []sessionDraft, []ledger.Session, map[review.FindingID]string, []ReviewerFailure, error) {
 	type job struct {
 		selected llm.SelectedAgent
 		agent    agents.Agent
@@ -1502,7 +1829,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 				return
 			}
 			defer func() { <-sem }()
-			result, session, ledgerSession, failure, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs)
+			result, session, ledgerSession, failure, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs, reviewerResume{scope: cohortScope, sessionID: reviewerResumeIDs[current.agent.ID], discussion: discussion})
 			mu.Lock()
 			defer mu.Unlock()
 			if failure != nil {
@@ -1537,7 +1864,22 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 	return allFindings, reviewerResults, sessions, ledgerSessions, findingSessions, failures, nil
 }
 
-func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string) (llm.Findings, sessionDraft, ledger.Session, *ReviewerFailure, error) {
+type reviewerResume struct {
+	scope      ledger.ReviewerCohortScope
+	sessionID  string
+	discussion reviewerDiscussionCheckpoint
+}
+
+type reviewerDiscussionCheckpoint struct {
+	responses []review.ThreadResponseAction
+	actions   []ledger.PlannedAction
+}
+
+func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string, resume ...reviewerResume) (llm.Findings, sessionDraft, ledger.Session, *ReviewerFailure, error) {
+	var resumeState reviewerResume
+	if len(resume) > 0 {
+		resumeState = resume[0]
+	}
 	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
@@ -1545,7 +1887,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := patchPaths(parsed.Patches)
 	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
-	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths)
+	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
@@ -1590,6 +1932,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		logPath:           logPath,
 		prompt:            prompt,
 		baseRequest:       request,
+		resumeSessionID:   resumeState.sessionID,
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
@@ -1598,6 +1941,15 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 			NewFindingID: opts.newFindingID,
 		})
 	})
+	if providerSessionID := strings.TrimSpace(session.ProviderReportedSessionID); providerSessionID != "" && strings.TrimSpace(resumeState.scope.PRKey) != "" {
+		store, ok := opts.Store.(reviewerCohortStore)
+		if !ok {
+			return llm.Findings{}, session, ledgerSession, nil, fmt.Errorf("pipeline: reviewer cohort store is required")
+		}
+		if updateErr := store.UpdateReviewerCohortSession(ctx, resumeState.scope, agent.ID, providerSessionID, opts.now()); updateErr != nil {
+			return llm.Findings{}, session, ledgerSession, nil, updateErr
+		}
+	}
 	if err != nil {
 		var taskErr *llmTaskError
 		if errors.As(err, &taskErr) && taskErr.status == llmTaskStatusFailedIsolated {
@@ -1738,8 +2090,12 @@ func prepareNamedSession(ctx context.Context, opts Options, req Request, live bo
 		active:         active,
 		supportsResume: opts.Adapter.SupportsResume(),
 		createdAt:      now,
+		store:          opts.NamedSessions,
 	}
 	if req.FreshSession {
+		if err := opts.NamedSessions.DeleteNamedSession(ctx, active.Name); err != nil && !errors.Is(err, ledger.ErrNotFound) {
+			return namedSessionState{}, fmt.Errorf("pipeline: delete named session %q: %w", active.Name, err)
+		}
 		return state, nil
 	}
 	stored, err := opts.NamedSessions.GetNamedSession(ctx, active.Name)
@@ -1807,13 +2163,34 @@ func (s *namedSessionState) resumeID() string {
 	return s.currentProviderSessionID
 }
 
-func (s *namedSessionState) recordSessionID(draft sessionDraft) {
-	if s == nil || !s.enabled || !s.supportsResume {
-		return
+func (s *namedSessionState) checkpointSessionID(ctx context.Context, draft sessionDraft, lastUsedAt time.Time) error {
+	return s.checkpointProviderSessionID(ctx, draft.ProviderReportedSessionID, lastUsedAt)
+}
+
+func (s *namedSessionState) checkpointProviderSessionID(ctx context.Context, providerSessionID string, lastUsedAt time.Time) error {
+	if s == nil || !s.enabled {
+		return nil
 	}
-	if strings.TrimSpace(draft.ProviderReportedSessionID) != "" {
-		s.currentProviderSessionID = draft.ProviderReportedSessionID
+	providerSessionID = strings.TrimSpace(providerSessionID)
+	if providerSessionID == "" {
+		return nil
 	}
+	if s.store == nil {
+		return fmt.Errorf("pipeline: named session store is required")
+	}
+	candidate := ledger.NamedSession{
+		Name: s.active.Name, Profile: s.active.Profile, Provider: s.active.Provider,
+		Adapter: s.active.Adapter, Model: s.active.Model, Host: s.active.Host,
+		ProviderSessionID: providerSessionID, DurableSession: s.supportsResume,
+		CreatedAt: s.createdAt, LastUsedAt: lastUsedAt,
+	}
+	if err := s.store.UpsertNamedSession(ctx, candidate); err != nil {
+		return fmt.Errorf("pipeline: checkpoint named session %q: %w", s.active.Name, err)
+	}
+	if s.supportsResume {
+		s.currentProviderSessionID = providerSessionID
+	}
+	return nil
 }
 
 func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.Time) *ledger.NamedSession {

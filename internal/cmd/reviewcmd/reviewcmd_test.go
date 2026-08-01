@@ -377,8 +377,10 @@ func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
 	for _, want := range []string{
 		"already approved the PR",
 		"--rerun to bypass these local gates",
-		"Provider session reuse is independent",
-		"--fresh-session starts a fresh provider",
+		"--rerun reuse the PR's original reviewer cohort",
+		"--session scopes only the orchestrator conversation",
+		"--fresh-session",
+		"reselects the reviewer cohort",
 		"--fast requests fast execution for reviewer agents only",
 		"approval override request newer than that marker",
 		"--retry-posts is recovery-only",

@@ -263,6 +263,12 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 		if run, loadErr := opts.Store.GetRun(context.Background(), result.Run.RunID); loadErr == nil {
 			result.Run = run
 		}
+		if errors.Is(err, gitprovider.ErrStaleSHA) {
+			result.Outbox = outbox.Result{Outcome: ledger.OutcomeAborted, ExitCode: exitUpstream, Aborted: true}
+			result.ExitCode = exitUpstream
+			result.Message = "review premises moved during thread response checkpoint"
+			return result, nil
+		}
 		return result, err
 	}
 	if planResult != nil {
@@ -328,7 +334,8 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 	if err != nil {
 		return "", nil, err
 	}
-	if result.Decision.Kind == gate.DecisionResume && len(actions) > 0 {
+	checkpointOnly := onlyThreadCheckpointActions(actions)
+	if result.Decision.Kind == gate.DecisionResume && len(actions) > 0 && !checkpointOnly {
 		desired, err := desiredOutcomeFromActions(actions)
 		if err != nil {
 			if completeErr := opts.Store.CompleteRun(ctx, result.Run.RunID, ledger.OutcomeFailed, opts.now()); completeErr != nil {
@@ -338,7 +345,7 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 		}
 		return desired, nil, nil
 	}
-	if result.Decision.Kind == gate.DecisionResume {
+	if result.Decision.Kind == gate.DecisionResume && !checkpointOnly {
 		empty, err := planningStateEmpty(ctx, opts.Store, result.Run.RunID)
 		if err != nil {
 			return "", nil, err
@@ -363,6 +370,9 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 			return "", nil, err
 		}
 		outcome := plannerFailureOutcome(pipeline.ClassifyFailure(err), result.Decision.Kind == gate.DecisionResume)
+		if errors.Is(err, gitprovider.ErrStaleSHA) {
+			outcome = ledger.OutcomeAborted
+		}
 		if completeErr := opts.Store.CompleteRun(context.Background(), result.Run.RunID, outcome, opts.now()); completeErr != nil {
 			return "", nil, completeErr
 		}
@@ -373,6 +383,18 @@ func planOrResume(ctx context.Context, opts Options, req Request, result Result)
 		return "", nil, err
 	}
 	return desired, &planned, nil
+}
+
+func onlyThreadCheckpointActions(actions []ledger.PlannedAction) bool {
+	if len(actions) == 0 {
+		return false
+	}
+	for _, action := range actions {
+		if action.Kind != ledger.PlannedActionThreadReply && action.Kind != ledger.PlannedActionResolveThread {
+			return false
+		}
+	}
+	return true
 }
 
 func plannerFailureOutcome(kind pipeline.FailureKind, resumed bool) ledger.Outcome {

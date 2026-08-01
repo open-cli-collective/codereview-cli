@@ -28,6 +28,8 @@ Architecture guardrails for LLM execution, model resolution, Git provider
 writes, command and review harness boundaries, inline thread lifecycle, and
 retention live in
 [`docs/architecture.md`](architecture.md).
+The canonical first-run, rerun, fresh-session, checkpoint, and recovery sequence
+lives in [`docs/review-lifecycle.md`](review-lifecycle.md).
 
 The temporary architecture refactor workstream context for issue #420 lives in
 [`docs/architecture-refactor-workstream.md`](architecture-refactor-workstream.md).

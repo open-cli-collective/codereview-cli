@@ -243,9 +243,10 @@ func TestDataPruneDefaultIgnoresConfiguredRetention(t *testing.T) {
 	}
 	layout := mustLayout(t)
 	store := openLedgerForTest(t, layout)
-	allocateRun(t, store, layout, "live-31d", ledger.PostModeLive, testNow().Add(-31*24*time.Hour))
-	allocateRun(t, store, layout, "live-91d", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
-	allocateRun(t, store, layout, "dry-8d", ledger.PostModeDryRun, testNow().Add(-8*24*time.Hour))
+	now := time.Now().UTC()
+	allocateRun(t, store, layout, "live-31d", ledger.PostModeLive, now.Add(-31*24*time.Hour))
+	allocateRun(t, store, layout, "live-91d", ledger.PostModeLive, now.Add(-91*24*time.Hour))
+	allocateRun(t, store, layout, "dry-8d", ledger.PostModeDryRun, now.Add(-8*24*time.Hour))
 	if err := store.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

@@ -3,6 +3,10 @@
 This document records review-pipeline boundaries that are intended to stay
 stable as the implementation evolves.
 
+The canonical runtime sequence, state ownership, rerun/fresh-session semantics,
+and interrupted-run recovery contract live in
+[review-lifecycle.md](review-lifecycle.md).
+
 ## Durable LLM Execution Boundary
 
 All production structured LLM actions must flow through

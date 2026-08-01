@@ -302,6 +302,114 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 	return summarize(actions, outcome, exitCode, false), nil
 }
 
+// PostCheckpoint posts only persisted thread replies/resolutions without
+// completing the run. Provider failures remain pending for the final outbox.
+func PostCheckpoint(ctx context.Context, opts Options, req Request) (Result, error) {
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if err := validateRequest(opts, req); err != nil {
+		return Result{ExitCode: exitFailed}, err
+	}
+	live, ok := opts.Provider.(interface {
+		GetPR(context.Context, gitprovider.PRRef) (gitprovider.PR, error)
+	})
+	if !ok {
+		return Result{ExitCode: exitFailed}, fmt.Errorf("outbox: checkpoint provider must read pull requests")
+	}
+	pr, err := live.GetPR(ctx, req.PRRef)
+	if err != nil {
+		return Result{ExitCode: exitUpstream}, err
+	}
+	if pr.Head.SHA != req.Run.SHA || pr.Base.SHA != req.Run.BaseSHA {
+		return Result{Outcome: ledger.OutcomeIncomplete, ExitCode: exitUpstream, Aborted: true}, nil
+	}
+	actions, err := opts.Store.ListPlannedActions(ctx, req.Run.RunID)
+	if err != nil {
+		return Result{ExitCode: exitFailed}, err
+	}
+	actions = sortActions(actions)
+	state, err := readHostState(ctx, opts.Provider, req.PRRef)
+	if err != nil {
+		return Result{ExitCode: exitUpstream}, err
+	}
+	for i := range actions {
+		if actions[i].Status != ledger.PlannedActionPending || !checkpointAction(actions[i]) {
+			continue
+		}
+		match, matchErr := reconcileAction(req, opts.Provider.Capabilities(), actions, actions[i], state)
+		if matchErr != nil || !match.ok {
+			continue
+		}
+		now := opts.Now().UTC()
+		actions[i].Status = ledger.PlannedActionPosted
+		actions[i].PostedAt = &now
+		actions[i].UpstreamID = strPtr(match.upstreamID)
+		actions[i].Error = nil
+		actions[i].FailureClass = nil
+		if err := opts.Store.UpdatePlannedAction(ctx, actions[i]); err != nil {
+			return Result{ExitCode: exitFailed}, err
+		}
+	}
+	for i := range actions {
+		if actions[i].Status != ledger.PlannedActionPending || !checkpointAction(actions[i]) {
+			continue
+		}
+		if actions[i].Kind == ledger.PlannedActionResolveThread && !sameThreadReplyPosted(actions[i], actions) {
+			continue
+		}
+		plan, _, planErr := buildActionPlan(opts.Provider, req, actions, actions[i])
+		if planErr != nil {
+			if err := recordPendingError(ctx, opts.Store, &actions[i], planErr); err != nil {
+				return Result{ExitCode: exitFailed}, err
+			}
+			continue
+		}
+		if err := opts.Limiter.Wait(ctx, req.PRRef.Host); err != nil {
+			if updateErr := recordPendingError(ctx, opts.Store, &actions[i], err); updateErr != nil {
+				return Result{ExitCode: exitFailed}, updateErr
+			}
+			if isContextError(err) {
+				return checkpointResult(actions), err
+			}
+			continue
+		}
+		now := opts.Now().UTC()
+		actions[i].Attempts++
+		actions[i].AttemptedAt = &now
+		if err := opts.Store.UpdatePlannedAction(ctx, actions[i]); err != nil {
+			return Result{ExitCode: exitFailed}, err
+		}
+		upstreamID, postErr := dispatch(ctx, opts.Provider, req.PRRef, plan)
+		if postErr != nil {
+			if err := recordPendingError(ctx, opts.Store, &actions[i], postErr); err != nil {
+				return Result{ExitCode: exitFailed}, err
+			}
+			continue
+		}
+		actions[i].Status = ledger.PlannedActionPosted
+		actions[i].PostedAt = &now
+		actions[i].UpstreamID = strPtr(upstreamID)
+		actions[i].Error = nil
+		actions[i].FailureClass = nil
+		if err := opts.Store.UpdatePlannedAction(ctx, actions[i]); err != nil {
+			return Result{ExitCode: exitFailed}, err
+		}
+	}
+	return checkpointResult(actions), nil
+}
+
+func checkpointAction(action ledger.PlannedAction) bool {
+	return action.Kind == ledger.PlannedActionThreadReply || action.Kind == ledger.PlannedActionResolveThread
+}
+
+func checkpointResult(actions []ledger.PlannedAction) Result {
+	result := summarize(actions, ledger.OutcomeIncomplete, exitOK, false)
+	result.Outcome = ledger.OutcomeIncomplete
+	result.ExitCode = exitOK
+	return result
+}
+
 func validateRequest(opts Options, req Request) error {
 	if opts.Store == nil {
 		return fmt.Errorf("outbox: store is required")

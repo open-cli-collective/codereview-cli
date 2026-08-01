@@ -14,7 +14,7 @@ Use `cr` when you want to:
 
 - preview review actions before posting anything;
 - run a live PR review with idempotent posting and resume behavior;
-- reuse PR-scoped LLM sessions by default or named sessions across related live reviews;
+- reuse a fixed PR-scoped reviewer cohort and its LLM sessions by default;
 - inspect trusted reviewer agents available to a repository;
 - manage local review run data and credentials from the terminal.
 
@@ -98,6 +98,8 @@ review data lives under the OS data directory for the `cr` binary.
 
 For repo review guidance, reviewer-facing dossier context, and dossier/workbench
 retention conventions, see [docs/review-guidance.md](docs/review-guidance.md).
+For first runs, reruns, fresh sessions, thread checkpoints, and interrupted-run
+recovery, see [docs/review-lifecycle.md](docs/review-lifecycle.md).
 
 ## Authentication And Setup
 

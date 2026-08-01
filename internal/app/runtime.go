@@ -412,6 +412,22 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 		RetentionManualOnly: req.RetentionManualOnly,
 		ResolveRepoRoot:     resolveRepoRoot,
 		GitCommand:          gitCommand,
+		ThreadCheckpoint: func(ctx context.Context, run ledger.Run, pipelineReq pipeline.Request) error {
+			result, err := outbox.PostCheckpoint(ctx, outbox.Options{Store: ledgerStore, Provider: liveProvider, Limiter: limiter}, outbox.Request{
+				Run:                             run,
+				PRRef:                           pipelineReq.PRRef,
+				PostingIdentity:                 pipelineReq.PostingIdentity,
+				DesiredOutcome:                  ledger.OutcomeComment,
+				ResolveThreadPermissionAdvisory: postingUsesGitHubApp(profile),
+			})
+			if err != nil {
+				return err
+			}
+			if result.Aborted {
+				return gitprovider.ErrStaleSHA
+			}
+			return nil
+		},
 	}
 	return reviewRunner{
 		pipeline: pipelineOpts,
@@ -439,6 +455,13 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 		},
 		hooks: dispatcher,
 	}
+}
+
+func postingUsesGitHubApp(profile config.Profile) bool {
+	if profile.ReviewerCredentials != nil {
+		return profile.ReviewerCredentials.AuthMode == config.GitAuthModeGitHubApp
+	}
+	return profile.Git.AuthMode == config.GitAuthModeGitHubApp
 }
 
 func buildApprovalOverrideClassifier(profile config.Profile, adapter llm.Adapter, warnings io.Writer) approvaloverride.Classifier {

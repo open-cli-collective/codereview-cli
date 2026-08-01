@@ -25,7 +25,8 @@ type commandFlags struct {
 func Register(rootCmd *cobra.Command, opts *root.Options) {
 	cmd := &cobra.Command{
 		Use:   "sessions",
-		Short: "Manage named LLM sessions",
+		Short: "Manage named orchestrator sessions",
+		Long:  "Manage named orchestrator sessions. PR-scoped reviewer cohorts are reused automatically and reset with cr review --fresh-session.",
 	}
 	cmd.AddCommand(newListCommand(opts), newShowCommand(opts), newDeleteCommand(opts))
 	rootCmd.AddCommand(cmd)
@@ -35,7 +36,7 @@ func newListCommand(opts *root.Options) *cobra.Command {
 	var flags commandFlags
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List named LLM sessions",
+		Short: "List named orchestrator sessions",
 		Args:  exitcode.NoArgs("sessions list accepts no arguments"),
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			store, cleanup, err := openStore(cmd.Context(), nil, "sessions.list", false)
@@ -67,7 +68,7 @@ func newShowCommand(opts *root.Options) *cobra.Command {
 	var flags commandFlags
 	cmd := &cobra.Command{
 		Use:   "show <name>",
-		Short: "Show one named LLM session",
+		Short: "Show one named orchestrator session",
 		Args:  exitcode.NonEmptyArg("sessions show requires <name>"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])
@@ -100,7 +101,7 @@ func newDeleteCommand(opts *root.Options) *cobra.Command {
 	var flags commandFlags
 	cmd := &cobra.Command{
 		Use:   "delete <name>",
-		Short: "Delete one named LLM session",
+		Short: "Delete one named orchestrator session",
 		Args:  exitcode.NonEmptyArg("sessions delete requires <name>"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := strings.TrimSpace(args[0])

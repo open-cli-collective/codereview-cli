@@ -25,7 +25,7 @@ import (
 
 const (
 	// SchemaVersion is the current ledger schema version.
-	SchemaVersion = 3
+	SchemaVersion = 4
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
 	writeQueueSize     = 64
@@ -363,6 +363,45 @@ type NamedSession struct {
 	LastUsedAt        time.Time
 }
 
+// ReviewerAssignmentMode records whether a cohort member reviews every changed
+// file or only its persisted/rebased assignment.
+type ReviewerAssignmentMode string
+
+const (
+	// ReviewerAssignmentBroad assigns every changed file to a reviewer.
+	ReviewerAssignmentBroad ReviewerAssignmentMode = "broad"
+	// ReviewerAssignmentScoped assigns only the persisted/rebased file set.
+	ReviewerAssignmentScoped ReviewerAssignmentMode = "scoped"
+)
+
+// ReviewerCohortScope identifies one durable reviewer cohort.
+type ReviewerCohortScope struct {
+	PRKey           string
+	Profile         string
+	PostingIdentity string
+}
+
+// ReviewerCohortMember is one ordered reviewer and its resumable runtime state.
+type ReviewerCohortMember struct {
+	AgentID           string
+	AssignmentMode    ReviewerAssignmentMode
+	Files             []string
+	AllowedFiles      []string
+	Model             string
+	Effort            string
+	Fast              bool
+	ProviderSessionID string
+}
+
+// ReviewerCohort is the fixed reviewer set for one PR/profile/posting identity.
+type ReviewerCohort struct {
+	Scope     ReviewerCohortScope
+	Adapter   string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Members   []ReviewerCohortMember
+}
+
 // Open opens or creates a ledger database at path and applies migrations.
 func Open(ctx context.Context, path string) (*Store, error) {
 	if strings.TrimSpace(path) == "" {
@@ -496,6 +535,18 @@ func migrations() []dbmig.Migration {
 			Up: func(ctx context.Context, tx *sql.Tx) error {
 				_, err := tx.ExecContext(ctx, `ALTER TABLE named_sessions ADD COLUMN durable_session INTEGER NOT NULL DEFAULT 0`)
 				return err
+			},
+		},
+		{
+			Version: 4,
+			Name:    "reviewer cohorts",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				for _, statement := range reviewerCohortSchemaStatements {
+					if _, err := tx.ExecContext(ctx, statement); err != nil {
+						return err
+					}
+				}
+				return nil
 			},
 		},
 	}
@@ -951,6 +1002,62 @@ func (s *Store) InsertPlanningResult(ctx context.Context, findings []Finding, ac
 	})
 }
 
+// MergePlanningResult atomically adds final findings/actions while preserving
+// mutable state for action IDs already persisted by an early checkpoint.
+func (s *Store) MergePlanningResult(ctx context.Context, findings []Finding, actions []PlannedAction) error {
+	for _, finding := range findings {
+		if err := validateFinding(finding); err != nil {
+			return err
+		}
+	}
+	for _, action := range actions {
+		if err := validatePlannedAction(action, true); err != nil {
+			return err
+		}
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("ledger: begin merge planning result: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, finding := range findings {
+			var existingRunID string
+			err := tx.QueryRowContext(ctx, `SELECT run_id FROM findings WHERE finding_id = ?`, finding.FindingID).Scan(&existingRunID)
+			switch {
+			case err == nil && existingRunID == finding.RunID:
+				continue
+			case err == nil:
+				return fmt.Errorf("ledger: finding %q belongs to run %q", finding.FindingID, existingRunID)
+			case !errors.Is(err, sql.ErrNoRows):
+				return fmt.Errorf("ledger: check merged finding %q: %w", finding.FindingID, err)
+			}
+			if err := insertFindingRow(ctx, tx, finding); err != nil {
+				return fmt.Errorf("ledger: merge planning result finding: %w", err)
+			}
+		}
+		for _, action := range actions {
+			var existingRunID string
+			err := tx.QueryRowContext(ctx, `SELECT run_id FROM planned_actions WHERE action_id = ?`, action.ActionID).Scan(&existingRunID)
+			switch {
+			case err == nil && existingRunID == action.RunID:
+				continue
+			case err == nil:
+				return fmt.Errorf("ledger: action %q belongs to run %q", action.ActionID, existingRunID)
+			case !errors.Is(err, sql.ErrNoRows):
+				return fmt.Errorf("ledger: check merged action %q: %w", action.ActionID, err)
+			}
+			if err := insertPlannedActionRow(ctx, tx, action); err != nil {
+				return fmt.Errorf("ledger: merge planning result action: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("ledger: commit merge planning result: %w", err)
+		}
+		return nil
+	})
+}
+
 func insertPlannedActionRow(ctx context.Context, db execer, action PlannedAction) error {
 	payload, err := encodePlannedActionPayload(action.Action)
 	if err != nil {
@@ -1130,6 +1237,169 @@ ON CONFLICT(name) DO UPDATE SET
 		)
 		if err != nil {
 			return fmt.Errorf("ledger: upsert named session: %w", err)
+		}
+		return nil
+	})
+}
+
+// ReplaceReviewerCohort atomically replaces the complete ordered cohort.
+func (s *Store) ReplaceReviewerCohort(ctx context.Context, cohort ReviewerCohort) error {
+	if err := validateReviewerCohort(cohort); err != nil {
+		return err
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("ledger: begin replace reviewer cohort: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		updatedAt := cohort.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = cohort.CreatedAt
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO reviewer_cohorts (pr_key, profile, posting_identity, adapter, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(pr_key, profile, posting_identity) DO UPDATE SET
+	adapter = excluded.adapter,
+	created_at = excluded.created_at,
+	updated_at = excluded.updated_at`,
+			cohort.Scope.PRKey, cohort.Scope.Profile, cohort.Scope.PostingIdentity, cohort.Adapter,
+			encodeTime(cohort.CreatedAt), encodeTime(updatedAt)); err != nil {
+			return fmt.Errorf("ledger: replace reviewer cohort: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM reviewer_cohort_members WHERE pr_key = ? AND profile = ? AND posting_identity = ?`,
+			cohort.Scope.PRKey, cohort.Scope.Profile, cohort.Scope.PostingIdentity); err != nil {
+			return fmt.Errorf("ledger: clear reviewer cohort members: %w", err)
+		}
+		for position, member := range cohort.Members {
+			files, _ := json.Marshal(member.Files)
+			allowedFiles, _ := json.Marshal(member.AllowedFiles)
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO reviewer_cohort_members (
+	pr_key, profile, posting_identity, position, agent_id, assignment_mode,
+	files_json, allowed_files_json, model, effort, fast, provider_session_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				cohort.Scope.PRKey, cohort.Scope.Profile, cohort.Scope.PostingIdentity, position, member.AgentID,
+				string(member.AssignmentMode), string(files), string(allowedFiles), member.Model, member.Effort,
+				boolToInt(member.Fast), member.ProviderSessionID); err != nil {
+				return fmt.Errorf("ledger: insert reviewer cohort member %q: %w", member.AgentID, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("ledger: commit replace reviewer cohort: %w", err)
+		}
+		return nil
+	})
+}
+
+// GetReviewerCohort returns one cohort in its persisted order.
+func (s *Store) GetReviewerCohort(ctx context.Context, scope ReviewerCohortScope) (ReviewerCohort, error) {
+	if err := validateReviewerCohortScope(scope); err != nil {
+		return ReviewerCohort{}, err
+	}
+	if err := s.checkOpen(); err != nil {
+		return ReviewerCohort{}, err
+	}
+	cohort := ReviewerCohort{Scope: scope}
+	var createdAt, updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+SELECT adapter, created_at, updated_at FROM reviewer_cohorts
+WHERE pr_key = ? AND profile = ? AND posting_identity = ?`, scope.PRKey, scope.Profile, scope.PostingIdentity).
+		Scan(&cohort.Adapter, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewerCohort{}, ErrNotFound
+	}
+	if err != nil {
+		return ReviewerCohort{}, fmt.Errorf("ledger: get reviewer cohort: %w", err)
+	}
+	if cohort.CreatedAt, err = parseTime(createdAt); err != nil {
+		return ReviewerCohort{}, err
+	}
+	if cohort.UpdatedAt, err = parseTime(updatedAt); err != nil {
+		return ReviewerCohort{}, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT agent_id, assignment_mode, files_json, allowed_files_json, model, effort, fast, provider_session_id
+FROM reviewer_cohort_members
+WHERE pr_key = ? AND profile = ? AND posting_identity = ?
+ORDER BY position`, scope.PRKey, scope.Profile, scope.PostingIdentity)
+	if err != nil {
+		return ReviewerCohort{}, fmt.Errorf("ledger: list reviewer cohort members: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var member ReviewerCohortMember
+		var mode, files, allowedFiles string
+		var fast int
+		if err := rows.Scan(&member.AgentID, &mode, &files, &allowedFiles, &member.Model, &member.Effort, &fast, &member.ProviderSessionID); err != nil {
+			return ReviewerCohort{}, fmt.Errorf("ledger: scan reviewer cohort member: %w", err)
+		}
+		member.AssignmentMode = ReviewerAssignmentMode(mode)
+		member.Fast = fast != 0
+		if err := json.Unmarshal([]byte(files), &member.Files); err != nil {
+			return ReviewerCohort{}, fmt.Errorf("ledger: decode reviewer cohort files: %w", err)
+		}
+		if err := json.Unmarshal([]byte(allowedFiles), &member.AllowedFiles); err != nil {
+			return ReviewerCohort{}, fmt.Errorf("ledger: decode reviewer cohort allowed files: %w", err)
+		}
+		cohort.Members = append(cohort.Members, member)
+	}
+	if err := rows.Err(); err != nil {
+		return ReviewerCohort{}, fmt.Errorf("ledger: list reviewer cohort members rows: %w", err)
+	}
+	return cohort, nil
+}
+
+// UpdateReviewerCohortSession records the latest provider session for one member.
+func (s *Store) UpdateReviewerCohortSession(ctx context.Context, scope ReviewerCohortScope, agentID, providerSessionID string, updatedAt time.Time) error {
+	if err := validateReviewerCohortScope(scope); err != nil {
+		return err
+	}
+	if strings.TrimSpace(agentID) == "" || strings.TrimSpace(providerSessionID) == "" || updatedAt.IsZero() {
+		return ErrInvalidInput
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("ledger: begin update reviewer cohort session: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		result, err := tx.ExecContext(ctx, `
+UPDATE reviewer_cohort_members SET provider_session_id = ?
+WHERE pr_key = ? AND profile = ? AND posting_identity = ? AND agent_id = ?`,
+			providerSessionID, scope.PRKey, scope.Profile, scope.PostingIdentity, agentID)
+		if err != nil {
+			return fmt.Errorf("ledger: update reviewer cohort session: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("ledger: update reviewer cohort session rows: %w", err)
+		}
+		if affected == 0 {
+			return ErrNotFound
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE reviewer_cohorts SET updated_at = ?
+WHERE pr_key = ? AND profile = ? AND posting_identity = ?`, encodeTime(updatedAt), scope.PRKey, scope.Profile, scope.PostingIdentity); err != nil {
+			return fmt.Errorf("ledger: update reviewer cohort timestamp: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("ledger: commit reviewer cohort session: %w", err)
+		}
+		return nil
+	})
+}
+
+// DeleteReviewerCohort removes one cohort and its members.
+func (s *Store) DeleteReviewerCohort(ctx context.Context, scope ReviewerCohortScope) error {
+	if err := validateReviewerCohortScope(scope); err != nil {
+		return err
+	}
+	return s.write(ctx, func(ctx context.Context, db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `DELETE FROM reviewer_cohorts WHERE pr_key = ? AND profile = ? AND posting_identity = ?`, scope.PRKey, scope.Profile, scope.PostingIdentity)
+		if err != nil {
+			return fmt.Errorf("ledger: delete reviewer cohort: %w", err)
 		}
 		return nil
 	})
@@ -1347,6 +1617,40 @@ func validateNamedSession(session NamedSession) error {
 	}
 	if session.LastUsedAt.IsZero() {
 		return invalidInput("last_used_at", "")
+	}
+	return nil
+}
+
+func validateReviewerCohortScope(scope ReviewerCohortScope) error {
+	for field, value := range map[string]string{
+		"pr_key": scope.PRKey, "profile": scope.Profile, "posting_identity": scope.PostingIdentity,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return invalidInput(field, value)
+		}
+	}
+	return nil
+}
+
+func validateReviewerCohort(cohort ReviewerCohort) error {
+	if err := validateReviewerCohortScope(cohort.Scope); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cohort.Adapter) == "" {
+		return invalidInput("adapter", cohort.Adapter)
+	}
+	if cohort.CreatedAt.IsZero() || len(cohort.Members) == 0 {
+		return ErrInvalidInput
+	}
+	seen := map[string]bool{}
+	for _, member := range cohort.Members {
+		if strings.TrimSpace(member.AgentID) == "" || strings.TrimSpace(member.Model) == "" || seen[member.AgentID] {
+			return ErrInvalidInput
+		}
+		seen[member.AgentID] = true
+		if member.AssignmentMode != ReviewerAssignmentBroad && member.AssignmentMode != ReviewerAssignmentScoped {
+			return invalidInput("assignment_mode", string(member.AssignmentMode))
+		}
 	}
 	return nil
 }
@@ -1744,5 +2048,35 @@ var schemaStatements = []string{
   provider_session_id TEXT NOT NULL,
   created_at     TEXT NOT NULL,
   last_used_at   TEXT NOT NULL
+)`,
+}
+
+var reviewerCohortSchemaStatements = []string{
+	`CREATE TABLE reviewer_cohorts (
+  pr_key           TEXT NOT NULL REFERENCES prs(pr_key) ON DELETE CASCADE,
+  profile          TEXT NOT NULL,
+  posting_identity TEXT NOT NULL,
+  adapter          TEXT NOT NULL,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY(pr_key, profile, posting_identity)
+)`,
+	`CREATE TABLE reviewer_cohort_members (
+  pr_key              TEXT NOT NULL,
+  profile             TEXT NOT NULL,
+  posting_identity    TEXT NOT NULL,
+  position            INTEGER NOT NULL,
+  agent_id            TEXT NOT NULL,
+  assignment_mode     TEXT NOT NULL,
+  files_json          TEXT NOT NULL,
+  allowed_files_json  TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  effort              TEXT NOT NULL,
+  fast                INTEGER NOT NULL DEFAULT 0,
+  provider_session_id TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY(pr_key, profile, posting_identity, agent_id),
+  UNIQUE(pr_key, profile, posting_identity, position),
+  FOREIGN KEY(pr_key, profile, posting_identity)
+    REFERENCES reviewer_cohorts(pr_key, profile, posting_identity) ON DELETE CASCADE
 )`,
 }

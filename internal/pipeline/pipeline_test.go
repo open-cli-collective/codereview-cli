@@ -27,6 +27,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
@@ -2803,6 +2804,18 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	if meta.InputFingerprint != wantFingerprint {
 		t.Fatalf("reviewer fingerprint = %q, want standard-speed %q", meta.InputFingerprint, wantFingerprint)
 	}
+	checkpointPrompt, _, err := buildReviewerPrompt(result.Artifacts, result.PR, selected, agent, []string{"main.go"}, reviewerDiscussionCheckpoint{
+		responses: []review.ThreadResponseAction{{Kind: review.ThreadResponseSummaryReply, ThreadID: "thread-1", Body: "Human clarified null handling.", Resolve: true, Rationale: "settled"}},
+		actions:   []ledger.PlannedAction{{Action: plannedactions.Action{Kind: ledger.PlannedActionThreadReply, ThreadID: "thread-1", Status: ledger.PlannedActionPosted}}},
+	})
+	if err != nil {
+		t.Fatalf("buildReviewerPrompt checkpoint: %v", err)
+	}
+	for _, want := range []string{`"discussion_outcomes"`, `"thread_id": "thread-1"`, `"post_status": "posted"`, "Human clarified null handling."} {
+		if !strings.Contains(checkpointPrompt, want) {
+			t.Fatalf("checkpoint prompt missing %q:\n%s", want, checkpointPrompt)
+		}
+	}
 }
 
 func TestDryRunFastFallsBackForUnsupportedRuntime(t *testing.T) {
@@ -3125,7 +3138,7 @@ func TestDefaultSessionNameUsesPRProfileAndPostingIdentityOnly(t *testing.T) {
 	}
 }
 
-func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
+func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -3167,7 +3180,6 @@ func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
 	req.Rerun = true
 	run := allocateLiveRun(t, store, provider, req, "run-default-live")
 	liveAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
-	liveAdapter.Queue(fakeLLMResult("selection-live", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	liveAdapter.Queue(fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	liveAdapter.Queue(fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6))
 
@@ -3187,8 +3199,11 @@ func TestDefaultSessionPersistsFromDryRunAndResumesLiveRerun(t *testing.T) {
 		t.Fatalf("Live: %v", err)
 	}
 	resumes := liveAdapter.Resumes()
-	if len(resumes) != 2 || resumes[0].SessionID != "rollup-dry" || resumes[1].SessionID != "selection-live" {
-		t.Fatalf("live resumes = %#v, want persisted dry-run session then within-run selection", resumes)
+	if len(resumes) != 2 || resumes[0].SessionID != "reviewer-dry" || resumes[1].SessionID != "rollup-dry" {
+		t.Fatalf("live resumes = %#v, want exact reviewer and orchestrator sessions", resumes)
+	}
+	if len(liveAdapter.Requests()) != 0 {
+		t.Fatalf("live starts = %#v, want cohort reuse without selection or fresh provider calls", liveAdapter.Requests())
 	}
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
@@ -3211,6 +3226,14 @@ func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
 	}
 	req.FreshSession = true
 	run := allocateLiveRun(t, store, provider, req, "run-default-fresh")
+	if err := store.ReplaceReviewerCohort(ctx, ledger.ReviewerCohort{
+		Scope:   ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)},
+		Adapter: "fake-llm", CreatedAt: fixedNow().Add(-time.Hour), Members: []ledger.ReviewerCohortMember{{
+			AgentID: "harness:reviewer", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"main.go"}, Model: "claude-sonnet-4-6", Effort: "medium", ProviderSessionID: "old-reviewer-session",
+		}},
+	}); err != nil {
+		t.Fatalf("ReplaceReviewerCohort: %v", err)
+	}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("selection-fresh", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-fresh", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
@@ -3241,8 +3264,15 @@ func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNamedSession: %v", err)
 	}
-	if gotStored.ProviderSessionID != "stored-session" {
-		t.Fatalf("stored provider session = %q, want unchanged until caller commits candidate", gotStored.ProviderSessionID)
+	if gotStored.ProviderSessionID != "rollup-fresh" {
+		t.Fatalf("stored provider session = %q, want immediate fresh rollup checkpoint", gotStored.ProviderSessionID)
+	}
+	cohort, err := store.GetReviewerCohort(ctx, ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)})
+	if err != nil {
+		t.Fatalf("GetReviewerCohort: %v", err)
+	}
+	if len(cohort.Members) != 1 || cohort.Members[0].ProviderSessionID != "reviewer-fresh" {
+		t.Fatalf("fresh cohort = %#v, want replacement reviewer session", cohort)
 	}
 }
 
@@ -3265,6 +3295,15 @@ func TestFreshSessionSkipsStoredNamedSession(t *testing.T) {
 	}
 	if state.active.Name != "daily" || state.resumeID() != "" {
 		t.Fatalf("fresh named state = %#v resume %q, want daily without stored resume", state, state.resumeID())
+	}
+	if _, err := store.GetNamedSession(ctx, "daily"); !errors.Is(err, ledger.ErrNotFound) {
+		t.Fatalf("GetNamedSession after fresh reset error = %v, want ErrNotFound", err)
+	}
+	if _, err := prepareNamedSession(ctx, Options{
+		Adapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
+		NamedSessions: store,
+	}, req, true, "claude-sonnet-4-6", fixedNow()); err != nil {
+		t.Fatalf("prepareNamedSession missing fresh row: %v", err)
 	}
 }
 
@@ -3327,8 +3366,8 @@ func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T
 	if err != nil {
 		t.Fatalf("GetNamedSession: %v", err)
 	}
-	if gotStored.ProviderSessionID != "stored-session" {
-		t.Fatalf("stored provider session = %q, want unchanged stored-session", gotStored.ProviderSessionID)
+	if gotStored.ProviderSessionID != "rollup-new" {
+		t.Fatalf("stored provider session = %q, want immediate rollup checkpoint", gotStored.ProviderSessionID)
 	}
 }
 
@@ -3379,8 +3418,55 @@ func TestLiveNamedSessionMissingRowStartsFreshAndReturnsCandidate(t *testing.T) 
 	if !reflect.DeepEqual(*result.NamedSessionCandidate, wantCandidate) {
 		t.Fatalf("candidate = %#v, want %#v", *result.NamedSessionCandidate, wantCandidate)
 	}
-	if _, err := store.GetNamedSession(ctx, req.SessionName); !errors.Is(err, ledger.ErrNotFound) {
-		t.Fatalf("GetNamedSession error = %v, want pipeline not to persist candidate", err)
+	if stored, err := store.GetNamedSession(ctx, req.SessionName); err != nil || stored.ProviderSessionID != "rollup-new" {
+		t.Fatalf("stored named session = %#v, err = %v, want immediate rollup checkpoint", stored, err)
+	}
+}
+
+func TestLiveNamedSessionPersistsProviderSessionFromSelectionFailure(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	run := allocateLiveRun(t, store, provider, req, "run-live-selection-failure")
+	providerErr := errors.New("selection provider failed")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(llm.FakeResult{SessionID: "selection-failed", WaitErr: providerErr})
+
+	_, err := liveForTest(ctx, Options{
+		Provider: provider, Adapter: adapter, Store: store, NamedSessions: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(), MaxConcurrency: 1,
+	}, req, run)
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("Live error = %v, want selection provider failure", err)
+	}
+	stored, err := store.GetNamedSession(ctx, req.SessionName)
+	if err != nil || stored.ProviderSessionID != "selection-failed" {
+		t.Fatalf("stored named session = %#v, err = %v, want failed selection session", stored, err)
+	}
+}
+
+func TestLiveNamedSessionCheckpointPersistenceFailureStopsPipeline(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.SessionName = "daily"
+	run := allocateLiveRun(t, store, provider, req, "run-live-checkpoint-failure")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-new", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	checkpointErr := errors.New("checkpoint write failed")
+
+	_, err := liveForTest(ctx, Options{
+		Provider: provider, Adapter: adapter, Store: store,
+		NamedSessions: failingNamedSessionStore{Store: store, upsertErr: checkpointErr},
+		Layout:        statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(), MaxConcurrency: 1,
+	}, req, run)
+	if !errors.Is(err, checkpointErr) {
+		t.Fatalf("Live error = %v, want named-session checkpoint failure", err)
 	}
 }
 
@@ -4656,6 +4742,132 @@ func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	}
 }
 
+func TestRebaseReviewerCohortKeepsOrderAndDropsEmptyScopeCalls(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}},
+		{ID: "repo:docs", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"docs/**"}},
+	}}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{
+		{AgentID: "repo:docs", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"docs/old.md"}, AllowedFiles: []string{"docs/old.md"}, Model: "claude-sonnet-4-6", Effort: "medium"},
+		{AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"old.go"}, AllowedFiles: []string{"old.go"}, Model: "claude-sonnet-4-6", Effort: "medium", ProviderSessionID: "go-session"},
+	}}
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []llm.SelectedAgent{{AgentID: "repo:go", Rationale: "reused reviewer cohort", Files: []string{"main.go"}, AllowedFiles: []string{"main.go"}}}
+	if !reflect.DeepEqual(selection.SelectedAgents, want) {
+		t.Fatalf("selected agents = %#v, want %#v", selection.SelectedAgents, want)
+	}
+	if !reflect.DeepEqual(resumes, map[string]string{"repo:go": "go-session"}) {
+		t.Fatalf("reviewer resumes = %#v, want exact saved session", resumes)
+	}
+}
+
+func TestRebaseReviewerCohortAssignsNewFilesToPersistedBroadMember(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad, Files: []string{"old.go"}, Model: "claude-sonnet-4-6", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:general", ModelTier: "medium", Effort: "medium"}}}
+
+	selection, _, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go", "schema.sql"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []string{"main.go", "schema.sql"}
+	if len(selection.SelectedAgents) != 1 || !reflect.DeepEqual(selection.SelectedAgents[0].Files, want) || len(selection.SelectedAgents[0].AllowedFiles) != 0 {
+		t.Fatalf("broad rebased selection = %#v, want files %#v without access constraint", selection.SelectedAgents, want)
+	}
+}
+
+func TestPersistReviewerCohortTreatsFilesOnlyAssignmentAsScoped(t *testing.T) {
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	run := allocateLiveRun(t, store, provider, req, "run-files-only-scope")
+	scope := ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}}}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{AgentID: "repo:go", Files: []string{"main.go"}}}}
+
+	if err := persistReviewerCohort(ctx, Options{Store: store, Adapter: &llm.FakeAdapter{NameValue: "fake-llm"}}, req, scope, catalog, selection, fixedNow()); err != nil {
+		t.Fatalf("persistReviewerCohort: %v", err)
+	}
+	cohort, err := store.GetReviewerCohort(ctx, scope)
+	if err != nil {
+		t.Fatalf("GetReviewerCohort: %v", err)
+	}
+	if len(cohort.Members) != 1 || cohort.Members[0].AssignmentMode != ledger.ReviewerAssignmentScoped {
+		t.Fatalf("cohort members = %#v, want files-only scoped assignment", cohort.Members)
+	}
+	rebased, _, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	if len(rebased.SelectedAgents) != 1 || !reflect.DeepEqual(rebased.SelectedAgents[0].AllowedFiles, []string{"main.go"}) {
+		t.Fatalf("rebased selection = %#v, want scoped Files fallback", rebased.SelectedAgents)
+	}
+}
+
+func TestRestoreOrchestratorSessionFromInterruptedRunUsesLatestSession(t *testing.T) {
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	run := allocateLiveRun(t, store, provider, req, "interrupted-orchestrator")
+	for _, session := range []ledger.Session{
+		{SessionRowID: "selection", RunID: run.RunID, ProviderSessionID: "selection-session", Role: ledger.SessionRoleOrchestrator, Adapter: "fake", Model: "model", StartedAt: fixedNow()},
+		{SessionRowID: "thread", RunID: run.RunID, ProviderSessionID: "thread-session", Role: ledger.SessionRoleOrchestrator, Adapter: "fake", Model: "model", StartedAt: fixedNow().Add(time.Second)},
+	} {
+		if err := store.InsertSession(context.Background(), session); err != nil {
+			t.Fatalf("InsertSession: %v", err)
+		}
+	}
+	state := namedSessionState{enabled: true, supportsResume: true, currentProviderSessionID: "older-session"}
+	if err := restoreOrchestratorSessionFromRun(context.Background(), store, run.RunID, &state); err != nil {
+		t.Fatalf("restoreOrchestratorSessionFromRun: %v", err)
+	}
+	if state.resumeID() != "thread-session" {
+		t.Fatalf("restored orchestrator session = %q, want latest thread session", state.resumeID())
+	}
+}
+
+func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "old-adapter", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Model: "claude-sonnet-4-6", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}}}}
+
+	for _, tc := range []struct {
+		name       string
+		adapter    string
+		files      []string
+		maxAgents  int
+		wantDetail string
+	}{
+		{name: "runtime", adapter: "new-adapter", files: []string{"main.go"}, wantDetail: "--fresh-session"},
+		{name: "uncovered", adapter: "old-adapter", files: []string{"schema.sql"}, wantDetail: "uncovered"},
+		{name: "max agents", adapter: "old-adapter", files: []string{"main.go"}, maxAgents: 0, wantDetail: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := cohort
+			if tc.name == "max agents" {
+				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-4-6", Effort: "medium"})
+				catalog.Agents = append(catalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
+				tc.maxAgents = 1
+				tc.wantDetail = "--max-agents"
+			}
+			_, _, err := rebaseReviewerCohort(req, catalog, candidate, tc.files, tc.maxAgents, tc.adapter)
+			if err == nil || !strings.Contains(err.Error(), tc.wantDetail) || !strings.Contains(err.Error(), "--fresh-session") {
+				t.Fatalf("rebaseReviewerCohort error = %v, want %q and fresh-session guidance", err, tc.wantDetail)
+			}
+		})
+	}
+}
+
 func TestBuildReviewerCoverageAllowsBroadReviewerSplitAssignments(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{
@@ -5822,6 +6034,15 @@ func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.Fa
 			DurationMS:       123,
 		},
 	}
+}
+
+type failingNamedSessionStore struct {
+	*ledger.Store
+	upsertErr error
+}
+
+func (s failingNamedSessionStore) UpsertNamedSession(context.Context, ledger.NamedSession) error {
+	return s.upsertErr
 }
 
 type providerOriginUsageAdapter struct {
