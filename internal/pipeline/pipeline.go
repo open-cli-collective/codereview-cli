@@ -767,7 +767,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return executionPhaseFailure(err)
 	}
 	if reusedCohort {
-		if err := restoreOrchestratorSessionFromRun(ctx, opts.Store, run.RunID, &namedSession); err != nil {
+		if err := restoreOrchestratorSessionFromRun(ctx, opts.Store, run.RunID, prepared.artifacts, &namedSession); err != nil {
 			return nil, false, err
 		}
 	}
@@ -1734,30 +1734,36 @@ func persistReviewerCohort(ctx context.Context, opts Options, req Request, scope
 	return store.ReplaceReviewerCohort(ctx, cohort)
 }
 
-type runSessionStore interface {
-	ListSessionsForRun(context.Context, string) ([]ledger.Session, error)
-}
-
-func restoreOrchestratorSessionFromRun(ctx context.Context, store Store, runID string, state *namedSessionState) error {
-	sessions, ok := store.(runSessionStore)
-	if !ok || state == nil || !state.supportsResume {
+func restoreOrchestratorSessionFromRun(ctx context.Context, store Store, runID string, artifacts ArtifactPaths, state *namedSessionState) error {
+	if state == nil || !state.supportsResume {
 		return nil
 	}
-	rows, err := sessions.ListSessionsForRun(ctx, runID)
+	metadata, err := llmlifecycle.ListMetadata(lifecyclePaths(artifacts))
 	if err != nil {
 		return err
 	}
-	var latest *ledger.Session
-	for i := range rows {
-		row := &rows[i]
-		if row.Role != ledger.SessionRoleOrchestrator || strings.TrimSpace(row.ProviderSessionID) == "" {
+	var latest ledger.Session
+	found := false
+	for _, meta := range metadata {
+		if meta.TaskID != orchestratorSelectionStage && meta.TaskID != orchestratorRollupStage && meta.Phase != string(stagemodel.StageThreadAnalysis) {
 			continue
 		}
-		if latest == nil || row.StartedAt.After(latest.StartedAt) {
+		if strings.TrimSpace(meta.SessionRowID) == "" {
+			continue
+		}
+		row, err := store.GetSession(ctx, meta.SessionRowID)
+		if err != nil {
+			return fmt.Errorf("pipeline: restore orchestrator task %q session %q: %w", meta.TaskID, meta.SessionRowID, err)
+		}
+		if row.RunID != runID || row.Role != ledger.SessionRoleOrchestrator || strings.TrimSpace(row.ProviderSessionID) == "" {
+			continue
+		}
+		if !found || row.StartedAt.After(latest.StartedAt) {
 			latest = row
+			found = true
 		}
 	}
-	if latest != nil {
+	if found {
 		state.currentProviderSessionID = latest.ProviderSessionID
 	}
 	return nil

@@ -5000,22 +5000,48 @@ func TestPersistReviewerCohortTreatsFilesOnlyAssignmentAsScoped(t *testing.T) {
 	}
 }
 
-func TestRestoreOrchestratorSessionFromInterruptedRunUsesLatestSession(t *testing.T) {
+func TestRestoreOrchestratorSessionFromInterruptedRunUsesLatestChainSession(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	run := allocateLiveRun(t, store, provider, req, "interrupted-orchestrator")
+	artifacts := ArtifactPathsFromDir(run.ArtifactPath)
 	for _, session := range []ledger.Session{
 		{SessionRowID: "selection", RunID: run.RunID, ProviderSessionID: "selection-session", Role: ledger.SessionRoleOrchestrator, Adapter: "fake", Model: "model", StartedAt: fixedNow()},
-		{SessionRowID: "thread", RunID: run.RunID, ProviderSessionID: "thread-session", Role: ledger.SessionRoleOrchestrator, Adapter: "fake", Model: "model", StartedAt: fixedNow().Add(time.Second)},
+		{SessionRowID: "dossier", RunID: run.RunID, ProviderSessionID: "dossier-session", Role: ledger.SessionRoleOrchestrator, Adapter: "fake", Model: "model", StartedAt: fixedNow().Add(time.Second)},
 	} {
 		if err := store.InsertSession(context.Background(), session); err != nil {
 			t.Fatalf("InsertSession: %v", err)
 		}
 	}
+	for _, meta := range []llmlifecycle.Metadata{
+		{TaskID: orchestratorSelectionStage, Phase: "selection", SessionRowID: "selection"},
+		{TaskID: dossierSummaryTaskID, Phase: "dossier", SessionRowID: "dossier"},
+	} {
+		if err := llmlifecycle.WriteMetadata(lifecyclePaths(artifacts), meta); err != nil {
+			t.Fatalf("WriteMetadata(%s): %v", meta.TaskID, err)
+		}
+	}
 	state := namedSessionState{enabled: true, supportsResume: true, currentProviderSessionID: "older-session"}
-	if err := restoreOrchestratorSessionFromRun(context.Background(), store, run.RunID, &state); err != nil {
+	if err := restoreOrchestratorSessionFromRun(context.Background(), store, run.RunID, artifacts, &state); err != nil {
 		t.Fatalf("restoreOrchestratorSessionFromRun: %v", err)
+	}
+	if state.resumeID() != "selection-session" {
+		t.Fatalf("restored orchestrator session = %q, want selection session instead of newer dossier", state.resumeID())
+	}
+	if err := store.InsertSession(context.Background(), ledger.Session{
+		SessionRowID: "thread", RunID: run.RunID, ProviderSessionID: "thread-session", Role: ledger.SessionRoleOrchestrator,
+		Adapter: "fake", Model: "model", StartedAt: fixedNow().Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("InsertSession(thread): %v", err)
+	}
+	if err := llmlifecycle.WriteMetadata(lifecyclePaths(artifacts), llmlifecycle.Metadata{
+		TaskID: "thread-analysis-thread-1", Phase: string(stagemodel.StageThreadAnalysis), SessionRowID: "thread",
+	}); err != nil {
+		t.Fatalf("WriteMetadata(thread): %v", err)
+	}
+	if err := restoreOrchestratorSessionFromRun(context.Background(), store, run.RunID, artifacts, &state); err != nil {
+		t.Fatalf("restoreOrchestratorSessionFromRun after thread: %v", err)
 	}
 	if state.resumeID() != "thread-session" {
 		t.Fatalf("restored orchestrator session = %q, want latest thread session", state.resumeID())
