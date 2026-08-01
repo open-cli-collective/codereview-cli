@@ -293,6 +293,7 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	request.Effort = req.Effort
 	request.Prompt = req.Prompt
 	request.LogPath = req.LogPath
+	request.DurableSession = request.DurableSession || req.Adapter.SupportsResume()
 	structured, runErr := llm.RunStructuredWithSessionResume(ctx, req.Adapter, resumeSessionID, request, decode)
 	completed := now()
 	draft := SessionDraft{

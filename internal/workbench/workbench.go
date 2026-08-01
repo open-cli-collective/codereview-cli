@@ -351,7 +351,6 @@ func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter,
 		Effort:            effort,
 		Prompt:            prompt,
 		LogPath:           logPath,
-		DurableSession:    adapter.SupportsResume(),
 		ReviewerWorkspace: &workspace,
 		OnValidationRetry: func(req *llm.Request) error {
 			if err := cleanupCurrent(); err != nil {

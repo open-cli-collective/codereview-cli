@@ -188,6 +188,10 @@ func TestAnalyzeThreadsCheckpointsProviderSessionBeforeReturningFailure(t *testi
 	if !reflect.DeepEqual(checkpoints, []string{"thread-session-failed"}) {
 		t.Fatalf("session checkpoints = %#v, want failed provider session", checkpoints)
 	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requests[0].DurableSession {
+		t.Fatalf("fresh thread-analysis requests = %#v, want durable start", requests)
+	}
 }
 
 func TestAnalyzeThreadsPropagatesSessionCheckpointFailure(t *testing.T) {

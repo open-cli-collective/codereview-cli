@@ -2408,6 +2408,40 @@ func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestRunStructuredTaskStartsDurableOrchestratorAndResumesExactSession(t *testing.T) {
+	ctx := context.Background()
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("rollup-session", `{"ok":true}`, 1, 1))
+	adapter.Queue(fakeLLMResult("continued-session", `{"ok":true}`, 1, 1))
+	opts := Options{Adapter: adapter, Now: fixedNow, NewSessionRowID: sequence("session")}
+	first := llmTaskSpec{
+		taskID: "orchestrator-rollup-first", phase: "rollup", allowNoRunCache: true,
+		inputFingerprint: "first", artifacts: ArtifactPathsFromDir(t.TempDir()), role: ledger.SessionRoleOrchestrator,
+		model: "model", effort: "medium", prompt: "prompt",
+	}
+
+	_, firstSession, _, err := runStructuredTask(ctx, opts, first, func(data []byte) (bool, error) { return len(data) > 0, nil })
+	if err != nil {
+		t.Fatalf("first runStructuredTask: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requests[0].DurableSession {
+		t.Fatalf("fresh orchestrator requests = %#v, want durable start", requests)
+	}
+	second := first
+	second.taskID = "orchestrator-rollup-second"
+	second.inputFingerprint = "second"
+	second.artifacts = ArtifactPathsFromDir(t.TempDir())
+	second.resumeSessionID = firstSession.ProviderReportedSessionID
+	if _, _, _, err := runStructuredTask(ctx, opts, second, func(data []byte) (bool, error) { return len(data) > 0, nil }); err != nil {
+		t.Fatalf("second runStructuredTask: %v", err)
+	}
+	resumes := adapter.Resumes()
+	if len(resumes) != 1 || resumes[0].SessionID != "rollup-session" {
+		t.Fatalf("orchestrator resumes = %#v, want exact rollup-session", resumes)
+	}
+}
+
 func TestRunStructuredTaskRejectsDependencyTaskIDMismatchBeforeRetry(t *testing.T) {
 	ctx := context.Background()
 	artifacts := ArtifactPathsFromDir(t.TempDir())
