@@ -75,17 +75,18 @@ type Store interface {
 	InsertSession(context.Context, ledger.Session) error
 	GetSession(context.Context, string) (ledger.Session, error)
 	InsertPlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error
+	InsertPlannedActions(context.Context, []ledger.PlannedAction) error
+	MergePlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error
 	ListFindings(context.Context, string) ([]ledger.Finding, error)
 	ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error)
-	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
-}
-
-type reviewerCohortStore interface {
 	GetReviewerCohort(context.Context, ledger.ReviewerCohortScope) (ledger.ReviewerCohort, error)
 	ReplaceReviewerCohort(context.Context, ledger.ReviewerCohort) error
 	UpdateReviewerCohortSession(context.Context, ledger.ReviewerCohortScope, string, string, time.Time) error
 	DeleteReviewerCohort(context.Context, ledger.ReviewerCohortScope) error
+	CompleteRun(context.Context, string, ledger.Outcome, time.Time) error
 }
+
+var _ Store = (*ledger.Store)(nil)
 
 // NamedSessionStore persists cross-run LLM sessions.
 type NamedSessionStore interface {
@@ -940,11 +941,7 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 		return err
 	}
 	if hasPersistedPlanning {
-		store, ok := opts.Store.(checkpointPlanningStore)
-		if !ok {
-			return fmt.Errorf("pipeline: checkpoint planning store is required")
-		}
-		if err := store.MergePlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
+		if err := opts.Store.MergePlanningResult(ctx, ledgerFindings, plannedActions); err != nil {
 			return err
 		}
 		plannedActions, err = opts.Store.ListPlannedActions(ctx, run.RunID)
@@ -1324,11 +1321,6 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 	return threadanalysis.ResponseActions(results), nil
 }
 
-type checkpointPlanningStore interface {
-	InsertPlannedActions(context.Context, []ledger.PlannedAction) error
-	MergePlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error
-}
-
 func checkpointThreadResponses(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, caps reviewplan.ProviderCaps, responses []review.ThreadResponseAction) ([]ledger.PlannedAction, error) {
 	existing, err := opts.Store.ListPlannedActions(ctx, run.RunID)
 	if err != nil {
@@ -1353,11 +1345,7 @@ func checkpointThreadResponses(ctx context.Context, opts Options, req Request, m
 		for _, action := range plan.Actions {
 			actions = append(actions, ledger.PlannedAction{Action: action.Action, RunID: run.RunID})
 		}
-		store, ok := opts.Store.(checkpointPlanningStore)
-		if !ok {
-			return nil, fmt.Errorf("pipeline: checkpoint planning store is required")
-		}
-		if err := store.InsertPlannedActions(ctx, actions); err != nil {
+		if err := opts.Store.InsertPlannedActions(ctx, actions); err != nil {
 			return nil, err
 		}
 	}
@@ -1672,17 +1660,13 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 }
 
 func loadReviewerCohort(ctx context.Context, opts Options, req Request, scope ledger.ReviewerCohortScope, catalog agents.Catalog, changedFiles []string, maxAgents int) (llm.Selection, map[string]string, bool, error) {
-	store, ok := opts.Store.(reviewerCohortStore)
-	if !ok {
-		return llm.Selection{}, nil, false, fmt.Errorf("pipeline: reviewer cohort store is required")
-	}
 	if req.FreshSession {
-		if err := store.DeleteReviewerCohort(ctx, scope); err != nil && !errors.Is(err, ledger.ErrNotFound) {
+		if err := opts.Store.DeleteReviewerCohort(ctx, scope); err != nil && !errors.Is(err, ledger.ErrNotFound) {
 			return llm.Selection{}, nil, false, err
 		}
 		return llm.Selection{}, nil, false, nil
 	}
-	cohort, err := store.GetReviewerCohort(ctx, scope)
+	cohort, err := opts.Store.GetReviewerCohort(ctx, scope)
 	if errors.Is(err, ledger.ErrNotFound) {
 		return llm.Selection{}, nil, false, nil
 	}
@@ -1702,10 +1686,6 @@ func loadReviewerCohort(ctx context.Context, opts Options, req Request, scope le
 func persistReviewerCohort(ctx context.Context, opts Options, req Request, scope ledger.ReviewerCohortScope, catalog agents.Catalog, selection llm.Selection, now time.Time) error {
 	if len(selection.SelectedAgents) == 0 {
 		return nil
-	}
-	store, ok := opts.Store.(reviewerCohortStore)
-	if !ok {
-		return fmt.Errorf("pipeline: reviewer cohort store is required")
 	}
 	cohort := ledger.ReviewerCohort{Scope: scope, Adapter: opts.Adapter.Name(), CreatedAt: now, UpdatedAt: now}
 	for _, selected := range selection.SelectedAgents {
@@ -1731,7 +1711,7 @@ func persistReviewerCohort(ctx context.Context, opts Options, req Request, scope
 			Fast:           req.ReviewerFast,
 		})
 	}
-	return store.ReplaceReviewerCohort(ctx, cohort)
+	return opts.Store.ReplaceReviewerCohort(ctx, cohort)
 }
 
 func restoreOrchestratorSessionFromRun(ctx context.Context, store Store, runID string, artifacts ArtifactPaths, state *namedSessionState) error {
@@ -2018,11 +1998,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		})
 	})
 	if providerSessionID := strings.TrimSpace(session.ProviderReportedSessionID); providerSessionID != "" && strings.TrimSpace(resumeState.scope.PRKey) != "" {
-		store, ok := opts.Store.(reviewerCohortStore)
-		if !ok {
-			return llm.Findings{}, session, ledgerSession, nil, fmt.Errorf("pipeline: reviewer cohort store is required")
-		}
-		if updateErr := store.UpdateReviewerCohortSession(ctx, resumeState.scope, agent.ID, providerSessionID, opts.now()); updateErr != nil {
+		if updateErr := opts.Store.UpdateReviewerCohortSession(ctx, resumeState.scope, agent.ID, providerSessionID, opts.now()); updateErr != nil {
 			return llm.Findings{}, session, ledgerSession, nil, updateErr
 		}
 	}

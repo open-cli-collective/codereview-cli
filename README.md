@@ -746,13 +746,15 @@ cr review --fail-on major https://github.com/OWNER/REPO/pull/123
 ```
 
 Force a fresh local live review instead of using existing approval, override,
-resume, or marker gates while continuing the PR's provider session:
+resume, or marker gates while continuing the PR's orchestrator and reviewer
+sessions:
 
 ```bash
 cr review --rerun https://github.com/OWNER/REPO/pull/123
 ```
 
-Start both a fresh local review and a fresh provider conversation:
+Start both a fresh local review and fresh orchestrator and reviewer
+conversations, including reviewer reselection:
 
 ```bash
 cr review --rerun --fresh-session https://github.com/OWNER/REPO/pull/123
@@ -774,8 +776,9 @@ cr review https://github.com/OWNER/REPO/pull/123
 ```
 
 By default, dry-run and live reviews of the same PR, profile, and posting
-identity reuse one provider session across pushes. Override that scope with a
-named session for a series of related live reviews:
+identity reuse one orchestrator session and one PR-scoped reviewer cohort
+across pushes. Override only the orchestrator scope with a named session for a
+series of related live reviews:
 
 ```bash
 cr review --session release-train https://github.com/OWNER/REPO/pull/123
@@ -1111,9 +1114,9 @@ Modes:
 |------|-----------|
 | `--dry-run` | Plan review actions, write local artifacts, and print the plan without posting. |
 | `--no-post` | Alias for `--dry-run`. |
-| `--rerun` | Bypass existing local approval, approval-override, resume, and marker gates and start a new live review while retaining provider-session reuse. Mutually exclusive with `--retry-posts`. |
+| `--rerun` | Bypass existing local approval, approval-override, resume, and marker gates and start a new live review while reusing the PR's original reviewer cohort plus reviewer and orchestrator sessions. Mutually exclusive with `--retry-posts`. |
 | `--retry-posts` | Retry missing or failed required posts for an existing run without rerunning LLM planning or checking approval overrides. Mutually exclusive with `--rerun` and incompatible with `--session`. |
-| `--fresh-session` | Start a fresh provider conversation for this invocation without changing local review gates. Incompatible with `--retry-posts`, which does not run LLM planning. |
+| `--fresh-session` | Reset the PR-scoped reviewer cohort, reselect reviewers, and start fresh reviewer and orchestrator conversations without changing local review gates. Incompatible with `--retry-posts`, which does not run LLM planning. |
 | `--fast` | Enable fast execution for reviewer agents, overriding the profile default. Incompatible with `--retry-posts`. |
 | `--no-fast` | Disable fast execution for reviewer agents, overriding the profile default. Mutually exclusive with `--fast`. |
 
@@ -1132,7 +1135,7 @@ Review selection and execution flags:
 | `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
-| `--session <name>` | Override the default PR/profile/posting-identity scope with a named LLM session for live reviews. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
+| `--session <name>` | Override the PR's default orchestrator session with a named live-review session. Reviewer cohorts remain PR-scoped. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 
 Review progress on stderr reports the merged reviewer catalog, final selected
 IDs and reasoning, and each reviewer assignment with winning provenance and
@@ -1168,11 +1171,13 @@ whether it was ignored as unsupported, and the speed actually reported by the
 provider, or `unknown` when unavailable.
 
 Local run state and provider session state are independent. By default, each
-PR/profile/posting-identity tuple gets one durable provider session shared by
-dry-run and live reviews and retained when the PR head changes. `--session`
-selects an explicit named live-review session instead. `--fresh-session`
-skips provider resume for one invocation and replaces that scope's durable
-session after successful planning (and, for live review, successful posting).
+PR/profile/posting-identity tuple gets one durable orchestrator session and one
+ordered reviewer cohort whose members retain their own provider sessions. Plain
+follow-up reviews and `--rerun` reuse that cohort and those exact sessions even
+when the PR head changes. `--session` selects an explicit named orchestrator
+session only; the reviewer cohort remains PR-scoped. `--fresh-session` clears
+both scopes for the invocation, runs selection again, and persists the new
+orchestrator session and reviewer cohort.
 
 Live review uses a local gate before planning or posting. If the posting
 identity has already approved the PR, `cr review` exits immediately in Go code
@@ -1323,7 +1328,8 @@ builds the comparison model, and writes JSON and Markdown artifacts.
 cr sessions list [--json]
 ```
 
-Lists named LLM sessions in name order. Text output shows name, profile,
+Lists named orchestrator sessions in name order. Reviewer cohorts are automatic
+PR-scoped state and are not listed here. Text output shows name, profile,
 provider, adapter, model, host, and last-used time. JSON output includes the
 provider session ID plus created and last-used timestamps.
 
@@ -1333,8 +1339,8 @@ provider session ID plus created and last-used timestamps.
 cr sessions show <name> [--json]
 ```
 
-Shows one named LLM session. Missing sessions return an error. Text output
-includes the provider session ID.
+Shows one named orchestrator session. Missing sessions return an error. Text
+output includes the provider session ID.
 
 ### `cr sessions delete`
 
@@ -1342,8 +1348,9 @@ includes the provider session ID.
 cr sessions delete <name> [--json]
 ```
 
-Deletes one named LLM session row. It does not delete provider-side session
-state. Missing sessions return an error.
+Deletes one named orchestrator session row. It does not delete provider-side
+session state or the PR-scoped reviewer cohort. Missing sessions return an
+error.
 
 `sessions delete` emits progress on stderr for layout resolution, legacy
 migration, ledger open, and session deletion.

@@ -7086,12 +7086,36 @@ func (noopStore) InsertPlanningResult(context.Context, []ledger.Finding, []ledge
 	return nil
 }
 
+func (noopStore) InsertPlannedActions(context.Context, []ledger.PlannedAction) error {
+	return nil
+}
+
+func (noopStore) MergePlanningResult(context.Context, []ledger.Finding, []ledger.PlannedAction) error {
+	return nil
+}
+
 func (noopStore) ListFindings(context.Context, string) ([]ledger.Finding, error) {
 	return nil, nil
 }
 
 func (noopStore) ListPlannedActions(context.Context, string) ([]ledger.PlannedAction, error) {
 	return nil, nil
+}
+
+func (noopStore) GetReviewerCohort(context.Context, ledger.ReviewerCohortScope) (ledger.ReviewerCohort, error) {
+	return ledger.ReviewerCohort{}, ledger.ErrNotFound
+}
+
+func (noopStore) ReplaceReviewerCohort(context.Context, ledger.ReviewerCohort) error {
+	return nil
+}
+
+func (noopStore) UpdateReviewerCohortSession(context.Context, ledger.ReviewerCohortScope, string, string, time.Time) error {
+	return nil
+}
+
+func (noopStore) DeleteReviewerCohort(context.Context, ledger.ReviewerCohortScope) error {
+	return nil
 }
 
 func (noopStore) CompleteRun(context.Context, string, ledger.Outcome, time.Time) error {
