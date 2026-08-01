@@ -772,14 +772,21 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		}
 	}
 	selectionInRun := false
+	reviewerInRun := false
 	if reusedCohort {
 		if _, selectionInRun, err = llmlifecycle.ReadMetadata(lifecyclePaths(prepared.artifacts), orchestratorSelectionStage); err != nil {
 			return nil, false, err
 		}
+		if selectionInRun {
+			reviewerInRun, err = hasReviewerTaskMetadata(prepared.artifacts, selection.SelectedAgents)
+			if err != nil {
+				return nil, false, err
+			}
+		}
 	}
 	var selectionSession sessionDraft
 	var selectionLedgerSession ledger.Session
-	if !reusedCohort || selectionInRun {
+	if !reusedCohort || selectionInRun && reviewerInRun {
 		selection, selectionSession, selectionLedgerSession, err = runSelectionPhase(ctx, opts, selectionPhaseRequest{
 			RunID:                       run.RunID,
 			DurableSession:              namedSession.enabled && namedSession.supportsResume,
@@ -827,7 +834,8 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, err
 	}
-	findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, findingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, reviewerDiscussionCheckpoint{responses: threadResponses, actions: checkpointActions})
+	reviewerThreadResponses, reviewerCheckpointActions := recoverCheckpointThreadResponses(threadResponses, prepared.threadContext, checkpointActions)
+	findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, findingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, reviewerDiscussionCheckpoint{responses: reviewerThreadResponses, actions: reviewerCheckpointActions})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
@@ -1322,15 +1330,15 @@ type checkpointPlanningStore interface {
 }
 
 func checkpointThreadResponses(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, caps reviewplan.ProviderCaps, responses []review.ThreadResponseAction) ([]ledger.PlannedAction, error) {
-	if len(responses) == 0 {
-		return nil, nil
-	}
 	existing, err := opts.Store.ListPlannedActions(ctx, run.RunID)
 	if err != nil {
 		return nil, err
 	}
 	actions := checkpointActionsOnly(existing)
 	if len(actions) == 0 {
+		if len(responses) == 0 {
+			return nil, nil
+		}
 		plan, err := reviewplan.BuildThreadResponses(reviewplan.ThreadResponseRequest{
 			PostMode:     mode.planPostMode,
 			ProviderCaps: caps,
@@ -1358,6 +1366,9 @@ func checkpointThreadResponses(ctx context.Context, opts Options, req Request, m
 			if errors.Is(err, gitprovider.ErrStaleSHA) {
 				return nil, err
 			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
 			opts.emitWarning(fmt.Sprintf("thread response checkpoint posting failed; final posting will retry: %v", err))
 		}
 	}
@@ -1366,6 +1377,65 @@ func checkpointThreadResponses(ctx context.Context, opts Options, req Request, m
 		return nil, err
 	}
 	return checkpointActionsOnly(stored), nil
+}
+
+func recoverCheckpointThreadResponses(current []review.ThreadResponseAction, threads []threadcontext.Thread, actions []ledger.PlannedAction) ([]review.ThreadResponseAction, []ledger.PlannedAction) {
+	seen := make(map[string]bool, len(current))
+	for _, response := range current {
+		seen[response.ThreadID] = true
+	}
+	replies := make(map[string]ledger.PlannedAction)
+	resolves := make(map[string]bool)
+	for _, action := range actions {
+		switch action.Kind {
+		case ledger.PlannedActionThreadReply:
+			if action.ThreadReply != nil && action.ThreadReply.Summary {
+				replies[action.ThreadID] = action
+			}
+		case ledger.PlannedActionResolveThread:
+			resolves[action.ThreadID] = true
+		case ledger.PlannedActionInlineComment, ledger.PlannedActionRollupComment, ledger.PlannedActionSubmitReview:
+		}
+	}
+	out := append([]review.ThreadResponseAction(nil), current...)
+	recoveredActions := append([]ledger.PlannedAction(nil), actions...)
+	for _, thread := range threads {
+		threadID := string(thread.ID)
+		if seen[threadID] {
+			continue
+		}
+		summary, ok := thread.EffectiveSettledSummary()
+		if !ok || !summary.LastCommentAuthoredByPostingIdentity || !summary.LastCommentHasThreadSummaryMarker {
+			continue
+		}
+		body := summary.Body
+		resolve := resolves[threadID]
+		if reply, exists := replies[threadID]; exists {
+			body = reply.ThreadReply.Body
+		} else {
+			synthetic := ledger.PlannedAction{}
+			synthetic.Kind = ledger.PlannedActionThreadReply
+			synthetic.ThreadID = threadID
+			synthetic.Status = ledger.PlannedActionPosted
+			recoveredActions = append(recoveredActions, synthetic)
+		}
+		out = append(out, review.ThreadResponseAction{
+			Kind: review.ThreadResponseSummaryReply, ThreadID: threadID,
+			Body: body, Resolve: resolve,
+		})
+	}
+	return out, recoveredActions
+}
+
+func hasReviewerTaskMetadata(artifacts ArtifactPaths, selected []llm.SelectedAgent) (bool, error) {
+	for _, reviewer := range selected {
+		if _, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(artifacts), reviewerTaskID(reviewer.AgentID)); err != nil {
+			return false, err
+		} else if ok {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func checkpointActionsOnly(actions []ledger.PlannedAction) []ledger.PlannedAction {

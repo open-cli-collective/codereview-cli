@@ -35,6 +35,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
 func dryRunForTest(ctx context.Context, opts Options, req Request) (Result, error) {
@@ -701,6 +702,143 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	}
 	if stored.Outcome == nil || *stored.Outcome != ledger.OutcomeDryRun {
 		t.Fatalf("second run outcome = %#v, want dry_run", stored.Outcome)
+	}
+}
+
+func TestLiveResumeRecoversPostedThreadSummaryForReviewerPrompt(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	provider.threads = []gitprovider.InlineThread{markedReviewThread(t, "thread-1", "main.go", 2, req.PostingIdentity, human)}
+	provider.caps.ThreadResolution = true
+	run := allocateLiveRun(t, store, provider, req, "run-thread-checkpoint-resume")
+	var checkpointCalls, posts, reconciles int
+	threadCheckpoint := func(ctx context.Context, run ledger.Run, _ Request) error {
+		checkpointCalls++
+		actions, err := store.ListPlannedActions(ctx, run.RunID)
+		if err != nil {
+			return err
+		}
+		for _, action := range actions {
+			if action.Kind != ledger.PlannedActionThreadReply || action.Status != ledger.PlannedActionPending {
+				continue
+			}
+			if provider.threads[0].Comments[len(provider.threads[0].Comments)-1].ID == "thread-1-summary" {
+				now := fixedNow()
+				action.Status = ledger.PlannedActionPosted
+				action.PostedAt = &now
+				upstreamID := "thread-1-summary"
+				action.UpstreamID = &upstreamID
+				if err := store.UpdatePlannedAction(ctx, action); err != nil {
+					return err
+				}
+				reconciles++
+				continue
+			}
+			markerText, err := marker.RenderThreadSummary(marker.ThreadSummaryMarker{RunID: run.RunID, ActionID: action.ActionID})
+			if err != nil {
+				return err
+			}
+			postedAt := fixedNow().Add(2 * time.Minute)
+			provider.threads[0].Comments = append(provider.threads[0].Comments, gitprovider.ThreadComment{
+				ID: "thread-1-summary", ThreadID: "thread-1", Body: markerText + "\n\nHuman clarified null handling.",
+				Author: req.PostingIdentity, CommitSHA: provider.pr.Head.SHA, Path: "main.go", Side: review.DiffSideRight,
+				Line: 2, SubjectType: review.AnchorKindLine, CreatedAt: postedAt, UpdatedAt: postedAt,
+			})
+			posts++
+			return context.Canceled
+		}
+		return nil
+	}
+
+	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
+	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	firstAdapter.Queue(fakeLLMResult("thread-session", `{
+		"schema_version": 1,
+		"thread_id": "thread-1",
+		"decision": "summarize",
+		"summary": "Human clarified null handling.",
+		"resolve": true,
+		"rationale": "settled"
+	}`, 1, 1))
+	_, err := liveForTest(ctx, Options{
+		Provider: provider, Adapter: firstAdapter, Store: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(),
+		MaxConcurrency: 1, ThreadCheckpoint: threadCheckpoint,
+	}, req, run)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Live error = %v, want checkpoint interruption", err)
+	}
+	if posts != 1 || checkpointCalls != 1 {
+		t.Fatalf("first checkpoint calls/posts = %d/%d, want 1/1", checkpointCalls, posts)
+	}
+	metadataPath, err := lifecyclePaths(ArtifactPathsFromDir(run.ArtifactPath)).Metadata("thread-analysis-thread-1")
+	if err != nil {
+		t.Fatalf("thread metadata path: %v", err)
+	}
+	if err := os.Remove(metadataPath); err != nil {
+		t.Fatalf("remove thread metadata: %v", err)
+	}
+
+	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	secondAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 1, 1))
+	secondAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 1, 1))
+	_, err = liveForTest(ctx, Options{
+		Provider: provider, Adapter: secondAdapter, Store: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewSessionRowID: sequence("resume-session"), NewFindingID: findingSequence("finding"), NewActionID: actionSequence(),
+		MaxConcurrency: 1, ThreadCheckpoint: threadCheckpoint,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("second Live: %v", err)
+	}
+	if posts != 1 || reconciles != 1 || checkpointCalls != 2 {
+		t.Fatalf("checkpoint calls/posts/reconciles = %d/%d/%d, want 2/1/1", checkpointCalls, posts, reconciles)
+	}
+	requests := secondAdapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("second adapter requests = %d, want reviewer and rollup only", len(requests))
+	}
+	var reviewerPrompt string
+	for _, request := range requests {
+		if strings.Contains(request.Prompt, "Use schema_version 1 and fields: thread_id") {
+			t.Fatalf("resumed pipeline repeated thread analysis:\n%s", request.Prompt)
+		}
+		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+			reviewerPrompt = request.Prompt
+		}
+	}
+	if reviewerPrompt == "" {
+		t.Fatal("resumed reviewer prompt not found")
+	}
+	for _, want := range []string{`"discussion_outcomes"`, `"thread_id": "thread-1"`, `"post_status": "posted"`, "Human clarified null handling."} {
+		if !strings.Contains(reviewerPrompt, want) {
+			t.Fatalf("resumed reviewer prompt missing %q:\n%s", want, reviewerPrompt)
+		}
+	}
+}
+
+func TestRecoverCheckpointThreadResponsesUsesAuthoritativeMarkerWithoutLocalState(t *testing.T) {
+	bot := gitprovider.Identity{Login: "review-bot", ID: "review-bot-id"}
+	human := gitprovider.Identity{Login: "human", ID: "human-id"}
+	threads, err := threadcontext.Normalize([]gitprovider.InlineThread{
+		crSettledReviewThread(t, "thread-1", "main.go", 2, bot, human, "Marker-only durable summary."),
+	}, threadcontext.Options{PostingIdentity: bot})
+	if err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+
+	responses, actions := recoverCheckpointThreadResponses(nil, threads, nil)
+	if len(responses) != 1 || responses[0].Body != "Marker-only durable summary." || responses[0].Kind != review.ThreadResponseSummaryReply {
+		t.Fatalf("recovered responses = %#v, want authoritative marker summary", responses)
+	}
+	outcomes := reviewerDiscussionOutcomes(reviewerDiscussionCheckpoint{responses: responses, actions: actions})
+	if len(outcomes) != 1 || outcomes[0].Body != "Marker-only durable summary." || outcomes[0].PostStatus != ledger.PlannedActionPosted.String() {
+		t.Fatalf("discussion outcomes = %#v, want marker summary with posted status", outcomes)
 	}
 }
 
