@@ -206,6 +206,9 @@ func (a *SubprocessAdapter) startJSONLSubprocess(ctx context.Context, req Reques
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
 	launchDir := scratch
 	if a.kind == subprocessCodex && resumeSessionID != "" && req.ReviewerWorkspace != nil {
+		// Codex resume rejects --sandbox/--cd/--add-dir. Launching from the new
+		// disposable checkout rebinds its workspace while processEnv keeps tool
+		// caches and temporary writes inside the new invocation scratch root.
 		launchDir = req.ReviewerWorkspace.RepoDir
 	}
 	env, err := a.processEnv(req, scratch)
@@ -602,9 +605,6 @@ func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Re
 		}
 		if sessionID == "" {
 			return a.Start(ctx, req)
-		}
-		if req.ReviewerWorkspace != nil {
-			return nil, fmt.Errorf("%w: codex_cli resume does not support reviewer workspace roots", ErrUnsafeSubprocessConfig)
 		}
 		return a.startJSONLSubprocess(ctx, req, sessionID)
 	default:

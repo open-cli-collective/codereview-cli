@@ -3317,7 +3317,10 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 
 	req.Rerun = true
 	run := allocateLiveRun(t, store, provider, req, "run-default-live")
-	liveAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	liveAdapter := &reviewerWorkspaceResumeAdapter{
+		FakeAdapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
+		reviewerSessionID: "reviewer-dry",
+	}
 	liveAdapter.Queue(fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	liveAdapter.Queue(fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6))
 
@@ -3342,6 +3345,9 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 	}
 	if len(liveAdapter.Requests()) != 0 {
 		t.Fatalf("live starts = %#v, want cohort reuse without selection or fresh provider calls", liveAdapter.Requests())
+	}
+	if err := liveAdapter.BoundaryError(); err != nil {
+		t.Fatalf("reviewer resume workspace boundary: %v", err)
 	}
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
@@ -6177,6 +6183,50 @@ func fakeLLMResult(sessionID, structured string, tokensIn, tokensOut int) llm.Fa
 type failingNamedSessionStore struct {
 	*ledger.Store
 	upsertErr error
+}
+
+type reviewerWorkspaceResumeAdapter struct {
+	*llm.FakeAdapter
+	mu                sync.Mutex
+	reviewerSessionID string
+	checked           bool
+	boundaryErr       error
+}
+
+func (a *reviewerWorkspaceResumeAdapter) Resume(ctx context.Context, sessionID string, req llm.Request) (llm.Stream, error) {
+	if sessionID == a.reviewerSessionID {
+		a.mu.Lock()
+		a.checked = true
+		switch {
+		case req.ReviewerWorkspace == nil:
+			a.boundaryErr = errors.New("reviewer workspace is missing")
+		case strings.TrimSpace(req.ReviewerWorkspace.RepoDir) == "":
+			a.boundaryErr = errors.New("reviewer workspace repo is missing")
+		case strings.TrimSpace(req.ReviewerWorkspace.ScratchDir) == "":
+			a.boundaryErr = errors.New("reviewer workspace scratch is missing")
+		default:
+			if info, err := os.Stat(req.ReviewerWorkspace.RepoDir); err != nil {
+				a.boundaryErr = fmt.Errorf("reviewer workspace repo unavailable: %w", err)
+			} else if !info.IsDir() {
+				a.boundaryErr = errors.New("reviewer workspace repo is not a directory")
+			} else if info, err := os.Stat(req.ReviewerWorkspace.ScratchDir); err != nil {
+				a.boundaryErr = fmt.Errorf("reviewer workspace scratch unavailable: %w", err)
+			} else if !info.IsDir() {
+				a.boundaryErr = errors.New("reviewer workspace scratch is not a directory")
+			}
+		}
+		a.mu.Unlock()
+	}
+	return a.FakeAdapter.Resume(ctx, sessionID, req)
+}
+
+func (a *reviewerWorkspaceResumeAdapter) BoundaryError() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.checked {
+		return errors.New("reviewer resume was not checked")
+	}
+	return a.boundaryErr
 }
 
 func (s failingNamedSessionStore) UpsertNamedSession(context.Context, ledger.NamedSession) error {
