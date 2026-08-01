@@ -890,22 +890,44 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			t.Fatalf("WriteFile(repo): %v", err)
 		}
 		adapter := newCodexHelperAdapter("tool-success", recordPath, 5*time.Second, "CGO_CFLAGS=-O2", "CGO_CXXFLAGS=-stdlib=libc++")
-		stream, err := adapter.Resume(context.Background(), "prior-session", Request{
-			Model:  "gpt-5.5",
-			Effort: "high",
-			Prompt: "resume prompt",
+		request := Request{
+			Model:          "gpt-5.5",
+			Effort:         "high",
+			Prompt:         "initial prompt",
+			DurableSession: true,
 			ReviewerWorkspace: &ReviewerWorkspaceRequest{
 				RepoDir:    repoRoot,
 				ScratchDir: scratchRoot,
 			},
-		})
+		}
+		initialStream, err := adapter.Start(context.Background(), request)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := initialStream.Wait(context.Background()); err != nil {
+			t.Fatalf("initial Wait: %v", err)
+		}
+		if initialStream.SessionID() != "session-1" {
+			t.Fatalf("initial SessionID = %q, want session-1", initialStream.SessionID())
+		}
+		request.Prompt = "resume prompt"
+		stream, err := adapter.Resume(context.Background(), initialStream.SessionID(), request)
 		if err != nil {
 			t.Fatalf("Resume: %v", err)
 		}
 		if _, err := stream.Wait(context.Background()); err != nil {
 			t.Fatalf("Wait: %v", err)
 		}
-		record := readHelperRecord(t, recordPath)
+		records := readHelperRecords(t, recordPath)
+		if len(records) != 2 {
+			t.Fatalf("helper records = %d, want durable start and resume", len(records))
+		}
+		initialRecord, record := records[0], records[1]
+		if containsFlag(initialRecord.AdapterArgs, "--ephemeral") {
+			t.Fatalf("initial args = %#v, durable reviewer must not use --ephemeral", initialRecord.AdapterArgs)
+		}
+		assertFlagValue(t, initialRecord.AdapterArgs, "--sandbox", "workspace-write")
+		assertFlagValue(t, initialRecord.AdapterArgs, "--cd", repoRoot)
 		if !samePath(t, record.Cwd, repoRoot) || record.CwdEntries != 1 {
 			t.Fatalf("resume cwd = %q entries = %d, want workspace %q with checkout", record.Cwd, record.CwdEntries, repoRoot)
 		}
@@ -916,6 +938,10 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			if containsFlag(record.AdapterArgs, flag) {
 				t.Fatalf("resume args = %#v, do not want unsupported %s", record.AdapterArgs, flag)
 			}
+		}
+		promptIndex := len(argsBeforePrompt(record.AdapterArgs))
+		if promptIndex < 1 || record.AdapterArgs[promptIndex-1] != initialStream.SessionID() {
+			t.Fatalf("resume args = %#v, want exact session %q", record.AdapterArgs, initialStream.SessionID())
 		}
 		for name, path := range map[string]string{
 			"TMPDIR": record.TMPDir, "GOTMPDIR": record.GoTmpDir, "GOCACHE": record.GoCache, "XDG_CACHE_HOME": record.XDGCacheHome,

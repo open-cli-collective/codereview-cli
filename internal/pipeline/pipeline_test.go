@@ -3304,6 +3304,15 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
+	var durableReviewerStart bool
+	for _, request := range dryAdapter.Requests() {
+		if request.ReviewerWorkspace != nil {
+			durableReviewerStart = request.DurableSession
+		}
+	}
+	if !durableReviewerStart {
+		t.Fatal("initial reviewer request was not durable for resume-capable adapter")
+	}
 	if dryResult.NamedSessionCandidate == nil {
 		t.Fatal("dry-run candidate = nil")
 	}
@@ -3547,12 +3556,13 @@ func TestLiveNamedSessionMissingRowStartsFreshAndReturnsCandidate(t *testing.T) 
 		t.Fatalf("resumes = %#v, want rollup resume from fresh selection", resumes)
 	}
 	requests := adapter.Requests()
-	if len(requests) < 1 || !requests[0].DurableSession {
-		t.Fatalf("requests = %#v, want durable selection start on first named-session run", requests)
+	if len(requests) != 2 {
+		t.Fatalf("requests = %#v, want selection and reviewer starts", requests)
 	}
-	for i := 1; i < len(requests); i++ {
-		if requests[i].DurableSession {
-			t.Fatalf("requests[%d] = %#v, do not want durable non-selection requests", i, requests[i])
+	for i, request := range requests {
+		wantDurable := i == 0 || request.ReviewerWorkspace != nil
+		if request.DurableSession != wantDurable {
+			t.Fatalf("requests[%d] = %#v, DurableSession = %t, want %t for selection/reviewer starts only", i, request, request.DurableSession, wantDurable)
 		}
 	}
 	if result.NamedSessionCandidate == nil {
