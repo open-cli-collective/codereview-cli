@@ -2319,18 +2319,10 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	}
 	workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
 
-	adapter := inputs.selection.Adapter
-	if adapter == "" {
-		adapter = inputs.rollup.Adapter
-	}
-	for i := 0; adapter == "" && i < len(inputs.reviewers); i++ {
-		adapter = inputs.reviewers[i].Adapter
-	}
-
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
 		ToolVersion:       req.ToolVersion,
-		Adapter:           adapter,
+		Adapter:           opts.Adapter.Name(),
 		Model:             sharedWorkstreamModel(workstreams),
 		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,

@@ -4626,7 +4626,7 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 		findingSessions: map[review.FindingID]string{"f-1": "row-1", "f-2": "row-unknown"},
 		startedAt:       fixedNow(),
 	}
-	summary, findingReviewers := Options{Now: fixedNow}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+	summary, findingReviewers := Options{Now: fixedNow, Adapter: &llm.FakeAdapter{NameValue: "fake"}}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
 
 	var names []string
 	for _, workstream := range summary.Workstreams {
@@ -4666,7 +4666,7 @@ func TestBuildRunSummaryReusedCohortSkipsSelectionStage(t *testing.T) {
 		},
 		startedAt: fixedNow(),
 	}
-	summary, _ := Options{Now: fixedNow}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+	summary, _ := Options{Now: fixedNow, Adapter: &llm.FakeAdapter{NameValue: "fake"}}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
 
 	var names []string
 	for _, workstream := range summary.Workstreams {
@@ -4676,7 +4676,7 @@ func TestBuildRunSummaryReusedCohortSkipsSelectionStage(t *testing.T) {
 		t.Fatalf("workstreams = %#v, want selection stage absent: %#v", names, want)
 	}
 	if summary.Adapter != "fake" {
-		t.Fatalf("adapter = %q, want fallback to a stage that ran", summary.Adapter)
+		t.Fatalf("adapter = %q, want the run adapter", summary.Adapter)
 	}
 }
 
