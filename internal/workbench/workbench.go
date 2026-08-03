@@ -420,10 +420,6 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 				_ = cleanup()
 				return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: invalid reviewer workspace file %q", path)
 			}
-			if err := validateReviewerWorkspaceFileTarget(filepath.Join(workspaceRepo, clean), clean); err != nil {
-				_ = cleanup()
-				return llm.ReviewerWorkspaceRequest{}, nil, err
-			}
 		}
 	}
 	return llm.ReviewerWorkspaceRequest{
@@ -436,20 +432,6 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 
 func isReviewerWorkspaceEscapePath(clean string) bool {
 	return clean == "." || clean == "" || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator))
-}
-
-func validateReviewerWorkspaceFileTarget(target string, displayPath string) error {
-	info, err := os.Lstat(target) // #nosec G304 -- target is derived from the pipeline-owned workbench checkout root plus validated relative paths.
-	if err != nil {
-		return fmt.Errorf("pipeline: stat reviewer workspace file %s: %w", displayPath, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("pipeline: reviewer workspace file %s must not be a symlink", displayPath)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("pipeline: reviewer workspace file %s must be a regular file", displayPath)
-	}
-	return nil
 }
 
 func writeJSONFile(path string, payload any) error {
