@@ -307,6 +307,33 @@ func TestReviewerWorkspaceAllowedFilesPreservesRealCheckout(t *testing.T) {
 	}
 }
 
+func TestReviewerWorkspaceAllowedFilesAcceptsDeletedPaths(t *testing.T) {
+	fixture := newWorkbenchGitFixture(t)
+	gitCommandMustSucceed(t, fixture.repoDir, "rm", "other.go")
+	gitCommandMustSucceed(t, fixture.repoDir, "commit", "-m", "delete other.go")
+	fixture.headSHA = strings.TrimSpace(gitCommandOutput(t, fixture.repoDir, "rev-parse", "HEAD"))
+	fixture.pr.Head.SHA = fixture.headSHA
+	artifacts := runartifact.FromDir(t.TempDir())
+	deps := Deps{GitCommand: testGitRunner(t, map[string]string{
+		"https://github.com/open-cli-collective/codereview-cli.git": fixture.repoDir,
+	})}
+	if err := Prepare(context.Background(), deps, Request{PRRef: fixture.pr.Ref, ReviewPR: fixture.pr, ChangedFiles: []string{"main.go", "other.go"}, Artifacts: artifacts}); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	workspace, cleanup, err := prepareReviewerWorkspace(context.Background(), deps, artifacts, fixture.headSHA, "harness:deleted", []string{"other.go"}, 1024)
+	if err != nil {
+		t.Fatalf("prepareReviewerWorkspace: %v", err)
+	}
+	defer cleanupForTest(t, cleanup)
+	if _, err := os.Stat(filepath.Join(workspace.RepoDir, "main.go")); err != nil {
+		t.Fatalf("Stat(main.go): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.RepoDir, "other.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Stat(other.go) error = %v, want file absent at head", err)
+	}
+}
+
 func TestReviewerWorkspaceAllowedFilesResetsWorkspace(t *testing.T) {
 	fixture, artifacts, deps := prepareReviewerFixture(t)
 	workspace, cleanup, err := prepareReviewerWorkspace(context.Background(), deps, artifacts, fixture.headSHA, "harness:scope-reset", []string{"main.go"}, 1024)
@@ -332,17 +359,65 @@ func TestReviewerWorkspaceAllowedFilesResetsWorkspace(t *testing.T) {
 	}
 }
 
-func TestReviewerWorkspaceAllowedFilesRejectsSymlinkTargets(t *testing.T) {
-	repo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(repo, "real.go"), []byte("package main\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(real.go): %v", err)
+func TestReviewerWorkspaceAllowedFilesAcceptsSymlinkTargets(t *testing.T) {
+	fixture := newWorkbenchGitFixture(t)
+	if err := os.Remove(filepath.Join(fixture.repoDir, "other.go")); err != nil {
+		t.Fatalf("Remove(other.go): %v", err)
 	}
-	if err := os.Symlink(filepath.Join(repo, "real.go"), filepath.Join(repo, "link.go")); err != nil {
-		t.Fatalf("Symlink(link.go): %v", err)
+	if err := os.Symlink("main.go", filepath.Join(fixture.repoDir, "other.go")); err != nil {
+		t.Fatalf("Symlink(other.go): %v", err)
 	}
-	err := validateReviewerWorkspaceFileTarget(filepath.Join(repo, "link.go"), "link.go")
-	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
-		t.Fatalf("validateReviewerWorkspaceFileTarget error = %v, want symlink rejection", err)
+	gitCommandMustSucceed(t, fixture.repoDir, "add", "other.go")
+	gitCommandMustSucceed(t, fixture.repoDir, "commit", "-m", "replace other.go with symlink")
+	fixture.headSHA = strings.TrimSpace(gitCommandOutput(t, fixture.repoDir, "rev-parse", "HEAD"))
+	fixture.pr.Head.SHA = fixture.headSHA
+	artifacts := runartifact.FromDir(t.TempDir())
+	deps := Deps{GitCommand: testGitRunner(t, map[string]string{
+		"https://github.com/open-cli-collective/codereview-cli.git": fixture.repoDir,
+	})}
+	if err := Prepare(context.Background(), deps, Request{PRRef: fixture.pr.Ref, ReviewPR: fixture.pr, ChangedFiles: []string{"other.go"}, Artifacts: artifacts}); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	workspace, cleanup, err := prepareReviewerWorkspace(context.Background(), deps, artifacts, fixture.headSHA, "harness:symlink", []string{"other.go"}, 1024)
+	if err != nil {
+		t.Fatalf("prepareReviewerWorkspace: %v", err)
+	}
+	defer cleanupForTest(t, cleanup)
+	info, err := os.Lstat(filepath.Join(workspace.RepoDir, "other.go"))
+	if err != nil {
+		t.Fatalf("Lstat(other.go): %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("other.go mode = %v, want symlink", info.Mode())
+	}
+}
+
+func TestReviewerWorkspaceAllowedFilesAcceptsSubmoduleTargets(t *testing.T) {
+	fixture := newWorkbenchGitFixture(t)
+	gitCommandMustSucceed(t, fixture.repoDir, "update-index", "--add", "--cacheinfo", "160000,"+fixture.baseSHA+",vendor/shared")
+	gitCommandMustSucceed(t, fixture.repoDir, "commit", "-m", "add submodule entry")
+	fixture.headSHA = strings.TrimSpace(gitCommandOutput(t, fixture.repoDir, "rev-parse", "HEAD"))
+	fixture.pr.Head.SHA = fixture.headSHA
+	artifacts := runartifact.FromDir(t.TempDir())
+	deps := Deps{GitCommand: testGitRunner(t, map[string]string{
+		"https://github.com/open-cli-collective/codereview-cli.git": fixture.repoDir,
+	})}
+	if err := Prepare(context.Background(), deps, Request{PRRef: fixture.pr.Ref, ReviewPR: fixture.pr, ChangedFiles: []string{"vendor/shared"}, Artifacts: artifacts}); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	workspace, cleanup, err := prepareReviewerWorkspace(context.Background(), deps, artifacts, fixture.headSHA, "harness:submodule", []string{"vendor/shared"}, 1024)
+	if err != nil {
+		t.Fatalf("prepareReviewerWorkspace: %v", err)
+	}
+	defer cleanupForTest(t, cleanup)
+	info, err := os.Stat(filepath.Join(workspace.RepoDir, "vendor", "shared"))
+	if err != nil {
+		t.Fatalf("Stat(vendor/shared): %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("vendor/shared mode = %v, want submodule directory", info.Mode())
 	}
 }
 
