@@ -2297,7 +2297,13 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		agentByRow[draft.RowID] = *draft.AgentID
 	}
 
-	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage(orchestratorSelectionStage, inputs.selection)}
+	// A reused reviewer cohort skips the selection stage, leaving a zero-valued
+	// draft; a workstream row for it would be all-"unavailable" and would nil
+	// every aggregate total, so only stages that actually ran are reported.
+	var workstreams []reviewplan.WorkstreamUsage
+	if sessionDraftPresent(inputs.selection) {
+		workstreams = append(workstreams, workstreamUsage(orchestratorSelectionStage, inputs.selection))
+	}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
@@ -2307,10 +2313,18 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	}
 	workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
 
+	adapter := inputs.selection.Adapter
+	if adapter == "" {
+		adapter = inputs.rollup.Adapter
+	}
+	for i := 0; adapter == "" && i < len(inputs.reviewers); i++ {
+		adapter = inputs.reviewers[i].Adapter
+	}
+
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
 		ToolVersion:       req.ToolVersion,
-		Adapter:           inputs.selection.Adapter,
+		Adapter:           adapter,
 		Model:             sharedWorkstreamModel(workstreams),
 		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,
@@ -2507,6 +2521,14 @@ func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewer
 		out = append(out, workstream.Model)
 	}
 	return out
+}
+
+// sessionDraftPresent reports whether a stage produced a session draft. Live
+// runs always set Model (falling back to "default"), and drafts rehydrated
+// from the ledger or task metadata carry it too, so an empty draft means the
+// stage never ran in this round.
+func sessionDraftPresent(draft sessionDraft) bool {
+	return draft.Model != "" || draft.RowID != ""
 }
 
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {

@@ -4638,6 +4638,32 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	}
 }
 
+func TestBuildRunSummaryReusedCohortSkipsSelectionStage(t *testing.T) {
+	agentID := "harness:alpha"
+	inputs := planRunInputs{
+		hasRun:    true,
+		selection: sessionDraft{},
+		reviewers: []sessionDraft{{RowID: "row-1", AgentID: &agentID, Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:    sessionDraft{RowID: "row-2", Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 30}},
+		selectedAgents: []llm.SelectedAgent{
+			{AgentID: agentID},
+		},
+		startedAt: fixedNow(),
+	}
+	summary, _ := Options{Now: fixedNow}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+
+	var names []string
+	for _, workstream := range summary.Workstreams {
+		names = append(names, workstream.Name)
+	}
+	if want := []string{agentID, "orchestrator-rollup"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("workstreams = %#v, want selection stage absent: %#v", names, want)
+	}
+	if summary.Adapter != "fake" {
+		t.Fatalf("adapter = %q, want fallback to a stage that ran", summary.Adapter)
+	}
+}
+
 func TestDryRunRejectsUnsafeProfileAgentSourcesBeforeRunAllocation(t *testing.T) {
 	tests := []struct {
 		name       string

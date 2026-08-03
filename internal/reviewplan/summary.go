@@ -294,8 +294,13 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 	}
 	out.WriteString("\n---\n<details>\n<summary>Completed in ")
 	out.WriteString(formatDurationMS(run.WallDurationMS))
-	out.WriteString(" | ")
-	out.WriteString(formatUSDEst(totals.CostUSD, totals.CostEstimated))
+	// The summary line has no field labels, so an unknown cost is omitted
+	// rather than rendered as a bare "unavailable"; the labeled Cost row in
+	// the table below still reports it.
+	if totals.CostUSD != nil {
+		out.WriteString(" | ")
+		out.WriteString(formatUSDEst(totals.CostUSD, totals.CostEstimated))
+	}
 	out.WriteString(" | ")
 	out.WriteString(escapeCell(orUnavailable(run.Model)))
 	out.WriteString(" | cr ")
