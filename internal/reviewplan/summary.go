@@ -65,7 +65,11 @@ type RunSummary struct {
 	ReviewerFailures  []ReviewerFailureSummary
 	ReviewerCoverage  []ReviewerCoverageSummary
 	WallDurationMS    *int64
-	Workstreams       []WorkstreamUsage
+	// Workstreams holds the stages that ran in this round; a stage skipped by
+	// reuse (e.g. selection under a reused reviewer cohort) is absent rather
+	// than present with empty usage, which is what lets AggregateUsage's
+	// every-workstream-reports rule produce totals for the round.
+	Workstreams []WorkstreamUsage
 }
 
 // ReviewerFailureSummary is a reviewer task diagnostic rendered in the rollup.

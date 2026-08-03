@@ -4600,10 +4600,11 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	agentID := "harness:alpha"
 	inputs := planRunInputs{
-		hasRun:    true,
-		selection: sessionDraft{Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 0}},
-		reviewers: []sessionDraft{{RowID: "row-1", AgentID: &agentID, Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
-		rollup:    sessionDraft{Model: "sonnet", StartedAt: fixedNow(), CompletedAt: fixedNow().Add(2 * time.Second)},
+		hasRun:       true,
+		selectionRan: true,
+		selection:    sessionDraft{Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 0}},
+		reviewers:    []sessionDraft{{RowID: "row-1", AgentID: &agentID, Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:       sessionDraft{Model: "sonnet", StartedAt: fixedNow(), CompletedAt: fixedNow().Add(2 * time.Second)},
 		selectedAgents: []llm.SelectedAgent{
 			{AgentID: agentID},
 			{AgentID: "harness:missing-draft"},
@@ -4641,10 +4642,11 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 func TestBuildRunSummaryReusedCohortSkipsSelectionStage(t *testing.T) {
 	agentID := "harness:alpha"
 	inputs := planRunInputs{
-		hasRun:    true,
-		selection: sessionDraft{},
-		reviewers: []sessionDraft{{RowID: "row-1", AgentID: &agentID, Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
-		rollup:    sessionDraft{RowID: "row-2", Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 30}},
+		hasRun:       true,
+		selection:    sessionDraft{},
+		selectionRan: false,
+		reviewers:    []sessionDraft{{RowID: "row-1", AgentID: &agentID, Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:       sessionDraft{RowID: "row-2", Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 30}},
 		selectedAgents: []llm.SelectedAgent{
 			{AgentID: agentID},
 		},
