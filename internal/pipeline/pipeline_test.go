@@ -3395,6 +3395,20 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
 	}
+	var liveWorkstreams []string
+	for _, workstream := range liveResult.Plan.Summary.Run.Workstreams {
+		liveWorkstreams = append(liveWorkstreams, workstream.Name)
+	}
+	if want := []string{"harness:reviewer", "orchestrator-rollup"}; !reflect.DeepEqual(liveWorkstreams, want) {
+		t.Fatalf("live workstreams = %#v, want the skipped selection stage absent: %#v", liveWorkstreams, want)
+	}
+	totals := liveResult.Plan.Summary.Totals
+	if totals.TokensIn == nil || *totals.TokensIn != 50 || totals.TokensOut == nil || *totals.TokensOut != 10 {
+		t.Fatalf("live totals = %#v, want the two executed stages to aggregate", totals)
+	}
+	if totals.CostUSD == nil {
+		t.Fatal("live total cost = nil, want an estimate for the executed stages")
+	}
 }
 
 func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
