@@ -29,6 +29,23 @@ const (
 	defaultMaxCoverageConstraintRunes = 300
 )
 
+// FindingsConstraintLimits describes the validator limits for reviewer
+// constraints. Prompt builders use it to keep reviewer instructions aligned
+// with structured-output validation.
+type FindingsConstraintLimits struct {
+	MaxEntries       int
+	MaxRunesPerEntry int
+}
+
+// DefaultFindingsConstraintLimits returns the fixed reviewer-constraint
+// limits enforced by DecodeFindings.
+func DefaultFindingsConstraintLimits() FindingsConstraintLimits {
+	return FindingsConstraintLimits{
+		MaxEntries:       defaultMaxCoverageConstraints,
+		MaxRunesPerEntry: defaultMaxCoverageConstraintRunes,
+	}
+}
+
 // Selection is validated orchestrator selection output.
 type Selection struct {
 	SelectedAgents []SelectedAgent

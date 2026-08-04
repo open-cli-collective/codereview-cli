@@ -355,6 +355,19 @@ func TestFindingsOutputContractScopesAnchorToFindingItems(t *testing.T) {
 	}
 }
 
+func TestFindingsOutputContractStatesValidatorConstraintLimits(t *testing.T) {
+	contract := findingsOutputContract("agent-1", []string{"main.go"})
+	instructions := strings.Join(contract.Instructions, "\n")
+	for _, want := range []string{
+		"constraints must contain at most 10 entries.",
+		"Each constraints entry must contain at most 300 Unicode runes.",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("constraints instructions = %q, want %q", instructions, want)
+		}
+	}
+}
+
 func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	prompt, err := buildRollupPrompt(gitprovider.PR{Body: "Rollup prompt body should stay out of prompt payloads."}, []review.Finding{
 		{

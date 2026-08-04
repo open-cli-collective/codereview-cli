@@ -700,6 +700,7 @@ func selectionExampleAgents(agentIDs []string, changedFiles []string) []map[stri
 }
 
 func findingsOutputContract(agentID string, changedFiles []string) outputContract {
+	constraintLimits := llm.DefaultFindingsConstraintLimits()
 	return outputContract{
 		Instructions: []string{
 			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
@@ -711,6 +712,8 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 			"skipped_files must list assigned changed files you intentionally did not inspect or could not inspect.",
 			"At least one of inspected_files or skipped_files must be non-empty.",
 			"constraints must list any material review constraints, such as intentionally narrow scope, missing context, or tool limitations.",
+			fmt.Sprintf("constraints must contain at most %d entries.", constraintLimits.MaxEntries),
+			fmt.Sprintf("Each constraints entry must contain at most %d Unicode runes.", constraintLimits.MaxRunesPerEntry),
 			"findings must be an empty array when there are no actionable findings.",
 			"file_path must be one of changed_files.",
 			"Do not provide finding_id; the harness assigns IDs.",
