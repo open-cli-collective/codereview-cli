@@ -25,11 +25,15 @@ func windowsOverlapped() windows.Overlapped {
 	return windows.Overlapped{Offset: windowsLockOffsetLow, OffsetHigh: windowsLockOffsetHigh}
 }
 
-func lockFile(file *os.File) error {
+func lockFile(file *os.File, exclusive bool) error {
+	flags := uint32(windows.LOCKFILE_FAIL_IMMEDIATELY)
+	if exclusive {
+		flags |= windows.LOCKFILE_EXCLUSIVE_LOCK
+	}
 	overlapped := windowsOverlapped()
 	err := windows.LockFileEx(
 		windows.Handle(file.Fd()),
-		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		flags,
 		0,
 		windowsLockLengthLow,
 		windowsLockLengthHigh,

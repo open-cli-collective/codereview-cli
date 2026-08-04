@@ -225,3 +225,40 @@ func assertPerm(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("%s mode = %o, want %o", path, got, want)
 	}
 }
+
+func TestSharedHoldersCoexistAndBlockExclusive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "locks", "active-runs.lock")
+
+	first, err := AcquireShared(path)
+	if err != nil {
+		t.Fatalf("first AcquireShared: %v", err)
+	}
+	second, err := AcquireShared(path)
+	if err != nil {
+		t.Fatalf("second AcquireShared alongside a shared holder: %v", err)
+	}
+
+	if _, err := Acquire(path); !errors.Is(err, ErrHeld) {
+		t.Fatalf("exclusive Acquire while shared held: err = %v, want ErrHeld", err)
+	}
+
+	if err := first.Release(); err != nil {
+		t.Fatalf("release first shared: %v", err)
+	}
+	if _, err := Acquire(path); !errors.Is(err, ErrHeld) {
+		t.Fatalf("exclusive Acquire while one shared holder remains: err = %v, want ErrHeld", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatalf("release second shared: %v", err)
+	}
+
+	exclusive, err := Acquire(path)
+	if err != nil {
+		t.Fatalf("exclusive Acquire after all shared released: %v", err)
+	}
+	defer func() { _ = exclusive.Release() }()
+
+	if _, err := AcquireShared(path); !errors.Is(err, ErrHeld) {
+		t.Fatalf("AcquireShared while exclusive held: err = %v, want ErrHeld", err)
+	}
+}

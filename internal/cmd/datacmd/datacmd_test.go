@@ -17,6 +17,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -577,4 +578,49 @@ func equalStrings(left, right []string) bool {
 
 func testNow() time.Time {
 	return time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+}
+
+// The command-level enforcement: a live prune or purge refuses while any run
+// holds the active-runs lock, deletes nothing, and succeeds normally once
+// the lock is released.
+func TestDataPruneAndPurgeRefuseWhileActiveRunsLockHeld(t *testing.T) {
+	statedirtest.Hermetic(t)
+	layout := seedRun(t, "old-live", ledger.PostModeLive, testNow().Add(-91*24*time.Hour))
+	held, err := runlock.AcquireShared(layout.ActiveRunsLock())
+	if err != nil {
+		t.Fatalf("AcquireShared: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	err = runDataCommand(&stdout, &stderr, "data", "prune", "--older-than", "24h")
+	if err == nil || !strings.Contains(err.Error(), "another cr instance appears to be running") {
+		t.Fatalf("prune while lock held: err = %v, want refusal", err)
+	}
+	err = runDataCommand(&stdout, &stderr, "data", "purge", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "another cr instance appears to be running") {
+		t.Fatalf("purge while lock held: err = %v, want refusal", err)
+	}
+	store := openLedgerForTest(t, layout)
+	if _, err := store.GetRun(context.Background(), "old-live"); err != nil {
+		t.Fatalf("run deleted by refused command: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := held.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := runDataCommand(&stdout, &stderr, "data", "prune", "--older-than", "24h", "--json"); err != nil {
+		t.Fatalf("prune after release: %v; stderr = %q", err, stderr.String())
+	}
+	var decoded view.DataPrune
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v; stdout = %q", err, stdout.String())
+	}
+	if len(decoded.DeletedRuns) != 1 || decoded.DeletedRuns[0].RunID != "old-live" {
+		t.Fatalf("decoded = %#v, want old-live deleted after lock release", decoded)
+	}
 }

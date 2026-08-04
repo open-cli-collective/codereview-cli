@@ -63,14 +63,17 @@ type AcquireFunc func(string) (Lock, error)
 
 // Options contains response-run dependencies.
 type Options struct {
-	Store        Store
-	Provider     outbox.LiveProvider
-	Adapter      llm.Adapter
-	Limiter      outbox.Limiter
-	Layout       statepaths.Layout
-	Acquire      AcquireFunc
-	TaskProgress llmlifecycle.Progress
-	Now          func() time.Time
+	Store    Store
+	Provider outbox.LiveProvider
+	Adapter  llm.Adapter
+	Limiter  outbox.Limiter
+	Layout   statepaths.Layout
+	Acquire  AcquireFunc
+	// AcquireShared takes the shared data-root active-runs lock held for the
+	// run's duration. Defaults to runlock.AcquireShared.
+	AcquireShared AcquireFunc
+	TaskProgress  llmlifecycle.Progress
+	Now           func() time.Time
 
 	NewRunID       func() string
 	NewActionID    func(reviewplan.ActionKind) (string, error)
@@ -117,6 +120,14 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	}
 	if err := validateRequest(req); err != nil {
 		return Result{}, err
+	}
+	// The respond path allocates runs and artifacts under the same data root
+	// as review runs, so it holds the active-runs lock shared for its whole
+	// duration too — a concurrently starting instance's retention prune must
+	// see this run as live. Fail-open: a lock failure degrades to unguarded
+	// behavior rather than blocking the response run.
+	if shared, lockErr := opts.acquireShared(opts.Layout.ActiveRunsLock()); lockErr == nil {
+		defer func() { _ = shared.Release() }()
 	}
 	if strings.TrimSpace(req.RetryRunID) != "" {
 		return retry(ctx, opts, req)
@@ -767,4 +778,11 @@ func (opts Options) acquire(path string) (Lock, error) {
 		return opts.Acquire(path)
 	}
 	return runlock.Acquire(path)
+}
+
+func (opts Options) acquireShared(path string) (Lock, error) {
+	if opts.AcquireShared != nil {
+		return opts.AcquireShared(path)
+	}
+	return runlock.AcquireShared(path)
 }
