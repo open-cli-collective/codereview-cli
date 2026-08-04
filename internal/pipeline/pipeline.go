@@ -312,7 +312,7 @@ const (
 	reviewerToolDiagnosticMaxRunes       = 300
 )
 
-var reviewerDiagnosticPathRE = regexp.MustCompile("([A-Za-z]:[\\\\/]|/)[^[:space:]]+")
+var reviewerDiagnosticPathRE = regexp.MustCompile(`([A-Za-z]:[\\/]|/)[^[:space:]]+`)
 
 // SelectionSession describes the single LLM turn used for selection-only execution.
 type SelectionSession struct {
