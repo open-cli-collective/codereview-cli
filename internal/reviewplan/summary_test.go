@@ -399,8 +399,8 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		md := plan.RollupMarkdown
 		for _, want := range []string{
-			"- `go:implementation-tests` — complete (broad)\n",
-			"- `architecture:solid` — complete (constrained); inspected 1 of 2 files: `a.go`; scoped to assigned files",
+			"- `go:implementation-tests` — complete (broad); skipped: none; constraints: none\n",
+			"- `architecture:solid` — complete (constrained); inspected 1 of 2 files: `a.go`; skipped: none; scoped to assigned files",
 			"<summary>Inspected files (2)</summary>",
 			"- `a.go`",
 			"- `b.go`",
@@ -411,7 +411,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
-	t.Run("coverage cells distinguish known empty collections from missing results", func(t *testing.T) {
+	t.Run("coverage list distinguishes known empty collections from missing results", func(t *testing.T) {
 		req := baseRequest()
 		req.Findings = nil
 		req.Rollup = review.Rollup{
@@ -446,9 +446,9 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		md := plan.RollupMarkdown
 		for _, want := range []string{
-			"| complete-broad | complete_broad | main.go | none | none |",
-			"| complete-constrained | complete_constrained | none | main.go | read-only tools |",
-			"| failed | incomplete_failed | unavailable | unavailable | unavailable |",
+			"- `complete-broad` — complete (broad); skipped: none; constraints: none",
+			"- `complete-constrained` — complete (constrained); skipped: `main.go`; read-only tools",
+			"- `failed` — ⚠️ failed\n",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("coverage row missing %q:\n%s", want, md)

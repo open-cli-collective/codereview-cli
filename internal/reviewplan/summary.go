@@ -283,11 +283,15 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		}
 		if len(entry.SkippedFiles) > 0 {
 			notes = append(notes, "skipped: "+codeSpanList(entry.SkippedFiles))
+		} else if coverageResultProduced(entry.Status) {
+			notes = append(notes, "skipped: none")
 		}
 		if len(entry.Constraints) > 0 {
 			// Constraints are independent sentences of reviewer prose; a
 			// space joins them without stacking punctuation.
 			notes = append(notes, escapeCell(strings.Join(entry.Constraints, " ")))
+		} else if coverageResultProduced(entry.Status) {
+			notes = append(notes, "constraints: none")
 		}
 		if strings.TrimSpace(entry.Diagnostic) != "" {
 			notes = append(notes, escapeCell(entry.Diagnostic))
@@ -306,6 +310,15 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		out.WriteString("\n</details>\n")
 	}
 	out.WriteString("\n")
+}
+
+func coverageResultProduced(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "complete_broad", "complete_constrained", "incomplete_skipped":
+		return true
+	default:
+		return false
+	}
 }
 
 // coverageStatusLabel humanizes the coverage status enum; the healthy states
