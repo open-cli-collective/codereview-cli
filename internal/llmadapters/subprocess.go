@@ -481,11 +481,7 @@ func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cm
 		}
 		if detail != "" {
 			runErr := fmt.Errorf("llm subprocess: Claude foreground task failed: %w: %s", waitErr, detail)
-			if isTransientCLIDetail(detail) {
-				result.err = fmt.Errorf("%w: %w", ErrTransient, runErr)
-			} else {
-				result.err = runErr
-			}
+			result.err = classifyCLIDetail(runErr, detail)
 		} else {
 			result.err = waitErr
 		}
@@ -510,11 +506,7 @@ func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cm
 		case parsed.IsError:
 			detail := strings.TrimSpace(parsed.Result)
 			runErr := fmt.Errorf("llm subprocess: Claude foreground task errored: %s", detail)
-			if isTransientCLIDetail(detail) {
-				result.err = fmt.Errorf("%w: %w", ErrTransient, runErr)
-			} else {
-				result.err = runErr
-			}
+			result.err = classifyCLIDetail(runErr, detail)
 		default:
 			result.err = fmt.Errorf("llm subprocess: Claude foreground task completed without a result file: %w", err)
 		}
@@ -951,11 +943,7 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		}
 		if detail != "" {
 			launchErr := fmt.Errorf("llm subprocess: Claude bg launch failed: %w: %s", waitErr, detail)
-			if isTransientCLIDetail(detail) {
-				result.err = fmt.Errorf("%w: %w", ErrTransient, launchErr)
-			} else {
-				result.err = launchErr
-			}
+			result.err = classifyCLIDetail(launchErr, detail)
 		} else {
 			result.err = waitErr
 		}
@@ -1361,10 +1349,7 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 				}
 				detail := claudeBGStateDetail(state)
 				jobErr := fmt.Errorf("llm subprocess: Claude background job %s: %s", stateName, detail)
-				if isTransientCLIDetail(detail) {
-					return state, fmt.Errorf("%w: %w", ErrTransient, jobErr)
-				}
-				return state, jobErr
+				return state, classifyCLIDetail(jobErr, detail)
 			}
 		}
 
