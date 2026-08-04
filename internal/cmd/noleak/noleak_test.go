@@ -40,6 +40,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitexec"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
@@ -435,6 +436,7 @@ func noLeakGitMustSucceed(t *testing.T, dir string, args ...string) string {
 func noLeakGitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Env = gittest.Env()
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

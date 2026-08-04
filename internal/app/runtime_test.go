@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
@@ -497,6 +498,7 @@ func TestOpenSelectionReturnsExecutableSelectionRuntime(t *testing.T) {
 	git := func(dir string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command("git", args...) // #nosec G204 -- test uses structured Git arguments.
+		cmd.Env = gittest.Env()
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -544,6 +546,7 @@ func TestOpenSelectionReturnsExecutableSelectionRuntime(t *testing.T) {
 						cmdArgs[2] = repoDir
 					}
 					cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- test uses structured Git arguments.
+					cmd.Env = gittest.Env()
 					cmd.Dir = dir
 					return cmd.CombinedOutput()
 				}, nil
