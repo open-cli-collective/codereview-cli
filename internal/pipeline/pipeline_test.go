@@ -3175,6 +3175,8 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	req.ReviewerModelOverride = "openai-codex/gpt-5.6-luna"
+	req.ReviewerEffortOverride = "high"
 	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
 	if err != nil {
 		t.Fatalf("PRKey: %v", err)
@@ -3245,6 +3247,13 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	if len(sessions) != 3 {
 		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
 	}
+	requests := adapter.Requests()
+	if len(requests) != 3 || requests[1].Model != "openai-codex/gpt-5.6-luna" || requests[1].Effort != "high" {
+		t.Fatalf("LLM requests = %#v, want exact Luna/high reviewer override", requests)
+	}
+	if requests[0].Model == "openai-codex/gpt-5.6-luna" || requests[2].Model == "openai-codex/gpt-5.6-luna" {
+		t.Fatalf("selection/rollup requests = %#v, want routing unchanged", requests)
+	}
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 }
@@ -3260,8 +3269,6 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 		{name: "selection model", mutate: func(req *Request) { req.SelectionModelOverride = "bench-model" }},
 		{name: "selection effort", mutate: func(req *Request) { req.SelectionEffortOverride = "high" }},
 		{name: "selection prompt", mutate: func(req *Request) { req.SelectionPromptInstructions = "Use applies_when." }},
-		{name: "reviewer model", mutate: func(req *Request) { req.ReviewerModelOverride = "bench-model" }},
-		{name: "reviewer effort", mutate: func(req *Request) { req.ReviewerEffortOverride = "high" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3291,6 +3298,15 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 				t.Fatalf("adapter requests = %#v, want none", adapter.Requests())
 			}
 		})
+	}
+}
+
+func TestLiveReviewerModelAndEffortOverridesAreNotDryRunOnly(t *testing.T) {
+	if hasDryRunStageOverrides(Request{ReviewerModelOverride: "openai-codex/gpt-5.6-luna", ReviewerEffortOverride: "high"}) {
+		t.Fatal("reviewer model and effort overrides are classified as dry-run-only")
+	}
+	if !hasDryRunStageOverrides(Request{SelectionModelOverride: "selection-model"}) {
+		t.Fatal("selection model override is not classified as dry-run-only")
 	}
 }
 

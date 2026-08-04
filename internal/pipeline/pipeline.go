@@ -3108,9 +3108,7 @@ func hasDryRunStageOverrides(req Request) bool {
 	return strings.TrimSpace(req.SelectionModelOverride) != "" ||
 		strings.TrimSpace(req.SelectionEffortOverride) != "" ||
 		strings.TrimSpace(req.SelectionPromptInstructions) != "" ||
-		strings.TrimSpace(req.ReviewerModelOverride) != "" ||
-		strings.TrimSpace(req.ReviewerModelTierOverride) != "" ||
-		strings.TrimSpace(req.ReviewerEffortOverride) != ""
+		strings.TrimSpace(req.ReviewerModelTierOverride) != ""
 }
 
 func resolveSelectionRuntimeConfig(profile config.Profile, modelOverride, effortOverride string) (llmRuntimeConfig, error) {
