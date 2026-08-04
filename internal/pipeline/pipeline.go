@@ -2608,30 +2608,18 @@ func (opts Options) emitWarning(warning string) {
 }
 
 // tryPruneRetention runs automatic retention through the guarded entry
-// point, which prunes only while holding the data-root active-runs lock
-// exclusively. A contended lock means another instance is mid-run (or
-// already pruning); retention is best-effort housekeeping, so the prune is
-// skipped rather than waited for.
+// point, which owns the skip-on-contention and degrade-with-warning policy;
+// a non-nil error means the retention pass itself failed.
 func tryPruneRetention(ctx context.Context, opts Options) error {
 	if opts.RetentionManualOnly {
 		return nil
 	}
-	result, skipped, err := datalifecycle.PruneGuarded(ctx, datalifecycle.Options{
+	_, err := datalifecycle.PruneGuarded(ctx, datalifecycle.Options{
 		Layout: opts.Layout,
 		Store:  opts.Store,
 		Now:    opts.Now,
-	}, datalifecycle.PruneOptions{Retention: opts.Retention})
-	if err != nil {
-		if skipped {
-			opts.emitWarning(fmt.Sprintf("skipping retention prune (active-runs lock unavailable): %v", err))
-			return nil
-		}
-		return err
-	}
-	for _, warning := range result.Warnings {
-		opts.emitWarning(fmt.Sprintf("warning: %s", warning))
-	}
-	return nil
+	}, datalifecycle.PruneOptions{Retention: opts.Retention}, opts.emitWarning)
+	return err
 }
 
 func ledgerFinding(runID, sessionRowID string, finding reviewplan.AnchoredFinding) ledger.Finding {

@@ -550,33 +550,22 @@ func applyAdvisoryThreadResolutionWarning(ctx context.Context, opts Options, res
 }
 
 // pruneRetention runs automatic retention through the guarded entry point,
-// which prunes only while holding the data-root active-runs lock
-// exclusively. A contended lock (another instance mid-run or pruning) skips
-// the prune: retention is best-effort housekeeping.
+// which owns the skip-on-contention and degrade-with-warning policy; a
+// non-nil error means the retention pass itself failed.
 func pruneRetention(ctx context.Context, opts Options) error {
 	if opts.RetentionManualOnly {
 		return nil
 	}
-	result, skipped, err := datalifecycle.PruneGuarded(ctx, datalifecycle.Options{
+	_, err := datalifecycle.PruneGuarded(ctx, datalifecycle.Options{
 		Layout: opts.Layout,
 		Store:  opts.Store,
 		Now:    opts.Now,
-	}, datalifecycle.PruneOptions{Retention: opts.Retention})
-	if err != nil {
-		if skipped {
-			if opts.Warnings != nil {
-				_, _ = fmt.Fprintf(opts.Warnings, "warning: skipping retention prune (active-runs lock unavailable): %v\n", err)
-			}
-			return nil
-		}
-		return err
-	}
-	for _, warning := range result.Warnings {
+	}, datalifecycle.PruneOptions{Retention: opts.Retention}, func(warning string) {
 		if opts.Warnings != nil {
-			_, _ = fmt.Fprintf(opts.Warnings, "warning: %s\n", warning)
+			_, _ = fmt.Fprintln(opts.Warnings, warning)
 		}
-	}
-	return nil
+	})
+	return err
 }
 
 func reviewPostingUsesGitHubApp(profile config.Profile) bool {

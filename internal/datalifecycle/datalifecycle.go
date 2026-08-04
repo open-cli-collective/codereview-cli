@@ -175,28 +175,35 @@ func Show(ctx context.Context, opts Options) (Stats, error) {
 // PruneGuarded runs Prune only while holding the data-root active-runs lock
 // exclusively, so automatic retention can never delete another process's
 // in-flight run artifacts. It is the required entry point for every
-// automatic (non-interactive) retention pass; skipped=true means the prune
-// did not run — with a nil error when the lock was contended (another
-// instance is mid-run or pruning, and retention is best-effort housekeeping),
-// or with the lock error when the lock could not be taken at all. Interactive
-// commands that need refusal semantics or already hold the lock (cr data
-// prune/purge) call Prune directly under their own acquisition.
-func PruneGuarded(ctx context.Context, opts Options, prune PruneOptions) (result PruneResult, skipped bool, err error) {
+// automatic (non-interactive) retention pass and owns the best-effort
+// policy: a contended lock (another instance mid-run or pruning) skips the
+// prune silently, an unavailable lock skips it with a message to warn, and
+// prune warnings are forwarded to warn — so a non-nil error always means the
+// pass itself failed. warn may be nil. Interactive commands that need
+// refusal semantics or already hold the lock (cr data prune/purge) call
+// Prune directly under their own acquisition.
+func PruneGuarded(ctx context.Context, opts Options, prune PruneOptions, warn func(string)) (PruneResult, error) {
+	if warn == nil {
+		warn = func(string) {}
+	}
 	if err := validateOptions(opts); err != nil {
-		return PruneResult{}, false, err
+		return PruneResult{}, err
 	}
 	lock, err := runlock.Acquire(opts.Layout.ActiveRunsLock())
 	if err != nil {
-		if errors.Is(err, runlock.ErrHeld) {
-			return PruneResult{}, true, nil
+		if !errors.Is(err, runlock.ErrHeld) {
+			warn(fmt.Sprintf("skipping retention prune (active-runs lock unavailable): %v", err))
 		}
-		return PruneResult{}, true, err
+		return PruneResult{}, nil
 	}
 	result, pruneErr := Prune(ctx, opts, prune)
 	if releaseErr := lock.Release(); releaseErr != nil && pruneErr == nil {
 		pruneErr = releaseErr
 	}
-	return result, false, pruneErr
+	for _, warning := range result.Warnings {
+		warn(fmt.Sprintf("warning: %s", warning))
+	}
+	return result, pruneErr
 }
 
 // Prune deletes selected ledger rows first, then best-effort artifact dirs.
