@@ -82,6 +82,23 @@ func TestAnalyzeThreadRunsDurableStepWithPromptSafeContext(t *testing.T) {
 	assertFileOmits(t, meta.ValidatedOutputPath, "Here is the JSON")
 }
 
+func TestPromptForInputStatesDecisionFieldContract(t *testing.T) {
+	prompt, err := promptForInput(analysisInputForThread("thread-1", promptThread("human reply")))
+	if err != nil {
+		t.Fatalf("promptForInput: %v", err)
+	}
+	for _, want := range []string{
+		"skip: reply_body and summary must be empty; resolve must be false.",
+		"reply_only and clarify: reply_body is required; summary must be empty; resolve must be false.",
+		"acknowledge and concede: reply_body is required; when resolve is true, summary is required.",
+		"summarize: reply_body must be empty; summary is required; resolve must be true.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing output contract %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestAnalyzeThreadsPreservesSingleThreadArtifactsAndOrder(t *testing.T) {
 	threads := []threadcontext.Thread{
 		promptThreadWithID("thread-1", "first reply"),
