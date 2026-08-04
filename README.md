@@ -673,7 +673,7 @@ Built-in model maps:
 |----------|---------|-------|--------|-------|
 | `openai` | `codex_cli` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
 | `openai` | `openai_api` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
-| `anthropic` | `claude_cli` | unset | `claude-sonnet-4-6` | `claude-opus-4-8` |
+| `anthropic` | `claude_cli` | unset | `claude-sonnet-5` | `claude-opus-5` |
 | `anthropic` | `anthropic_api` | unset | unset | unset |
 | `pi` | `pi_rpc` | unset | unset | unset |
 
@@ -1154,10 +1154,10 @@ Policy and output flags:
 Fast mode defaults off; set `fast: true` on a profile to enable it by default.
 `--fast` and `--no-fast` override the profile. Unsupported runtime/model
 combinations warn and continue at normal speed. Fast mode supports `claude_cli`
-and `anthropic_api` with `claude-opus-4-8` or `claude-opus-4-7`, and `codex_cli`
+and `anthropic_api` with `claude-opus-5` or `claude-opus-4-8`, and `codex_cli`
 with `gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`.
-Anthropic has deprecated Opus 4.7 fast mode and plans to remove it on July 24,
-2026. Claude CLI receives a per-session `fastMode` setting, Anthropic API
+Anthropic has removed Opus 4.7 fast mode. Claude CLI receives a per-session
+`fastMode` setting, Anthropic API
 requests use its fast-mode beta, and Codex CLI receives `service_tier="fast"`.
 Fast mode has premium pricing and applies only to reviewer agents, not
 selection, synthesis, approval-override classification, or `cr respond` thread
