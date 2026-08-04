@@ -48,6 +48,43 @@ func TestExecuteReadRejectsBinaryFiles(t *testing.T) {
 	}
 }
 
+func TestExecuteReadValidatesBinaryContractAcrossFile(t *testing.T) {
+	repo, diff := reviewerToolFixture(t)
+	config := Config{RepoDir: repo, DiffPath: diff, MaxOutputBytes: 1024}
+
+	t.Run("valid UTF-8 split across validation buffer", func(t *testing.T) {
+		content := strings.Repeat("a", maxReadBinaryProbeBytes-1) + "€"
+		if err := os.WriteFile(filepath.Join(repo, "boundary.txt"), []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile(boundary): %v", err)
+		}
+		if _, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "boundary.txt"}); err != nil {
+			t.Fatalf("Execute(valid UTF-8) error = %v, want success", err)
+		}
+	})
+
+	t.Run("binary byte after validation buffer", func(t *testing.T) {
+		content := append([]byte(strings.Repeat("a", maxReadBinaryProbeBytes)), 0)
+		if err := os.WriteFile(filepath.Join(repo, "late-binary.bin"), content, 0o600); err != nil {
+			t.Fatalf("WriteFile(late binary): %v", err)
+		}
+		_, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "late-binary.bin"})
+		if !errors.Is(err, ErrDenied) {
+			t.Fatalf("Execute(late binary) error = %v, want ErrDenied", err)
+		}
+	})
+
+	t.Run("invalid UTF-8 after validation buffer", func(t *testing.T) {
+		content := append([]byte(strings.Repeat("a", maxReadBinaryProbeBytes)), 0xff)
+		if err := os.WriteFile(filepath.Join(repo, "late-invalid.bin"), content, 0o600); err != nil {
+			t.Fatalf("WriteFile(late invalid): %v", err)
+		}
+		_, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "late-invalid.bin"})
+		if !errors.Is(err, ErrDenied) {
+			t.Fatalf("Execute(late invalid) error = %v, want ErrDenied", err)
+		}
+	})
+}
+
 func TestRunReadAndDiffRangesReachContentBeyondOutputCap(t *testing.T) {
 	repo, diff := reviewerToolFixture(t)
 	largeFile := strings.Repeat("a", 40*1024) + "READ_TARGET" + strings.Repeat("b", 40*1024)

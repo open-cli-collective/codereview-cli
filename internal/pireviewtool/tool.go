@@ -145,7 +145,7 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 		if openErr != nil {
 			return "", fmt.Errorf("read %q: %w", request.Path, openErr)
 		}
-		if binaryErr := rejectBinaryFile(file); binaryErr != nil {
+		if binaryErr := rejectBinaryFile(ctx, file); binaryErr != nil {
 			_ = file.Close()
 			return "", fmt.Errorf("read %q: %w", request.Path, binaryErr)
 		}
@@ -188,16 +188,45 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 	return boundOutput(output, config.MaxOutputBytes), nil
 }
 
-func rejectBinaryFile(file *os.File) error {
-	probe := make([]byte, maxReadBinaryProbeBytes)
-	n, err := file.ReadAt(probe, 0)
-	if err != nil && !errors.Is(err, io.EOF) {
+func rejectBinaryFile(ctx context.Context, file *os.File) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if bytes.IndexByte(probe[:n], 0) >= 0 || !utf8.Valid(probe[:n]) {
+	buffer := make([]byte, maxReadBinaryProbeBytes)
+	pending := make([]byte, 0, utf8.UTFMax-1)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, readErr := file.Read(buffer)
+		data := append(pending, buffer[:n]...)
+		pending = pending[:0]
+		if bytes.IndexByte(data, 0) >= 0 {
+			return fmt.Errorf("%w: binary files are not reviewer-visible", ErrDenied)
+		}
+		for len(data) > 0 {
+			runeValue, size := utf8.DecodeRune(data)
+			if runeValue == utf8.RuneError && size == 1 {
+				if !utf8.FullRune(data) {
+					pending = append(pending, data...)
+					break
+				}
+				return fmt.Errorf("%w: binary files are not reviewer-visible", ErrDenied)
+			}
+			data = data[size:]
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+	if len(pending) > 0 {
 		return fmt.Errorf("%w: binary files are not reviewer-visible", ErrDenied)
 	}
-	return nil
+	_, err := file.Seek(0, io.SeekStart)
+	return err
 }
 
 func validateRepoRoot(root string) (string, error) {
