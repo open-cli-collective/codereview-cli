@@ -450,8 +450,8 @@ func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
 			provider: LLMProviderAnthropic,
 			adapter:  LLMAdapterClaudeCLI,
 			want: ModelMap{
-				"medium": "claude-sonnet-4-6",
-				"large":  "claude-opus-4-8",
+				"medium": "claude-sonnet-5",
+				"large":  "claude-opus-5",
 			},
 		},
 		{name: "anthropic api", provider: LLMProviderAnthropic, adapter: LLMAdapterAnthropicAPI, want: ModelMap{}},

@@ -632,7 +632,7 @@ Supported values:
 | `llm.reviewer_model_tier` | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
-| `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
+| `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. Review-time pruning runs only when no other cr instance is mid-run (it requires the data-root active-runs lock exclusively) and is skipped, not queued, on contention. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
 logged-in CLI or local runtime. `api_key` LLM auth requires `llm.credential`
@@ -678,7 +678,7 @@ Built-in model maps:
 |----------|---------|-------|--------|-------|
 | `openai` | `codex_cli` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
 | `openai` | `openai_api` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
-| `anthropic` | `claude_cli` | unset | `claude-sonnet-4-6` | `claude-opus-4-8` |
+| `anthropic` | `claude_cli` | unset | `claude-sonnet-5` | `claude-opus-5` |
 | `anthropic` | `anthropic_api` | unset | unset | unset |
 | `pi` | `pi_rpc` | unset | unset | unset |
 
@@ -1159,10 +1159,10 @@ Policy and output flags:
 Fast mode defaults off; set `fast: true` on a profile to enable it by default.
 `--fast` and `--no-fast` override the profile. Unsupported runtime/model
 combinations warn and continue at normal speed. Fast mode supports `claude_cli`
-and `anthropic_api` with `claude-opus-4-8` or `claude-opus-4-7`, and `codex_cli`
+and `anthropic_api` with `claude-opus-5` or `claude-opus-4-8`, and `codex_cli`
 with `gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`.
-Anthropic has deprecated Opus 4.7 fast mode and plans to remove it on July 24,
-2026. Claude CLI receives a per-session `fastMode` setting, Anthropic API
+Anthropic has removed Opus 4.7 fast mode. Claude CLI receives a per-session
+`fastMode` setting, Anthropic API
 requests use its fast-mode beta, and Codex CLI receives `service_tier="fast"`.
 Fast mode has premium pricing and applies only to reviewer agents, not
 selection, synthesis, approval-override classification, or `cr respond` thread
@@ -1392,7 +1392,14 @@ Flags:
 
 Prune deletes the ledger row first, then removes artifact directories best
 effort. Unsafe artifact paths and remove failures are reported as warnings after
-the ledger row is deleted.
+the ledger row is deleted. Orphan directories modified within the last 24 hours
+are exempt from the sweep: an unreferenced directory can belong to a run that is
+still being set up.
+
+A live (non-dry-run) prune refuses while any review or respond run on the
+machine holds the data-root active-runs lock, exiting with "another cr instance
+appears to be running; wait for it to finish and retry". `--dry-run` never takes
+the lock.
 
 When progress logging is enabled, `data prune` emits stderr brackets for layout
 resolution, optional legacy migration, ledger open, run selection, delete
@@ -1407,7 +1414,9 @@ cr data purge --dry-run [--json]
 
 Purges the whole local data root. `--yes` is required unless `--dry-run` is set.
 Purge does not open the ledger database, so it can remove a corrupt local data
-root. `--json` emits the data root, dry-run status, and removed status.
+root. `--json` emits the data root, dry-run status, and removed status. Like a
+live prune, purge refuses while any review or respond run on the machine holds
+the data-root active-runs lock.
 
 `data purge` emits progress on stderr for layout resolution and the purge
 action itself.

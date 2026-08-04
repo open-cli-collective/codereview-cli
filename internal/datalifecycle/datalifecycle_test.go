@@ -270,6 +270,7 @@ func TestPruneSweepsOrphansAndPreservesReferencedArtifacts(t *testing.T) {
 	orphan := testRun(layout, "orphan", ledger.PostModeLive, testNow())
 	writeFile(t, filepath.Join(ref.ArtifactPath, "rollup.md"), "keep")
 	writeFile(t, filepath.Join(orphan.ArtifactPath, "rollup.md"), "remove")
+	backdate(t, orphan.ArtifactPath, testNow().Add(-2*OrphanGrace))
 	store := &fakeStore{runs: []ledger.Run{ref}}
 	keep := 10
 
@@ -301,9 +302,10 @@ func TestShowSummarizesRunsAndOrphans(t *testing.T) {
 	orphan := testRun(layout, "orphan", ledger.PostModeDryRun, now)
 	writeFile(t, filepath.Join(live.ArtifactPath, "rollup.md"), "12345")
 	writeFile(t, filepath.Join(orphan.ArtifactPath, "rollup.md"), "123")
+	backdate(t, orphan.ArtifactPath, now.Add(-2*OrphanGrace))
 	store := &fakeStore{runs: []ledger.Run{dry, live}}
 
-	stats, err := Show(context.Background(), Options{Layout: layout, Store: store})
+	stats, err := Show(context.Background(), Options{Layout: layout, Store: store, Now: testNow})
 	if err != nil {
 		t.Fatalf("Show: %v", err)
 	}
@@ -445,4 +447,39 @@ func orphanPaths(items []OrphanItem) []string {
 		paths = append(paths, item.Path)
 	}
 	return paths
+}
+
+// backdate moves path's mtime outside the orphan grace window so tests can
+// distinguish sweepable orphans from ones a live run may still own.
+func backdate(t *testing.T, path string, to time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, to, to); err != nil {
+		t.Fatalf("Chtimes %s: %v", path, err)
+	}
+}
+
+func TestPruneKeepsOrphansWithinGraceWindow(t *testing.T) {
+	layout := testLayout(t)
+	fresh := testRun(layout, "fresh-orphan", ledger.PostModeLive, testNow())
+	stale := testRun(layout, "stale-orphan", ledger.PostModeLive, testNow())
+	writeFile(t, filepath.Join(fresh.ArtifactPath, "rollup.md"), "in-flight setup")
+	writeFile(t, filepath.Join(stale.ArtifactPath, "rollup.md"), "long dead")
+	backdate(t, fresh.ArtifactPath, testNow().Add(-OrphanGrace/2))
+	backdate(t, stale.ArtifactPath, testNow().Add(-2*OrphanGrace))
+	store := &fakeStore{}
+	keep := 10
+
+	result, err := Prune(context.Background(), Options{Layout: layout, Store: store, Now: testNow}, PruneOptions{KeepLast: &keep})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if got, want := orphanPaths(result.OrphansRemoved), []string{stale.ArtifactPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("orphans removed = %#v, want only the stale orphan %#v", got, want)
+	}
+	if _, err := os.Stat(fresh.ArtifactPath); err != nil {
+		t.Fatalf("fresh orphan within grace was removed: %v", err)
+	}
+	if _, err := os.Stat(stale.ArtifactPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale orphan stat error = %v, want not exist", err)
+	}
 }

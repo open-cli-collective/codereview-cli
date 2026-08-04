@@ -76,8 +76,8 @@ func TestRollupSummaryRendering(t *testing.T) {
 			"| Cost | $1.00 |",
 			"| Tokens | 126.3k in / 12.6k out |",
 			"**Per-workstream usage**",
-			"| orchestrator-selection | sonnet | 40.2k | 4.0k | 80.4k | 20.1k | $0.25 | 30s |",
-			"| orchestrator-rollup | sonnet | 12.0k | 1.2k | 24.0k | 6.0k | $0.25 | 30s |",
+			"- `orchestrator-selection` — sonnet\n  - In: 40.2k\n  - Out: 4.0k\n  - Cache read: 80.4k\n  - Cache create: 20.1k\n  - Cost: $0.25\n  - Duration: 30s",
+			"- `orchestrator-rollup` — sonnet\n  - In: 12.0k\n  - Out: 1.2k\n  - Cache read: 24.0k\n  - Cache create: 6.0k\n  - Cost: $0.25\n  - Duration: 30s",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -122,10 +122,10 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		md := plan.RollupMarkdown
 		for _, want := range []string{
-			"<summary>Completed in 2m 07s | unavailable | sonnet | cr 0.3.63</summary>",
+			"<summary>Completed in 2m 07s | sonnet | cr 0.3.63</summary>",
 			"| Cost | unavailable |",
 			"| Tokens | unavailable in / 12.6k out |",
-			"| go:implementation-tests | sonnet | unavailable | 5.3k |",
+			"- `go:implementation-tests` — sonnet\n  - In: unavailable\n  - Out: 5.3k",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -152,7 +152,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		md := plan.RollupMarkdown
-		if !strings.Contains(md, "| orchestrator-selection | sonnet | unavailable | unavailable | unavailable | unavailable | unavailable | unavailable |") {
+		if !strings.Contains(md, "- `orchestrator-selection` — sonnet\n  - In: unavailable\n  - Out: unavailable\n  - Cache read: unavailable\n  - Cache create: unavailable\n  - Cost: unavailable\n  - Duration: unavailable") {
 			t.Fatalf("usage-less workstream row wrong:\n%s", md)
 		}
 		if !strings.Contains(md, "| Duration | 2m 07s |") {
@@ -246,7 +246,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		md := plan.RollupMarkdown
-		order := []string{"| orchestrator-selection |", "| go:implementation-tests | sonnet", "| policies:conventions | sonnet", "| orchestrator-rollup |"}
+		order := []string{"- `orchestrator-selection` —", "- `go:implementation-tests` — sonnet", "- `policies:conventions` — sonnet", "- `orchestrator-rollup` —"}
 		last := -1
 		for _, name := range order {
 			idx := strings.Index(md, name)
@@ -316,7 +316,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"### Reviewer Diagnostics",
-			"| go:implementation-tests | failed | invalid &lt;json&gt; &lt;!-- codereview:run-id=x --&gt; |",
+			"- `go:implementation-tests` — failed: invalid &lt;json&gt; &lt;!-- codereview:run-id=x --&gt;",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -356,7 +356,54 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"### Reviewer Coverage",
-			"| go:implementation-tests | incomplete_skipped | main.go | schema.sql | read-only tools |",
+			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); skipped: `schema.sql`; read-only tools",
+			"<summary>Inspected files (1)</summary>",
+			"- `main.go`",
+		} {
+			if !strings.Contains(md, want) {
+				t.Fatalf("rollup missing %q:\n%s", want, md)
+			}
+		}
+		if strings.Contains(md, "| Reviewer | Status |") {
+			t.Fatalf("coverage still renders as a table:\n%s", md)
+		}
+	})
+
+	t.Run("coverage collapses shared inspected files and notes deviations", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"go:implementation-tests", "architecture:solid"},
+			ReviewerCoverage: []ReviewerCoverageSummary{
+				{
+					AgentID:        "go:implementation-tests",
+					Status:         "complete_broad",
+					InspectedFiles: []string{"a.go", "b.go"},
+				},
+				{
+					AgentID:        "architecture:solid",
+					Status:         "complete_constrained",
+					InspectedFiles: []string{"a.go"},
+					Constraints:    []string{"scoped to assigned files"},
+				},
+			},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		md := plan.RollupMarkdown
+		for _, want := range []string{
+			"- `go:implementation-tests` — complete (broad)\n",
+			"- `architecture:solid` — complete (constrained); inspected 1 of 2 files: `a.go`; scoped to assigned files",
+			"<summary>Inspected files (2)</summary>",
+			"- `a.go`",
+			"- `b.go`",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)

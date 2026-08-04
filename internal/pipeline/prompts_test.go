@@ -355,6 +355,19 @@ func TestFindingsOutputContractScopesAnchorToFindingItems(t *testing.T) {
 	}
 }
 
+func TestFindingsOutputContractStatesValidatorConstraintLimits(t *testing.T) {
+	contract := findingsOutputContract("agent-1", []string{"main.go"})
+	instructions := strings.Join(contract.Instructions, "\n")
+	for _, want := range []string{
+		"constraints must contain at most 10 entries.",
+		"Each constraints entry must contain at most 300 Unicode runes.",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("constraints instructions = %q, want %q", instructions, want)
+		}
+	}
+}
+
 func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	prompt, err := buildRollupPrompt(gitprovider.PR{Body: "Rollup prompt body should stay out of prompt payloads."}, []review.Finding{
 		{
@@ -457,7 +470,7 @@ func TestRollupPromptBudgetUsesSynthesisModel(t *testing.T) {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
 	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-4-6") {
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-5") {
 		t.Fatalf("rollup budget error = %v, want synthesis-model budget failure", err)
 	}
 }
@@ -474,7 +487,7 @@ func TestRollupPromptBudgetIgnoresSelectionModelOverride(t *testing.T) {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
 	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-4-6") {
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-5") {
 		t.Fatalf("rollup budget error = %v, want default synthesis model despite selection override", err)
 	}
 }

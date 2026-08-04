@@ -29,6 +29,23 @@ const (
 	defaultMaxCoverageConstraintRunes = 300
 )
 
+// FindingsConstraintLimits describes the validator limits for reviewer
+// constraints. Prompt builders use it to keep reviewer instructions aligned
+// with structured-output validation.
+type FindingsConstraintLimits struct {
+	MaxEntries       int
+	MaxRunesPerEntry int
+}
+
+// DefaultFindingsConstraintLimits returns the fixed reviewer-constraint
+// limits enforced by DecodeFindings.
+func DefaultFindingsConstraintLimits() FindingsConstraintLimits {
+	return FindingsConstraintLimits{
+		MaxEntries:       defaultMaxCoverageConstraints,
+		MaxRunesPerEntry: defaultMaxCoverageConstraintRunes,
+	}
+}
+
 // Selection is validated orchestrator selection output.
 type Selection struct {
 	SelectedAgents []SelectedAgent
@@ -342,11 +359,13 @@ func decodeCoverageStrings(name string, values []string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	seen := map[string]bool{}
 	for _, value := range values {
+		if utf8.RuneCountInString(value) > defaultMaxCoverageConstraintRunes {
+			return nil, fmt.Errorf("llm: %s entry length out of bounds", name)
+		}
 		value = sanitize(value)
 		if strings.TrimSpace(value) == "" {
 			return nil, fmt.Errorf("llm: %s entries must be non-empty", name)
 		}
-		value = truncateCoverageConstraint(value)
 		if seen[value] {
 			return nil, fmt.Errorf("llm: duplicate %s entry %q", name, value)
 		}
@@ -354,18 +373,6 @@ func decodeCoverageStrings(name string, values []string) ([]string, error) {
 		out = append(out, value)
 	}
 	return out, nil
-}
-
-// truncateCoverageConstraint keeps a model-authored coverage diagnostic
-// structurally valid while preserving its leading cause and marking loss.
-func truncateCoverageConstraint(value string) string {
-	if utf8.RuneCountInString(value) <= defaultMaxCoverageConstraintRunes {
-		return value
-	}
-	const marker = "..."
-	keep := defaultMaxCoverageConstraintRunes - len(marker)
-	runes := []rune(value)
-	return string(runes[:keep]) + marker
 }
 
 func validateCoverageFileDisjoint(inspected, skipped []string) error {

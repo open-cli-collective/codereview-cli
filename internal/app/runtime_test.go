@@ -947,8 +947,8 @@ func TestNewAdapterCreatesSupportedCLIAdapters(t *testing.T) {
 func TestAdapterConstructorsCoverLLMRuntimeSpecs(t *testing.T) {
 	want := make(map[config.LLMAdapter]struct{}, len(config.LLMRuntimeSpecs()))
 	wantFastModels := map[config.LLMAdapter][]string{
-		config.LLMAdapterClaudeCLI:    {"claude-opus-4-8", "claude-opus-4-7"},
-		config.LLMAdapterAnthropicAPI: {"claude-opus-4-8", "claude-opus-4-7"},
+		config.LLMAdapterClaudeCLI:    {"claude-opus-5", "claude-opus-4-8"},
+		config.LLMAdapterAnthropicAPI: {"claude-opus-5", "claude-opus-4-8"},
 		config.LLMAdapterCodexCLI:     {"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 	}
 	for _, spec := range config.LLMRuntimeSpecs() {
