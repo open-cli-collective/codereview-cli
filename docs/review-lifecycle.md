@@ -77,6 +77,10 @@ not reached the PR.
 
 - Reviewer-local LLM failures remain isolated and retain any provider session
   ID reported by the failed attempt.
+- A resume or fork whose provider conversation no longer exists is retried once
+  as a new conversation instead of failing the task. Session reuse saves cost and
+  carries prior context; neither is required for a correct review, so a cleaned-up
+  conversation degrades rather than losing the reviewer.
 - Early posting failures remain pending and do not prevent reviewer execution.
   Final posting retries them.
 - A moved head or base stops checkpoint posting before reviewer work.
