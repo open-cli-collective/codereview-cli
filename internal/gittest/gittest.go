@@ -5,7 +5,9 @@ import "os"
 
 // Env returns the process environment with host git configuration masked, so
 // fixture repositories behave identically regardless of the developer's
-// global or system config. Without this, host settings leak into fixture
+// global or system config. Every test that shells out to git must set
+// cmd.Env = gittest.Env() — a bare exec.Command("git", ...) reintroduces
+// the per-machine behavior this package exists to remove. Without this, host settings leak into fixture
 // commits — commit signing with a passphrase-protected key fails every
 // fixture commit, and hooksPath or init.templateDir can rewrite fixture
 // state — making the suite pass or fail by machine.

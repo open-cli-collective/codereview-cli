@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 )
 
@@ -75,6 +76,7 @@ func TestPrepareFetchesForkHeadThroughMergeRequestRef(t *testing.T) {
 			}
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd.Env = gittest.Env()
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}

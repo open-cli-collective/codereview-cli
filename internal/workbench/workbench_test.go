@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -102,6 +103,7 @@ func TestPrepareFetchesForkHeadThroughBasePullRef(t *testing.T) {
 			}
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd.Env = gittest.Env()
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}
@@ -149,6 +151,7 @@ func TestPrepareRejectsUnsafeFetchRef(t *testing.T) {
 			}
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd.Env = gittest.Env()
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}
@@ -585,6 +588,7 @@ func testGitRunner(t *testing.T, remotes map[string]string) func(context.Context
 			}
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed arguments.
+		cmd.Env = gittest.Env()
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}
@@ -604,6 +608,7 @@ func gitCommandMustSucceed(t *testing.T, dir string, args ...string) string {
 func gitCommandOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Env = gittest.Env()
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}

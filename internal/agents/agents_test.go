@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 )
 
 func TestLoadFilesystemSourceParsesAgent(t *testing.T) {
@@ -396,7 +397,9 @@ func trustCurrentTempFixturesForAgents(t *testing.T) {
 
 func initGitRepoForAgentsTest(t *testing.T, dir string) {
 	t.Helper()
-	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd := exec.Command("git", "init", dir) // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd.Env = gittest.Env()
+	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init %s: %v\n%s", dir, err, out)
 	}
 }
