@@ -316,7 +316,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"### Reviewer Diagnostics",
-			"| go:implementation-tests | failed | invalid &lt;json&gt; &lt;!-- codereview:run-id=x --&gt; |",
+			"- `go:implementation-tests` — failed: invalid &lt;json&gt; &lt;!-- codereview:run-id=x --&gt;",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -356,7 +356,54 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"### Reviewer Coverage",
-			"| go:implementation-tests | incomplete_skipped | main.go | schema.sql | read-only tools |",
+			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); skipped: `schema.sql`; read-only tools",
+			"<summary>Inspected files (1)</summary>",
+			"- `main.go`",
+		} {
+			if !strings.Contains(md, want) {
+				t.Fatalf("rollup missing %q:\n%s", want, md)
+			}
+		}
+		if strings.Contains(md, "| Reviewer | Status |") {
+			t.Fatalf("coverage still renders as a table:\n%s", md)
+		}
+	})
+
+	t.Run("coverage collapses shared inspected files and notes deviations", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"go:implementation-tests", "architecture:solid"},
+			ReviewerCoverage: []ReviewerCoverageSummary{
+				{
+					AgentID:        "go:implementation-tests",
+					Status:         "complete_broad",
+					InspectedFiles: []string{"a.go", "b.go"},
+				},
+				{
+					AgentID:        "architecture:solid",
+					Status:         "complete_constrained",
+					InspectedFiles: []string{"a.go"},
+					Constraints:    []string{"scoped to assigned files"},
+				},
+			},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		md := plan.RollupMarkdown
+		for _, want := range []string{
+			"- `go:implementation-tests` — complete (broad)\n",
+			"- `architecture:solid` — complete (constrained); inspected 1 of 2 files: `a.go`; scoped to assigned files",
+			"<summary>Inspected files (2)</summary>",
+			"- `a.go`",
+			"- `b.go`",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
