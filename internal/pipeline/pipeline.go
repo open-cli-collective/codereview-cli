@@ -308,7 +308,11 @@ const (
 	reviewerCoverageIncompleteSkipped    = "incomplete_skipped"
 	reviewerCoverageIncompleteFailed     = "incomplete_failed"
 	reviewerCoverageIncompleteUnassigned = "incomplete_unassigned"
+	reviewerCoverageIncompleteTool       = "incomplete_tool"
+	reviewerToolDiagnosticMaxRunes       = 300
 )
+
+var reviewerDiagnosticPathRE = regexp.MustCompile(`([A-Za-z]:[\\/]|/)[^[:space:]]+`)
 
 // SelectionSession describes the single LLM turn used for selection-only execution.
 type SelectionSession struct {
@@ -703,6 +707,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	}); err != nil {
 		return Result{}, pipelineTaskError(err)
 	}
+	if err := writeReviewerInputArtifacts(prepared.artifacts, prepared.rawDiff); err != nil {
+		return Result{}, err
+	}
 
 	findingSessions, blockingFailure, err := executePlanPhases(ctx, opts, req, mode, run, prepared, now, maxAgents, maxConcurrency, &result)
 	if err != nil {
@@ -854,7 +861,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	result.Findings = findings
 	result.ReviewerFailures = reviewerFailures
 	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerSessions)
-	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles)
+	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles, reviewerToolEvidenceByAgent(reviewerSessions))
 	result.ReviewerCoverage = reviewerCoverage
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
 
@@ -964,7 +971,7 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 		return err
 	}
 	result.PlannedActions = plannedActions
-	return writeArtifacts(prepared.artifacts, prepared.rawDiff, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored))
+	return writeArtifacts(prepared.artifacts, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored))
 }
 
 func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitprovider.PR) (ledger.Run, bool, error) {
@@ -2117,6 +2124,34 @@ func sanitizeTaskErrorForMarkdown(err error) string {
 	return value
 }
 
+func reviewerToolDiagnostic(evidence *llm.ReviewerToolEvidence, artifactDir string) string {
+	if evidence == nil || evidence.DiffStatus == llm.DiffToolStatusSucceeded {
+		return ""
+	}
+	detail := strings.TrimSpace(evidence.DiffDiagnostic)
+	if detail == "" && evidence.DiffStatus == llm.DiffToolStatusNotInvoked {
+		detail = "not invoked"
+	}
+	if detail == "" {
+		detail = "tool " + string(evidence.DiffStatus)
+	}
+	return normalizeReviewerToolDiagnostic("cr_diff: "+detail, artifactDir)
+}
+
+func normalizeReviewerToolDiagnostic(value, artifactDir string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if clean := filepath.Clean(strings.TrimSpace(artifactDir)); clean != "." && clean != "" {
+		value = strings.ReplaceAll(value, clean, "<path>")
+	}
+	value = reviewerDiagnosticPathRE.ReplaceAllString(value, "<path>")
+	value = strings.ReplaceAll(value, "<!-- codereview:", "&lt;!-- codereview:")
+	runes := []rune(value)
+	if len(runes) > reviewerToolDiagnosticMaxRunes {
+		value = string(runes[:reviewerToolDiagnosticMaxRunes-3]) + "..."
+	}
+	return value
+}
+
 func prepareNamedSession(ctx context.Context, opts Options, req Request, live bool, model string, now time.Time) (namedSessionState, error) {
 	explicitName := strings.TrimSpace(req.SessionName)
 	if explicitName != "" && !live {
@@ -2313,26 +2348,25 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		agentByRow[draft.RowID] = *draft.AgentID
 	}
 
-	// A reused reviewer cohort skips the selection stage; a workstream row for
-	// its zero draft would be all-"unavailable" and would nil every aggregate
-	// total, so only stages that actually ran are reported.
-	var workstreams []reviewplan.WorkstreamUsage
-	if inputs.selectionRan {
+	workstreams := make([]reviewplan.WorkstreamUsage, 0, len(inputs.reviewers)+2)
+	if sessionDraftExecuted(inputs.selection) {
 		workstreams = append(workstreams, workstreamUsage(orchestratorSelectionStage, inputs.selection))
 	}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
-		if draft, ok := reviewerByAgent[selected.AgentID]; ok {
+		if draft, ok := reviewerByAgent[selected.AgentID]; ok && sessionDraftExecuted(draft) {
 			workstreams = append(workstreams, workstreamUsage(selected.AgentID, draft))
 		}
 	}
-	workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
+	if sessionDraftExecuted(inputs.rollup) {
+		workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
+	}
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
 		ToolVersion:       req.ToolVersion,
-		Adapter:           opts.Adapter.Name(),
+		Adapter:           runAdapter(inputs),
 		Model:             sharedWorkstreamModel(workstreams),
 		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,
@@ -2351,6 +2385,32 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	return summary, findingReviewers
 }
 
+// sessionDraftExecuted distinguishes a phase that ran (or loaded durable
+// telemetry) from the zero draft left by a reused cohort that skipped it.
+func sessionDraftExecuted(draft sessionDraft) bool {
+	return strings.TrimSpace(draft.Adapter) != "" ||
+		strings.TrimSpace(draft.ProviderSessionID) != "" ||
+		strings.TrimSpace(draft.ProviderReportedSessionID) != "" ||
+		!draft.StartedAt.IsZero() || !draft.CompletedAt.IsZero() ||
+		draft.Response.DurationMS != 0 || draft.Response.Usage.TokensIn != nil ||
+		draft.Response.Usage.TokensOut != nil || draft.Response.Usage.CacheRead != nil ||
+		draft.Response.Usage.CacheCreate != nil || draft.Response.Usage.CostUSD != nil
+}
+
+// runAdapter recovers the adapter from an executed phase when selection was
+// skipped during cohort reuse.
+func runAdapter(inputs planRunInputs) string {
+	if adapter := strings.TrimSpace(inputs.selection.Adapter); adapter != "" {
+		return adapter
+	}
+	for _, draft := range inputs.reviewers {
+		if adapter := strings.TrimSpace(draft.Adapter); adapter != "" {
+			return adapter
+		}
+	}
+	return strings.TrimSpace(inputs.rollup.Adapter)
+}
+
 func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerFailureSummary {
 	out := make([]reviewplan.ReviewerFailureSummary, 0, len(failures))
 	for _, failure := range failures {
@@ -2362,7 +2422,18 @@ func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerF
 	return out
 }
 
-func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string) []reviewplan.ReviewerCoverageSummary {
+func reviewerToolEvidenceByAgent(sessions []sessionDraft) map[string]*llm.ReviewerToolEvidence {
+	out := make(map[string]*llm.ReviewerToolEvidence, len(sessions))
+	for _, session := range sessions {
+		if session.AgentID == nil || session.Response.ReviewerToolEvidence == nil {
+			continue
+		}
+		out[*session.AgentID] = session.Response.ReviewerToolEvidence
+	}
+	return out
+}
+
+func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
 	if len(selected) == 0 {
 		return nil
 	}
@@ -2401,6 +2472,12 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		entry.InspectedFiles = copySortedStrings(result.InspectedFiles)
 		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
 		entry.Constraints = copySortedStrings(result.Constraints)
+		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {
+			entry.Status = reviewerCoverageIncompleteTool
+			entry.Diagnostic = reviewerToolDiagnostic(evidence, "")
+			out = append(out, entry)
+			continue
+		}
 		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
 		switch {
 		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
@@ -2430,6 +2507,13 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		})
 	}
 	return out
+}
+
+func reviewerToolEvidenceForAgent(evidenceMaps []map[string]*llm.ReviewerToolEvidence, agentID string) *llm.ReviewerToolEvidence {
+	if len(evidenceMaps) == 0 {
+		return nil
+	}
+	return evidenceMaps[0][agentID]
 }
 
 // reviewerAssignmentScope is the coverage expectation: selected or allowed files
@@ -2995,9 +3079,7 @@ func hasDryRunStageOverrides(req Request) bool {
 	return strings.TrimSpace(req.SelectionModelOverride) != "" ||
 		strings.TrimSpace(req.SelectionEffortOverride) != "" ||
 		strings.TrimSpace(req.SelectionPromptInstructions) != "" ||
-		strings.TrimSpace(req.ReviewerModelOverride) != "" ||
-		strings.TrimSpace(req.ReviewerModelTierOverride) != "" ||
-		strings.TrimSpace(req.ReviewerEffortOverride) != ""
+		strings.TrimSpace(req.ReviewerModelTierOverride) != ""
 }
 
 func resolveSelectionRuntimeConfig(profile config.Profile, modelOverride, effortOverride string) (llmRuntimeConfig, error) {

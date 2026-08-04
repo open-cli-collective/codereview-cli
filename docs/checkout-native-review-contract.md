@@ -292,6 +292,22 @@ trusted review workbench rather than an OS-enforced write boundary. Codex CLI
 reviewers run with `workspace-write` and the reviewer checkout as their working
 directory.
 
+Pi RPC reviewers use `permission_bounded` mode. They run from the disposable
+reviewer checkout with Pi's built-in tools disabled and one invocation-owned
+extension that exposes only `cr_read`, `cr_search`, `cr_list`, and `cr_diff`.
+Those tools delegate to CR's bounded read-only helper: repository paths reject
+absolute paths, traversal, links/reparse points, and filesystem-boundary
+crossings, while `cr_diff` reads the run's precomputed pinned diff artifact
+instead of invoking Git or honoring repository/user Git configuration.
+The reviewer prompt requires `cr_diff` before head-file inspection. CR reserves
+space within the existing aggregate log cap for a compact `cr_diff` event
+summary so operators can distinguish no invocation, failure, and completion.
+Read/diff responses expose bounded byte ranges with deterministic continuation
+offsets, and list/search omit VCS metadata such as `.git`. Per-tool output,
+tool duration, and aggregate reviewer RPC/stderr logs are bounded without
+limiting protocol parsing. Non-reviewer Pi tasks retain their tool-free scratch
+working directory.
+
 Unsupported adapters must fail clearly. They must not silently fall back to
 stuffed diffs or full file bodies.
 
@@ -322,6 +338,7 @@ The coverage status values are:
 - `complete_constrained`: a reviewer with `allowed_files` covered that narrowed
   assignment
 - `incomplete_skipped`: assigned files were skipped or not reported as inspected
+- `incomplete_tool`: the fixed-diff tool was not invoked, did not complete, or failed
 - `incomplete_failed`: an isolated reviewer failure or missing reviewer result
   prevented coverage
 - `incomplete_unassigned`: changed files were not assigned to any selected

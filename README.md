@@ -117,8 +117,13 @@ cr init --non-interactive \
 Setup with Pi's local RPC runtime. Install Pi's coding agent and make sure the
 `pi` binary is available on `PATH` before running `cr review`. New installs
 should use the current npm package (`@earendil-works/pi-coding-agent`); existing
-installs from the previous npm scope can also work if their `pi` binary supports
-the required `--mode rpc` and `--system-prompt` flags.
+installs from the previous npm scope can also work when CR's compatibility
+preflight confirms the reviewer controls it requires: RPC/system-prompt mode;
+`--no-builtin-tools` with an exact `--tools` allowlist; explicit `--extension` loading while
+`--no-extensions` disables discovery; and `--no-context-files`, `--no-approve`,
+`--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-session`.
+CR preflights these capabilities before starting a Pi reviewer and returns an
+incompatible-runtime error when any control is unavailable.
 
 ```bash
 cr init --non-interactive \
@@ -1130,9 +1135,9 @@ Review selection and execution flags:
 | `--selection-model <model>` | Exact provider model ID passthrough for the selection stage only. Bypasses the default medium-tier selection model resolution. Requires `--dry-run` or `--no-post`. |
 | `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--selection-prompt <path>` | Load selection-stage instruction text from a file while preserving the structured JSON selection protocol. Requires `--dry-run` or `--no-post`. |
-| `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Available for dry-run, no-post, and live reviews. |
 | `--reviewer-model-tier <tier>` | Override the reviewer baseline tier only with `small`, `medium`, or `large`. This still respects higher agent `model_tier` floors. Requires `--dry-run` or `--no-post`. |
-| `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Available for dry-run, no-post, and live reviews. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Override the PR's default orchestrator session with a named live-review session. Reviewer cohorts remain PR-scoped. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |

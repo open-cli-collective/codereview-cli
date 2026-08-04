@@ -66,6 +66,41 @@ func TestRun(t *testing.T) {
 	}
 }
 
+func TestRunPiReviewerToolHiddenCommand(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	if err := os.MkdirAll(repoDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll(repo): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(main.go): %v", err)
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("fixed diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	configPath := filepath.Join(tempDir, "config.json")
+	configBytes, err := json.Marshal(map[string]any{
+		"repo_dir": repoDir, "diff_path": diffPath, "max_output_bytes": 2048, "timeout_ms": 1000,
+	})
+	if err != nil {
+		t.Fatalf("Marshal(config): %v", err)
+	}
+	if err := os.WriteFile(configPath, configBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"__pi-review-tool", "--config", configPath}, strings.NewReader(`{"tool":"cr_read","path":"main.go"}`), &stdout, &stderr)
+	if code != 0 || stdout.String() != "package main\n" || stderr.Len() != 0 {
+		t.Fatalf("run helper = %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--help"}, strings.NewReader(""), &stdout, &stderr); code != 0 || strings.Contains(stdout.String(), "__pi-review-tool") {
+		t.Fatalf("root help code = %d, stdout %q, hidden helper must stay hidden", code, stdout.String())
+	}
+}
+
 func TestRunConfigShowJSON(t *testing.T) {
 	statedirtest.Hermetic(t)
 	path, err := config.Path()

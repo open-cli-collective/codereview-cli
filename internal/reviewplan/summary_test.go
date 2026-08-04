@@ -356,7 +356,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"### Reviewer Coverage",
-			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); skipped: `schema.sql`; read-only tools",
+			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); skipped: `schema.sql`; constraints: read-only tools",
 			"<summary>Inspected files (1)</summary>",
 			"- `main.go`",
 		} {
@@ -399,8 +399,8 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		md := plan.RollupMarkdown
 		for _, want := range []string{
-			"- `go:implementation-tests` — complete (broad)\n",
-			"- `architecture:solid` — complete (constrained); inspected 1 of 2 files: `a.go`; scoped to assigned files",
+			"- `go:implementation-tests` — complete (broad); skipped: none; constraints: none\n",
+			"- `architecture:solid` — complete (constrained); inspected 1 assigned file (2 inspected across reviewers): `a.go`; skipped: none; constraints: scoped to assigned files",
 			"<summary>Inspected files (2)</summary>",
 			"- `a.go`",
 			"- `b.go`",
@@ -411,7 +411,52 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown reviewer coverage status force comment", func(t *testing.T) {
+	t.Run("coverage list distinguishes known empty collections from missing results", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"complete-broad", "complete-constrained", "failed"},
+			ReviewerCoverage: []ReviewerCoverageSummary{
+				{
+					AgentID:        "complete-broad",
+					Status:         "complete_broad",
+					InspectedFiles: []string{"main.go"},
+				},
+				{
+					AgentID:      "complete-constrained",
+					Status:       "complete_constrained",
+					SkippedFiles: []string{"main.go"},
+					Constraints:  []string{"read-only tools"},
+				},
+				{
+					AgentID: "failed",
+					Status:  "incomplete_failed",
+					Scope:   []string{"main.go"},
+				},
+			},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		md := plan.RollupMarkdown
+		for _, want := range []string{
+			"- `complete-broad` — complete (broad); skipped: none; constraints: none",
+			"- `complete-constrained` — complete (constrained); skipped: `main.go`; constraints: read-only tools",
+			"- `failed` — ⚠️ failed\n",
+		} {
+			if !strings.Contains(md, want) {
+				t.Fatalf("coverage row missing %q:\n%s", want, md)
+			}
+		}
+	})
+
+	t.Run("incomplete tool reviewer coverage force comment", func(t *testing.T) {
 		req := baseRequest()
 		req.Findings = nil
 		req.Rollup = review.Rollup{
@@ -422,7 +467,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		req.RunSummary = RunSummary{
 			ReviewerCoverage: []ReviewerCoverageSummary{{
 				AgentID: "go:implementation-tests",
-				Status:  "partial_coverage",
+				Status:  "incomplete_tool",
 			}},
 		}
 		plan, err := Build(req)
@@ -430,7 +475,10 @@ func TestRollupSummaryRendering(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		if plan.Outcome != OutcomeComment {
-			t.Fatalf("outcome = %q, want comment for unknown coverage status", plan.Outcome)
+			t.Fatalf("outcome = %q, want comment for incomplete tool coverage", plan.Outcome)
+		}
+		if !strings.Contains(plan.RollupMarkdown, "⚠️ incomplete (tool failure)") {
+			t.Fatalf("rollup = %q, want humanized incomplete tool status", plan.RollupMarkdown)
 		}
 	})
 

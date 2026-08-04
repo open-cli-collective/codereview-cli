@@ -219,7 +219,7 @@ func TestBuildPlanClassifiesActionIDFailureTerminalAcrossPaths(t *testing.T) {
 	}
 }
 
-func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -255,9 +255,11 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 		Event:  review.ReviewEventApprove,
 	}}
 	baseAdapter := &llm.FakeAdapter{
-		NameValue:      "fake-llm",
-		QuotaValue:     llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
-		QuotaSupported: true,
+		NameValue:                  "pi_rpc",
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspacePermissionBounded,
+		QuotaValue:                 llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
+		QuotaSupported:             true,
 	}
 	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
 	baseAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
@@ -611,7 +613,9 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
 	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	firstAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	reviewer := fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
+	reviewer.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusIncomplete}
+	firstAdapter.Queue(reviewer)
 	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
 	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
 	_, err := dryRunForTest(ctx, Options{
@@ -687,6 +691,9 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	assertPromptContains(t, resumeReq.Prompt, "finding-1", "harness:reviewer", "main.go")
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
 		t.Fatalf("result findings = %#v, want cached reviewer finding", result.Findings)
+	}
+	if len(result.ReviewerCoverage) != 1 || result.ReviewerCoverage[0].Status != reviewerCoverageIncompleteTool || result.ReviewerCoverage[0].Diagnostic != "cr_diff: tool incomplete" {
+		t.Fatalf("cached reviewer coverage = %#v, want incomplete typed tool evidence", result.ReviewerCoverage)
 	}
 	for taskID, want := range successMetadata {
 		got, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(artifacts), taskID)
@@ -997,6 +1004,57 @@ func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
 	}
 }
 
+func TestDryRunTypedReviewerToolEvidenceForcesIncompleteCoverage(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     llm.DiffToolStatus
+		diagnostic string
+		want       string
+	}{
+		{name: "not invoked", status: llm.DiffToolStatusNotInvoked, want: "cr_diff: not invoked"},
+		{name: "incomplete", status: llm.DiffToolStatusIncomplete, want: "cr_diff: tool incomplete"},
+		{name: "failed", status: llm.DiffToolStatusFailed, diagnostic: "fixed diff unavailable", want: "cr_diff: fixed diff unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+			adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
+			adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+			reviewer := fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", []string{"main.go"}, nil), 1, 1)
+			reviewer.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: tt.status, DiffDiagnostic: tt.diagnostic}
+			adapter.Queue(reviewer)
+			adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 1, 1))
+
+			result, err := dryRunForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewRunID:        func() string { return "run-typed-tool-evidence" },
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req)
+			if err != nil {
+				t.Fatalf("DryRun: %v", err)
+			}
+			if result.Plan.Outcome != reviewplan.OutcomeComment {
+				t.Fatalf("outcome = %q, want comment despite approve rollup", result.Plan.Outcome)
+			}
+			coverage := result.Plan.Summary.Run.ReviewerCoverage
+			if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteTool || coverage[0].Diagnostic != tt.want {
+				t.Fatalf("coverage = %#v, want incomplete tool diagnostic %q", coverage, tt.want)
+			}
+		})
+	}
+}
+
 func TestDryRunNormalizesReviewerFindingsFileAlias(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1114,8 +1172,9 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	workspace := requests[1].ReviewerWorkspace
 	if !strings.Contains(workspace.RepoDir, filepath.Join("workbench", "reviewers")) ||
 		!strings.HasPrefix(workspace.ScratchDir, result.Artifacts.WorkbenchScratch+string(filepath.Separator)) ||
+		workspace.DiffPath != result.Artifacts.DiffPatch ||
 		workspace.MaxToolOutputBytes != 32*1024 {
-		t.Fatalf("reviewer workspace request = %#v, want disposable repo, scratch, and default cap", workspace)
+		t.Fatalf("reviewer workspace request = %#v, want disposable repo, scratch, fixed diff, and default cap", workspace)
 	}
 	if provider.threadCalls != 0 {
 		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
@@ -3173,6 +3232,8 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	req.ReviewerModelOverride = "openai-codex/gpt-5.6-luna"
+	req.ReviewerEffortOverride = "high"
 	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
 	if err != nil {
 		t.Fatalf("PRKey: %v", err)
@@ -3243,6 +3304,13 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	if len(sessions) != 3 {
 		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
 	}
+	requests := adapter.Requests()
+	if len(requests) != 3 || requests[1].Model != "openai-codex/gpt-5.6-luna" || requests[1].Effort != "high" {
+		t.Fatalf("LLM requests = %#v, want exact Luna/high reviewer override", requests)
+	}
+	if requests[0].Model == "openai-codex/gpt-5.6-luna" || requests[2].Model == "openai-codex/gpt-5.6-luna" {
+		t.Fatalf("selection/rollup requests = %#v, want routing unchanged", requests)
+	}
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 }
@@ -3258,8 +3326,6 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 		{name: "selection model", mutate: func(req *Request) { req.SelectionModelOverride = "bench-model" }},
 		{name: "selection effort", mutate: func(req *Request) { req.SelectionEffortOverride = "high" }},
 		{name: "selection prompt", mutate: func(req *Request) { req.SelectionPromptInstructions = "Use applies_when." }},
-		{name: "reviewer model", mutate: func(req *Request) { req.ReviewerModelOverride = "bench-model" }},
-		{name: "reviewer effort", mutate: func(req *Request) { req.ReviewerEffortOverride = "high" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3289,6 +3355,15 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 				t.Fatalf("adapter requests = %#v, want none", adapter.Requests())
 			}
 		})
+	}
+}
+
+func TestLiveReviewerModelAndEffortOverridesAreNotDryRunOnly(t *testing.T) {
+	if hasDryRunStageOverrides(Request{ReviewerModelOverride: "openai-codex/gpt-5.6-luna", ReviewerEffortOverride: "high"}) {
+		t.Fatal("reviewer model and effort overrides are classified as dry-run-only")
+	}
+	if !hasDryRunStageOverrides(Request{SelectionModelOverride: "selection-model"}) {
+		t.Fatal("selection model override is not classified as dry-run-only")
 	}
 }
 
@@ -3365,8 +3440,14 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 		FakeAdapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
 		reviewerSessionID: "reviewer-dry",
 	}
-	liveAdapter.Queue(fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
-	liveAdapter.Queue(fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6))
+	reviewerLive := fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
+	reviewerCost := 1.25
+	reviewerLive.Response.Usage.CostUSD = &reviewerCost
+	liveAdapter.Queue(reviewerLive)
+	rollupLive := fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6)
+	rollupCost := 2.0
+	rollupLive.Response.Usage.CostUSD = &rollupCost
+	liveAdapter.Queue(rollupLive)
 
 	liveResult, err := liveForTest(ctx, Options{
 		Provider:        provider,
@@ -3396,19 +3477,25 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
 	}
-	var liveWorkstreams []string
-	for _, workstream := range liveResult.Plan.Summary.Run.Workstreams {
-		liveWorkstreams = append(liveWorkstreams, workstream.Name)
+	if liveResult.Plan.Summary.Run.Adapter != "fake-llm" {
+		t.Fatalf("live summary adapter = %q, want resumed run adapter", liveResult.Plan.Summary.Run.Adapter)
 	}
-	if want := []string{"harness:reviewer", "orchestrator-rollup"}; !reflect.DeepEqual(liveWorkstreams, want) {
-		t.Fatalf("live workstreams = %#v, want the skipped selection stage absent: %#v", liveWorkstreams, want)
+	var workstreamNames []string
+	for _, workstream := range liveResult.Plan.Summary.Run.Workstreams {
+		workstreamNames = append(workstreamNames, workstream.Name)
+	}
+	if want := []string{"harness:reviewer", "orchestrator-rollup"}; !reflect.DeepEqual(workstreamNames, want) {
+		t.Fatalf("live summary workstreams = %#v, want only executed workstreams %#v", workstreamNames, want)
 	}
 	totals := liveResult.Plan.Summary.Totals
 	if totals.TokensIn == nil || *totals.TokensIn != 50 || totals.TokensOut == nil || *totals.TokensOut != 10 {
-		t.Fatalf("live totals = %#v, want the two executed stages to aggregate", totals)
+		t.Fatalf("live summary token totals = %#v, want 50 in / 10 out", totals)
 	}
-	if totals.CostUSD == nil {
-		t.Fatal("live total cost = nil, want an estimate for the executed stages")
+	if totals.CostUSD == nil || *totals.CostUSD != 3.25 {
+		t.Fatalf("live summary cost total = %#v, want 3.25", totals)
+	}
+	if totals.ComputeDurationMS == nil || *totals.ComputeDurationMS != 246 {
+		t.Fatalf("live summary compute duration = %#v, want 246ms", totals)
 	}
 }
 
@@ -4910,6 +4997,48 @@ func TestBuildReviewerCoverageStatuses(t *testing.T) {
 	if byAgent["unassigned"].Status != reviewerCoverageIncompleteUnassigned ||
 		!reflect.DeepEqual(byAgent["unassigned"].SkippedFiles, []string{"unassigned.go"}) {
 		t.Fatalf("unassigned coverage = %#v", byAgent["unassigned"])
+	}
+}
+
+func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *testing.T) {
+	got := buildReviewerCoverage(
+		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},
+		[]llm.Findings{{
+			AgentID:        "harness:reviewer",
+			InspectedFiles: []string{"main.go"},
+			Constraints:    []string{"cr_diff: fixed diff unavailable"},
+		}},
+		nil,
+		[]string{"main.go"},
+		map[string]*llm.ReviewerToolEvidence{
+			"harness:reviewer": {DiffStatus: llm.DiffToolStatusSucceeded},
+		},
+	)
+	if len(got) != 1 {
+		t.Fatalf("coverage entries = %#v", got)
+	}
+	if got[0].Status != reviewerCoverageCompleteBroad || got[0].Diagnostic != "" {
+		t.Fatalf("coverage = %#v, want complete coverage from successful typed evidence", got[0])
+	}
+	if !reflect.DeepEqual(got[0].Constraints, []string{"cr_diff: fixed diff unavailable"}) {
+		t.Fatalf("constraints = %#v, want unmodified reviewer constraints", got[0].Constraints)
+	}
+}
+
+func TestReviewerToolDiagnosticNormalizesPreciseFailure(t *testing.T) {
+	got := reviewerToolDiagnostic(&llm.ReviewerToolEvidence{
+		DiffStatus:     llm.DiffToolStatusFailed,
+		DiffDiagnostic: "fixed diff: open /private/artifacts/run/diff.patch: no such file or directory",
+	}, "")
+	want := "cr_diff: fixed diff: open <path> no such file or directory"
+	if got != want {
+		t.Fatalf("reviewerToolDiagnostic = %q, want %q", got, want)
+	}
+}
+
+func TestReviewerToolDiagnosticMarksDiffNotInvokedIncomplete(t *testing.T) {
+	if got := reviewerToolDiagnostic(&llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusNotInvoked}, t.TempDir()); got != "cr_diff: not invoked" {
+		t.Fatalf("reviewerToolDiagnostic = %q, want not invoked diagnostic", got)
 	}
 }
 

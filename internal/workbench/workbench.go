@@ -425,6 +425,7 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 	return llm.ReviewerWorkspaceRequest{
 		RepoDir:            workspaceRepo,
 		ScratchDir:         workspaceScratch,
+		DiffPath:           artifacts.DiffPatch,
 		AllowedFiles:       append([]string(nil), allowedFiles...),
 		MaxToolOutputBytes: maxToolOutputBytes,
 	}, cleanup, nil

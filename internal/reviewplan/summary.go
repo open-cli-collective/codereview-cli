@@ -278,16 +278,24 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		fmt.Fprintf(out, "- %s — %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status))
 		var notes []string
 		if len(entry.InspectedFiles) > 0 && !stringSetsEqual(entry.InspectedFiles, union) {
-			notes = append(notes, fmt.Sprintf("inspected %d of %d files: %s",
-				len(entry.InspectedFiles), len(union), codeSpanList(entry.InspectedFiles)))
+			assignedNoun := "files"
+			if len(entry.InspectedFiles) == 1 {
+				assignedNoun = "file"
+			}
+			notes = append(notes, fmt.Sprintf("inspected %d assigned %s (%d inspected across reviewers): %s",
+				len(entry.InspectedFiles), assignedNoun, len(union), codeSpanList(entry.InspectedFiles)))
 		}
 		if len(entry.SkippedFiles) > 0 {
 			notes = append(notes, "skipped: "+codeSpanList(entry.SkippedFiles))
+		} else if coverageResultProduced(entry.Status) {
+			notes = append(notes, "skipped: none")
 		}
 		if len(entry.Constraints) > 0 {
 			// Constraints are independent sentences of reviewer prose; a
 			// space joins them without stacking punctuation.
-			notes = append(notes, escapeCell(strings.Join(entry.Constraints, " ")))
+			notes = append(notes, "constraints: "+escapeCell(strings.Join(entry.Constraints, " ")))
+		} else if coverageResultProduced(entry.Status) {
+			notes = append(notes, "constraints: none")
 		}
 		if strings.TrimSpace(entry.Diagnostic) != "" {
 			notes = append(notes, escapeCell(entry.Diagnostic))
@@ -308,6 +316,15 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 	out.WriteString("\n")
 }
 
+func coverageResultProduced(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "complete_broad", "complete_constrained", "incomplete_skipped":
+		return true
+	default:
+		return false
+	}
+}
+
 // coverageStatusLabel humanizes the coverage status enum; the healthy states
 // stay quiet and the exceptional ones lead with a marker so they stand out
 // in the list. Unknown values pass through untranslated.
@@ -319,6 +336,8 @@ func coverageStatusLabel(status string) string {
 		return "complete (constrained)"
 	case "incomplete_skipped":
 		return "⚠️ incomplete (skipped files)"
+	case "incomplete_tool":
+		return "⚠️ incomplete (tool failure)"
 	case "incomplete_failed":
 		return "⚠️ failed"
 	case "incomplete_unassigned":

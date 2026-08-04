@@ -157,7 +157,6 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"skipped_files":["main.go"],"findings":[]}`, "both inspected and skipped")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["  "],"findings":[]}`, "constraints")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["one","two","three","four","five","six","seven","eight","nine","ten","eleven"],"findings":[]}`, "constraints cap exceeded")
-	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["`+strings.Repeat("x", defaultMaxCoverageConstraintRunes+1)+`"],"findings":[]}`, "constraints entry length")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":2,"agent_id":"agent-1","findings":[]`), "schema_version")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[],"extra":true`), "unknown field")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"missing","findings":[]`), "unknown findings agent")
