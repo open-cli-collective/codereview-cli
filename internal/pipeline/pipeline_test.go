@@ -6112,19 +6112,6 @@ func assertRollupUsageRow(t *testing.T, path string, workstream string, wantCach
 	t.Fatalf("rollup markdown %s missing usage entry for %q:\n%s", path, workstream, data)
 }
 
-func markdownTableCells(line string) []string {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
-		return nil
-	}
-	parts := strings.Split(strings.Trim(line, "|"), "|")
-	cells := make([]string, 0, len(parts))
-	for _, part := range parts {
-		cells = append(cells, strings.TrimSpace(part))
-	}
-	return cells
-}
-
 func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
 	t.Helper()
 	artifactPath := filepath.Join(layout.DataRoot, "runs", "github_open-cli_codereview-cli_29", strings.Repeat("a", 40), strings.Repeat("b", 40), "home__review-bot", runID)
