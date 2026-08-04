@@ -3395,6 +3395,20 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
 	}
+	var liveWorkstreams []string
+	for _, workstream := range liveResult.Plan.Summary.Run.Workstreams {
+		liveWorkstreams = append(liveWorkstreams, workstream.Name)
+	}
+	if want := []string{"harness:reviewer", "orchestrator-rollup"}; !reflect.DeepEqual(liveWorkstreams, want) {
+		t.Fatalf("live workstreams = %#v, want the skipped selection stage absent: %#v", liveWorkstreams, want)
+	}
+	totals := liveResult.Plan.Summary.Totals
+	if totals.TokensIn == nil || *totals.TokensIn != 50 || totals.TokensOut == nil || *totals.TokensOut != 10 {
+		t.Fatalf("live totals = %#v, want the two executed stages to aggregate", totals)
+	}
+	if totals.CostUSD == nil {
+		t.Fatal("live total cost = nil, want an estimate for the executed stages")
+	}
 }
 
 func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
@@ -4600,10 +4614,11 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	agentID := "harness:alpha"
 	inputs := planRunInputs{
-		hasRun:    true,
-		selection: sessionDraft{Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 0}},
-		reviewers: []sessionDraft{{RowID: "row-1", AgentID: &agentID, Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
-		rollup:    sessionDraft{Model: "sonnet", StartedAt: fixedNow(), CompletedAt: fixedNow().Add(2 * time.Second)},
+		hasRun:       true,
+		selectionRan: true,
+		selection:    sessionDraft{Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 0}},
+		reviewers:    []sessionDraft{{RowID: "row-1", AgentID: &agentID, Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:       sessionDraft{Model: "sonnet", StartedAt: fixedNow(), CompletedAt: fixedNow().Add(2 * time.Second)},
 		selectedAgents: []llm.SelectedAgent{
 			{AgentID: agentID},
 			{AgentID: "harness:missing-draft"},
@@ -4611,7 +4626,7 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 		findingSessions: map[review.FindingID]string{"f-1": "row-1", "f-2": "row-unknown"},
 		startedAt:       fixedNow(),
 	}
-	summary, findingReviewers := Options{Now: fixedNow}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+	summary, findingReviewers := Options{Now: fixedNow, Adapter: &llm.FakeAdapter{NameValue: "fake"}}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
 
 	var names []string
 	for _, workstream := range summary.Workstreams {
@@ -4635,6 +4650,33 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	}
 	if !reflect.DeepEqual(findingReviewers, map[review.FindingID]string{"f-1": agentID}) {
 		t.Fatalf("finding reviewers = %#v, want unknown session unattributed", findingReviewers)
+	}
+}
+
+func TestBuildRunSummaryReusedCohortSkipsSelectionStage(t *testing.T) {
+	agentID := "harness:alpha"
+	inputs := planRunInputs{
+		hasRun:       true,
+		selection:    sessionDraft{},
+		selectionRan: false,
+		reviewers:    []sessionDraft{{RowID: "row-1", AgentID: &agentID, Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:       sessionDraft{RowID: "row-2", Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 30}},
+		selectedAgents: []llm.SelectedAgent{
+			{AgentID: agentID},
+		},
+		startedAt: fixedNow(),
+	}
+	summary, _ := Options{Now: fixedNow, Adapter: &llm.FakeAdapter{NameValue: "fake"}}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+
+	var names []string
+	for _, workstream := range summary.Workstreams {
+		names = append(names, workstream.Name)
+	}
+	if want := []string{agentID, "orchestrator-rollup"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("workstreams = %#v, want selection stage absent: %#v", names, want)
+	}
+	if summary.Adapter != "fake" {
+		t.Fatalf("adapter = %q, want the run adapter", summary.Adapter)
 	}
 }
 

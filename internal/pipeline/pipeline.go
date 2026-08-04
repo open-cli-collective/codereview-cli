@@ -787,7 +787,8 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 	var selectionSession sessionDraft
 	var selectionLedgerSession ledger.Session
-	if !reusedCohort || selectionInRun && reviewerInRun {
+	selectionRan := !reusedCohort || selectionInRun && reviewerInRun
+	if selectionRan {
 		selection, selectionSession, selectionLedgerSession, err = runSelectionPhase(ctx, opts, selectionPhaseRequest{
 			RunID:                       run.RunID,
 			DurableSession:              namedSession.enabled && namedSession.supportsResume,
@@ -903,6 +904,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		repoSources:      repoSources,
 		hasRun:           true,
 		selection:        selectionSession,
+		selectionRan:     selectionRan,
 		reviewers:        reviewerSessions,
 		rollup:           rollupSession,
 		selectedAgents:   selection.SelectedAgents,
@@ -2270,8 +2272,12 @@ func (s *namedSessionState) buildCandidate(draft sessionDraft, lastUsedAt time.T
 // planRunInputs carries the session telemetry buildPlan turns into the
 // rollup's RunSummary and finding attribution.
 type planRunInputs struct {
-	hasRun           bool
-	selection        sessionDraft
+	hasRun    bool
+	selection sessionDraft
+	// selectionRan is stated by the execution phase: a reused reviewer cohort
+	// skips the selection stage, leaving selection a zero draft that must not
+	// be reported as a workstream.
+	selectionRan     bool
 	reviewers        []sessionDraft
 	rollup           sessionDraft
 	selectedAgents   []llm.SelectedAgent
@@ -2297,7 +2303,13 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		agentByRow[draft.RowID] = *draft.AgentID
 	}
 
-	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage(orchestratorSelectionStage, inputs.selection)}
+	// A reused reviewer cohort skips the selection stage; a workstream row for
+	// its zero draft would be all-"unavailable" and would nil every aggregate
+	// total, so only stages that actually ran are reported.
+	var workstreams []reviewplan.WorkstreamUsage
+	if inputs.selectionRan {
+		workstreams = append(workstreams, workstreamUsage(orchestratorSelectionStage, inputs.selection))
+	}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
@@ -2310,7 +2322,7 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
 		ToolVersion:       req.ToolVersion,
-		Adapter:           inputs.selection.Adapter,
+		Adapter:           opts.Adapter.Name(),
 		Model:             sharedWorkstreamModel(workstreams),
 		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,

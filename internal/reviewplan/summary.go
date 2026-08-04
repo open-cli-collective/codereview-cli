@@ -65,7 +65,11 @@ type RunSummary struct {
 	ReviewerFailures  []ReviewerFailureSummary
 	ReviewerCoverage  []ReviewerCoverageSummary
 	WallDurationMS    *int64
-	Workstreams       []WorkstreamUsage
+	// Workstreams holds the stages that ran in this round; a stage skipped by
+	// reuse (e.g. selection under a reused reviewer cohort) is absent rather
+	// than present with empty usage, which is what lets AggregateUsage's
+	// every-workstream-reports rule produce totals for the round.
+	Workstreams []WorkstreamUsage
 }
 
 // ReviewerFailureSummary is a reviewer task diagnostic rendered in the rollup.
@@ -294,8 +298,13 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 	}
 	out.WriteString("\n---\n<details>\n<summary>Completed in ")
 	out.WriteString(formatDurationMS(run.WallDurationMS))
-	out.WriteString(" | ")
-	out.WriteString(formatUSDEst(totals.CostUSD, totals.CostEstimated))
+	// The summary line has no field labels, so an unknown cost is omitted
+	// rather than rendered as a bare "unavailable"; the labeled Cost row in
+	// the table below still reports it.
+	if totals.CostUSD != nil {
+		out.WriteString(" | ")
+		out.WriteString(formatUSDEst(totals.CostUSD, totals.CostEstimated))
+	}
 	out.WriteString(" | ")
 	out.WriteString(escapeCell(orUnavailable(run.Model)))
 	out.WriteString(" | cr ")

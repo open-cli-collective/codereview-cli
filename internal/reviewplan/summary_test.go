@@ -122,7 +122,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		md := plan.RollupMarkdown
 		for _, want := range []string{
-			"<summary>Completed in 2m 07s | unavailable | sonnet | cr 0.3.63</summary>",
+			"<summary>Completed in 2m 07s | sonnet | cr 0.3.63</summary>",
 			"| Cost | unavailable |",
 			"| Tokens | unavailable in / 12.6k out |",
 			"| go:implementation-tests | sonnet | unavailable | 5.3k |",
