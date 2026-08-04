@@ -420,19 +420,19 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 
 	if len(run.Workstreams) > 0 {
 		out.WriteString("\n**Per-workstream usage**\n\n")
-		out.WriteString("| Workstream | Model | In | Out | Cache read | Cache create | Cost | Duration |\n")
-		out.WriteString("|---|---|---:|---:|---:|---:|---:|---:|\n")
+		// Nested bullets rather than an eight-column table: GitHub gives
+		// tables no width control, so workstream names and headers wrap
+		// mid-word. Labels make each value self-describing, so unknown
+		// values stay as "unavailable" here (unlike the unlabeled summary
+		// line, which omits them).
 		for _, workstream := range run.Workstreams {
-			fmt.Fprintf(out, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
-				escapeCell(workstream.Name),
-				escapeCell(orUnavailable(workstream.Model)),
-				formatTokens(workstream.TokensIn),
-				formatTokens(workstream.TokensOut),
-				formatTokens(workstream.CacheRead),
-				formatTokens(workstream.CacheCreate),
-				formatUSDEst(workstream.CostUSD, workstream.CostEstimated),
-				formatDurationMS(workstream.DurationMS),
-			)
+			fmt.Fprintf(out, "- %s — %s\n", codeSpan(workstream.Name), escapeCell(orUnavailable(workstream.Model)))
+			fmt.Fprintf(out, "  - In: %s\n", formatTokens(workstream.TokensIn))
+			fmt.Fprintf(out, "  - Out: %s\n", formatTokens(workstream.TokensOut))
+			fmt.Fprintf(out, "  - Cache read: %s\n", formatTokens(workstream.CacheRead))
+			fmt.Fprintf(out, "  - Cache create: %s\n", formatTokens(workstream.CacheCreate))
+			fmt.Fprintf(out, "  - Cost: %s\n", formatUSDEst(workstream.CostUSD, workstream.CostEstimated))
+			fmt.Fprintf(out, "  - Duration: %s\n", formatDurationMS(workstream.DurationMS))
 		}
 	}
 	out.WriteString("\n</details>\n")

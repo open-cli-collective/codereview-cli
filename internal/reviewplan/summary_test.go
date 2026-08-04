@@ -76,8 +76,8 @@ func TestRollupSummaryRendering(t *testing.T) {
 			"| Cost | $1.00 |",
 			"| Tokens | 126.3k in / 12.6k out |",
 			"**Per-workstream usage**",
-			"| orchestrator-selection | sonnet | 40.2k | 4.0k | 80.4k | 20.1k | $0.25 | 30s |",
-			"| orchestrator-rollup | sonnet | 12.0k | 1.2k | 24.0k | 6.0k | $0.25 | 30s |",
+			"- `orchestrator-selection` — sonnet\n  - In: 40.2k\n  - Out: 4.0k\n  - Cache read: 80.4k\n  - Cache create: 20.1k\n  - Cost: $0.25\n  - Duration: 30s",
+			"- `orchestrator-rollup` — sonnet\n  - In: 12.0k\n  - Out: 1.2k\n  - Cache read: 24.0k\n  - Cache create: 6.0k\n  - Cost: $0.25\n  - Duration: 30s",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -125,7 +125,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 			"<summary>Completed in 2m 07s | sonnet | cr 0.3.63</summary>",
 			"| Cost | unavailable |",
 			"| Tokens | unavailable in / 12.6k out |",
-			"| go:implementation-tests | sonnet | unavailable | 5.3k |",
+			"- `go:implementation-tests` — sonnet\n  - In: unavailable\n  - Out: 5.3k",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -152,7 +152,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		md := plan.RollupMarkdown
-		if !strings.Contains(md, "| orchestrator-selection | sonnet | unavailable | unavailable | unavailable | unavailable | unavailable | unavailable |") {
+		if !strings.Contains(md, "- `orchestrator-selection` — sonnet\n  - In: unavailable\n  - Out: unavailable\n  - Cache read: unavailable\n  - Cache create: unavailable\n  - Cost: unavailable\n  - Duration: unavailable") {
 			t.Fatalf("usage-less workstream row wrong:\n%s", md)
 		}
 		if !strings.Contains(md, "| Duration | 2m 07s |") {
@@ -246,7 +246,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		md := plan.RollupMarkdown
-		order := []string{"| orchestrator-selection |", "| go:implementation-tests | sonnet", "| policies:conventions | sonnet", "| orchestrator-rollup |"}
+		order := []string{"- `orchestrator-selection` —", "- `go:implementation-tests` — sonnet", "- `policies:conventions` — sonnet", "- `orchestrator-rollup` —"}
 		last := -1
 		for _, name := range order {
 			idx := strings.Index(md, name)

@@ -4439,7 +4439,7 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 	if reviewerCounts["harness:alpha"] != 1 || reviewerCounts["harness:beta"] != 1 {
 		t.Fatalf("reviewer counts = %#v, want one finding each", summary.Reviewers)
 	}
-	for _, want := range []string{"| Reviewer | Findings |", "Per-workstream usage", "| orchestrator-selection |"} {
+	for _, want := range []string{"| Reviewer | Findings |", "Per-workstream usage", "- `orchestrator-selection` —"} {
 		if !strings.Contains(result.Plan.RollupMarkdown, want) {
 			t.Fatalf("rollup markdown missing %q:\n%s", want, result.Plan.RollupMarkdown)
 		}
@@ -6069,38 +6069,47 @@ func assertRollupUsageRow(t *testing.T, path string, workstream string, wantCach
 	if err != nil {
 		t.Fatalf("read rollup markdown: %v", err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		cells := markdownTableCells(line)
-		if len(cells) < 8 || cells[0] != workstream {
+	lines := strings.Split(string(data), "\n")
+	// Coverage renders the same "- `name` —" bullet shape, so scope the
+	// scan to the usage section.
+	section := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "**Per-workstream usage**") {
+			section = i
+			break
+		}
+	}
+	if section < 0 {
+		t.Fatalf("rollup markdown %s missing per-workstream usage section:\n%s", path, data)
+	}
+	for i := section + 1; i < len(lines); i++ {
+		line := lines[i]
+		if !strings.HasPrefix(line, "- `"+workstream+"` — ") {
 			continue
 		}
-		for _, idx := range []int{2, 3, 4} {
-			if cells[idx] == "" || cells[idx] == "unavailable" {
-				t.Fatalf("rollup usage row %q cell %d = %q, want populated token/cache value in line %q", workstream, idx, cells[idx], line)
+		values := map[string]string{}
+		for _, sub := range lines[i+1:] {
+			if !strings.HasPrefix(sub, "  - ") {
+				break
+			}
+			if label, value, ok := strings.Cut(strings.TrimPrefix(sub, "  - "), ": "); ok {
+				values[label] = value
 			}
 		}
-		if wantCacheCreate && (cells[5] == "" || cells[5] == "unavailable") {
-			t.Fatalf("rollup usage row %q cache create = %q, want populated value in line %q", workstream, cells[5], line)
+		for _, label := range []string{"In", "Out", "Cache read"} {
+			if values[label] == "" || values[label] == "unavailable" {
+				t.Fatalf("rollup usage %q %s = %q, want populated token/cache value", workstream, label, values[label])
+			}
 		}
-		if !wantCacheCreate && cells[5] != "unavailable" {
-			t.Fatalf("rollup usage row %q cache create = %q, want unavailable when provider omitted it in line %q", workstream, cells[5], line)
+		if wantCacheCreate && (values["Cache create"] == "" || values["Cache create"] == "unavailable") {
+			t.Fatalf("rollup usage %q cache create = %q, want populated value", workstream, values["Cache create"])
+		}
+		if !wantCacheCreate && values["Cache create"] != "unavailable" {
+			t.Fatalf("rollup usage %q cache create = %q, want unavailable when provider omitted it", workstream, values["Cache create"])
 		}
 		return
 	}
-	t.Fatalf("rollup markdown %s missing usage row for %q:\n%s", path, workstream, data)
-}
-
-func markdownTableCells(line string) []string {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
-		return nil
-	}
-	parts := strings.Split(strings.Trim(line, "|"), "|")
-	cells := make([]string, 0, len(parts))
-	for _, part := range parts {
-		cells = append(cells, strings.TrimSpace(part))
-	}
-	return cells
+	t.Fatalf("rollup markdown %s missing usage entry for %q:\n%s", path, workstream, data)
 }
 
 func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {
