@@ -299,6 +299,9 @@ Those tools delegate to CR's bounded read-only helper: repository paths reject
 absolute paths, traversal, links/reparse points, and filesystem-boundary
 crossings, while `cr_diff` reads the run's precomputed pinned diff artifact
 instead of invoking Git or honoring repository/user Git configuration.
+The reviewer prompt requires `cr_diff` before head-file inspection. CR reserves
+space within the existing aggregate log cap for a compact `cr_diff` event
+summary so operators can distinguish no invocation, failure, and completion.
 Read/diff responses expose bounded byte ranges with deterministic continuation
 offsets, and list/search omit VCS metadata such as `.git`. Per-tool output,
 tool duration, and aggregate reviewer RPC/stderr logs are bounded without

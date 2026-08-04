@@ -21,9 +21,10 @@ import (
 const (
 	piRPCPromptID             = "prompt-1"
 	piRPCSystemPrompt         = "You are a strict JSON API for code review structured output. Return exactly one JSON object that matches the requested schema. Do not include markdown fences, prose, explanations, or leading/trailing text. The first byte of your final answer must be { and the last byte must be }."
-	piRPCReviewerSystemPrompt = piRPCSystemPrompt + " Inspect the disposable repository only through the CR-owned cr_read, cr_search, cr_list, and cr_diff tools. These tools are read-only; do not request shell, write, edit, or any other tool."
+	piRPCReviewerSystemPrompt = piRPCSystemPrompt + " Inspect the disposable repository only through the CR-owned cr_read, cr_search, cr_list, and cr_diff tools. Invoke cr_diff before cr_read, cr_search, or cr_list so the review starts from the pinned change. If cr_diff fails, record that exact tool failure as a constraint before inspecting allowed head files. These tools are read-only; do not request shell, write, edit, or any other tool."
 	piRPCReviewerToolTimeout  = 15 * time.Second
 	piRPCReviewerToolNames    = "cr_read,cr_search,cr_list,cr_diff"
+	piRPCToolEvidenceReserve  = 256
 	piRPCPreflightTimeout     = 5 * time.Second
 	piRPCPreflightOutputBytes = 64 * 1024
 )
@@ -164,7 +165,8 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		logBytesLeft:       -1,
 	}
 	if req.ReviewerWorkspace != nil {
-		stream.logBytesLeft = req.ReviewerWorkspace.MaxToolOutputBytes
+		stream.toolEvidenceBytesLeft = min(piRPCToolEvidenceReserve, req.ReviewerWorkspace.MaxToolOutputBytes)
+		stream.logBytesLeft = req.ReviewerWorkspace.MaxToolOutputBytes - stream.toolEvidenceBytesLeft
 	}
 	go stream.run(process.Context(), process.Command(), process.Stdout(), process.Stderr())
 	return stream, nil
@@ -410,11 +412,15 @@ func writePiRPCPrompt(stdin io.Writer, prompt string) error {
 
 type piRPCStream struct {
 	baseStream
-	stdin              io.Closer
-	allowReviewerTools bool
-	logLimitMu         sync.Mutex
-	logBytesLeft       int
-	logCapped          bool
+	stdin                 io.Closer
+	allowReviewerTools    bool
+	logLimitMu            sync.Mutex
+	logBytesLeft          int
+	logCapped             bool
+	toolEvidenceBytesLeft int
+	diffToolStarted       int
+	diffToolCompleted     int
+	diffToolFailed        int
 }
 
 func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
@@ -434,6 +440,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	}
 	waitErr := cmd.Wait()
 	<-stderrDone
+	s.writeReviewerToolEvidence()
 
 	result := subprocessResult{response: scanResult.response}
 	switch {
@@ -488,6 +495,7 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 			result.err = ErrToolUse
 			return result
 		}
+		s.observeReviewerToolEvent(event)
 		if event.responseFailure != "" {
 			s.Cancel()
 			result.err = fmt.Errorf("llm pi rpc: prompt failed: %s", event.responseFailure)
@@ -547,6 +555,44 @@ func (s *piRPCStream) writeLog(p []byte) {
 	}
 	s.logBytesLeft = 0
 	s.logCapped = true
+}
+
+func (s *piRPCStream) observeReviewerToolEvent(event piRPCEvent) {
+	if !s.allowReviewerTools || event.toolName != "cr_diff" {
+		return
+	}
+	if event.toolStarted {
+		s.diffToolStarted++
+	}
+	if event.toolCompleted {
+		s.diffToolCompleted++
+	}
+	if event.toolFailed {
+		s.diffToolFailed++
+	}
+}
+
+func (s *piRPCStream) writeReviewerToolEvidence() {
+	if !s.allowReviewerTools || s.toolEvidenceBytesLeft <= 0 {
+		return
+	}
+	status := "not_invoked"
+	switch {
+	case s.diffToolFailed > 0:
+		status = "failed"
+	case s.diffToolCompleted > 0:
+		status = "succeeded"
+	case s.diffToolStarted > 0:
+		status = "incomplete"
+	}
+	evidence := []byte(fmt.Sprintf("codereview-pi-tool-evidence tool=cr_diff status=%s started=%d completed=%d failed=%d\n", status, s.diffToolStarted, s.diffToolCompleted, s.diffToolFailed))
+	s.logLimitMu.Lock()
+	defer s.logLimitMu.Unlock()
+	writeBytes := min(len(evidence), s.toolEvidenceBytesLeft)
+	if writeBytes > 0 {
+		s.WriteLog(evidence[:writeBytes])
+		s.toolEvidenceBytesLeft -= writeBytes
+	}
 }
 
 func normalizePiRPCLogLine(line []byte) []byte {
@@ -617,6 +663,9 @@ type piRPCEvent struct {
 	usage            Usage
 	toolUse          bool
 	toolName         string
+	toolStarted      bool
+	toolCompleted    bool
+	toolFailed       bool
 	responseFailure  string
 	agentEnd         bool
 }
@@ -637,6 +686,17 @@ func parsePiRPCEvent(line []byte) (piRPCEvent, error) {
 	}
 	if event.toolUse {
 		event.toolName = firstRawString(raw, "toolName", "tool_name", "name")
+		switch eventType {
+		case "tool_execution_start":
+			event.toolStarted = true
+		case "tool_execution_end":
+			event.toolCompleted = true
+			event.toolFailed = rawBool(raw, "isError")
+			var resultRaw map[string]json.RawMessage
+			if err := json.Unmarshal(raw["result"], &resultRaw); err == nil && rawBool(resultRaw, "isError") {
+				event.toolFailed = true
+			}
+		}
 	}
 	if id := firstRawString(raw, "sessionId", "session_id"); id != "" {
 		event.sessionID = id

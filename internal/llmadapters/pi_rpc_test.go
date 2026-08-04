@@ -151,6 +151,12 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 		t.Fatalf("args = %#v, reviewer extension tools must remain enabled", record.AdapterArgs)
 	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
+	reviewerPrompt := flagValue(record.AdapterArgs, "--system-prompt")
+	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails"} {
+		if !strings.Contains(reviewerPrompt, instruction) {
+			t.Fatalf("reviewer system prompt = %q, want instruction %q", reviewerPrompt, instruction)
+		}
+	}
 	for _, flag := range []string{"--no-builtin-tools", "--no-context-files", "--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(record.AdapterArgs, flag) {
 			t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
@@ -258,6 +264,61 @@ func TestPiRPCReviewerLogCapDoesNotBreakProtocolCompletion(t *testing.T) {
 	}
 	if !strings.Contains(string(logged), "reviewer RPC/stderr log cap reached") {
 		t.Fatalf("reviewer log = %q, want cap marker", logged)
+	}
+	if !strings.Contains(string(logged), "codereview-pi-tool-evidence tool=cr_diff status=not_invoked started=0 completed=0 failed=0") {
+		t.Fatalf("reviewer log = %q, want bounded no-invocation evidence", logged)
+	}
+}
+
+func TestPiRPCReviewerLogCapPreservesDiffFailureEvidence(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("fixed diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	logPath := filepath.Join(tempDir, "reviewer.jsonl")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("reviewer-diff-failure-log-flood", filepath.Join(tempDir, "record.json")),
+		Timeout:           5 * time.Second,
+	})
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt:  "review",
+		LogPath: logPath,
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %s, want completed final response", response.StructuredOutput)
+	}
+	logged, err := os.ReadFile(logPath) // #nosec G304 -- logPath is rooted in t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(log): %v", err)
+	}
+	if len(logged) > 2048 {
+		t.Fatalf("reviewer log = %d bytes, want aggregate cap 2048", len(logged))
+	}
+	if !strings.Contains(string(logged), "reviewer RPC/stderr log cap reached") {
+		t.Fatalf("reviewer log = %q, want cap marker", logged)
+	}
+	if !strings.Contains(string(logged), "codereview-pi-tool-evidence tool=cr_diff status=failed started=1 completed=1 failed=1") {
+		t.Fatalf("reviewer log = %q, want bounded failed-invocation evidence", logged)
 	}
 }
 
@@ -770,6 +831,13 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		for i := 0; i < 20; i++ {
 			fmt.Printf("{\"type\":\"tool_execution_end\",\"toolCallId\":\"tool-%d\",\"toolName\":\"cr_read\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":%q}]}}\n", i, strings.Repeat("tool output ", 500))
 		}
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+	case "reviewer-diff-failure-log-flood":
+		fmt.Fprintln(os.Stderr, strings.Repeat("stderr flood\n", 1000))
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		fmt.Println(`{"type":"tool_execution_start","toolCallId":"diff-1","toolName":"cr_diff","args":{}}`)
+		fmt.Println(`{"type":"tool_execution_end","toolCallId":"diff-1","toolName":"cr_diff","result":{"content":[{"type":"text","text":"fixed diff unavailable"}],"isError":true}}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
 		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 	case "sleep":
