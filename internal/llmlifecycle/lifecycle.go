@@ -412,6 +412,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		draft := SessionDraftFromLedger(session)
 		draft.Response.Usage.Speed = meta.Speed
+		draft.Response.ReviewerToolEvidence = meta.ReviewerToolEvidence
 		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
@@ -859,6 +860,7 @@ func loadOptionalTaskSession(ctx context.Context, store Store, runID string, met
 	}
 	draft := SessionDraftFromLedger(session)
 	draft.Response.Usage.Speed = meta.Speed
+	draft.Response.ReviewerToolEvidence = meta.ReviewerToolEvidence
 	return session, draft, nil
 }
 

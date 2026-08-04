@@ -275,6 +275,43 @@ func TestPiRPCReviewerLogCapDoesNotBreakProtocolCompletion(t *testing.T) {
 	}
 }
 
+func TestPiRPCReviewerReportsIncompleteDiffEvidence(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("fixed diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("reviewer-diff-incomplete", filepath.Join(tempDir, "record.json")),
+		Timeout:           5 * time.Second,
+	})
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt: "review",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if response.ReviewerToolEvidence == nil || response.ReviewerToolEvidence.DiffStatus != llm.DiffToolStatusIncomplete {
+		t.Fatalf("reviewer tool evidence = %#v, want incomplete cr_diff", response.ReviewerToolEvidence)
+	}
+}
+
 func TestPiRPCReviewerLogCapPreservesDiffFailureEvidence(t *testing.T) {
 	tempDir := t.TempDir()
 	repoDir := filepath.Join(tempDir, "repo")
@@ -455,8 +492,8 @@ func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T)
 		t.Fatalf("preflightReviewerRuntime: %v", err)
 	}
 	record := readPiRPCRecord(t, recordPath)
-	if record.CwdEntries != 1 {
-		t.Fatalf("preflight cwd = %q with %d entries, want only generated extension", record.Cwd, record.CwdEntries)
+	if record.CwdEntries != 0 {
+		t.Fatalf("preflight cwd = %q with %d entries, want empty isolated repository", record.Cwd, record.CwdEntries)
 	}
 	if samePath(t, record.Cwd, repoRootForTest(t)) {
 		t.Fatalf("preflight cwd = repository root %q", record.Cwd)
@@ -468,8 +505,11 @@ func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T)
 			t.Fatalf("preflight args = %#v, want %s", record.AdapterArgs, flag)
 		}
 	}
-	if extensionPath := flagValue(record.AdapterArgs, "--extension"); extensionPath == "" || filepath.Base(extensionPath) != "cr-preflight.mjs" {
-		t.Fatalf("preflight extension = %q, want generated preflight extension", extensionPath)
+	if extensionPath := flagValue(record.AdapterArgs, "--extension"); extensionPath == "" || filepath.Base(extensionPath) != "cr-review-tools.mjs" {
+		t.Fatalf("preflight extension = %q, want generated reviewer extension", extensionPath)
+	}
+	if got := strings.Count(record.Extension, "pi.registerTool"); got != 4 {
+		t.Fatalf("preflight extension registers %d tools, want 4", got)
 	}
 	if _, err := os.Stat(mutationPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("hostile resource mutation stat = %v, want resource undiscovered", err)
@@ -897,6 +937,11 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"tool_execution_start","toolCallId":"diff-1","toolName":"cr_diff","args":{}}`)
 		fmt.Println(`{"type":"tool_execution_end","toolCallId":"diff-1","toolName":"cr_diff","result":{"content":[{"type":"text","text":"fixed diff unavailable"}],"isError":true}}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+	case "reviewer-diff-incomplete":
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		fmt.Println(`{"type":"tool_execution_start","toolCallId":"diff-1","toolName":"cr_diff","args":{}}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
 		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 	case "sleep":

@@ -612,7 +612,9 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
 	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	firstAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	reviewer := fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
+	reviewer.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusIncomplete}
+	firstAdapter.Queue(reviewer)
 	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
 	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
 	_, err := dryRunForTest(ctx, Options{
@@ -688,6 +690,9 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	assertPromptContains(t, resumeReq.Prompt, "finding-1", "harness:reviewer", "main.go")
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
 		t.Fatalf("result findings = %#v, want cached reviewer finding", result.Findings)
+	}
+	if len(result.ReviewerCoverage) != 1 || result.ReviewerCoverage[0].Status != reviewerCoverageIncompleteTool || result.ReviewerCoverage[0].Diagnostic != "cr_diff: tool incomplete" {
+		t.Fatalf("cached reviewer coverage = %#v, want incomplete typed tool evidence", result.ReviewerCoverage)
 	}
 	for taskID, want := range successMetadata {
 		got, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(artifacts), taskID)

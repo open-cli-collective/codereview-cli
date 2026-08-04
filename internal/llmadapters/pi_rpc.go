@@ -193,8 +193,38 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 		return fmt.Errorf("%w: create empty preflight directory: %w", ErrPiRPCIncompatible, err)
 	}
 	defer func() { _ = os.RemoveAll(preflightDir) }()
-	extensionPath := filepath.Join(preflightDir, "cr-preflight.mjs")
-	if err := os.WriteFile(extensionPath, []byte("export default function () {}\n"), 0o600); err != nil {
+	repoDir := filepath.Join(preflightDir, "repo")
+	scratchDir := filepath.Join(preflightDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return fmt.Errorf("%w: create preflight %s directory: %w", ErrPiRPCIncompatible, filepath.Base(dir), err)
+		}
+	}
+	diffPath := filepath.Join(preflightDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("preflight diff\n"), 0o600); err != nil {
+		return fmt.Errorf("%w: write preflight diff: %w", ErrPiRPCIncompatible, err)
+	}
+	configPath := filepath.Join(scratchDir, "review-tools.json")
+	config, err := json.Marshal(map[string]any{
+		"repo_dir":         repoDir,
+		"diff_path":        diffPath,
+		"allowed_files":    []string{},
+		"max_output_bytes": piRPCPreflightOutputBytes,
+		"timeout_ms":       piRPCReviewerToolTimeout.Milliseconds(),
+	})
+	if err != nil {
+		return fmt.Errorf("%w: marshal preflight tool config: %w", ErrPiRPCIncompatible, err)
+	}
+	if err := os.WriteFile(configPath, append(config, '\n'), 0o600); err != nil {
+		return fmt.Errorf("%w: write preflight tool config: %w", ErrPiRPCIncompatible, err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("%w: locate CR executable: %w", ErrPiRPCIncompatible, err)
+	}
+	extensionPath := filepath.Join(scratchDir, "cr-review-tools.mjs")
+	extension := piRPCReviewerExtension(executable, configPath, repoDir, piRPCPreflightOutputBytes, piRPCReviewerToolTimeout)
+	if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil {
 		return fmt.Errorf("%w: write preflight extension: %w", ErrPiRPCIncompatible, err)
 	}
 	args := append(append([]string(nil), a.commandArgsPrefix...),
@@ -212,7 +242,7 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 		"--no-session",
 	)
 	cmd := exec.CommandContext(ctx, a.command, args...) // #nosec G204 -- adapter command and fixed help argument come from trusted runtime configuration.
-	cmd.Dir = preflightDir
+	cmd.Dir = repoDir
 	cmd.Env = append(os.Environ(), a.env...)
 	cmd.Stdin = strings.NewReader(`{"id":"state-1","type":"get_state"}` + "\n")
 	capture := &boundedPiRPCPreflightCapture{remaining: piRPCPreflightOutputBytes}
