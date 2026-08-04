@@ -375,12 +375,9 @@ func TestPiRPCReviewerExtensionLoadsInInstalledPi(t *testing.T) {
 	if err != nil {
 		t.Skip("Pi is not installed")
 	}
-	if err := NewPiRPCAdapter(PiRPCOptions{Command: piPath}).preflightReviewerRuntime(context.Background()); err != nil {
-		t.Fatalf("installed Pi reviewer preflight: %v", err)
-	}
 	tempDir := t.TempDir()
 	extensionPath := filepath.Join(tempDir, "cr-review-tools.mjs")
-	extension := piRPCReviewerExtension(os.Args[0], filepath.Join(tempDir, "config.json"), tempDir, 2048, time.Second, "")
+	extension := piRPCReviewerExtension(os.Args[0], filepath.Join(tempDir, "config.json"), tempDir, 2048, time.Second, piRPCPreflightRegistration)
 	if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil { // #nosec G703 -- extensionPath is rooted in t.TempDir.
 		t.Fatalf("WriteFile(extension): %v", err)
 	}
@@ -402,6 +399,12 @@ func TestPiRPCReviewerExtensionLoadsInInstalledPi(t *testing.T) {
 	}
 	if !strings.Contains(string(output), `"id":"state-1"`) || !strings.Contains(string(output), `"success":true`) {
 		t.Fatalf("Pi get_state output = %s, want successful response", output)
+	}
+	if !piRPCPreflightReceivedRegistration(string(output)) {
+		t.Fatalf("Pi extension output = %s, want registration completion marker", output)
+	}
+	if err := NewPiRPCAdapter(PiRPCOptions{Command: piPath}).preflightReviewerRuntime(context.Background()); err != nil {
+		t.Fatalf("installed Pi reviewer preflight: %v", err)
 	}
 }
 
@@ -511,7 +514,7 @@ func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T)
 	if got := strings.Count(record.Extension, "pi.registerTool"); got != 4 {
 		t.Fatalf("preflight extension registers %d tools, want 4", got)
 	}
-	if !strings.Contains(record.Extension, "registrationMarkerPath") {
+	if !strings.Contains(record.Extension, "registrationMarker") {
 		t.Fatalf("preflight extension = %q, want registration-completion marker", record.Extension)
 	}
 	if _, err := os.Stat(mutationPath); !errors.Is(err, os.ErrNotExist) {
@@ -535,6 +538,15 @@ func TestPiRPCPreflightReceivedStateRequiresOneSuccessfulStateResponse(t *testin
 				t.Fatalf("piRPCPreflightReceivedState(%q) = %t, want %t", tt.output, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPiRPCPreflightReceivedRegistrationRequiresExactMarkerLine(t *testing.T) {
+	if piRPCPreflightReceivedRegistration("prefix " + piRPCPreflightRegistration + " suffix\n") {
+		t.Fatal("registration marker embedded in diagnostic was accepted")
+	}
+	if !piRPCPreflightReceivedRegistration(piRPCPreflightRegistration + "\n") {
+		t.Fatal("exact registration marker was not accepted")
 	}
 }
 
@@ -883,15 +895,8 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 	}
 	if extensionPath := flagValue(record.AdapterArgs, "--extension"); extensionPath != "" {
 		record.Extension = string(mustReadHelperFile(extensionPath))
-		for _, line := range strings.Split(record.Extension, "\n") {
-			const prefix = "const registrationMarkerPath = "
-			if !strings.HasPrefix(line, prefix) {
-				continue
-			}
-			var markerPath string
-			if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(line, prefix), ";")), &markerPath); err == nil && markerPath != "" {
-				_ = os.WriteFile(markerPath, []byte(piRPCPreflightRegistration), 0o600) // #nosec G703 -- marker path is generated in the test-owned preflight scratch directory.
-			}
+		if strings.Contains(record.Extension, piRPCPreflightRegistration) {
+			fmt.Fprintln(os.Stderr, piRPCPreflightRegistration)
 		}
 	}
 	if recordPath != "" {

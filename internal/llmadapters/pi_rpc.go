@@ -28,7 +28,7 @@ const (
 	piRPCToolDiagnosticMaxRunes = 128
 	piRPCPreflightTimeout       = 5 * time.Second
 	piRPCPreflightOutputBytes   = 64 * 1024
-	piRPCPreflightRegistration  = "cr_read,cr_search,cr_list,cr_diff\n"
+	piRPCPreflightRegistration  = "codereview-pi-reviewer-tools-registered cr_read,cr_search,cr_list,cr_diff"
 )
 
 // ErrPiRPCIncompatible reports that the installed Pi runtime cannot enforce
@@ -224,8 +224,7 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 		return fmt.Errorf("%w: locate CR executable: %w", ErrPiRPCIncompatible, err)
 	}
 	extensionPath := filepath.Join(scratchDir, "cr-review-tools.mjs")
-	registrationMarkerPath := filepath.Join(scratchDir, "reviewer-tools-registered")
-	extension := piRPCReviewerExtension(executable, configPath, repoDir, piRPCPreflightOutputBytes, piRPCReviewerToolTimeout, registrationMarkerPath)
+	extension := piRPCReviewerExtension(executable, configPath, repoDir, piRPCPreflightOutputBytes, piRPCReviewerToolTimeout, piRPCPreflightRegistration)
 	if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil {
 		return fmt.Errorf("%w: write preflight extension: %w", ErrPiRPCIncompatible, err)
 	}
@@ -256,11 +255,11 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 		}
 		return fmt.Errorf("%w: help preflight failed: %w", ErrPiRPCIncompatible, err)
 	}
-	if !piRPCPreflightReceivedState(capture.String()) {
+	output := capture.String()
+	if !piRPCPreflightReceivedState(output) {
 		return fmt.Errorf("%w: reviewer extension preflight did not return successful state", ErrPiRPCIncompatible)
 	}
-	registration, err := os.ReadFile(registrationMarkerPath) // #nosec G304 -- marker is owned by the isolated preflight scratch directory.
-	if err != nil || string(registration) != piRPCPreflightRegistration {
+	if !piRPCPreflightReceivedRegistration(output) {
 		return fmt.Errorf("%w: reviewer extension did not complete required tool registrations", ErrPiRPCIncompatible)
 	}
 	return nil
@@ -275,6 +274,17 @@ func piRPCPreflightReceivedState(output string) bool {
 			Success bool   `json:"success"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &response); err == nil && response.ID == "state-1" && response.Success {
+			return true
+		}
+	}
+	return false
+}
+
+func piRPCPreflightReceivedRegistration(output string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 0, 4*1024), piRPCPreflightOutputBytes)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == piRPCPreflightRegistration {
 			return true
 		}
 	}
@@ -854,20 +864,19 @@ func isAllowedPiRPCReviewerTool(name string) bool {
 	}
 }
 
-func piRPCReviewerExtension(executable, configPath, repoDir string, maxOutputBytes int, timeout time.Duration, registrationMarkerPath string) string {
+func piRPCReviewerExtension(executable, configPath, repoDir string, maxOutputBytes int, timeout time.Duration, registrationMarker string) string {
 	quoted := func(value string) string {
 		data, _ := json.Marshal(value)
 		return string(data)
 	}
 	return `import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
 
 const executable = ` + quoted(executable) + `;
 const configPath = ` + quoted(configPath) + `;
 const repoDir = ` + quoted(repoDir) + `;
 const maxOutputBytes = ` + strconv.Itoa(maxOutputBytes) + `;
 const timeoutMs = ` + strconv.FormatInt(timeout.Milliseconds(), 10) + `;
-const registrationMarkerPath = ` + quoted(registrationMarkerPath) + `;
+const registrationMarker = ` + quoted(registrationMarker) + `;
 
 function runTool(tool, params, signal) {
   return new Promise((resolve) => {
@@ -912,7 +921,7 @@ export default function (pi) {
   pi.registerTool({ name: "cr_search", label: "CR Search", description: "Search repository text literally.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" } }, required: ["query"], additionalProperties: false }, execute: headTool("cr_search") });
   pi.registerTool({ name: "cr_list", label: "CR List", description: "List repository files.", parameters: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }, execute: headTool("cr_list") });
   pi.registerTool({ name: "cr_diff", label: "CR Diff", description: "Read the fixed pinned review diff. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, additionalProperties: false }, execute: (_id, params, signal) => { diffAttempted = true; return runTool("cr_diff", params, signal); } });
-  if (registrationMarkerPath) writeFileSync(registrationMarkerPath, "cr_read,cr_search,cr_list,cr_diff\\n", { mode: 0o600 });
+  if (registrationMarker) process.stderr.write(registrationMarker + "\n");
 }
 `
 }
