@@ -549,16 +549,26 @@ func applyAdvisoryThreadResolutionWarning(ctx context.Context, opts Options, res
 	return nil
 }
 
+// pruneRetention runs automatic retention through the guarded entry point,
+// which prunes only while holding the data-root active-runs lock
+// exclusively. A contended lock (another instance mid-run or pruning) skips
+// the prune: retention is best-effort housekeeping.
 func pruneRetention(ctx context.Context, opts Options) error {
 	if opts.RetentionManualOnly {
 		return nil
 	}
-	result, err := datalifecycle.Prune(ctx, datalifecycle.Options{
+	result, skipped, err := datalifecycle.PruneGuarded(ctx, datalifecycle.Options{
 		Layout: opts.Layout,
 		Store:  opts.Store,
 		Now:    opts.Now,
 	}, datalifecycle.PruneOptions{Retention: opts.Retention})
 	if err != nil {
+		if skipped {
+			if opts.Warnings != nil {
+				_, _ = fmt.Fprintf(opts.Warnings, "warning: skipping retention prune (active-runs lock unavailable): %v\n", err)
+			}
+			return nil
+		}
 		return err
 	}
 	for _, warning := range result.Warnings {

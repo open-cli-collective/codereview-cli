@@ -2607,45 +2607,29 @@ func (opts Options) emitWarning(warning string) {
 	_, _ = fmt.Fprintln(opts.Warnings, warning)
 }
 
-// tryPruneRetention runs automatic retention only while holding the
-// data-root active-runs lock exclusively, so it can never delete a sibling
-// process's in-flight run artifacts. Contention means another instance is
-// mid-run (or already pruning); retention is best-effort housekeeping, so
-// the prune is skipped rather than waited for.
+// tryPruneRetention runs automatic retention through the guarded entry
+// point, which prunes only while holding the data-root active-runs lock
+// exclusively. A contended lock means another instance is mid-run (or
+// already pruning); retention is best-effort housekeeping, so the prune is
+// skipped rather than waited for.
 func tryPruneRetention(ctx context.Context, opts Options) error {
 	if opts.RetentionManualOnly {
 		return nil
 	}
-	exclusive, err := runlock.Acquire(opts.Layout.ActiveRunsLock())
+	result, skipped, err := datalifecycle.PruneGuarded(ctx, datalifecycle.Options{
+		Layout: opts.Layout,
+		Store:  opts.Store,
+		Now:    opts.Now,
+	}, datalifecycle.PruneOptions{Retention: opts.Retention})
 	if err != nil {
-		if !errors.Is(err, runlock.ErrHeld) {
+		if skipped {
 			opts.emitWarning(fmt.Sprintf("skipping retention prune (active-runs lock unavailable): %v", err))
+			return nil
 		}
-		return nil
-	}
-	pruneErr := pruneRetention(ctx, opts.Layout, opts.Store, opts.Now, opts.Warnings, opts.Retention, opts.RetentionManualOnly)
-	if releaseErr := exclusive.Release(); releaseErr != nil && pruneErr == nil {
-		pruneErr = releaseErr
-	}
-	return pruneErr
-}
-
-func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalifecycle.Store, now func() time.Time, warnings io.Writer, retention datalifecycle.RetentionPolicy, manualOnly bool) error {
-	if manualOnly {
-		return nil
-	}
-	result, err := datalifecycle.Prune(ctx, datalifecycle.Options{
-		Layout: layout,
-		Store:  store,
-		Now:    now,
-	}, datalifecycle.PruneOptions{Retention: retention})
-	if err != nil {
 		return err
 	}
 	for _, warning := range result.Warnings {
-		if warnings != nil {
-			_, _ = fmt.Fprintf(warnings, "warning: %s\n", warning)
-		}
+		opts.emitWarning(fmt.Sprintf("warning: %s", warning))
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -169,6 +170,33 @@ func Show(ctx context.Context, opts Options) (Stats, error) {
 		stats.OrphanBytes += orphan.Bytes
 	}
 	return stats, nil
+}
+
+// PruneGuarded runs Prune only while holding the data-root active-runs lock
+// exclusively, so automatic retention can never delete another process's
+// in-flight run artifacts. It is the required entry point for every
+// automatic (non-interactive) retention pass; skipped=true means the prune
+// did not run — with a nil error when the lock was contended (another
+// instance is mid-run or pruning, and retention is best-effort housekeeping),
+// or with the lock error when the lock could not be taken at all. Interactive
+// commands that need refusal semantics or already hold the lock (cr data
+// prune/purge) call Prune directly under their own acquisition.
+func PruneGuarded(ctx context.Context, opts Options, prune PruneOptions) (result PruneResult, skipped bool, err error) {
+	if err := validateOptions(opts); err != nil {
+		return PruneResult{}, false, err
+	}
+	lock, err := runlock.Acquire(opts.Layout.ActiveRunsLock())
+	if err != nil {
+		if errors.Is(err, runlock.ErrHeld) {
+			return PruneResult{}, true, nil
+		}
+		return PruneResult{}, true, err
+	}
+	result, pruneErr := Prune(ctx, opts, prune)
+	if releaseErr := lock.Release(); releaseErr != nil && pruneErr == nil {
+		pruneErr = releaseErr
+	}
+	return result, false, pruneErr
 }
 
 // Prune deletes selected ledger rows first, then best-effort artifact dirs.

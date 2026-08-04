@@ -627,7 +627,7 @@ Supported values:
 | `llm.reviewer_model_tier` | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
-| `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
+| `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. Review-time pruning runs only when no other cr instance is mid-run (it requires the data-root active-runs lock exclusively) and is skipped, not queued, on contention. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
 logged-in CLI or local runtime. `api_key` LLM auth requires `llm.credential`
@@ -1387,7 +1387,14 @@ Flags:
 
 Prune deletes the ledger row first, then removes artifact directories best
 effort. Unsafe artifact paths and remove failures are reported as warnings after
-the ledger row is deleted.
+the ledger row is deleted. Orphan directories modified within the last 24 hours
+are exempt from the sweep: an unreferenced directory can belong to a run that is
+still being set up.
+
+A live (non-dry-run) prune refuses while any review or respond run on the
+machine holds the data-root active-runs lock, exiting with "another cr instance
+appears to be running; wait for it to finish and retry". `--dry-run` never takes
+the lock.
 
 When progress logging is enabled, `data prune` emits stderr brackets for layout
 resolution, optional legacy migration, ledger open, run selection, delete
@@ -1402,7 +1409,9 @@ cr data purge --dry-run [--json]
 
 Purges the whole local data root. `--yes` is required unless `--dry-run` is set.
 Purge does not open the ledger database, so it can remove a corrupt local data
-root. `--json` emits the data root, dry-run status, and removed status.
+root. `--json` emits the data root, dry-run status, and removed status. Like a
+live prune, purge refuses while any review or respond run on the machine holds
+the data-root active-runs lock.
 
 `data purge` emits progress on stderr for layout resolution and the purge
 action itself.

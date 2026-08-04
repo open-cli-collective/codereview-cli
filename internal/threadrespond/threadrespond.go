@@ -118,6 +118,14 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 	if err := validateRequest(req); err != nil {
 		return Result{}, err
 	}
+	// The respond path allocates runs and artifacts under the same data root
+	// as review runs, so it holds the active-runs lock shared for its whole
+	// duration too — a concurrently starting instance's retention prune must
+	// see this run as live. Fail-open: a lock failure degrades to unguarded
+	// behavior rather than blocking the response run.
+	if shared, lockErr := runlock.AcquireShared(opts.Layout.ActiveRunsLock()); lockErr == nil {
+		defer func() { _ = shared.Release() }()
+	}
 	if strings.TrimSpace(req.RetryRunID) != "" {
 		return retry(ctx, opts, req)
 	}
