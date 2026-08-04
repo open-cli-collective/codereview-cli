@@ -8,7 +8,7 @@ func platformSupported() error {
 	return ErrUnsupported
 }
 
-func lockFile(*os.File) error {
+func lockFile(*os.File, bool) error {
 	return ErrUnsupported
 }
 
