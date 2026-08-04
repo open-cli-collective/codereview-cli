@@ -2297,20 +2297,25 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		agentByRow[draft.RowID] = *draft.AgentID
 	}
 
-	workstreams := []reviewplan.WorkstreamUsage{workstreamUsage(orchestratorSelectionStage, inputs.selection)}
+	workstreams := make([]reviewplan.WorkstreamUsage, 0, len(inputs.reviewers)+2)
+	if sessionDraftExecuted(inputs.selection) {
+		workstreams = append(workstreams, workstreamUsage(orchestratorSelectionStage, inputs.selection))
+	}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
-		if draft, ok := reviewerByAgent[selected.AgentID]; ok {
+		if draft, ok := reviewerByAgent[selected.AgentID]; ok && sessionDraftExecuted(draft) {
 			workstreams = append(workstreams, workstreamUsage(selected.AgentID, draft))
 		}
 	}
-	workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
+	if sessionDraftExecuted(inputs.rollup) {
+		workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
+	}
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
 		ToolVersion:       req.ToolVersion,
-		Adapter:           inputs.selection.Adapter,
+		Adapter:           runAdapter(inputs),
 		Model:             sharedWorkstreamModel(workstreams),
 		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
 		SelectedReviewers: selectedIDs,
@@ -2327,6 +2332,32 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		}
 	}
 	return summary, findingReviewers
+}
+
+// sessionDraftExecuted distinguishes a phase that ran (or loaded durable
+// telemetry) from the zero draft left by a reused cohort that skipped it.
+func sessionDraftExecuted(draft sessionDraft) bool {
+	return strings.TrimSpace(draft.Adapter) != "" ||
+		strings.TrimSpace(draft.ProviderSessionID) != "" ||
+		strings.TrimSpace(draft.ProviderReportedSessionID) != "" ||
+		!draft.StartedAt.IsZero() || !draft.CompletedAt.IsZero() ||
+		draft.Response.DurationMS != 0 || draft.Response.Usage.TokensIn != nil ||
+		draft.Response.Usage.TokensOut != nil || draft.Response.Usage.CacheRead != nil ||
+		draft.Response.Usage.CacheCreate != nil || draft.Response.Usage.CostUSD != nil
+}
+
+// runAdapter recovers the adapter from an executed phase when selection was
+// skipped during cohort reuse.
+func runAdapter(inputs planRunInputs) string {
+	if adapter := strings.TrimSpace(inputs.selection.Adapter); adapter != "" {
+		return adapter
+	}
+	for _, draft := range inputs.reviewers {
+		if adapter := strings.TrimSpace(draft.Adapter); adapter != "" {
+			return adapter
+		}
+	}
+	return strings.TrimSpace(inputs.rollup.Adapter)
 }
 
 func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerFailureSummary {

@@ -3367,8 +3367,14 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 		FakeAdapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
 		reviewerSessionID: "reviewer-dry",
 	}
-	liveAdapter.Queue(fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
-	liveAdapter.Queue(fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6))
+	reviewerLive := fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
+	reviewerCost := 1.25
+	reviewerLive.Response.Usage.CostUSD = &reviewerCost
+	liveAdapter.Queue(reviewerLive)
+	rollupLive := fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6)
+	rollupCost := 2.0
+	rollupLive.Response.Usage.CostUSD = &rollupCost
+	liveAdapter.Queue(rollupLive)
 
 	liveResult, err := liveForTest(ctx, Options{
 		Provider:        provider,
@@ -3397,6 +3403,26 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 	}
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
+	}
+	if liveResult.Plan.Summary.Run.Adapter != "fake-llm" {
+		t.Fatalf("live summary adapter = %q, want resumed run adapter", liveResult.Plan.Summary.Run.Adapter)
+	}
+	var workstreamNames []string
+	for _, workstream := range liveResult.Plan.Summary.Run.Workstreams {
+		workstreamNames = append(workstreamNames, workstream.Name)
+	}
+	if want := []string{"harness:reviewer", "orchestrator-rollup"}; !reflect.DeepEqual(workstreamNames, want) {
+		t.Fatalf("live summary workstreams = %#v, want only executed workstreams %#v", workstreamNames, want)
+	}
+	totals := liveResult.Plan.Summary.Totals
+	if totals.TokensIn == nil || *totals.TokensIn != 50 || totals.TokensOut == nil || *totals.TokensOut != 10 {
+		t.Fatalf("live summary token totals = %#v, want 50 in / 10 out", totals)
+	}
+	if totals.CostUSD == nil || *totals.CostUSD != 3.25 {
+		t.Fatalf("live summary cost total = %#v, want 3.25", totals)
+	}
+	if totals.ComputeDurationMS == nil || *totals.ComputeDurationMS != 246 {
+		t.Fatalf("live summary compute duration = %#v, want 246ms", totals)
 	}
 }
 
