@@ -257,39 +257,121 @@ func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFa
 		return
 	}
 	out.WriteString("### Reviewer Diagnostics\n\n")
-	out.WriteString("| Reviewer | Status | Diagnostic |\n")
-	out.WriteString("|----------|--------|------------|\n")
 	for _, failure := range failures {
-		fmt.Fprintf(out, "| %s | failed | %s |\n", escapeCell(failure.AgentID), escapeCell(failure.Error))
+		fmt.Fprintf(out, "- %s — failed: %s\n", codeSpan(failure.AgentID), escapeCell(failure.Error))
 	}
 	out.WriteString("\n")
 }
 
+// GitHub tables offer no column-width control, so variable-length values
+// (paths, constraint prose) wrap mid-word and repeat per row. Coverage is
+// rendered as a list instead: shared inspected files collapse into one
+// details block, per-reviewer lines carry only deviations, and unknown
+// fields are omitted rather than rendered as "unavailable".
 func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerCoverageSummary) {
 	if len(coverage) == 0 {
 		return
 	}
 	out.WriteString("### Reviewer Coverage\n\n")
-	out.WriteString("| Reviewer | Status | Inspected | Skipped | Constraints |\n")
-	out.WriteString("|----------|--------|-----------|---------|-------------|\n")
+	union := inspectedFileUnion(coverage)
 	for _, entry := range coverage {
-		fmt.Fprintf(out, "| %s | %s | %s | %s | %s |\n",
-			escapeCell(entry.AgentID),
-			escapeCell(entry.Status),
-			escapeCell(orUnavailable(strings.Join(entry.InspectedFiles, ", "))),
-			escapeCell(orUnavailable(strings.Join(entry.SkippedFiles, ", "))),
-			escapeCell(coverageAnnotationCell(entry)),
-		)
+		fmt.Fprintf(out, "- %s — %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status))
+		var notes []string
+		if len(entry.InspectedFiles) > 0 && !stringSetsEqual(entry.InspectedFiles, union) {
+			notes = append(notes, fmt.Sprintf("inspected %d of %d files: %s",
+				len(entry.InspectedFiles), len(union), codeSpanList(entry.InspectedFiles)))
+		}
+		if len(entry.SkippedFiles) > 0 {
+			notes = append(notes, "skipped: "+codeSpanList(entry.SkippedFiles))
+		}
+		if len(entry.Constraints) > 0 {
+			// Constraints are independent sentences of reviewer prose; a
+			// space joins them without stacking punctuation.
+			notes = append(notes, escapeCell(strings.Join(entry.Constraints, " ")))
+		}
+		if strings.TrimSpace(entry.Diagnostic) != "" {
+			notes = append(notes, escapeCell(entry.Diagnostic))
+		}
+		if len(notes) > 0 {
+			out.WriteString("; ")
+			out.WriteString(strings.Join(notes, "; "))
+		}
+		out.WriteString("\n")
+	}
+	if len(union) > 0 {
+		fmt.Fprintf(out, "\n<details>\n<summary>Inspected files (%d)</summary>\n\n", len(union))
+		for _, file := range union {
+			fmt.Fprintf(out, "- %s\n", codeSpan(file))
+		}
+		out.WriteString("\n</details>\n")
 	}
 	out.WriteString("\n")
 }
 
-func coverageAnnotationCell(entry ReviewerCoverageSummary) string {
-	parts := append([]string(nil), entry.Constraints...)
-	if strings.TrimSpace(entry.Diagnostic) != "" {
-		parts = append(parts, entry.Diagnostic)
+// coverageStatusLabel humanizes the coverage status enum; the healthy states
+// stay quiet and the exceptional ones lead with a marker so they stand out
+// in the list. Unknown values pass through untranslated.
+func coverageStatusLabel(status string) string {
+	switch status {
+	case "complete_broad":
+		return "complete (broad)"
+	case "complete_constrained":
+		return "complete (constrained)"
+	case "incomplete_skipped":
+		return "⚠️ incomplete (skipped files)"
+	case "incomplete_failed":
+		return "⚠️ failed"
+	case "incomplete_unassigned":
+		return "⚠️ unassigned"
+	default:
+		return escapeCell(status)
 	}
-	return orUnavailable(strings.Join(parts, "; "))
+}
+
+func inspectedFileUnion(coverage []ReviewerCoverageSummary) []string {
+	seen := map[string]bool{}
+	var union []string
+	for _, entry := range coverage {
+		for _, file := range entry.InspectedFiles {
+			if !seen[file] {
+				seen[file] = true
+				union = append(union, file)
+			}
+		}
+	}
+	sort.Strings(union)
+	return union
+}
+
+func stringSetsEqual(a, b []string) bool {
+	set := map[string]bool{}
+	for _, value := range a {
+		set[value] = true
+	}
+	if len(set) != len(b) {
+		return false
+	}
+	for _, value := range b {
+		if !set[value] {
+			return false
+		}
+	}
+	return true
+}
+
+// codeSpan wraps a dynamic value in a markdown code span; backticks are
+// replaced so the value cannot terminate the span early.
+func codeSpan(value string) string {
+	cleaned := strings.NewReplacer("`", "'", "\n", " ", "\r", " ").Replace(sanitize(value))
+	return "`" + strings.TrimSpace(cleaned) + "`"
+}
+
+func codeSpanList(values []string) string {
+	spans := make([]string, 0, len(values))
+	for _, value := range values {
+		spans = append(spans, codeSpan(value))
+	}
+	return strings.Join(spans, ", ")
 }
 
 func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage) {
