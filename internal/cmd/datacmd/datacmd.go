@@ -3,8 +3,10 @@ package datacmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -14,6 +16,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
+	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
@@ -92,6 +95,13 @@ func newPruneCommand(opts *root.Options) *cobra.Command {
 				return err
 			}
 			defer cleanup()
+			if !flags.dryRun {
+				lock, lockErr := acquireDataLock(layout, "data prune")
+				if lockErr != nil {
+					return lockErr
+				}
+				defer func() { _ = lock.Release() }()
+			}
 			result, err := datalifecycle.Prune(cmd.Context(), datalifecycle.Options{
 				Layout:   layout,
 				Store:    store,
@@ -146,6 +156,13 @@ func newPurgeCommand(opts *root.Options) *cobra.Command {
 				return layoutSpan.End(err)
 			}
 			_ = layoutSpan.End(nil)
+			if !flags.dryRun {
+				lock, lockErr := acquireDataLock(layout, "data purge")
+				if lockErr != nil {
+					return lockErr
+				}
+				defer func() { _ = lock.Release() }()
+			}
 			purgeSpan := logger.Start("data.purge", "purge_root", "data-root")
 			result, err := datalifecycle.Purge(layout, flags.dryRun, flags.yes, nil)
 			if err != nil {
@@ -200,4 +217,24 @@ func (emptyLifecycleStore) ListRuns(context.Context) ([]ledger.Run, error) {
 
 func (emptyLifecycleStore) DeleteRun(context.Context, string) error {
 	return ledger.ErrNotFound
+}
+
+// acquireDataLock takes the data-root active-runs lock before a destructive
+// lifecycle command so it cannot delete a live run's artifacts. A missing
+// data root returns no lock: there is nothing to protect, and creating the
+// lock file would materialize state the command promises not to create.
+func acquireDataLock(layout statepaths.Layout, op string) (*runlock.Lock, error) {
+	if _, err := os.Stat(layout.DataRoot); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	lock, err := runlock.Acquire(layout.ActiveRunsLock())
+	if err != nil {
+		if errors.Is(err, runlock.ErrHeld) {
+			return nil, fmt.Errorf("%s: another cr instance appears to be running; wait for it to finish and retry", op)
+		}
+		return nil, err
+	}
+	return lock, nil
 }

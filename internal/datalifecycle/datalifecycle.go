@@ -21,6 +21,12 @@ const (
 	LiveRetention = 90 * 24 * time.Hour
 	// DryRunRetention is the default retention window for dry-run review runs.
 	DryRunRetention = 7 * 24 * time.Hour
+	// OrphanGrace is how recently an unreferenced artifact directory must
+	// have been modified to be exempt from the orphan sweep. A directory can
+	// look orphaned while its run is still being set up (the ledger row and
+	// artifacts are not written atomically), so only directories old enough
+	// that no live run can plausibly own them are swept.
+	OrphanGrace = 24 * time.Hour
 )
 
 // Store is the ledger behavior required by data lifecycle operations.
@@ -124,7 +130,7 @@ func Show(ctx context.Context, opts Options) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
-	orphanItems, err := orphanItems(opts.Layout, runs)
+	orphanItems, err := orphanItems(opts.Layout, runs, opts.now().Add(-OrphanGrace))
 	if err != nil {
 		return Stats{}, err
 	}
@@ -186,7 +192,7 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 	result := PruneResult{DryRun: prune.DryRun, SelectedRuns: runItems(selected)}
 	if prune.DryRun {
 		orphanSpan := startProgress(opts.Progress, "find_orphans", "data-root")
-		orphanItems, err := orphanItems(opts.Layout, runs)
+		orphanItems, err := orphanItems(opts.Layout, runs, opts.now().Add(-OrphanGrace))
 		if err != nil {
 			orphanSpan.End(err)
 			return result, err
@@ -222,7 +228,7 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 	}
 	remainingSpan.End(nil)
 	orphanSpan := startProgress(opts.Progress, "remove_orphans", "data-root")
-	orphans, err := orphanItems(opts.Layout, remaining)
+	orphans, err := orphanItems(opts.Layout, remaining, opts.now().Add(-OrphanGrace))
 	if err != nil {
 		orphanSpan.End(err)
 		return result, err
@@ -370,7 +376,7 @@ func startProgress(reporter ProgressReporter, op, target string) ProgressSpan {
 	return span
 }
 
-func orphanItems(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, error) {
+func orphanItems(layout statepaths.Layout, runs []ledger.Run, graceCutoff time.Time) ([]OrphanItem, error) {
 	root := runsRoot(layout)
 	if _, err := os.Stat(root); errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -398,6 +404,13 @@ func orphanItems(layout statepaths.Layout, runs []ledger.Run) ([]OrphanItem, err
 			return err
 		}
 		if referenced[filepath.Clean(abs)] {
+			return filepath.SkipDir
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(graceCutoff) {
 			return filepath.SkipDir
 		}
 		bytes, err := dirBytes(path)

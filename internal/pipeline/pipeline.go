@@ -32,6 +32,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/sessionreuse"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -431,7 +432,7 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
 	}
-	if err := pruneRetention(ctx, opts.Layout, opts.Store, opts.Now, opts.Warnings, opts.Retention, opts.RetentionManualOnly); err != nil {
+	if err := tryPruneRetention(ctx, opts); err != nil {
 		return Result{}, err
 	}
 	return execute(ctx, opts, req, executionMode{
@@ -570,6 +571,15 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			return Result{}, Failure(FailureTerminal, err)
 		}
 		return Result{}, err
+	}
+	// Hold the data-root active-runs lock shared for the whole run so no
+	// concurrently starting instance can prune this run's artifacts out from
+	// under it. The lock is advisory and best-effort: failing to take it
+	// degrades to today's unguarded behavior rather than blocking the review.
+	if shared, lockErr := runlock.AcquireShared(opts.Layout.ActiveRunsLock()); lockErr == nil {
+		defer func() { _ = shared.Release() }()
+	} else {
+		opts.emitWarning(fmt.Sprintf("proceeding without the active-runs lock (concurrent prunes may disrupt this run): %v", lockErr))
 	}
 	completed := false
 	failureOutcome := ledger.OutcomeFailed
@@ -2595,6 +2605,29 @@ func (opts Options) emitWarning(warning string) {
 		return
 	}
 	_, _ = fmt.Fprintln(opts.Warnings, warning)
+}
+
+// tryPruneRetention runs automatic retention only while holding the
+// data-root active-runs lock exclusively, so it can never delete a sibling
+// process's in-flight run artifacts. Contention means another instance is
+// mid-run (or already pruning); retention is best-effort housekeeping, so
+// the prune is skipped rather than waited for.
+func tryPruneRetention(ctx context.Context, opts Options) error {
+	if opts.RetentionManualOnly {
+		return nil
+	}
+	exclusive, err := runlock.Acquire(opts.Layout.ActiveRunsLock())
+	if err != nil {
+		if !errors.Is(err, runlock.ErrHeld) {
+			opts.emitWarning(fmt.Sprintf("skipping retention prune (active-runs lock unavailable): %v", err))
+		}
+		return nil
+	}
+	pruneErr := pruneRetention(ctx, opts.Layout, opts.Store, opts.Now, opts.Warnings, opts.Retention, opts.RetentionManualOnly)
+	if releaseErr := exclusive.Release(); releaseErr != nil && pruneErr == nil {
+		pruneErr = releaseErr
+	}
+	return pruneErr
 }
 
 func pruneRetention(ctx context.Context, layout statepaths.Layout, store datalifecycle.Store, now func() time.Time, warnings io.Writer, retention datalifecycle.RetentionPolicy, manualOnly bool) error {
