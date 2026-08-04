@@ -246,23 +246,24 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 	cmd.Dir = repoDir
 	cmd.Env = append(os.Environ(), a.env...)
 	cmd.Stdin = strings.NewReader(`{"id":"state-1","type":"get_state"}` + "\n")
-	capture := &boundedPiRPCPreflightCapture{remaining: piRPCPreflightOutputBytes}
-	cmd.Stdout = capture
-	cmd.Stderr = capture
+	stdout := &boundedPiRPCPreflightCapture{remaining: piRPCPreflightOutputBytes / 2}
+	stderr := &boundedPiRPCPreflightCapture{remaining: piRPCPreflightOutputBytes / 2}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("%w: help preflight timed out: %w", ErrPiRPCIncompatible, ctx.Err())
 		}
 		return fmt.Errorf("%w: help preflight failed: %w", ErrPiRPCIncompatible, err)
 	}
-	output := capture.String()
-	if !piRPCPreflightReceivedState(output) {
-		return fmt.Errorf("%w: reviewer extension preflight did not return successful state", ErrPiRPCIncompatible)
-	}
-	if !piRPCPreflightReceivedRegistration(output) {
-		return fmt.Errorf("%w: reviewer extension did not complete required tool registrations", ErrPiRPCIncompatible)
+	if !piRPCPreflightReady(stdout.String(), stderr.String()) {
+		return fmt.Errorf("%w: reviewer extension preflight did not return required state and registration evidence", ErrPiRPCIncompatible)
 	}
 	return nil
+}
+
+func piRPCPreflightReady(stdout, stderr string) bool {
+	return piRPCPreflightReceivedState(stdout) && piRPCPreflightReceivedRegistration(stderr)
 }
 
 func piRPCPreflightReceivedState(output string) bool {
@@ -869,6 +870,10 @@ func piRPCReviewerExtension(executable, configPath, repoDir string, maxOutputByt
 		data, _ := json.Marshal(value)
 		return string(data)
 	}
+	markerStatement := ""
+	if registrationMarker != "" {
+		markerStatement = "  process.stderr.write(" + quoted(registrationMarker+"\n") + ");\n"
+	}
 	return `import { spawn } from "node:child_process";
 
 const executable = ` + quoted(executable) + `;
@@ -876,7 +881,6 @@ const configPath = ` + quoted(configPath) + `;
 const repoDir = ` + quoted(repoDir) + `;
 const maxOutputBytes = ` + strconv.Itoa(maxOutputBytes) + `;
 const timeoutMs = ` + strconv.FormatInt(timeout.Milliseconds(), 10) + `;
-const registrationMarker = ` + quoted(registrationMarker) + `;
 
 function runTool(tool, params, signal) {
   return new Promise((resolve) => {
@@ -921,7 +925,7 @@ export default function (pi) {
   pi.registerTool({ name: "cr_search", label: "CR Search", description: "Search repository text literally.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" } }, required: ["query"], additionalProperties: false }, execute: headTool("cr_search") });
   pi.registerTool({ name: "cr_list", label: "CR List", description: "List repository files.", parameters: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }, execute: headTool("cr_list") });
   pi.registerTool({ name: "cr_diff", label: "CR Diff", description: "Read the fixed pinned review diff. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, additionalProperties: false }, execute: (_id, params, signal) => { diffAttempted = true; return runTool("cr_diff", params, signal); } });
-  if (registrationMarker) process.stderr.write(registrationMarker + "\n");
+` + markerStatement + `
 }
 `
 }

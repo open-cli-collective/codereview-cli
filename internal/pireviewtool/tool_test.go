@@ -37,6 +37,17 @@ func TestRunDecodesOneStrictRequest(t *testing.T) {
 	}
 }
 
+func TestExecuteReadRejectsBinaryFiles(t *testing.T) {
+	repo, diff := reviewerToolFixture(t)
+	if err := os.WriteFile(filepath.Join(repo, "binary.bin"), []byte{0, 1, 2, 3}, 0o600); err != nil {
+		t.Fatalf("WriteFile(binary): %v", err)
+	}
+	_, err := Execute(context.Background(), Config{RepoDir: repo, DiffPath: diff, MaxOutputBytes: 1024}, Request{Tool: ToolRead, Path: "binary.bin"})
+	if !errors.Is(err, ErrDenied) {
+		t.Fatalf("Execute(binary read) error = %v, want ErrDenied", err)
+	}
+}
+
 func TestRunReadAndDiffRangesReachContentBeyondOutputCap(t *testing.T) {
 	repo, diff := reviewerToolFixture(t)
 	largeFile := strings.Repeat("a", 40*1024) + "READ_TARGET" + strings.Repeat("b", 40*1024)

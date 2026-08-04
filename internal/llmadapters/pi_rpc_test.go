@@ -514,7 +514,7 @@ func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T)
 	if got := strings.Count(record.Extension, "pi.registerTool"); got != 4 {
 		t.Fatalf("preflight extension registers %d tools, want 4", got)
 	}
-	if !strings.Contains(record.Extension, "registrationMarker") {
+	if !strings.Contains(record.Extension, piRPCPreflightRegistration) {
 		t.Fatalf("preflight extension = %q, want registration-completion marker", record.Extension)
 	}
 	if _, err := os.Stat(mutationPath); !errors.Is(err, os.ErrNotExist) {
@@ -547,6 +547,17 @@ func TestPiRPCPreflightReceivedRegistrationRequiresExactMarkerLine(t *testing.T)
 	}
 	if !piRPCPreflightReceivedRegistration(piRPCPreflightRegistration + "\n") {
 		t.Fatal("exact registration marker was not accepted")
+	}
+}
+
+func TestPiRPCPreflightRequiresResponsesOnTheirExpectedStreams(t *testing.T) {
+	state := `{"id":"state-1","success":true}` + "\n"
+	marker := piRPCPreflightRegistration + "\n"
+	if !piRPCPreflightReady(state, marker) {
+		t.Fatal("preflight readiness = false, want valid separated streams")
+	}
+	if piRPCPreflightReady(marker+state, "") || piRPCPreflightReady("", state+marker) {
+		t.Fatal("preflight accepted state or marker from the wrong stream")
 	}
 }
 

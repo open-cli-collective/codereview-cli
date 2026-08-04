@@ -27,7 +27,8 @@ const (
 	// ToolList lists regular files below a confined repository path.
 	ToolList = "cr_list"
 	// ToolDiff reads the fixed pinned diff artifact.
-	ToolDiff = "cr_diff"
+	ToolDiff                = "cr_diff"
+	maxReadBinaryProbeBytes = 8 * 1024
 )
 
 const (
@@ -144,6 +145,10 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 		if openErr != nil {
 			return "", fmt.Errorf("read %q: %w", request.Path, openErr)
 		}
+		if binaryErr := rejectBinaryFile(file); binaryErr != nil {
+			_ = file.Close()
+			return "", fmt.Errorf("read %q: %w", request.Path, binaryErr)
+		}
 		output, err = readRange(file, request.Offset, request.Limit, config.MaxOutputBytes)
 		_ = file.Close()
 		if err != nil {
@@ -181,6 +186,18 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 		return "", fmt.Errorf("%w: unknown tool %q", ErrDenied, request.Tool)
 	}
 	return boundOutput(output, config.MaxOutputBytes), nil
+}
+
+func rejectBinaryFile(file *os.File) error {
+	probe := make([]byte, maxReadBinaryProbeBytes)
+	n, err := file.ReadAt(probe, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if bytes.IndexByte(probe[:n], 0) >= 0 || !utf8.Valid(probe[:n]) {
+		return fmt.Errorf("%w: binary files are not reviewer-visible", ErrDenied)
+	}
+	return nil
 }
 
 func validateRepoRoot(root string) (string, error) {
