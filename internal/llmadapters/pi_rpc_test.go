@@ -387,11 +387,46 @@ func TestPiRPCReviewerPreflightRejectsUnsupportedPi(t *testing.T) {
 			RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
 		},
 	})
-	if !errors.Is(err, ErrPiRPCIncompatible) || !strings.Contains(err.Error(), "--no-builtin-tools") {
-		t.Fatalf("Start error = %v, want classified Pi compatibility error naming missing flag", err)
+	if !errors.Is(err, ErrPiRPCIncompatible) {
+		t.Fatalf("Start error = %v, want classified Pi compatibility error", err)
 	}
 	if stream != nil {
 		t.Fatalf("stream = %#v, want nil before reviewer launch", stream)
+	}
+}
+
+func TestPiRPCReviewerPreflightDoesNotCacheCanceledContext(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("success", filepath.Join(tempDir, "record.json")),
+	})
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := Request{Prompt: "review", ReviewerWorkspace: &ReviewerWorkspaceRequest{
+		RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+	}}
+	if stream, err := adapter.Start(canceled, req); err == nil || stream != nil {
+		t.Fatalf("canceled Start = (%#v, %v), want preflight failure", stream, err)
+	}
+	stream, err := adapter.Start(context.Background(), req)
+	if err != nil {
+		t.Fatalf("healthy Start after cancellation: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("healthy Wait after cancellation: %v", err)
 	}
 }
 
@@ -412,16 +447,21 @@ func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T)
 		t.Fatalf("preflightReviewerRuntime: %v", err)
 	}
 	record := readPiRPCRecord(t, recordPath)
-	if record.CwdEntries != 0 {
-		t.Fatalf("preflight cwd = %q with %d entries, want invocation-owned empty directory", record.Cwd, record.CwdEntries)
+	if record.CwdEntries != 1 {
+		t.Fatalf("preflight cwd = %q with %d entries, want only generated extension", record.Cwd, record.CwdEntries)
 	}
 	if samePath(t, record.Cwd, repoRootForTest(t)) {
 		t.Fatalf("preflight cwd = repository root %q", record.Cwd)
 	}
-	for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session"} {
+	assertFlagValue(t, record.AdapterArgs, "--mode", "rpc")
+	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
+	for _, flag := range []string{"--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session"} {
 		if !containsFlag(record.AdapterArgs, flag) {
 			t.Fatalf("preflight args = %#v, want %s", record.AdapterArgs, flag)
 		}
+	}
+	if extensionPath := flagValue(record.AdapterArgs, "--extension"); extensionPath == "" || filepath.Base(extensionPath) != "cr-preflight.mjs" {
+		t.Fatalf("preflight extension = %q, want generated preflight extension", extensionPath)
 	}
 	if _, err := os.Stat(mutationPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("hostile resource mutation stat = %v, want resource undiscovered", err)
@@ -778,6 +818,14 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		data, _ := json.Marshal(record)
 		// #nosec G703 -- helper writes only to a t.TempDir path supplied by the parent test.
 		_ = os.WriteFile(recordPath, data, 0o600)
+	}
+	if command["type"] == "get_state" {
+		if os.Getenv("LLM_PI_RPC_HELP_UNSUPPORTED") == "1" {
+			fmt.Println(`{"id":"state-1","success":false,"error":"unsupported"}`)
+		} else {
+			fmt.Println(`{"id":"state-1","success":true}`)
+		}
+		os.Exit(0)
 	}
 
 	switch os.Getenv("LLM_HELPER_MODE") {

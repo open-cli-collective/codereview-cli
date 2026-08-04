@@ -2134,12 +2134,19 @@ func reviewerToolDiagnostic(logPath, artifactDir string) string {
 		return ""
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.Contains(line, "codereview-pi-tool-evidence") || reviewerEvidenceField(line, "status") != "failed" {
+		if !strings.Contains(line, "codereview-pi-tool-evidence") {
+			continue
+		}
+		status := reviewerEvidenceField(line, "status")
+		if status == "" || status == "succeeded" {
 			continue
 		}
 		detail := reviewerEvidenceField(line, "error")
+		if detail == "" && status == "not_invoked" {
+			detail = "not invoked"
+		}
 		if detail == "" {
-			detail = "tool execution failed"
+			detail = "tool " + status
 		}
 		return normalizeReviewerToolDiagnostic("cr_diff: "+detail, artifactDir)
 	}

@@ -338,6 +338,7 @@ The coverage status values are:
 - `complete_constrained`: a reviewer with `allowed_files` covered that narrowed
   assignment
 - `incomplete_skipped`: assigned files were skipped or not reported as inspected
+- `incomplete_tool`: the fixed-diff tool was not invoked, did not complete, or failed
 - `incomplete_failed`: an isolated reviewer failure or missing reviewer result
   prevented coverage
 - `incomplete_unassigned`: changed files were not assigned to any selected

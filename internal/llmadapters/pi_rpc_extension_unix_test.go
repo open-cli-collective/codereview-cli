@@ -66,3 +66,18 @@ func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 	_ = cmd.Wait()
 	eventually(t, time.Second, func() bool { return !processExists(helperPID) })
 }
+
+func TestPiRPCReviewerExtensionRequiresDiffBeforeHeadTools(t *testing.T) {
+	extension := piRPCReviewerExtension("review-tool", "config.json", "/repo", 2048, time.Second)
+	for _, want := range []string{
+		"let diffAttempted = false",
+		"if (!diffAttempted)",
+		"cr_diff must be invoked before inspecting repository files",
+		"diffAttempted = true",
+		"execute: headTool(\"cr_read\")",
+	} {
+		if !strings.Contains(extension, want) {
+			t.Fatalf("extension missing diff-ordering enforcement %q:\n%s", want, extension)
+		}
+	}
+}

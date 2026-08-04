@@ -356,7 +356,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"### Reviewer Coverage",
-			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); skipped: `schema.sql`; read-only tools",
+			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); skipped: `schema.sql`; constraints: read-only tools",
 			"<summary>Inspected files (1)</summary>",
 			"- `main.go`",
 		} {
@@ -400,7 +400,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"- `go:implementation-tests` — complete (broad); skipped: none; constraints: none\n",
-			"- `architecture:solid` — complete (constrained); inspected 1 of 2 files: `a.go`; skipped: none; scoped to assigned files",
+			"- `architecture:solid` — complete (constrained); inspected 1 assigned file (2 inspected across reviewers): `a.go`; skipped: none; constraints: scoped to assigned files",
 			"<summary>Inspected files (2)</summary>",
 			"- `a.go`",
 			"- `b.go`",
@@ -447,7 +447,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"- `complete-broad` — complete (broad); skipped: none; constraints: none",
-			"- `complete-constrained` — complete (constrained); skipped: `main.go`; read-only tools",
+			"- `complete-constrained` — complete (constrained); skipped: `main.go`; constraints: read-only tools",
 			"- `failed` — ⚠️ failed\n",
 		} {
 			if !strings.Contains(md, want) {
@@ -476,6 +476,9 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		if plan.Outcome != OutcomeComment {
 			t.Fatalf("outcome = %q, want comment for incomplete tool coverage", plan.Outcome)
+		}
+		if !strings.Contains(plan.RollupMarkdown, "⚠️ incomplete (tool failure)") {
+			t.Fatalf("rollup = %q, want humanized incomplete tool status", plan.RollupMarkdown)
 		}
 	})
 

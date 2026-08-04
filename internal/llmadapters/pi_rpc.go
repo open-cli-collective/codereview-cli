@@ -52,8 +52,8 @@ type PiRPCAdapter struct {
 	timeout           time.Duration
 	scratchDirFactory ScratchDirFactory
 	fastModeModels    []string
-	preflightOnce     sync.Once
-	preflightErr      error
+	preflightMu       sync.Mutex
+	preflightReady    bool
 }
 
 var _ llm.Adapter = (*PiRPCAdapter)(nil)
@@ -118,9 +118,8 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		return nil, err
 	}
 	if req.ReviewerWorkspace != nil {
-		a.preflightOnce.Do(func() { a.preflightErr = a.preflightReviewerRuntime(ctx) })
-		if a.preflightErr != nil {
-			return nil, a.preflightErr
+		if err := a.ensureReviewerRuntime(ctx); err != nil {
+			return nil, err
 		}
 	}
 	scratch, cleanup, workDir, extensionPath, err := a.prepareInvocation(req)
@@ -173,6 +172,19 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	return stream, nil
 }
 
+func (a *PiRPCAdapter) ensureReviewerRuntime(ctx context.Context) error {
+	a.preflightMu.Lock()
+	defer a.preflightMu.Unlock()
+	if a.preflightReady {
+		return nil
+	}
+	if err := a.preflightReviewerRuntime(ctx); err != nil {
+		return err
+	}
+	a.preflightReady = true
+	return nil
+}
+
 func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, piRPCPreflightTimeout)
 	defer cancel()
@@ -181,8 +193,16 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 		return fmt.Errorf("%w: create empty preflight directory: %w", ErrPiRPCIncompatible, err)
 	}
 	defer func() { _ = os.RemoveAll(preflightDir) }()
+	extensionPath := filepath.Join(preflightDir, "cr-preflight.mjs")
+	if err := os.WriteFile(extensionPath, []byte("export default function () {}\n"), 0o600); err != nil {
+		return fmt.Errorf("%w: write preflight extension: %w", ErrPiRPCIncompatible, err)
+	}
 	args := append(append([]string(nil), a.commandArgsPrefix...),
-		"--no-tools",
+		"--mode", "rpc",
+		"--system-prompt", piRPCReviewerSystemPrompt,
+		"--no-builtin-tools",
+		"--tools", piRPCReviewerToolNames,
+		"--extension", extensionPath,
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -190,11 +210,11 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 		"--no-context-files",
 		"--no-approve",
 		"--no-session",
-		"--help",
 	)
 	cmd := exec.CommandContext(ctx, a.command, args...) // #nosec G204 -- adapter command and fixed help argument come from trusted runtime configuration.
 	cmd.Dir = preflightDir
 	cmd.Env = append(os.Environ(), a.env...)
+	cmd.Stdin = strings.NewReader(`{"id":"state-1","type":"get_state"}` + "\n")
 	capture := &boundedPiRPCPreflightCapture{remaining: piRPCPreflightOutputBytes}
 	cmd.Stdout = capture
 	cmd.Stderr = capture
@@ -204,17 +224,9 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 		}
 		return fmt.Errorf("%w: help preflight failed: %w", ErrPiRPCIncompatible, err)
 	}
-	help := capture.String()
-	required := []string{
-		"--mode", "rpc", "--system-prompt", "--no-builtin-tools", "--tools",
-		"--extension", "--no-extensions", "--no-skills", "--no-prompt-templates",
-		"--no-themes", "--no-session", "--no-context-files", "--no-approve",
-		"explicit -e paths still work",
-	}
-	for _, capability := range required {
-		if !strings.Contains(help, capability) {
-			return fmt.Errorf("%w: required capability %q is missing", ErrPiRPCIncompatible, capability)
-		}
+	output := capture.String()
+	if !strings.Contains(output, `"id":"state-1"`) || !strings.Contains(output, `"success":true`) {
+		return fmt.Errorf("%w: reviewer extension preflight did not return successful state", ErrPiRPCIncompatible)
 	}
 	return nil
 }
@@ -826,10 +838,15 @@ function runTool(tool, params, signal) {
 }
 
 export default function (pi) {
-  pi.registerTool({ name: "cr_read", label: "CR Read", description: "Read one repository file. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, required: ["path"], additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_read", params, signal) });
-  pi.registerTool({ name: "cr_search", label: "CR Search", description: "Search repository text literally.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" } }, required: ["query"], additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_search", params, signal) });
-  pi.registerTool({ name: "cr_list", label: "CR List", description: "List repository files.", parameters: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_list", params, signal) });
-  pi.registerTool({ name: "cr_diff", label: "CR Diff", description: "Read the fixed pinned review diff. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_diff", params, signal) });
+  let diffAttempted = false;
+  const headTool = (tool) => (_id, params, signal) => {
+    if (!diffAttempted) return Promise.resolve({ content: [{ type: "text", text: "cr_diff must be invoked before inspecting repository files" }], details: {}, isError: true });
+    return runTool(tool, params, signal);
+  };
+  pi.registerTool({ name: "cr_read", label: "CR Read", description: "Read one repository file. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, required: ["path"], additionalProperties: false }, execute: headTool("cr_read") });
+  pi.registerTool({ name: "cr_search", label: "CR Search", description: "Search repository text literally.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" } }, required: ["query"], additionalProperties: false }, execute: headTool("cr_search") });
+  pi.registerTool({ name: "cr_list", label: "CR List", description: "List repository files.", parameters: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }, execute: headTool("cr_list") });
+  pi.registerTool({ name: "cr_diff", label: "CR Diff", description: "Read the fixed pinned review diff. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, additionalProperties: false }, execute: (_id, params, signal) => { diffAttempted = true; return runTool("cr_diff", params, signal); } });
 }
 `
 }

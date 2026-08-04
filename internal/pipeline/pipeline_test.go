@@ -4974,6 +4974,16 @@ func TestReviewerToolDiagnosticNormalizesPreciseFailure(t *testing.T) {
 	}
 }
 
+func TestReviewerToolDiagnosticMarksDiffNotInvokedIncomplete(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "reviewer.jsonl")
+	if err := os.WriteFile(logPath, []byte("codereview-pi-tool-evidence tool=cr_diff status=not_invoked started=0 completed=0 failed=0\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if got := reviewerToolDiagnostic(logPath, filepath.Dir(logPath)); got != "cr_diff: not invoked" {
+		t.Fatalf("reviewerToolDiagnostic = %q, want not invoked diagnostic", got)
+	}
+}
+
 func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", AllowedFiles: []string{"main.go", "other.go"}}},

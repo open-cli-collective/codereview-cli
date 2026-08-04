@@ -278,8 +278,12 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		fmt.Fprintf(out, "- %s — %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status))
 		var notes []string
 		if len(entry.InspectedFiles) > 0 && !stringSetsEqual(entry.InspectedFiles, union) {
-			notes = append(notes, fmt.Sprintf("inspected %d of %d files: %s",
-				len(entry.InspectedFiles), len(union), codeSpanList(entry.InspectedFiles)))
+			assignedNoun := "files"
+			if len(entry.InspectedFiles) == 1 {
+				assignedNoun = "file"
+			}
+			notes = append(notes, fmt.Sprintf("inspected %d assigned %s (%d inspected across reviewers): %s",
+				len(entry.InspectedFiles), assignedNoun, len(union), codeSpanList(entry.InspectedFiles)))
 		}
 		if len(entry.SkippedFiles) > 0 {
 			notes = append(notes, "skipped: "+codeSpanList(entry.SkippedFiles))
@@ -289,7 +293,7 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		if len(entry.Constraints) > 0 {
 			// Constraints are independent sentences of reviewer prose; a
 			// space joins them without stacking punctuation.
-			notes = append(notes, escapeCell(strings.Join(entry.Constraints, " ")))
+			notes = append(notes, "constraints: "+escapeCell(strings.Join(entry.Constraints, " ")))
 		} else if coverageResultProduced(entry.Status) {
 			notes = append(notes, "constraints: none")
 		}
@@ -332,6 +336,8 @@ func coverageStatusLabel(status string) string {
 		return "complete (constrained)"
 	case "incomplete_skipped":
 		return "⚠️ incomplete (skipped files)"
+	case "incomplete_tool":
+		return "⚠️ incomplete (tool failure)"
 	case "incomplete_failed":
 		return "⚠️ failed"
 	case "incomplete_unassigned":
