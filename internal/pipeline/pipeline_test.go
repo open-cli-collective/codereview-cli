@@ -4899,6 +4899,37 @@ func TestBuildReviewerCoverageStatuses(t *testing.T) {
 	}
 }
 
+func TestBuildReviewerCoverageDoesNotMarkCrDiffFailureComplete(t *testing.T) {
+	got := buildReviewerCoverage(
+		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},
+		[]llm.Findings{{
+			AgentID:        "harness:reviewer",
+			InspectedFiles: []string{"main.go"},
+			Constraints:    []string{"cr_diff: fixed diff unavailable"},
+		}},
+		nil,
+		[]string{"main.go"},
+	)
+	if len(got) != 1 {
+		t.Fatalf("coverage entries = %#v", got)
+	}
+	if got[0].Status != "incomplete_tool" || got[0].Diagnostic != "cr_diff: fixed diff unavailable" {
+		t.Fatalf("coverage = %#v, want incomplete tool diagnostic", got[0])
+	}
+}
+
+func TestReviewerToolDiagnosticNormalizesPreciseFailure(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "reviewer.jsonl")
+	if err := os.WriteFile(logPath, []byte(`codereview-pi-tool-evidence tool=cr_diff status=failed started=1 completed=1 failed=1 error="fixed diff: open /private/artifacts/run/diff.patch: no such file or directory"`+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got := reviewerToolDiagnostic(logPath, filepath.Dir(logPath))
+	want := "cr_diff: fixed diff: open <path> no such file or directory"
+	if got != want {
+		t.Fatalf("reviewerToolDiagnostic = %q, want %q", got, want)
+	}
+}
+
 func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", AllowedFiles: []string{"main.go", "other.go"}}},

@@ -320,6 +320,9 @@ func TestPiRPCReviewerLogCapPreservesDiffFailureEvidence(t *testing.T) {
 	if !strings.Contains(string(logged), "codereview-pi-tool-evidence tool=cr_diff status=failed started=1 completed=1 failed=1") {
 		t.Fatalf("reviewer log = %q, want bounded failed-invocation evidence", logged)
 	}
+	if !strings.Contains(string(logged), `error="fixed diff unavailable"`) {
+		t.Fatalf("reviewer log = %q, want precise cr_diff failure", logged)
+	}
 }
 
 func TestPiRPCReviewerExtensionLoadsInInstalledPi(t *testing.T) {

@@ -155,7 +155,6 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"skipped_files":["main.go"],"findings":[]}`, "both inspected and skipped")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["  "],"findings":[]}`, "constraints")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["one","two","three","four","five","six","seven","eight","nine","ten","eleven"],"findings":[]}`, "constraints cap exceeded")
-	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["`+strings.Repeat("x", defaultMaxCoverageConstraintRunes+1)+`"],"findings":[]}`, "constraints entry length")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":2,"agent_id":"agent-1","findings":[]`), "schema_version")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[],"extra":true`), "unknown field")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"missing","findings":[]`), "unknown findings agent")
@@ -177,6 +176,25 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: func() (review.FindingID, error) { return "", errors.New("id failed") }}, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]`), "id failed")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("").next}, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]`), "blank")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("dup", "dup").next}, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"},{"severity":"minor","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]`), "duplicate")
+}
+
+func TestDecodeFindingsBoundsOversizedConstraintWithoutRejecting(t *testing.T) {
+	longConstraint := strings.Repeat("x", defaultMaxCoverageConstraintRunes+25)
+	got, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["`+longConstraint+`"],"findings":[]}`), FindingsOptions{
+		KnownAgents:  map[string]bool{"agent-1": true},
+		ChangedFiles: map[string]bool{"main.go": true},
+		NewFindingID: newIDQueue("f-1").next,
+	})
+	if err != nil {
+		t.Fatalf("DecodeFindings: %v", err)
+	}
+	if len(got.Constraints) != 1 {
+		t.Fatalf("constraints = %#v, want one bounded constraint", got.Constraints)
+	}
+	want := strings.Repeat("x", defaultMaxCoverageConstraintRunes-3) + "..."
+	if got.Constraints[0] != want {
+		t.Fatalf("constraint = %q, want deterministic truncation %q", got.Constraints[0], want)
+	}
 }
 
 func findingsFixture(fields string) string {

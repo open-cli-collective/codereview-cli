@@ -409,7 +409,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown reviewer coverage status force comment", func(t *testing.T) {
+	t.Run("incomplete tool reviewer coverage force comment", func(t *testing.T) {
 		req := baseRequest()
 		req.Findings = nil
 		req.Rollup = review.Rollup{
@@ -420,7 +420,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		req.RunSummary = RunSummary{
 			ReviewerCoverage: []ReviewerCoverageSummary{{
 				AgentID: "go:implementation-tests",
-				Status:  "partial_coverage",
+				Status:  "incomplete_tool",
 			}},
 		}
 		plan, err := Build(req)
@@ -428,7 +428,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		if plan.Outcome != OutcomeComment {
-			t.Fatalf("outcome = %q, want comment for unknown coverage status", plan.Outcome)
+			t.Fatalf("outcome = %q, want comment for incomplete tool coverage", plan.Outcome)
 		}
 	})
 

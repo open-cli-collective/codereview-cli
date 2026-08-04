@@ -346,9 +346,7 @@ func decodeCoverageStrings(name string, values []string) ([]string, error) {
 		if strings.TrimSpace(value) == "" {
 			return nil, fmt.Errorf("llm: %s entries must be non-empty", name)
 		}
-		if utf8.RuneCountInString(value) > defaultMaxCoverageConstraintRunes {
-			return nil, fmt.Errorf("llm: %s entry length out of bounds", name)
-		}
+		value = truncateCoverageConstraint(value)
 		if seen[value] {
 			return nil, fmt.Errorf("llm: duplicate %s entry %q", name, value)
 		}
@@ -356,6 +354,18 @@ func decodeCoverageStrings(name string, values []string) ([]string, error) {
 		out = append(out, value)
 	}
 	return out, nil
+}
+
+// truncateCoverageConstraint keeps a model-authored coverage diagnostic
+// structurally valid while preserving its leading cause and marking loss.
+func truncateCoverageConstraint(value string) string {
+	if utf8.RuneCountInString(value) <= defaultMaxCoverageConstraintRunes {
+		return value
+	}
+	const marker = "..."
+	keep := defaultMaxCoverageConstraintRunes - len(marker)
+	runes := []rune(value)
+	return string(runes[:keep]) + marker
 }
 
 func validateCoverageFileDisjoint(inspected, skipped []string) error {

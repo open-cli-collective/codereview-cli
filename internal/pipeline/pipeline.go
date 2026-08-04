@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -307,7 +308,11 @@ const (
 	reviewerCoverageIncompleteSkipped    = "incomplete_skipped"
 	reviewerCoverageIncompleteFailed     = "incomplete_failed"
 	reviewerCoverageIncompleteUnassigned = "incomplete_unassigned"
+	reviewerCoverageIncompleteTool       = "incomplete_tool"
+	reviewerToolDiagnosticMaxRunes       = 300
 )
+
+var reviewerDiagnosticPathRE = regexp.MustCompile("([A-Za-z]:[\\\\/]|/)[^[:space:]]+")
 
 // SelectionSession describes the single LLM turn used for selection-only execution.
 type SelectionSession struct {
@@ -2016,6 +2021,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		}
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
+	if diagnostic := reviewerToolDiagnostic(logPath, artifacts.Dir); diagnostic != "" {
+		findings = appendReviewerToolDiagnostic(findings, diagnostic)
+	}
 	return findings, session, ledgerSession, nil, nil
 }
 
@@ -2106,6 +2114,77 @@ func sanitizeTaskErrorForMarkdown(err error) string {
 		value = string(runes[:1000]) + "..."
 	}
 	return value
+}
+
+func reviewerToolDiagnostic(logPath, artifactDir string) string {
+	data, err := os.ReadFile(logPath) // #nosec G304 -- logPath is the run-owned reviewer log.
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.Contains(line, "codereview-pi-tool-evidence") || reviewerEvidenceField(line, "status") != "failed" {
+			continue
+		}
+		detail := reviewerEvidenceField(line, "error")
+		if detail == "" {
+			detail = "tool execution failed"
+		}
+		return normalizeReviewerToolDiagnostic("cr_diff: "+detail, artifactDir)
+	}
+	return ""
+}
+
+func reviewerEvidenceField(line, field string) string {
+	marker := field + "="
+	index := strings.Index(line, marker)
+	if index < 0 {
+		return ""
+	}
+	value := strings.TrimSpace(line[index+len(marker):])
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "\"") {
+		if decoded, err := strconv.Unquote(value); err == nil {
+			return decoded
+		}
+		return ""
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func normalizeReviewerToolDiagnostic(value, artifactDir string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if clean := filepath.Clean(strings.TrimSpace(artifactDir)); clean != "." && clean != "" {
+		value = strings.ReplaceAll(value, clean, "<path>")
+	}
+	value = reviewerDiagnosticPathRE.ReplaceAllString(value, "<path>")
+	value = strings.ReplaceAll(value, "<!-- codereview:", "&lt;!-- codereview:")
+	runes := []rune(value)
+	if len(runes) > reviewerToolDiagnosticMaxRunes {
+		value = string(runes[:reviewerToolDiagnosticMaxRunes-3]) + "..."
+	}
+	return value
+}
+
+func appendReviewerToolDiagnostic(findings llm.Findings, diagnostic string) llm.Findings {
+	if diagnostic == "" {
+		return findings
+	}
+	constraints := make([]string, 0, len(findings.Constraints)+1)
+	for _, constraint := range findings.Constraints {
+		lower := strings.ToLower(strings.TrimSpace(constraint))
+		if strings.HasPrefix(lower, "cr_diff:") || (strings.Contains(lower, "pi reviewer tool") && strings.Contains(lower, "failed")) {
+			continue
+		}
+		constraints = append(constraints, constraint)
+	}
+	findings.Constraints = append(constraints, diagnostic)
+	return findings
 }
 
 func prepareNamedSession(ctx context.Context, opts Options, req Request, live bool, model string, now time.Time) (namedSessionState, error) {
@@ -2412,7 +2491,24 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		}
 		entry.InspectedFiles = copySortedStrings(result.InspectedFiles)
 		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
-		entry.Constraints = copySortedStrings(result.Constraints)
+		var toolDiagnostic string
+		constraints := make([]string, 0, len(result.Constraints))
+		for _, constraint := range result.Constraints {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(constraint)), "cr_diff:") {
+				if toolDiagnostic == "" {
+					toolDiagnostic = constraint
+				}
+				continue
+			}
+			constraints = append(constraints, constraint)
+		}
+		entry.Constraints = copySortedStrings(constraints)
+		if toolDiagnostic != "" {
+			entry.Status = reviewerCoverageIncompleteTool
+			entry.Diagnostic = toolDiagnostic
+			out = append(out, entry)
+			continue
+		}
 		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
 		switch {
 		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
