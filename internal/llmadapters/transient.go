@@ -32,24 +32,21 @@ func classifyHTTPStatusTransient(status int) bool {
 	}
 }
 
-// missingSessionCLIDetailSubstrings match the provider CLI messages for a
-// conversation cr asked to continue that the CLI can no longer find. Claude
-// reports one form when resuming (--resume) and another when forking.
-var missingSessionCLIDetailSubstrings = []string{
-	"no conversation found with session id",
-	"no conversation found with session",
-	"session not found",
-}
-
 // isMissingSessionCLIDetail reports whether detail says the conversation cr
 // asked to resume or fork is gone, as opposed to the provider failing. The
 // caller recovers by starting a fresh conversation rather than failing the task.
+//
+// Only the two message forms Claude actually emits are matched — resume's
+// "No conversation found with session ID: <id>" and fork's "source session
+// <id> not found". detail is not always a provider control message (the
+// foreground path falls back to the whole stdout transcript, and the
+// errored-result path carries the model's own text), so broad needles like a
+// bare "session not found" could reclassify arbitrary output. New provider
+// phrasings get added here when observed, not preempted.
 func isMissingSessionCLIDetail(detail string) bool {
 	lowered := strings.ToLower(detail)
-	for _, needle := range missingSessionCLIDetailSubstrings {
-		if strings.Contains(lowered, needle) {
-			return true
-		}
+	if strings.Contains(lowered, "no conversation found with session") {
+		return true
 	}
 	// Fork reports "source session <id> not found", so the id sits between the
 	// two halves and a single substring cannot match it.

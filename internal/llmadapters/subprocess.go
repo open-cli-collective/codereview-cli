@@ -943,11 +943,7 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		}
 		if detail != "" {
 			launchErr := fmt.Errorf("llm subprocess: Claude bg launch failed: %w: %s", waitErr, detail)
-			if isTransientCLIDetail(detail) {
-				result.err = fmt.Errorf("%w: %w", ErrTransient, launchErr)
-			} else {
-				result.err = launchErr
-			}
+			result.err = classifyCLIDetail(launchErr, detail)
 		} else {
 			result.err = waitErr
 		}

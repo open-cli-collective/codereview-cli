@@ -189,7 +189,10 @@ func (e *StructuredValidationError) Is(target error) bool {
 }
 
 // RunStructuredWithSessionResume runs a structured request, starting from an
-// existing provider session ID when provided.
+// existing provider session ID when provided. A resume whose provider
+// conversation no longer exists is retried once as a fresh conversation
+// instead of failing; callers that store the session for later reuse must
+// persist the returned SessionID, which replaces a dangling stored one.
 func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter, resumeSessionID string, req Request, decode Decoder[T]) (StructuredResult[T], error) {
 	var zero T
 	sessionID, response, err := runOnceWithSession(ctx, adapter, resumeSessionID, req)

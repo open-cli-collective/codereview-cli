@@ -45,7 +45,11 @@ func TestIsMissingSessionCLIDetail(t *testing.T) {
 		// The two forms Claude reports, from issue #538.
 		{"exit 1 before init — No conversation found with session ID: cf06076d-7175-4112-9cda-dbecea14a4a7", true},
 		{"source session e34a5ddf-3343-479f-866a-20c863967420 not found", true},
-		{"session not found", true},
+		// Bare "session not found" is deliberately NOT matched: detail can be
+		// a stdout transcript or the model's own text, and a broad needle
+		// would reclassify arbitrary output as a missing conversation.
+		{"session not found", false},
+		{"the model replied: session not found in my context", false},
 		// A provider failure is not a missing conversation, and must keep its
 		// own classification so it is retried rather than restarted fresh.
 		{"model is overloaded_error", false},
