@@ -96,6 +96,7 @@ func TestExecuteHoldsActiveRunsLockForRunDuration(t *testing.T) {
 				_, probed = runlock.Acquire(layout.ActiveRunsLock())
 				return nil, errors.New("probe abort")
 			}
+			// #nosec G204 -- test passthrough of the pipeline's own git args.
 			cmd := exec.CommandContext(gitCtx, "git", args...)
 			cmd.Dir = dir
 			return cmd.CombinedOutput()
