@@ -9,16 +9,28 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
 
 const (
-	piRPCPromptID     = "prompt-1"
-	piRPCSystemPrompt = "You are a strict JSON API for code review structured output. Return exactly one JSON object that matches the requested schema. Do not include markdown fences, prose, explanations, or leading/trailing text. The first byte of your final answer must be { and the last byte must be }."
+	piRPCPromptID             = "prompt-1"
+	piRPCSystemPrompt         = "You are a strict JSON API for code review structured output. Return exactly one JSON object that matches the requested schema. Do not include markdown fences, prose, explanations, or leading/trailing text. The first byte of your final answer must be { and the last byte must be }."
+	piRPCReviewerSystemPrompt = piRPCSystemPrompt + " Inspect the disposable repository only through the CR-owned cr_read, cr_search, cr_list, and cr_diff tools. These tools are read-only; do not request shell, write, edit, or any other tool."
+	piRPCReviewerToolTimeout  = 15 * time.Second
+	piRPCReviewerToolNames    = "cr_read,cr_search,cr_list,cr_diff"
+	piRPCPreflightTimeout     = 5 * time.Second
+	piRPCPreflightOutputBytes = 64 * 1024
 )
+
+// ErrPiRPCIncompatible reports that the installed Pi runtime cannot enforce
+// the bounded reviewer tool contract.
+var ErrPiRPCIncompatible = errors.New("llm pi rpc: incompatible Pi runtime")
 
 // PiRPCOptions configures the Pi RPC subprocess adapter.
 type PiRPCOptions struct {
@@ -38,9 +50,12 @@ type PiRPCAdapter struct {
 	timeout           time.Duration
 	scratchDirFactory ScratchDirFactory
 	fastModeModels    []string
+	preflightOnce     sync.Once
+	preflightErr      error
 }
 
 var _ llm.Adapter = (*PiRPCAdapter)(nil)
+var _ llm.ReviewerWorkspaceCapable = (*PiRPCAdapter)(nil)
 
 // NewPiRPCAdapter returns a Pi RPC subprocess adapter.
 func NewPiRPCAdapter(opts PiRPCOptions) *PiRPCAdapter {
@@ -71,6 +86,11 @@ func NewPiRPCAdapter(opts PiRPCOptions) *PiRPCAdapter {
 // Name returns the adapter name.
 func (a *PiRPCAdapter) Name() string { return "pi_rpc" }
 
+// ReviewerWorkspaceMode reports Pi's CR-owned, read-only inspection boundary.
+func (a *PiRPCAdapter) ReviewerWorkspaceMode() ReviewerWorkspaceMode {
+	return ReviewerWorkspacePermissionBounded
+}
+
 // SupportsResume reports whether Pi RPC session resume is implemented.
 func (a *PiRPCAdapter) SupportsResume() bool { return false }
 
@@ -95,34 +115,40 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	if err := validateFastMode(a.Name(), a.fastModeModels, req); err != nil {
 		return nil, err
 	}
-	scratch, cleanup, err := a.scratchDirFactory()
+	if req.ReviewerWorkspace != nil {
+		a.preflightOnce.Do(func() { a.preflightErr = a.preflightReviewerRuntime(ctx) })
+		if a.preflightErr != nil {
+			return nil, a.preflightErr
+		}
+	}
+	scratch, cleanup, workDir, extensionPath, err := a.prepareInvocation(req)
 	if err != nil {
 		return nil, err
 	}
 	if cleanup == nil {
 		cleanup = func() error { return nil }
 	}
-	scratch, err = validateScratchDir(scratch)
+	args, err := a.buildArgs(req, extensionPath)
 	if err != nil {
 		_ = cleanup()
 		return nil, err
 	}
-	args, err := a.buildArgs(req, scratch)
-	if err != nil {
-		_ = cleanup()
-		return nil, err
-	}
-	if err := a.validateArgs(args); err != nil {
+	if err := a.validateArgs(args, req, extensionPath); err != nil {
 		_ = cleanup()
 		return nil, err
 	}
 
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
-	var env []string
-	if len(a.env) > 0 {
-		env = append(os.Environ(), a.env...)
+	env := append(os.Environ(), a.env...)
+	if req.ReviewerWorkspace != nil {
+		env = append(env, req.ReviewerWorkspace.Env...)
+		env, err = reviewerInvocationEnv(env, scratch)
+		if err != nil {
+			_ = cleanup()
+			return nil, err
+		}
 	}
-	process, err := launchProcess(ctx, a.command, execArgs, scratch, env, a.timeout, req.LogPath, cleanup, true)
+	process, err := launchProcess(ctx, a.command, execArgs, workDir, env, a.timeout, req.LogPath, cleanup, true)
 	if err != nil {
 		return nil, err
 	}
@@ -132,23 +158,168 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 	}
 
 	stream := &piRPCStream{
-		baseStream: llm.NewProcessStream(process, cleanup),
-		stdin:      process.Stdin(),
+		baseStream:         llm.NewProcessStream(process, cleanup),
+		stdin:              process.Stdin(),
+		allowReviewerTools: req.ReviewerWorkspace != nil,
+		logBytesLeft:       -1,
+	}
+	if req.ReviewerWorkspace != nil {
+		stream.logBytesLeft = req.ReviewerWorkspace.MaxToolOutputBytes
 	}
 	go stream.run(process.Context(), process.Command(), process.Stdout(), process.Stderr())
 	return stream, nil
 }
 
-func (a *PiRPCAdapter) buildArgs(req Request, _ string) ([]string, error) {
-	args := []string{
-		"--mode", "rpc",
-		"--system-prompt", piRPCSystemPrompt,
+func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, piRPCPreflightTimeout)
+	defer cancel()
+	preflightDir, err := os.MkdirTemp("", "codereview-pi-preflight-*")
+	if err != nil {
+		return fmt.Errorf("%w: create empty preflight directory: %w", ErrPiRPCIncompatible, err)
+	}
+	defer func() { _ = os.RemoveAll(preflightDir) }()
+	args := append(append([]string(nil), a.commandArgsPrefix...),
 		"--no-tools",
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",
 		"--no-themes",
+		"--no-context-files",
+		"--no-approve",
 		"--no-session",
+		"--help",
+	)
+	cmd := exec.CommandContext(ctx, a.command, args...) // #nosec G204 -- adapter command and fixed help argument come from trusted runtime configuration.
+	cmd.Dir = preflightDir
+	cmd.Env = append(os.Environ(), a.env...)
+	capture := &boundedPiRPCPreflightCapture{remaining: piRPCPreflightOutputBytes}
+	cmd.Stdout = capture
+	cmd.Stderr = capture
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: help preflight timed out: %w", ErrPiRPCIncompatible, ctx.Err())
+		}
+		return fmt.Errorf("%w: help preflight failed: %w", ErrPiRPCIncompatible, err)
+	}
+	help := capture.String()
+	required := []string{
+		"--mode", "rpc", "--system-prompt", "--no-builtin-tools", "--tools",
+		"--extension", "--no-extensions", "--no-skills", "--no-prompt-templates",
+		"--no-themes", "--no-session", "--no-context-files", "--no-approve",
+		"explicit -e paths still work",
+	}
+	for _, capability := range required {
+		if !strings.Contains(help, capability) {
+			return fmt.Errorf("%w: required capability %q is missing", ErrPiRPCIncompatible, capability)
+		}
+	}
+	return nil
+}
+
+type boundedPiRPCPreflightCapture struct {
+	mu        sync.Mutex
+	remaining int
+	data      strings.Builder
+}
+
+func (w *boundedPiRPCPreflightCapture) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	writeBytes := len(p)
+	if writeBytes > w.remaining {
+		writeBytes = w.remaining
+	}
+	if writeBytes > 0 {
+		_, _ = w.data.Write(p[:writeBytes])
+		w.remaining -= writeBytes
+	}
+	return len(p), nil
+}
+
+func (w *boundedPiRPCPreflightCapture) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.data.String()
+}
+
+func (a *PiRPCAdapter) prepareInvocation(req Request) (scratch string, cleanup func() error, workDir, extensionPath string, err error) {
+	if req.ReviewerWorkspace == nil {
+		scratch, cleanup, err = a.scratchDirFactory()
+		if err != nil {
+			return "", nil, "", "", err
+		}
+		scratch, err = validateScratchDir(scratch)
+		if err != nil {
+			_ = cleanup()
+			return "", nil, "", "", err
+		}
+		return scratch, cleanup, scratch, "", nil
+	}
+	workspace := req.ReviewerWorkspace
+	for label, dir := range map[string]string{"repo": workspace.RepoDir, "scratch": workspace.ScratchDir} {
+		if strings.TrimSpace(dir) == "" || !filepath.IsAbs(dir) {
+			return "", nil, "", "", fmt.Errorf("%w: reviewer %s dir must be absolute", ErrUnsafeSubprocessConfig, label)
+		}
+		info, statErr := os.Lstat(filepath.Clean(dir))
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", nil, "", "", fmt.Errorf("%w: reviewer %s dir is not a real directory", ErrUnsafeSubprocessConfig, label)
+		}
+	}
+	if strings.TrimSpace(workspace.DiffPath) == "" || !filepath.IsAbs(workspace.DiffPath) || workspace.MaxToolOutputBytes <= 0 {
+		return "", nil, "", "", fmt.Errorf("%w: reviewer fixed diff and positive output limit are required", ErrUnsafeSubprocessConfig)
+	}
+	scratch, err = os.MkdirTemp(workspace.ScratchDir, "pi-rpc-")
+	if err != nil {
+		return "", nil, "", "", fmt.Errorf("llm pi rpc: create reviewer invocation scratch: %w", err)
+	}
+	cleanup = func() error { return os.RemoveAll(scratch) }
+	configPath := filepath.Join(scratch, "review-tools.json")
+	config := map[string]any{
+		"repo_dir":         workspace.RepoDir,
+		"diff_path":        workspace.DiffPath,
+		"allowed_files":    append([]string(nil), workspace.AllowedFiles...),
+		"max_output_bytes": workspace.MaxToolOutputBytes,
+		"timeout_ms":       piRPCReviewerToolTimeout.Milliseconds(),
+	}
+	data, marshalErr := json.Marshal(config)
+	if marshalErr != nil {
+		_ = cleanup()
+		return "", nil, "", "", marshalErr
+	}
+	if writeErr := os.WriteFile(configPath, append(data, '\n'), 0o600); writeErr != nil {
+		_ = cleanup()
+		return "", nil, "", "", fmt.Errorf("llm pi rpc: write reviewer tool config: %w", writeErr)
+	}
+	executable, executableErr := os.Executable()
+	if executableErr != nil {
+		_ = cleanup()
+		return "", nil, "", "", fmt.Errorf("llm pi rpc: locate CR executable: %w", executableErr)
+	}
+	extensionPath = filepath.Join(scratch, "cr-review-tools.mjs")
+	extension := piRPCReviewerExtension(executable, configPath, workspace.RepoDir, workspace.MaxToolOutputBytes, piRPCReviewerToolTimeout)
+	if writeErr := os.WriteFile(extensionPath, []byte(extension), 0o600); writeErr != nil {
+		_ = cleanup()
+		return "", nil, "", "", fmt.Errorf("llm pi rpc: write reviewer extension: %w", writeErr)
+	}
+	return scratch, cleanup, workspace.RepoDir, extensionPath, nil
+}
+
+func (a *PiRPCAdapter) buildArgs(req Request, extensionPath string) ([]string, error) {
+	systemPrompt := piRPCSystemPrompt
+	args := []string{
+		"--mode", "rpc",
+		"--system-prompt", systemPrompt,
+		"--no-extensions",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-themes",
+		"--no-session",
+	}
+	if req.ReviewerWorkspace == nil {
+		args = append(args, "--no-tools")
+	} else {
+		args[3] = piRPCReviewerSystemPrompt
+		args = append(args, "--no-builtin-tools", "--no-context-files", "--no-approve", "--tools", piRPCReviewerToolNames, "--extension", extensionPath)
 	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
@@ -159,36 +330,65 @@ func (a *PiRPCAdapter) buildArgs(req Request, _ string) ([]string, error) {
 	return args, nil
 }
 
-func (a *PiRPCAdapter) validateArgs(args []string) error {
-	if err := validateAllowedFlags("pi_rpc", args, map[string]bool{
+func (a *PiRPCAdapter) validateArgs(args []string, req Request, extensionPath string) error {
+	allowedFlags := map[string]bool{
 		"--mode":                true,
 		"--system-prompt":       true,
 		"--no-tools":            false,
+		"--no-builtin-tools":    false,
+		"--no-context-files":    false,
+		"--no-approve":          false,
+		"--tools":               true,
 		"--no-extensions":       false,
+		"--extension":           true,
 		"--no-skills":           false,
 		"--no-prompt-templates": false,
 		"--no-themes":           false,
 		"--no-session":          false,
 		"--model":               true,
 		"--thinking":            true,
-	}); err != nil {
+	}
+	if err := validateAllowedFlags("pi_rpc", args, allowedFlags); err != nil {
 		return err
+	}
+	for flag := range allowedFlags {
+		if countPiRPCFlag(args, flag) > 1 {
+			return fmt.Errorf("%w: duplicate %s", ErrUnsafeSubprocessConfig, flag)
+		}
 	}
 	if flagValue(args, "--mode") != "rpc" {
 		return fmt.Errorf("%w: pi_rpc must use rpc mode", ErrUnsafeSubprocessConfig)
 	}
-	if containsFlag(args, "--tools") || containsFlag(args, "-t") {
-		return fmt.Errorf("%w: pi_rpc must disable tools", ErrUnsafeSubprocessConfig)
-	}
-	for _, flag := range []string{"--system-prompt", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+	for _, flag := range []string{"--system-prompt", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(args, flag) {
 			return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 		}
 	}
-	if containsFlag(args, "--system-prompt") && flagValue(args, "--system-prompt") != piRPCSystemPrompt {
+	wantSystemPrompt := piRPCSystemPrompt
+	if req.ReviewerWorkspace == nil {
+		if !containsFlag(args, "--no-tools") || containsFlag(args, "--no-builtin-tools") || containsFlag(args, "--tools") || containsFlag(args, "-t") || containsFlag(args, "--extension") {
+			return fmt.Errorf("%w: non-reviewer pi_rpc must disable all tools", ErrUnsafeSubprocessConfig)
+		}
+	} else {
+		wantSystemPrompt = piRPCReviewerSystemPrompt
+		if containsFlag(args, "--no-tools") || !containsFlag(args, "--no-builtin-tools") || !containsFlag(args, "--no-context-files") || !containsFlag(args, "--no-approve") || flagValue(args, "--tools") != piRPCReviewerToolNames || flagValue(args, "--extension") != extensionPath {
+			return fmt.Errorf("%w: reviewer pi_rpc must load only the CR-owned extension", ErrUnsafeSubprocessConfig)
+		}
+	}
+	if containsFlag(args, "--system-prompt") && flagValue(args, "--system-prompt") != wantSystemPrompt {
 		return fmt.Errorf("%w: pi_rpc system prompt mismatch", ErrUnsafeSubprocessConfig)
 	}
 	return nil
+}
+
+func countPiRPCFlag(args []string, flag string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == flag || strings.HasPrefix(arg, flag+"=") {
+			count++
+		}
+	}
+	return count
 }
 
 func writePiRPCPrompt(stdin io.Writer, prompt string) error {
@@ -210,7 +410,11 @@ func writePiRPCPrompt(stdin io.Writer, prompt string) error {
 
 type piRPCStream struct {
 	baseStream
-	stdin io.Closer
+	stdin              io.Closer
+	allowReviewerTools bool
+	logLimitMu         sync.Mutex
+	logBytesLeft       int
+	logCapped          bool
 }
 
 func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
@@ -218,7 +422,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	go func() {
 		defer close(stderrDone)
 		if s.HasLog() {
-			_, _ = io.Copy(&s.baseStream, stderr)
+			_, _ = io.Copy(piRPCLogWriter{stream: s}, stderr)
 			return
 		}
 		_, _ = io.Copy(io.Discard, stderr)
@@ -269,7 +473,7 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 	var result piRPCScanResult
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
-		s.WriteLog(normalizePiRPCLogLine(line))
+		s.writeLog(normalizePiRPCLogLine(line))
 		event, err := parsePiRPCEvent(line)
 		if err != nil {
 			s.Cancel()
@@ -279,7 +483,7 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 		if event.sessionID != "" {
 			s.SetSessionID(event.sessionID)
 		}
-		if event.toolUse {
+		if event.toolUse && (!s.allowReviewerTools || !isAllowedPiRPCReviewerTool(event.toolName)) {
 			s.Cancel()
 			result.err = ErrToolUse
 			return result
@@ -302,6 +506,47 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 		result.err = err
 	}
 	return result
+}
+
+type piRPCLogWriter struct{ stream *piRPCStream }
+
+func (w piRPCLogWriter) Write(p []byte) (int, error) {
+	w.stream.writeLog(p)
+	return len(p), nil
+}
+
+func (s *piRPCStream) writeLog(p []byte) {
+	s.logLimitMu.Lock()
+	defer s.logLimitMu.Unlock()
+	if s.logBytesLeft < 0 {
+		s.WriteLog(p)
+		return
+	}
+	if s.logCapped || s.logBytesLeft == 0 {
+		return
+	}
+	const marker = "warning: reviewer RPC/stderr log cap reached; further logs truncated\n"
+	if len(p) < s.logBytesLeft {
+		s.WriteLog(p)
+		s.logBytesLeft -= len(p)
+		return
+	}
+	bodyBytes := s.logBytesLeft - len(marker)
+	if bodyBytes > len(p) {
+		bodyBytes = len(p)
+	}
+	if bodyBytes > 0 {
+		s.WriteLog(p[:bodyBytes])
+	}
+	markerBytes := s.logBytesLeft - max(bodyBytes, 0)
+	if markerBytes > len(marker) {
+		markerBytes = len(marker)
+	}
+	if markerBytes > 0 {
+		s.WriteLog([]byte(marker[:markerBytes]))
+	}
+	s.logBytesLeft = 0
+	s.logCapped = true
 }
 
 func normalizePiRPCLogLine(line []byte) []byte {
@@ -371,6 +616,7 @@ type piRPCEvent struct {
 	structuredOutput []byte
 	usage            Usage
 	toolUse          bool
+	toolName         string
 	responseFailure  string
 	agentEnd         bool
 }
@@ -388,6 +634,9 @@ func parsePiRPCEvent(line []byte) (piRPCEvent, error) {
 	event := piRPCEvent{
 		toolUse: piRPCEventIndicatesToolUse(eventType) || valueIndicatesToolUse(decoded),
 		usage:   parsePiRPCUsage(raw),
+	}
+	if event.toolUse {
+		event.toolName = firstRawString(raw, "toolName", "tool_name", "name")
 	}
 	if id := firstRawString(raw, "sessionId", "session_id"); id != "" {
 		event.sessionID = id
@@ -414,6 +663,70 @@ func parsePiRPCEvent(line []byte) (piRPCEvent, error) {
 		}
 	}
 	return event, nil
+}
+
+func isAllowedPiRPCReviewerTool(name string) bool {
+	switch name {
+	case "cr_read", "cr_search", "cr_list", "cr_diff":
+		return true
+	default:
+		return false
+	}
+}
+
+func piRPCReviewerExtension(executable, configPath, repoDir string, maxOutputBytes int, timeout time.Duration) string {
+	quoted := func(value string) string {
+		data, _ := json.Marshal(value)
+		return string(data)
+	}
+	return `import { spawn } from "node:child_process";
+
+const executable = ` + quoted(executable) + `;
+const configPath = ` + quoted(configPath) + `;
+const repoDir = ` + quoted(repoDir) + `;
+const maxOutputBytes = ` + strconv.Itoa(maxOutputBytes) + `;
+const timeoutMs = ` + strconv.FormatInt(timeout.Milliseconds(), 10) + `;
+
+function runTool(tool, params, signal) {
+  return new Promise((resolve) => {
+    const child = spawn(executable, ["__pi-review-tool", "--config", configPath], {
+      cwd: repoDir,
+      env: process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    const append = (current, chunk) => Buffer.concat([current, chunk]).subarray(0, maxOutputBytes);
+    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
+    const kill = () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    };
+    const timer = setTimeout(kill, timeoutMs);
+    signal?.addEventListener("abort", kill, { once: true });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ content: [{ type: "text", text: String(error) }], details: {}, isError: true });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", kill);
+      const text = code === 0 ? stdout.toString("utf8") : (stderr.toString("utf8") || ("tool exited " + code));
+      resolve({ content: [{ type: "text", text }], details: {}, isError: code !== 0 });
+    });
+    child.stdin.end(JSON.stringify({ ...params, tool }));
+  });
+}
+
+export default function (pi) {
+  pi.registerTool({ name: "cr_read", label: "CR Read", description: "Read one repository file. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, required: ["path"], additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_read", params, signal) });
+  pi.registerTool({ name: "cr_search", label: "CR Search", description: "Search repository text literally.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" } }, required: ["query"], additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_search", params, signal) });
+  pi.registerTool({ name: "cr_list", label: "CR List", description: "List repository files.", parameters: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_list", params, signal) });
+  pi.registerTool({ name: "cr_diff", label: "CR Diff", description: "Read the fixed pinned review diff. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, additionalProperties: false }, execute: (_id, params, signal) => runTool("cr_diff", params, signal) });
+}
+`
 }
 
 func piRPCEventIndicatesToolUse(value string) bool {

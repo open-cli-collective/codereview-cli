@@ -276,6 +276,9 @@ func TestReviewerWorkspaceSmokeAllowsReadAndWorkspaceWrites(t *testing.T) {
 	if requests[0].ReviewerWorkspace.MaxToolOutputBytes != defaultReviewerWorkspaceToolOutputBytes {
 		t.Fatalf("max tool output bytes = %d, want default %d", requests[0].ReviewerWorkspace.MaxToolOutputBytes, defaultReviewerWorkspaceToolOutputBytes)
 	}
+	if requests[0].ReviewerWorkspace.DiffPath != artifacts.DiffPatch {
+		t.Fatalf("fixed diff path = %q, want %q", requests[0].ReviewerWorkspace.DiffPath, artifacts.DiffPatch)
+	}
 	if !got.ReadOK || !got.MainContainsChanged || !got.OutOfScopeReadable || !got.TrackedWriteOK || !got.UntrackedWriteOK || !got.ScratchWriteOK {
 		t.Fatalf("smoke result = %#v, want checkout read success plus workspace and scratch writes", got)
 	}
@@ -476,6 +479,41 @@ func TestPrepareReviewerRequestAcceptsPermissionBoundedAdapter(t *testing.T) {
 	}
 	if req.ReviewerWorkspace.RepoDir == artifacts.WorkbenchRepoDir || !strings.HasPrefix(req.ReviewerWorkspace.ScratchDir, artifacts.WorkbenchScratch+string(filepath.Separator)) {
 		t.Fatalf("ReviewerWorkspace = %#v, want disposable repo and scratch", req.ReviewerWorkspace)
+	}
+	if req.ReviewerWorkspace.DiffPath != artifacts.DiffPatch {
+		t.Fatalf("fixed diff path = %q, want %q", req.ReviewerWorkspace.DiffPath, artifacts.DiffPatch)
+	}
+}
+
+func TestPrepareReviewerRequestValidationRetryGetsFreshWorkspaceWithSameFixedDiff(t *testing.T) {
+	fixture, artifacts, deps := prepareReviewerFixture(t)
+	adapter := &llm.FakeAdapter{
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspacePermissionBounded,
+	}
+	req, cleanup, err := PrepareReviewerRequest(context.Background(), deps, adapter, artifacts, fixture.headSHA, "harness:retry", []string{"main.go"}, "model", "medium", "prompt", filepath.Join(t.TempDir(), "review.jsonl"))
+	if err != nil {
+		t.Fatalf("PrepareReviewerRequest: %v", err)
+	}
+	defer cleanupForTest(t, cleanup)
+	firstRepo := req.ReviewerWorkspace.RepoDir
+	if err := os.WriteFile(filepath.Join(firstRepo, "untracked"), []byte("dirty"), 0o600); err != nil {
+		t.Fatalf("WriteFile(untracked): %v", err)
+	}
+	if err := req.OnValidationRetry(&req); err != nil {
+		t.Fatalf("OnValidationRetry: %v", err)
+	}
+	if !req.FreshValidationRetrySession || req.ReviewerWorkspace == nil {
+		t.Fatalf("retry request = %#v, want fresh reviewer session", req)
+	}
+	if _, err := os.Stat(filepath.Join(firstRepo, "untracked")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("first workspace stat error = %v, want cleaned", err)
+	}
+	if _, err := os.Stat(filepath.Join(req.ReviewerWorkspace.RepoDir, "untracked")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retry workspace stat error = %v, want clean", err)
+	}
+	if req.ReviewerWorkspace.DiffPath != artifacts.DiffPatch {
+		t.Fatalf("retry fixed diff = %q, want %q", req.ReviewerWorkspace.DiffPath, artifacts.DiffPatch)
 	}
 }
 

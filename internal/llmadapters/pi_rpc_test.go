@@ -95,6 +95,275 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	}
 }
 
+func TestPiRPCReviewerWorkspaceModeIsPermissionBounded(t *testing.T) {
+	adapter := NewPiRPCAdapter(PiRPCOptions{})
+	if got := AdapterReviewerWorkspaceMode(adapter); got != ReviewerWorkspacePermissionBounded {
+		t.Fatalf("ReviewerWorkspaceMode = %q, want %q", got, ReviewerWorkspacePermissionBounded)
+	}
+	if got := AdapterReviewerWorkspaceMode(adapter); got == ReviewerWorkspaceWrite {
+		t.Fatalf("ReviewerWorkspaceMode = %q, must not grant workspace_write", got)
+	}
+}
+
+func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("fixed diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	recordPath := filepath.Join(tempDir, "record.json")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("reviewer-tools", recordPath),
+		Timeout:           5 * time.Second,
+	})
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt: "review assigned files",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir:            repoDir,
+			ScratchDir:         scratchDir,
+			DiffPath:           diffPath,
+			AllowedFiles:       []string{"assigned.go"},
+			MaxToolOutputBytes: 2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	record := readPiRPCRecord(t, recordPath)
+	if !samePath(t, record.Cwd, repoDir) {
+		t.Fatalf("cwd = %q, want reviewer repo %q", record.Cwd, repoDir)
+	}
+	if containsFlag(record.AdapterArgs, "--no-tools") {
+		t.Fatalf("args = %#v, reviewer extension tools must remain enabled", record.AdapterArgs)
+	}
+	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
+	for _, flag := range []string{"--no-builtin-tools", "--no-context-files", "--no-approve", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+		if !containsFlag(record.AdapterArgs, flag) {
+			t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
+		}
+	}
+	extensionPath := flagValue(record.AdapterArgs, "--extension")
+	if extensionPath == "" || !pathWithin(t, scratchDir, extensionPath) {
+		t.Fatalf("--extension = %q, want generated extension under %q", extensionPath, scratchDir)
+	}
+	extension := []byte(record.Extension)
+	for _, tool := range []string{"cr_read", "cr_search", "cr_list", "cr_diff"} {
+		if !strings.Contains(string(extension), `name: "`+tool+`"`) {
+			t.Fatalf("extension does not register %s:\n%s", tool, extension)
+		}
+	}
+	for _, forbidden := range []string{"workspace_write", `name: "bash"`, `name: "edit"`, `name: "write"`} {
+		if strings.Contains(strings.ToLower(string(extension)), forbidden) {
+			t.Fatalf("extension contains forbidden capability %q:\n%s", forbidden, extension)
+		}
+	}
+	for _, key := range []string{"TMPDIR", "GOTMPDIR", "GOCACHE", "XDG_CACHE_HOME"} {
+		value := record.Env[key]
+		if value == "" || !pathWithin(t, scratchDir, value) {
+			t.Fatalf("%s = %q, want scratch-rooted path under %q", key, value, scratchDir)
+		}
+	}
+}
+
+func TestPiRPCReviewerWorkspaceRejectsUnknownToolEvents(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("fixed diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("tool", filepath.Join(tempDir, "record.json")),
+		Timeout:           5 * time.Second,
+	})
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt: "review",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); !errors.Is(err, ErrToolUse) {
+		t.Fatalf("Wait error = %v, want ErrToolUse for native Read event", err)
+	}
+}
+
+func TestPiRPCReviewerLogCapDoesNotBreakProtocolCompletion(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("fixed diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	logPath := filepath.Join(tempDir, "reviewer.jsonl")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("reviewer-log-flood", filepath.Join(tempDir, "record.json")),
+		Timeout:           5 * time.Second,
+	})
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt:  "review",
+		LogPath: logPath,
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %s, want completed final response", response.StructuredOutput)
+	}
+	logged, err := os.ReadFile(logPath) // #nosec G304 -- logPath is rooted in t.TempDir.
+	if err != nil {
+		t.Fatalf("ReadFile(log): %v", err)
+	}
+	if len(logged) > 2048 {
+		t.Fatalf("reviewer log = %d bytes, want aggregate cap 2048", len(logged))
+	}
+	if !strings.Contains(string(logged), "reviewer RPC/stderr log cap reached") {
+		t.Fatalf("reviewer log = %q, want cap marker", logged)
+	}
+}
+
+func TestPiRPCReviewerExtensionLoadsInInstalledPi(t *testing.T) {
+	piPath, err := exec.LookPath("pi")
+	if err != nil {
+		t.Skip("Pi is not installed")
+	}
+	if err := NewPiRPCAdapter(PiRPCOptions{Command: piPath}).preflightReviewerRuntime(context.Background()); err != nil {
+		t.Fatalf("installed Pi reviewer preflight: %v", err)
+	}
+	tempDir := t.TempDir()
+	extensionPath := filepath.Join(tempDir, "cr-review-tools.mjs")
+	extension := piRPCReviewerExtension(os.Args[0], filepath.Join(tempDir, "config.json"), tempDir, 2048, time.Second)
+	if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil { // #nosec G703 -- extensionPath is rooted in t.TempDir.
+		t.Fatalf("WriteFile(extension): %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, piPath,
+		"--mode", "rpc",
+		"--system-prompt", piRPCReviewerSystemPrompt,
+		"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session",
+		"--no-builtin-tools", "--no-context-files", "--no-approve",
+		"--tools", piRPCReviewerToolNames,
+		"--extension", extensionPath,
+	) // #nosec G204 -- test launches the discovered Pi executable with fixed arguments.
+	cmd.Dir = tempDir
+	cmd.Stdin = strings.NewReader("{\"id\":\"state-1\",\"type\":\"get_state\"}\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Pi extension load: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), `"id":"state-1"`) || !strings.Contains(string(output), `"success":true`) {
+		t.Fatalf("Pi get_state output = %s, want successful response", output)
+	}
+}
+
+func TestPiRPCReviewerPreflightRejectsUnsupportedPi(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env: append(piRPCHelperEnv("success", filepath.Join(tempDir, "record.json")),
+			"LLM_PI_RPC_HELP_UNSUPPORTED=1",
+		),
+		Timeout: 5 * time.Second,
+	})
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt: "review",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		},
+	})
+	if !errors.Is(err, ErrPiRPCIncompatible) || !strings.Contains(err.Error(), "--no-builtin-tools") {
+		t.Fatalf("Start error = %v, want classified Pi compatibility error naming missing flag", err)
+	}
+	if stream != nil {
+		t.Fatalf("stream = %#v, want nil before reviewer launch", stream)
+	}
+}
+
+func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "preflight.json")
+	mutationPath := filepath.Join(tempDir, "hostile-resource-loaded")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env: []string{
+			"LLM_PI_RPC_HELPER=1",
+			"LLM_HELPER_RECORD=" + recordPath,
+			"LLM_PI_RPC_HOSTILE_MUTATION=" + mutationPath,
+		},
+	})
+	if err := adapter.preflightReviewerRuntime(context.Background()); err != nil {
+		t.Fatalf("preflightReviewerRuntime: %v", err)
+	}
+	record := readPiRPCRecord(t, recordPath)
+	if record.CwdEntries != 0 {
+		t.Fatalf("preflight cwd = %q with %d entries, want invocation-owned empty directory", record.Cwd, record.CwdEntries)
+	}
+	if samePath(t, record.Cwd, repoRootForTest(t)) {
+		t.Fatalf("preflight cwd = repository root %q", record.Cwd)
+	}
+	for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session"} {
+		if !containsFlag(record.AdapterArgs, flag) {
+			t.Fatalf("preflight args = %#v, want %s", record.AdapterArgs, flag)
+		}
+	}
+	if _, err := os.Stat(mutationPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hostile resource mutation stat = %v, want resource undiscovered", err)
+	}
+}
+
 func TestPiRPCLogStripsCumulativeStreamingPartials(t *testing.T) {
 	recordPath := filepath.Join(t.TempDir(), "record.json")
 	logPath := filepath.Join(t.TempDir(), "pi-rpc.jsonl")
@@ -330,7 +599,8 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 
 func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 	adapter := NewPiRPCAdapter(PiRPCOptions{})
-	args, err := adapter.buildArgs(Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"}, t.TempDir())
+	req := Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"}
+	args, err := adapter.buildArgs(req, "")
 	if err != nil {
 		t.Fatalf("buildArgs: %v", err)
 	}
@@ -346,7 +616,35 @@ func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 		{name: "wrong system prompt", args: replaceFlagValue(args, "--system-prompt", "be loose")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := adapter.validateArgs(tt.args); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+			if err := adapter.validateArgs(tt.args, req, ""); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+				t.Fatalf("validateArgs error = %v, want ErrUnsafeSubprocessConfig", err)
+			}
+		})
+	}
+}
+
+func TestPiRPCRejectsUnsafeReviewerSpecs(t *testing.T) {
+	adapter := NewPiRPCAdapter(PiRPCOptions{})
+	extensionPath := filepath.Join(t.TempDir(), "extension.mjs")
+	req := Request{Prompt: "prompt", ReviewerWorkspace: &ReviewerWorkspaceRequest{}}
+	args, err := adapter.buildArgs(req, extensionPath)
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "missing builtin disable", args: removeFlag(args, "--no-builtin-tools")},
+		{name: "missing context disable", args: removeFlag(args, "--no-context-files")},
+		{name: "missing project approval disable", args: removeFlag(args, "--no-approve")},
+		{name: "all tools disabled", args: append(removeFlagWithValue(args, "--tools"), "--no-tools")},
+		{name: "native bash added", args: replaceFlagValue(args, "--tools", piRPCReviewerToolNames+",bash")},
+		{name: "wrong extension", args: replaceFlagValue(args, "--extension", filepath.Join(t.TempDir(), "other.mjs"))},
+		{name: "extra extension", args: append(args, "--extension", filepath.Join(t.TempDir(), "extra.mjs"))},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := adapter.validateArgs(tt.args, req, extensionPath); !errors.Is(err, ErrUnsafeSubprocessConfig) {
 				t.Fatalf("validateArgs error = %v, want ErrUnsafeSubprocessConfig", err)
 			}
 		})
@@ -364,6 +662,28 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 	if os.Getenv("LLM_PI_RPC_HELPER") != "1" {
 		return
 	}
+	if containsFlag(adapterArgsFromHelper(), "--help") {
+		cwd, _ := os.Getwd()
+		entries, _ := os.ReadDir(cwd)
+		record := piRPCRecord{AdapterArgs: adapterArgsFromHelper(), Cwd: cwd, CwdEntries: len(entries)}
+		if recordPath := os.Getenv("LLM_HELPER_RECORD"); recordPath != "" {
+			data, _ := json.Marshal(record)
+			_ = os.WriteFile(recordPath, data, 0o600) // #nosec G703 -- helper writes only to a test-owned path.
+		}
+		safe := len(entries) == 0
+		for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session"} {
+			safe = safe && containsFlag(record.AdapterArgs, flag)
+		}
+		if !safe && os.Getenv("LLM_PI_RPC_HOSTILE_MUTATION") != "" {
+			_ = os.WriteFile(os.Getenv("LLM_PI_RPC_HOSTILE_MUTATION"), []byte("loaded"), 0o600) // #nosec G703 -- test helper writes to a test-owned marker.
+		}
+		if os.Getenv("LLM_PI_RPC_HELP_UNSUPPORTED") == "1" {
+			fmt.Println("--mode rpc --system-prompt --no-tools")
+		} else {
+			fmt.Println("--mode rpc --system-prompt --no-tools --no-builtin-tools --tools --extension --no-extensions --no-skills --no-prompt-templates --no-themes --no-session --no-context-files --no-approve explicit -e paths still work")
+		}
+		os.Exit(0)
+	}
 	recordPath := os.Getenv("LLM_HELPER_RECORD")
 	cwd, _ := os.Getwd()
 	entries, _ := os.ReadDir(cwd)
@@ -380,6 +700,15 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		Cwd:         cwd,
 		CwdEntries:  len(entries),
 		Commands:    []map[string]string{command},
+		Env: map[string]string{
+			"TMPDIR":         os.Getenv("TMPDIR"),
+			"GOTMPDIR":       os.Getenv("GOTMPDIR"),
+			"GOCACHE":        os.Getenv("GOCACHE"),
+			"XDG_CACHE_HOME": os.Getenv("XDG_CACHE_HOME"),
+		},
+	}
+	if extensionPath := flagValue(record.AdapterArgs, "--extension"); extensionPath != "" {
+		record.Extension = string(mustReadHelperFile(extensionPath))
 	}
 	if recordPath != "" {
 		data, _ := json.Marshal(record)
@@ -427,6 +756,22 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"Read","args":{"path":"x"}}`)
 		time.Sleep(10 * time.Second)
+	case "reviewer-tools":
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		for _, tool := range []string{"cr_read", "cr_search", "cr_list", "cr_diff"} {
+			fmt.Printf("{\"type\":\"tool_execution_start\",\"toolCallId\":\"%s\",\"toolName\":%q,\"args\":{}}\n", tool, tool)
+			fmt.Printf("{\"type\":\"tool_execution_end\",\"toolCallId\":\"%s\",\"toolName\":%q,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n", tool, tool)
+		}
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+	case "reviewer-log-flood":
+		fmt.Fprintln(os.Stderr, strings.Repeat("stderr flood\n", 1000))
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		for i := 0; i < 20; i++ {
+			fmt.Printf("{\"type\":\"tool_execution_end\",\"toolCallId\":\"tool-%d\",\"toolName\":\"cr_read\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":%q}]}}\n", i, strings.Repeat("tool output ", 500))
+		}
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 	case "sleep":
 		time.Sleep(10 * time.Second)
 	case "malformed":
@@ -464,6 +809,19 @@ type piRPCRecord struct {
 	Cwd         string              `json:"cwd"`
 	CwdEntries  int                 `json:"cwd_entries"`
 	Commands    []map[string]string `json:"commands"`
+	Env         map[string]string   `json:"env"`
+	Extension   string              `json:"extension"`
+}
+
+func mustReadHelperFile(path string) []byte {
+	data, _ := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- helper reads the CR-generated extension path from its own argv.
+	return data
+}
+
+func pathWithin(t *testing.T, root, candidate string) bool {
+	t.Helper()
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func piRPCHelperPrefix() []string {
@@ -499,6 +857,18 @@ func removeFlag(args []string, flag string) []string {
 			continue
 		}
 		out = append(out, arg)
+	}
+	return out
+}
+
+func removeFlagWithValue(args []string, flag string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			i++
+			continue
+		}
+		out = append(out, args[i])
 	}
 	return out
 }

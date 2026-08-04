@@ -218,7 +218,7 @@ func TestBuildPlanClassifiesActionIDFailureTerminalAcrossPaths(t *testing.T) {
 	}
 }
 
-func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -254,9 +254,11 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 		Event:  review.ReviewEventApprove,
 	}}
 	baseAdapter := &llm.FakeAdapter{
-		NameValue:      "fake-llm",
-		QuotaValue:     llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
-		QuotaSupported: true,
+		NameValue:                  "pi_rpc",
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspacePermissionBounded,
+		QuotaValue:                 llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
+		QuotaSupported:             true,
 	}
 	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
 	baseAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
@@ -1113,8 +1115,9 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	workspace := requests[1].ReviewerWorkspace
 	if !strings.Contains(workspace.RepoDir, filepath.Join("workbench", "reviewers")) ||
 		!strings.HasPrefix(workspace.ScratchDir, result.Artifacts.WorkbenchScratch+string(filepath.Separator)) ||
+		workspace.DiffPath != result.Artifacts.DiffPatch ||
 		workspace.MaxToolOutputBytes != 32*1024 {
-		t.Fatalf("reviewer workspace request = %#v, want disposable repo, scratch, and default cap", workspace)
+		t.Fatalf("reviewer workspace request = %#v, want disposable repo, scratch, fixed diff, and default cap", workspace)
 	}
 	if provider.threadCalls != 0 {
 		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)

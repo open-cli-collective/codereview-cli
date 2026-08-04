@@ -59,6 +59,7 @@ type ReviewerWorkspaceCapable interface {
 type ReviewerWorkspaceRequest struct {
 	RepoDir            string
 	ScratchDir         string
+	DiffPath           string
 	Env                []string
 	AllowedFiles       []string
 	MaxToolOutputBytes int
