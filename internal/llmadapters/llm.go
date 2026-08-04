@@ -46,6 +46,9 @@ const (
 var (
 	// ErrTransient marks a retryable provider failure.
 	ErrTransient = llm.ErrTransient
+	// ErrMissingProviderSession marks a resume or fork of a conversation that
+	// no longer exists.
+	ErrMissingProviderSession = llm.ErrMissingProviderSession
 )
 
 // RequireReviewerWorkspace validates the neutral workspace capability.

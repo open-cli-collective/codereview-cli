@@ -20,6 +20,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
@@ -544,7 +545,9 @@ func gitWorktreeAgentSource(t *testing.T) string {
 	if err := os.MkdirAll(repoRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	if out, err := exec.Command("git", "init", repoRoot).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd := exec.Command("git", "init", repoRoot) // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd.Env = gittest.Env()
+	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init review repo: %v\n%s", err, out)
 	}
 	source := filepath.Join(repoRoot, "nested", "agents")
@@ -561,14 +564,18 @@ func siblingGitCatalogSource(t *testing.T) string {
 	if err := os.MkdirAll(reviewRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll review repo: %v", err)
 	}
-	if out, err := exec.Command("git", "init", reviewRoot).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd := exec.Command("git", "init", reviewRoot) // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd.Env = gittest.Env()
+	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init review repo: %v\n%s", err, out)
 	}
 	catalogRoot := filepath.Join(workspace, "catalog-repo")
 	if err := os.MkdirAll(catalogRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll catalog repo: %v", err)
 	}
-	if out, err := exec.Command("git", "init", catalogRoot).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd = exec.Command("git", "init", catalogRoot) // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd.Env = gittest.Env()
+	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init catalog repo: %v\n%s", err, out)
 	}
 	source := filepath.Join(catalogRoot, "agents")

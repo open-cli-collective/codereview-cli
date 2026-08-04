@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
@@ -5870,6 +5871,7 @@ func gitCommandMustSucceed(t *testing.T, dir string, args ...string) string {
 func gitCommandOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Env = gittest.Env()
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}
@@ -5906,6 +5908,7 @@ func workbenchGitCommandForTest(ref gitprovider.PRRef, repoDir string) func(cont
 			cmdArgs[2] = repoDir
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd.Env = gittest.Env()
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}
@@ -5995,7 +5998,9 @@ func trustCurrentTempFixtures(t *testing.T) {
 
 func initGitRepoForPipelineTest(t *testing.T, dir string) {
 	t.Helper()
-	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd := exec.Command("git", "init", dir) // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd.Env = gittest.Env()
+	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init %s: %v\n%s", dir, err, out)
 	}
 }
