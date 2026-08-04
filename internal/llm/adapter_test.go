@@ -671,3 +671,84 @@ func intPtr(value int) *int {
 func floatPtr(value float64) *float64 {
 	return &value
 }
+
+// A reviewer whose saved provider session has been cleaned up must still do its
+// work. Failing it instead produces a round that inspected nothing while
+// reporting zero findings, which reads as a clean pass (issue #538).
+func TestRunStructuredRecoversFromMissingProviderSession(t *testing.T) {
+	restore := activeRetryPolicy
+	activeRetryPolicy.Base = 0
+	t.Cleanup(func() { activeRetryPolicy = restore })
+
+	t.Run("retries once without the dangling session", func(t *testing.T) {
+		adapter := &FakeAdapter{SupportsResumeValue: true}
+		adapter.Queue(FakeResult{StartErr: fmt.Errorf("%w: source session s0 not found", ErrMissingProviderSession)})
+		adapter.Queue(FakeResult{SessionID: "fresh", Response: Response{StructuredOutput: []byte(`"ok"`)}})
+
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "s0", Request{Prompt: "prompt"},
+			func(data []byte) (string, error) { return string(data), nil })
+		if err != nil {
+			t.Fatalf("RunStructuredWithSessionResume: %v", err)
+		}
+		if result.SessionID != "fresh" {
+			t.Fatalf("session id = %q, want the newly started session", result.SessionID)
+		}
+		if resumes := adapter.Resumes(); len(resumes) != 1 || resumes[0].SessionID != "s0" {
+			t.Fatalf("resumes = %+v, want exactly one attempt against the dangling session", resumes)
+		}
+		// The recovery must be a fresh conversation, not another resume.
+		if got := len(adapter.Requests()); got != 1 {
+			t.Fatalf("Start calls = %d, want 1 fresh start after the dropped resume", got)
+		}
+	})
+
+	t.Run("does not retry forever when the fresh start also reports it", func(t *testing.T) {
+		adapter := &FakeAdapter{SupportsResumeValue: true}
+		missing := fmt.Errorf("%w: no conversation found with session id", ErrMissingProviderSession)
+		for i := 0; i < 5; i++ {
+			adapter.Queue(FakeResult{StartErr: missing})
+		}
+
+		_, err := RunStructuredWithSessionResume(context.Background(), adapter, "s0", Request{Prompt: "prompt"},
+			func(data []byte) (string, error) { return string(data), nil })
+		if !errors.Is(err, ErrMissingProviderSession) {
+			t.Fatalf("err = %v, want ErrMissingProviderSession", err)
+		}
+		if got := len(adapter.Requests()); got != 1 {
+			t.Fatalf("Start calls = %d, want the fallback to be attempted exactly once", got)
+		}
+	})
+
+	t.Run("leaves the transient budget intact for the fresh attempt", func(t *testing.T) {
+		adapter := &FakeAdapter{SupportsResumeValue: true}
+		adapter.Queue(FakeResult{StartErr: fmt.Errorf("%w: source session s0 not found", ErrMissingProviderSession)})
+		// Same number of transient failures a first-attempt task is allowed.
+		for i := 0; i < activeRetryPolicy.MaxRetries; i++ {
+			adapter.Queue(FakeResult{StartErr: fmt.Errorf("%w: overloaded", ErrTransient)})
+		}
+		adapter.Queue(FakeResult{SessionID: "fresh", Response: Response{StructuredOutput: []byte(`"ok"`)}})
+
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "s0", Request{Prompt: "prompt"},
+			func(data []byte) (string, error) { return string(data), nil })
+		if err != nil {
+			t.Fatalf("RunStructuredWithSessionResume: %v", err)
+		}
+		if result.SessionID != "fresh" {
+			t.Fatalf("session id = %q, want the newly started session", result.SessionID)
+		}
+	})
+
+	t.Run("a session-less task keeps failing rather than looping", func(t *testing.T) {
+		adapter := &FakeAdapter{SupportsResumeValue: true}
+		adapter.Queue(FakeResult{StartErr: fmt.Errorf("%w: no conversation found with session id", ErrMissingProviderSession)})
+
+		_, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"},
+			func(data []byte) (string, error) { return string(data), nil })
+		if !errors.Is(err, ErrMissingProviderSession) {
+			t.Fatalf("err = %v, want the error surfaced when there is no session to drop", err)
+		}
+		if got := len(adapter.Requests()); got != 1 {
+			t.Fatalf("Start calls = %d, want no extra attempt", got)
+		}
+	})
+}
