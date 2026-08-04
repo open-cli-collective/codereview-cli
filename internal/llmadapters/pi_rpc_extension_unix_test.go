@@ -26,7 +26,7 @@ func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 		t.Fatalf("WriteFile(helper): %v", err)
 	}
 	extensionPath := filepath.Join(tempDir, "extension.mjs")
-	extension := piRPCReviewerExtension(helperPath, filepath.Join(tempDir, "config.json"), tempDir, 2048, 5*time.Second)
+	extension := piRPCReviewerExtension(helperPath, filepath.Join(tempDir, "config.json"), tempDir, 2048, 5*time.Second, "")
 	if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil { // #nosec G703 -- extensionPath is rooted in t.TempDir.
 		t.Fatalf("WriteFile(extension): %v", err)
 	}
@@ -68,7 +68,7 @@ func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 }
 
 func TestPiRPCReviewerExtensionRequiresDiffBeforeHeadTools(t *testing.T) {
-	extension := piRPCReviewerExtension("review-tool", "config.json", "/repo", 2048, time.Second)
+	extension := piRPCReviewerExtension("review-tool", "config.json", "/repo", 2048, time.Second, "")
 	for _, want := range []string{
 		"let diffAttempted = false",
 		"if (!diffAttempted)",

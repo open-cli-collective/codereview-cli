@@ -4999,7 +4999,7 @@ func TestBuildReviewerCoverageStatuses(t *testing.T) {
 	}
 }
 
-func TestBuildReviewerCoverageDoesNotMarkCrDiffFailureComplete(t *testing.T) {
+func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},
 		[]llm.Findings{{
@@ -5009,12 +5009,18 @@ func TestBuildReviewerCoverageDoesNotMarkCrDiffFailureComplete(t *testing.T) {
 		}},
 		nil,
 		[]string{"main.go"},
+		map[string]*llm.ReviewerToolEvidence{
+			"harness:reviewer": {DiffStatus: llm.DiffToolStatusSucceeded},
+		},
 	)
 	if len(got) != 1 {
 		t.Fatalf("coverage entries = %#v", got)
 	}
-	if got[0].Status != "incomplete_tool" || got[0].Diagnostic != "cr_diff: fixed diff unavailable" {
-		t.Fatalf("coverage = %#v, want incomplete tool diagnostic", got[0])
+	if got[0].Status != reviewerCoverageCompleteBroad || got[0].Diagnostic != "" {
+		t.Fatalf("coverage = %#v, want complete coverage from successful typed evidence", got[0])
+	}
+	if !reflect.DeepEqual(got[0].Constraints, []string{"cr_diff: fixed diff unavailable"}) {
+		t.Fatalf("constraints = %#v, want unmodified reviewer constraints", got[0].Constraints)
 	}
 }
 

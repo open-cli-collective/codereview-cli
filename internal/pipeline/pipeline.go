@@ -861,7 +861,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	result.Findings = findings
 	result.ReviewerFailures = reviewerFailures
 	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerSessions)
-	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles)
+	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles, reviewerToolEvidenceByAgent(reviewerSessions))
 	result.ReviewerCoverage = reviewerCoverage
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
 
@@ -2032,9 +2032,6 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		}
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
-	if diagnostic := reviewerToolDiagnostic(session.Response.ReviewerToolEvidence, artifacts.Dir); diagnostic != "" {
-		findings = appendReviewerToolDiagnostic(findings, diagnostic)
-	}
 	return findings, session, ledgerSession, nil, nil
 }
 
@@ -2153,22 +2150,6 @@ func normalizeReviewerToolDiagnostic(value, artifactDir string) string {
 		value = string(runes[:reviewerToolDiagnosticMaxRunes-3]) + "..."
 	}
 	return value
-}
-
-func appendReviewerToolDiagnostic(findings llm.Findings, diagnostic string) llm.Findings {
-	if diagnostic == "" {
-		return findings
-	}
-	constraints := make([]string, 0, len(findings.Constraints)+1)
-	for _, constraint := range findings.Constraints {
-		lower := strings.ToLower(strings.TrimSpace(constraint))
-		if strings.HasPrefix(lower, "cr_diff:") || (strings.Contains(lower, "pi reviewer tool") && strings.Contains(lower, "failed")) {
-			continue
-		}
-		constraints = append(constraints, constraint)
-	}
-	findings.Constraints = append(constraints, diagnostic)
-	return findings
 }
 
 func prepareNamedSession(ctx context.Context, opts Options, req Request, live bool, model string, now time.Time) (namedSessionState, error) {
@@ -2441,7 +2422,18 @@ func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerF
 	return out
 }
 
-func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string) []reviewplan.ReviewerCoverageSummary {
+func reviewerToolEvidenceByAgent(sessions []sessionDraft) map[string]*llm.ReviewerToolEvidence {
+	out := make(map[string]*llm.ReviewerToolEvidence, len(sessions))
+	for _, session := range sessions {
+		if session.AgentID == nil || session.Response.ReviewerToolEvidence == nil {
+			continue
+		}
+		out[*session.AgentID] = session.Response.ReviewerToolEvidence
+	}
+	return out
+}
+
+func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
 	if len(selected) == 0 {
 		return nil
 	}
@@ -2479,21 +2471,10 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		}
 		entry.InspectedFiles = copySortedStrings(result.InspectedFiles)
 		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
-		var toolDiagnostic string
-		constraints := make([]string, 0, len(result.Constraints))
-		for _, constraint := range result.Constraints {
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(constraint)), "cr_diff:") {
-				if toolDiagnostic == "" {
-					toolDiagnostic = constraint
-				}
-				continue
-			}
-			constraints = append(constraints, constraint)
-		}
-		entry.Constraints = copySortedStrings(constraints)
-		if toolDiagnostic != "" {
+		entry.Constraints = copySortedStrings(result.Constraints)
+		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {
 			entry.Status = reviewerCoverageIncompleteTool
-			entry.Diagnostic = toolDiagnostic
+			entry.Diagnostic = reviewerToolDiagnostic(evidence, "")
 			out = append(out, entry)
 			continue
 		}
@@ -2526,6 +2507,13 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 		})
 	}
 	return out
+}
+
+func reviewerToolEvidenceForAgent(evidenceMaps []map[string]*llm.ReviewerToolEvidence, agentID string) *llm.ReviewerToolEvidence {
+	if len(evidenceMaps) == 0 {
+		return nil
+	}
+	return evidenceMaps[0][agentID]
 }
 
 // reviewerAssignmentScope is the coverage expectation: selected or allowed files
