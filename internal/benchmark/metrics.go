@@ -19,7 +19,36 @@ type RunMetrics struct {
 	ToolResults int            `json:"tool_results"`
 	Tokens      TokenMetrics   `json:"tokens"`
 	Cost        CostMetrics    `json:"cost"`
+	PiDiff      *PiDiffMetrics `json:"pi_diff,omitempty"`
 	Phases      []PhaseMetrics `json:"phases,omitempty"`
+}
+
+// PiDiffMetrics counts CR-owned cr_diff evidence records in a run.
+type PiDiffMetrics struct {
+	Succeeded  int `json:"succeeded"`
+	Failed     int `json:"failed"`
+	NotInvoked int `json:"not_invoked"`
+	Incomplete int `json:"incomplete,omitempty"`
+}
+
+func (m *PiDiffMetrics) add(other PiDiffMetrics) {
+	m.Succeeded += other.Succeeded
+	m.Failed += other.Failed
+	m.NotInvoked += other.NotInvoked
+	m.Incomplete += other.Incomplete
+}
+
+func (m *PiDiffMetrics) addStatus(status string) {
+	switch status {
+	case "succeeded":
+		m.Succeeded++
+	case "failed":
+		m.Failed++
+	case "not_invoked":
+		m.NotInvoked++
+	default:
+		m.Incomplete++
+	}
 }
 
 // TokenMetrics records provider token usage.
@@ -44,23 +73,24 @@ type CostMetrics struct {
 
 // PhaseMetrics summarizes one agent log.
 type PhaseMetrics struct {
-	Name        string       `json:"name"`
-	Role        string       `json:"role,omitempty"`
-	LogPath     string       `json:"log_path"`
-	Provider    string       `json:"provider,omitempty"`
-	Model       string       `json:"model,omitempty"`
-	StopReason  string       `json:"stop_reason,omitempty"`
-	LLMCalls    int          `json:"llm_calls"`
-	Turns       int          `json:"turns"`
-	ToolCalls   int          `json:"tool_calls"`
-	ToolResults int          `json:"tool_results"`
-	Tokens      TokenMetrics `json:"tokens"`
-	Cost        CostMetrics  `json:"cost"`
+	Name        string         `json:"name"`
+	Role        string         `json:"role,omitempty"`
+	LogPath     string         `json:"log_path"`
+	Provider    string         `json:"provider,omitempty"`
+	Model       string         `json:"model,omitempty"`
+	StopReason  string         `json:"stop_reason,omitempty"`
+	LLMCalls    int            `json:"llm_calls"`
+	Turns       int            `json:"turns"`
+	ToolCalls   int            `json:"tool_calls"`
+	ToolResults int            `json:"tool_results"`
+	Tokens      TokenMetrics   `json:"tokens"`
+	Cost        CostMetrics    `json:"cost"`
+	PiDiff      *PiDiffMetrics `json:"pi_diff,omitempty"`
 }
 
 // HasData reports whether metrics contain provider usage or activity.
 func (m RunMetrics) HasData() bool {
-	return len(m.Phases) > 0 || m.Turns > 0 || m.LLMCalls > 0 || m.ToolCalls > 0 || m.ToolResults > 0 || m.Tokens.Available || m.Cost.Available || m.Tokens.TotalTokens > 0 || m.Cost.Total > 0
+	return len(m.Phases) > 0 || m.PiDiff != nil || m.Turns > 0 || m.LLMCalls > 0 || m.ToolCalls > 0 || m.ToolResults > 0 || m.Tokens.Available || m.Cost.Available || m.Tokens.TotalTokens > 0 || m.Cost.Total > 0
 }
 
 // HasTokenUsage reports whether provider token telemetry was captured.
@@ -81,6 +111,12 @@ func (m *RunMetrics) Add(other RunMetrics) {
 	m.ToolResults += other.ToolResults
 	m.Tokens.add(other.Tokens)
 	m.Cost.add(other.Cost)
+	if other.PiDiff != nil {
+		if m.PiDiff == nil {
+			m.PiDiff = &PiDiffMetrics{}
+		}
+		m.PiDiff.add(*other.PiDiff)
+	}
 }
 
 // ExtractRunMetrics reads agent JSONL logs from a review artifact directory.
@@ -110,6 +146,12 @@ func ExtractRunMetrics(artifactPath string) (RunMetrics, error) {
 		metrics.LLMCalls += phase.LLMCalls
 		metrics.Tokens.add(phase.Tokens)
 		metrics.Cost.add(phase.Cost)
+		if phase.PiDiff != nil {
+			if metrics.PiDiff == nil {
+				metrics.PiDiff = &PiDiffMetrics{}
+			}
+			metrics.PiDiff.add(*phase.PiDiff)
+		}
 	}
 	return metrics, nil
 }
@@ -130,6 +172,15 @@ func extractPhaseMetrics(logPath string) (PhaseMetrics, error) {
 	for scanner.Scan() {
 		var event map[string]any
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			if status, handled := parsePiDiffEvidence(scanner.Bytes()); handled {
+				if status != "" {
+					if phase.PiDiff == nil {
+						phase.PiDiff = &PiDiffMetrics{}
+					}
+					phase.PiDiff.addStatus(status)
+				}
+				continue
+			}
 			return PhaseMetrics{}, fmt.Errorf("%s: %w", logPath, err)
 		}
 		accumulateEvent(&phase, event, partialFallbacks)
@@ -378,7 +429,7 @@ func (m *CostMetrics) add(other CostMetrics) {
 }
 
 func phaseHasData(phase PhaseMetrics) bool {
-	return phase.LLMCalls > 0 || phase.Turns > 0 || phase.ToolCalls > 0 || phase.ToolResults > 0 || phase.Tokens.Available || phase.Cost.Available || phase.Tokens.TotalTokens > 0 || phase.Cost.Total > 0
+	return phase.PiDiff != nil || phase.LLMCalls > 0 || phase.Turns > 0 || phase.ToolCalls > 0 || phase.ToolResults > 0 || phase.Tokens.Available || phase.Cost.Available || phase.Tokens.TotalTokens > 0 || phase.Cost.Total > 0
 }
 
 func phaseName(logPath string) string {
@@ -400,6 +451,38 @@ func phaseRole(name string) string {
 			return "orchestrator"
 		}
 		return "reviewer"
+	}
+}
+
+const piDiffEvidencePrefix = "codereview-pi-tool-evidence"
+
+func parsePiDiffEvidence(line []byte) (string, bool) {
+	fields := strings.Fields(strings.TrimSpace(string(line)))
+	if len(fields) == 0 || fields[0] != piDiffEvidencePrefix {
+		return "", false
+	}
+	tool := ""
+	status := ""
+	for _, field := range fields[1:] {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "tool":
+			tool = value
+		case "status":
+			status = value
+		}
+	}
+	if tool != "cr_diff" {
+		return "", true
+	}
+	switch status {
+	case "succeeded", "failed", "not_invoked", "incomplete":
+		return status, true
+	default:
+		return "incomplete", true
 	}
 }
 
