@@ -196,8 +196,8 @@ func TestResolveFirstAvailableUsesFirstConfiguredTier(t *testing.T) {
 	if got.Tier != config.ModelTierMedium {
 		t.Fatalf("Tier = %q, want %q", got.Tier, config.ModelTierMedium)
 	}
-	if got.Model != "claude-sonnet-4-6" {
-		t.Fatalf("Model = %q, want claude-sonnet-4-6", got.Model)
+	if got.Model != "claude-sonnet-5" {
+		t.Fatalf("Model = %q, want claude-sonnet-5", got.Model)
 	}
 	if got.Effort != "low" {
 		t.Fatalf("Effort = %q, want low", got.Effort)

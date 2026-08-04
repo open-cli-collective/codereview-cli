@@ -10367,7 +10367,7 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "" {
 		t.Fatalf("initial small model = %q, want unmapped Claude small model", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-4-6" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5" {
 		t.Fatalf("initial medium model = %q, want Claude built-in", got)
 	}
 

@@ -539,10 +539,10 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName: "claude-cli",
 		DisplayName:   "Claude CLI",
 		BuiltInModelMap: ModelMap{
-			string(ModelTierMedium): "claude-sonnet-4-6",
-			string(ModelTierLarge):  "claude-opus-4-8",
+			string(ModelTierMedium): "claude-sonnet-5",
+			string(ModelTierLarge):  "claude-opus-5",
 		},
-		FastModeModels: []string{"claude-opus-4-8", "claude-opus-4-7"},
+		FastModeModels: []string{"claude-opus-5", "claude-opus-4-8"},
 	},
 	{
 		Provider:              LLMProviderAnthropic,
@@ -551,7 +551,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName:         "anthropic-api-key",
 		DisplayName:           "Anthropic API",
 		BuiltInModelMap:       ModelMap{},
-		FastModeModels:        []string{"claude-opus-4-8", "claude-opus-4-7"},
+		FastModeModels:        []string{"claude-opus-5", "claude-opus-4-8"},
 		RequiresCredentialRef: true,
 	},
 	{

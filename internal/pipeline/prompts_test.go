@@ -457,7 +457,7 @@ func TestRollupPromptBudgetUsesSynthesisModel(t *testing.T) {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
 	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-4-6") {
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-5") {
 		t.Fatalf("rollup budget error = %v, want synthesis-model budget failure", err)
 	}
 }
@@ -474,7 +474,7 @@ func TestRollupPromptBudgetIgnoresSelectionModelOverride(t *testing.T) {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
 	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-4-6") {
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-5") {
 		t.Fatalf("rollup budget error = %v, want default synthesis model despite selection override", err)
 	}
 }
