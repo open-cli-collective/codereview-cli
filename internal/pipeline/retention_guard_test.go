@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 
@@ -98,6 +99,7 @@ func TestExecuteHoldsActiveRunsLockForRunDuration(t *testing.T) {
 			}
 			// #nosec G204 -- test passthrough of the pipeline's own git args.
 			cmd := exec.CommandContext(gitCtx, "git", args...)
+			cmd.Env = gittest.Env()
 			cmd.Dir = dir
 			return cmd.CombinedOutput()
 		},
