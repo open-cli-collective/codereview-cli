@@ -272,18 +272,40 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		fmt.Fprintf(out, "| %s | %s | %s | %s | %s |\n",
 			escapeCell(entry.AgentID),
 			escapeCell(entry.Status),
-			escapeCell(orUnavailable(strings.Join(entry.InspectedFiles, ", "))),
-			escapeCell(orUnavailable(strings.Join(entry.SkippedFiles, ", "))),
+			escapeCell(coverageCollectionCell(entry, entry.InspectedFiles)),
+			escapeCell(coverageCollectionCell(entry, entry.SkippedFiles)),
 			escapeCell(coverageAnnotationCell(entry)),
 		)
 	}
 	out.WriteString("\n")
 }
 
+func coverageCollectionCell(entry ReviewerCoverageSummary, values []string) string {
+	if len(values) > 0 {
+		return strings.Join(values, ", ")
+	}
+	if coverageResultProduced(entry.Status) {
+		return "none"
+	}
+	return unavailableValue
+}
+
+func coverageResultProduced(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "complete_broad", "complete_constrained", "incomplete_skipped":
+		return true
+	default:
+		return false
+	}
+}
+
 func coverageAnnotationCell(entry ReviewerCoverageSummary) string {
 	parts := append([]string(nil), entry.Constraints...)
 	if strings.TrimSpace(entry.Diagnostic) != "" {
 		parts = append(parts, entry.Diagnostic)
+	}
+	if len(parts) == 0 && coverageResultProduced(entry.Status) {
+		return "none"
 	}
 	return orUnavailable(strings.Join(parts, "; "))
 }

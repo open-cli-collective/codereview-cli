@@ -364,6 +364,51 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
+	t.Run("coverage cells distinguish known empty collections from missing results", func(t *testing.T) {
+		req := baseRequest()
+		req.Findings = nil
+		req.Rollup = review.Rollup{
+			ReviewEvent:          review.ReviewEventApprove,
+			ReviewEventRationale: "no findings",
+			OrderedFindings:      nil,
+		}
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"complete-broad", "complete-constrained", "failed"},
+			ReviewerCoverage: []ReviewerCoverageSummary{
+				{
+					AgentID:        "complete-broad",
+					Status:         "complete_broad",
+					InspectedFiles: []string{"main.go"},
+				},
+				{
+					AgentID:      "complete-constrained",
+					Status:       "complete_constrained",
+					SkippedFiles: []string{"main.go"},
+					Constraints:  []string{"read-only tools"},
+				},
+				{
+					AgentID: "failed",
+					Status:  "incomplete_failed",
+					Scope:   []string{"main.go"},
+				},
+			},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		md := plan.RollupMarkdown
+		for _, want := range []string{
+			"| complete-broad | complete_broad | main.go | none | none |",
+			"| complete-constrained | complete_constrained | none | main.go | read-only tools |",
+			"| failed | incomplete_failed | unavailable | unavailable | unavailable |",
+		} {
+			if !strings.Contains(md, want) {
+				t.Fatalf("coverage row missing %q:\n%s", want, md)
+			}
+		}
+	})
+
 	t.Run("unknown reviewer coverage status force comment", func(t *testing.T) {
 		req := baseRequest()
 		req.Findings = nil
