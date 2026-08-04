@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -110,6 +111,57 @@ func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
 	}
 }
 
+func TestDryRunPublishesPinnedDiffBeforeReviewerStart(t *testing.T) {
+	ctx := context.Background()
+	invocationDir := t.TempDir()
+	gitCommandMustSucceed(t, invocationDir, "init")
+	t.Chdir(invocationDir)
+	fixture := newWorkbenchGitFixture(t)
+	provider, req := dryRunHarness(t)
+	provider.pr = fixture.pr
+	addRepoAgentFixture(provider)
+	pinnedDiff := "diff --git a/main.go b/main.go\nindex 1111111..2222222 100644\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,2 @@\n package main\n-var changed = false\n+var changed = true\n"
+	provider.diff = gitprovider.UnifiedDiff{Raw: pinnedDiff}
+	req.PRRef = fixture.pr.Ref
+	req.PRURL = fixture.pr.URL
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	base := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter := &diffReadingAdapter{FakeAdapter: base}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:   provider,
+		Adapter:    adapter,
+		Store:      store,
+		Layout:     statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:        fixedNow,
+		GitCommand: workbenchGitCommandForTest(req.PRRef, fixture.repoDir),
+		ResolveRepoRoot: func(context.Context) (string, error) {
+			return invocationDir, nil
+		},
+		NewRunID:        func() string { return "run-pinned-diff" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if adapter.diffReadErr != nil {
+		t.Fatalf("reviewer read diff: %v", adapter.diffReadErr)
+	}
+	if len(adapter.diffContents) != 1 || adapter.diffContents[0] != pinnedDiff {
+		t.Fatalf("reviewer diff contents = %#v, want pinned diff", adapter.diffContents)
+	}
+	if got, err := os.ReadFile(result.Artifacts.DiffPatch); err != nil || string(got) != pinnedDiff {
+		t.Fatalf("retained diff = %q, %v; want pinned diff", got, err)
+	}
+}
+
 func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -198,6 +250,24 @@ func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
 	if len(secondAdapter.Requests()) != 0 || len(secondAdapter.Resumes()) != 0 {
 		t.Fatalf("adapter invoked despite stale reviewer metadata: starts=%#v resumes=%#v", secondAdapter.Requests(), secondAdapter.Resumes())
 	}
+}
+
+type diffReadingAdapter struct {
+	*llm.FakeAdapter
+	diffContents []string
+	diffReadErr  error
+}
+
+func (a *diffReadingAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	if req.ReviewerWorkspace != nil {
+		data, err := os.ReadFile(req.ReviewerWorkspace.DiffPath)
+		if err != nil {
+			a.diffReadErr = fmt.Errorf("read reviewer diff: %w", err)
+		} else {
+			a.diffContents = append(a.diffContents, string(data))
+		}
+	}
+	return a.FakeAdapter.Start(ctx, req)
 }
 
 func TestDryRunReviewerWorkspaceAvoidsContextStuffingBudgetFailures(t *testing.T) {
