@@ -454,7 +454,9 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	}
 	waitErr := cmd.Wait()
 	<-stderrDone
-	s.writeReviewerToolEvidence()
+	evidence := s.reviewerToolEvidence()
+	s.writeReviewerToolEvidence(evidence)
+	scanResult.response.ReviewerToolEvidence = evidence
 
 	result := subprocessResult{response: scanResult.response}
 	switch {
@@ -589,24 +591,35 @@ func (s *piRPCStream) observeReviewerToolEvent(event piRPCEvent) {
 	}
 }
 
-func (s *piRPCStream) writeReviewerToolEvidence() {
-	if !s.allowReviewerTools || s.toolEvidenceBytesLeft <= 0 {
-		return
+func (s *piRPCStream) reviewerToolEvidence() *llm.ReviewerToolEvidence {
+	if !s.allowReviewerTools {
+		return nil
 	}
-	status := "not_invoked"
+	status := llm.DiffToolStatusNotInvoked
 	switch {
 	case s.diffToolFailed > 0:
-		status = "failed"
+		status = llm.DiffToolStatusFailed
 	case s.diffToolCompleted > 0:
-		status = "succeeded"
+		status = llm.DiffToolStatusSucceeded
 	case s.diffToolStarted > 0:
-		status = "incomplete"
+		status = llm.DiffToolStatusIncomplete
 	}
-	evidence := fmt.Sprintf("codereview-pi-tool-evidence tool=cr_diff status=%s started=%d completed=%d failed=%d", status, s.diffToolStarted, s.diffToolCompleted, s.diffToolFailed)
-	if status == "failed" {
-		evidence += fmt.Sprintf(" error=%q", boundPiRPCToolError(s.diffToolError))
+	evidence := &llm.ReviewerToolEvidence{DiffStatus: status}
+	if status == llm.DiffToolStatusFailed {
+		evidence.DiffDiagnostic = boundPiRPCToolError(s.diffToolError)
 	}
-	evidenceBytes := []byte(evidence + "\n")
+	return evidence
+}
+
+func (s *piRPCStream) writeReviewerToolEvidence(evidence *llm.ReviewerToolEvidence) {
+	if evidence == nil || s.toolEvidenceBytesLeft <= 0 {
+		return
+	}
+	line := fmt.Sprintf("codereview-pi-tool-evidence tool=cr_diff status=%s started=%d completed=%d failed=%d", evidence.DiffStatus, s.diffToolStarted, s.diffToolCompleted, s.diffToolFailed)
+	if evidence.DiffStatus == llm.DiffToolStatusFailed {
+		line += fmt.Sprintf(" error=%q", evidence.DiffDiagnostic)
+	}
+	evidenceBytes := []byte(line + "\n")
 	s.logLimitMu.Lock()
 	defer s.logLimitMu.Unlock()
 	writeBytes := min(len(evidenceBytes), s.toolEvidenceBytesLeft)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -209,6 +210,31 @@ func TestSessionDraftFromMetadataRestoresAgentID(t *testing.T) {
 	empty := SessionDraftFromMetadata(Metadata{AgentID: "   "})
 	if empty.AgentID != nil {
 		t.Fatalf("empty.AgentID = %#v, want nil", empty.AgentID)
+	}
+}
+
+func TestSessionDraftFromMetadataRestoresReviewerToolEvidence(t *testing.T) {
+	evidence := &llm.ReviewerToolEvidence{
+		DiffStatus:     llm.DiffToolStatusFailed,
+		DiffDiagnostic: "fixed diff unavailable",
+	}
+	meta := BaseMetadata(lifecycleRequest(t, newLifecycleStore(), &llm.FakeAdapter{}), SessionDraft{
+		Response: llm.Response{ReviewerToolEvidence: evidence},
+	})
+	if !reflect.DeepEqual(meta.ReviewerToolEvidence, evidence) {
+		t.Fatalf("metadata reviewer tool evidence = %#v, want %#v", meta.ReviewerToolEvidence, evidence)
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("Marshal metadata: %v", err)
+	}
+	var restored Metadata
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatalf("Unmarshal metadata: %v", err)
+	}
+	draft := SessionDraftFromMetadata(restored)
+	if !reflect.DeepEqual(draft.Response.ReviewerToolEvidence, evidence) {
+		t.Fatalf("reviewer tool evidence = %#v, want %#v", draft.Response.ReviewerToolEvidence, evidence)
 	}
 }
 

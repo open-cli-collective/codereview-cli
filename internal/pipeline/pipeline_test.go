@@ -998,6 +998,57 @@ func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
 	}
 }
 
+func TestDryRunTypedReviewerToolEvidenceForcesIncompleteCoverage(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     llm.DiffToolStatus
+		diagnostic string
+		want       string
+	}{
+		{name: "not invoked", status: llm.DiffToolStatusNotInvoked, want: "cr_diff: not invoked"},
+		{name: "incomplete", status: llm.DiffToolStatusIncomplete, want: "cr_diff: tool incomplete"},
+		{name: "failed", status: llm.DiffToolStatusFailed, diagnostic: "fixed diff unavailable", want: "cr_diff: fixed diff unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+			adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
+			adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+			reviewer := fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", []string{"main.go"}, nil), 1, 1)
+			reviewer.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: tt.status, DiffDiagnostic: tt.diagnostic}
+			adapter.Queue(reviewer)
+			adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 1, 1))
+
+			result, err := dryRunForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewRunID:        func() string { return "run-typed-tool-evidence" },
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req)
+			if err != nil {
+				t.Fatalf("DryRun: %v", err)
+			}
+			if result.Plan.Outcome != reviewplan.OutcomeComment {
+				t.Fatalf("outcome = %q, want comment despite approve rollup", result.Plan.Outcome)
+			}
+			coverage := result.Plan.Summary.Run.ReviewerCoverage
+			if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteTool || coverage[0].Diagnostic != tt.want {
+				t.Fatalf("coverage = %#v, want incomplete tool diagnostic %q", coverage, tt.want)
+			}
+		})
+	}
+}
+
 func TestDryRunNormalizesReviewerFindingsFileAlias(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -4963,11 +5014,10 @@ func TestBuildReviewerCoverageDoesNotMarkCrDiffFailureComplete(t *testing.T) {
 }
 
 func TestReviewerToolDiagnosticNormalizesPreciseFailure(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "reviewer.jsonl")
-	if err := os.WriteFile(logPath, []byte(`codereview-pi-tool-evidence tool=cr_diff status=failed started=1 completed=1 failed=1 error="fixed diff: open /private/artifacts/run/diff.patch: no such file or directory"`+"\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	got := reviewerToolDiagnostic(logPath, filepath.Dir(logPath))
+	got := reviewerToolDiagnostic(&llm.ReviewerToolEvidence{
+		DiffStatus:     llm.DiffToolStatusFailed,
+		DiffDiagnostic: "fixed diff: open /private/artifacts/run/diff.patch: no such file or directory",
+	}, "")
 	want := "cr_diff: fixed diff: open <path> no such file or directory"
 	if got != want {
 		t.Fatalf("reviewerToolDiagnostic = %q, want %q", got, want)
@@ -4975,11 +5025,7 @@ func TestReviewerToolDiagnosticNormalizesPreciseFailure(t *testing.T) {
 }
 
 func TestReviewerToolDiagnosticMarksDiffNotInvokedIncomplete(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "reviewer.jsonl")
-	if err := os.WriteFile(logPath, []byte("codereview-pi-tool-evidence tool=cr_diff status=not_invoked started=0 completed=0 failed=0\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if got := reviewerToolDiagnostic(logPath, filepath.Dir(logPath)); got != "cr_diff: not invoked" {
+	if got := reviewerToolDiagnostic(&llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusNotInvoked}, t.TempDir()); got != "cr_diff: not invoked" {
 		t.Fatalf("reviewerToolDiagnostic = %q, want not invoked diagnostic", got)
 	}
 }

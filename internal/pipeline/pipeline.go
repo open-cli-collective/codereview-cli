@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2033,7 +2032,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		}
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
 	}
-	if diagnostic := reviewerToolDiagnostic(logPath, artifacts.Dir); diagnostic != "" {
+	if diagnostic := reviewerToolDiagnostic(session.Response.ReviewerToolEvidence, artifacts.Dir); diagnostic != "" {
 		findings = appendReviewerToolDiagnostic(findings, diagnostic)
 	}
 	return findings, session, ledgerSession, nil, nil
@@ -2128,52 +2127,18 @@ func sanitizeTaskErrorForMarkdown(err error) string {
 	return value
 }
 
-func reviewerToolDiagnostic(logPath, artifactDir string) string {
-	data, err := os.ReadFile(logPath) // #nosec G304 -- logPath is the run-owned reviewer log.
-	if err != nil {
+func reviewerToolDiagnostic(evidence *llm.ReviewerToolEvidence, artifactDir string) string {
+	if evidence == nil || evidence.DiffStatus == llm.DiffToolStatusSucceeded {
 		return ""
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.Contains(line, "codereview-pi-tool-evidence") {
-			continue
-		}
-		status := reviewerEvidenceField(line, "status")
-		if status == "" || status == "succeeded" {
-			continue
-		}
-		detail := reviewerEvidenceField(line, "error")
-		if detail == "" && status == "not_invoked" {
-			detail = "not invoked"
-		}
-		if detail == "" {
-			detail = "tool " + status
-		}
-		return normalizeReviewerToolDiagnostic("cr_diff: "+detail, artifactDir)
+	detail := strings.TrimSpace(evidence.DiffDiagnostic)
+	if detail == "" && evidence.DiffStatus == llm.DiffToolStatusNotInvoked {
+		detail = "not invoked"
 	}
-	return ""
-}
-
-func reviewerEvidenceField(line, field string) string {
-	marker := field + "="
-	index := strings.Index(line, marker)
-	if index < 0 {
-		return ""
+	if detail == "" {
+		detail = "tool " + string(evidence.DiffStatus)
 	}
-	value := strings.TrimSpace(line[index+len(marker):])
-	if value == "" {
-		return ""
-	}
-	if strings.HasPrefix(value, "\"") {
-		if decoded, err := strconv.Unquote(value); err == nil {
-			return decoded
-		}
-		return ""
-	}
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return ""
-	}
-	return fields[0]
+	return normalizeReviewerToolDiagnostic("cr_diff: "+detail, artifactDir)
 }
 
 func normalizeReviewerToolDiagnostic(value, artifactDir string) string {

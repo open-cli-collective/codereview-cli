@@ -36,6 +36,7 @@ type Adapter interface {
 // workspace.
 type ReviewerWorkspaceMode string
 
+// Diff tool evidence terminal states.
 const (
 	// ReviewerWorkspaceNone means the adapter cannot inspect a caller-provided workspace.
 	ReviewerWorkspaceNone ReviewerWorkspaceMode = "none"
@@ -126,9 +127,31 @@ type Stream interface {
 
 // Response is the completed LLM result.
 type Response struct {
-	StructuredOutput []byte
-	Usage            Usage
-	DurationMS       int64
+	StructuredOutput     []byte
+	Usage                Usage
+	DurationMS           int64
+	ReviewerToolEvidence *ReviewerToolEvidence
+}
+
+// DiffToolStatus records the terminal state of the required reviewer diff tool.
+type DiffToolStatus string
+
+const (
+	// DiffToolStatusNotInvoked means the reviewer never invoked cr_diff.
+	DiffToolStatusNotInvoked DiffToolStatus = "not_invoked"
+	// DiffToolStatusIncomplete means the reviewer started but did not complete cr_diff.
+	DiffToolStatusIncomplete DiffToolStatus = "incomplete"
+	// DiffToolStatusSucceeded means the reviewer completed cr_diff without failure.
+	DiffToolStatusSucceeded DiffToolStatus = "succeeded"
+	// DiffToolStatusFailed means the reviewer observed a cr_diff failure.
+	DiffToolStatusFailed DiffToolStatus = "failed"
+)
+
+// ReviewerToolEvidence records bounded, machine-significant reviewer tool state.
+// It is absent when the adapter does not provide reviewer tool evidence.
+type ReviewerToolEvidence struct {
+	DiffStatus     DiffToolStatus `json:"diff_status"`
+	DiffDiagnostic string         `json:"diff_diagnostic,omitempty"`
 }
 
 // Usage records nullable usage metrics.

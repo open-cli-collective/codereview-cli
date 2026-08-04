@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
 
 func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
@@ -255,6 +257,9 @@ func TestPiRPCReviewerLogCapDoesNotBreakProtocolCompletion(t *testing.T) {
 	if string(response.StructuredOutput) != `{"ok":true}` {
 		t.Fatalf("StructuredOutput = %s, want completed final response", response.StructuredOutput)
 	}
+	if response.ReviewerToolEvidence == nil || response.ReviewerToolEvidence.DiffStatus != llm.DiffToolStatusNotInvoked {
+		t.Fatalf("reviewer tool evidence = %#v, want not-invoked cr_diff", response.ReviewerToolEvidence)
+	}
 	logged, err := os.ReadFile(logPath) // #nosec G304 -- logPath is rooted in t.TempDir.
 	if err != nil {
 		t.Fatalf("ReadFile(log): %v", err)
@@ -306,6 +311,9 @@ func TestPiRPCReviewerLogCapPreservesDiffFailureEvidence(t *testing.T) {
 	}
 	if string(response.StructuredOutput) != `{"ok":true}` {
 		t.Fatalf("StructuredOutput = %s, want completed final response", response.StructuredOutput)
+	}
+	if response.ReviewerToolEvidence == nil || response.ReviewerToolEvidence.DiffStatus != llm.DiffToolStatusFailed || response.ReviewerToolEvidence.DiffDiagnostic != "fixed diff unavailable" {
+		t.Fatalf("reviewer tool evidence = %#v, want failed cr_diff with bounded diagnostic", response.ReviewerToolEvidence)
 	}
 	logged, err := os.ReadFile(logPath) // #nosec G304 -- logPath is rooted in t.TempDir.
 	if err != nil {
