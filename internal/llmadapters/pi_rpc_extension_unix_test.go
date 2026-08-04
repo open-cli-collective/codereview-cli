@@ -31,7 +31,7 @@ func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 		t.Fatalf("WriteFile(extension): %v", err)
 	}
 	runnerPath := filepath.Join(tempDir, "runner.mjs")
-	runner := "import extension from " + strconv.Quote(extensionPath) + ";\nconst tools = {};\nextension({ registerTool(tool) { tools[tool.name] = tool; } });\nawait tools.cr_read.execute('call-1', { path: 'main.go' }, new AbortController().signal);\n"
+	runner := "import extension from " + strconv.Quote(extensionPath) + ";\nconst tools = {};\nextension({ registerTool(tool) { tools[tool.name] = tool; } });\nvoid tools.cr_diff.execute('call-1', {}, new AbortController().signal);\n"
 	if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
 		t.Fatalf("WriteFile(runner): %v", err)
 	}
