@@ -729,8 +729,48 @@ func TestRepoLoadSkipsCategoryWithNoUsableAgentsAndKeepsSiblings(t *testing.T) {
 	if len(catalog.Agents) != 1 || catalog.Agents[0].Category.Name != "good-cat" {
 		t.Fatalf("agents = %#v, want the sibling category's agent", catalog.Agents)
 	}
-	if !skippedMentions(catalog.Sources[0].Skipped, "empty-cat", "no usable agents") {
-		t.Fatalf("skipped = %#v, want the empty category recorded", catalog.Sources[0].Skipped)
+	// The malformed agent carries the actionable detail; a second category-level
+	// entry for the same root cause would make the operator read it twice, once
+	// without that detail.
+	if !skippedMentions(catalog.Sources[0].Skipped, "empty-cat", "bad") {
+		t.Fatalf("skipped = %#v, want the malformed agent recorded", catalog.Sources[0].Skipped)
+	}
+	for _, entry := range catalog.Sources[0].Skipped {
+		if entry.Category == "empty-cat" && entry.Agent == "" {
+			t.Fatalf("skipped = %#v, want no redundant category entry alongside the agent entry", catalog.Sources[0].Skipped)
+		}
+	}
+}
+
+// A category directory that declares no agents at all is a different situation
+// from one whose agents are malformed, and reports as such.
+func TestRepoLoadRecordsCategoryDeclaringNoAgents(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	goodPath := repoAgentsRoot + "/good-cat"
+	emptyPath := repoAgentsRoot + "/empty-cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "good-cat", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "empty-cat", Type: "tree"})
+
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/index.yaml", []byte("name: good-cat\ndescription: c\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, goodPath, gitprovider.TreeEntry{Path: goodPath + "/agent", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/index.yaml", []byte(agentIndexYAML("agent", "desc", "medium", "medium")))
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/prompt.md", []byte("prompt"))
+
+	// Category index only; the category tree exists but declares no agent dirs.
+	reader.addFile(ref, pr.Base.SHA, emptyPath+"/index.yaml", []byte("name: empty-cat\ndescription: c\nowner: owner\n"))
+	reader.trees[repoFileSelector{ref: ref, gitRef: pr.Base.SHA, path: emptyPath}] = nil
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 1 {
+		t.Fatalf("agents = %#v, want the sibling category's agent", catalog.Agents)
+	}
+	if !skippedMentions(catalog.Sources[0].Skipped, "empty-cat", "declares no agents") {
+		t.Fatalf("skipped = %#v, want the empty category reported as declaring nothing", catalog.Sources[0].Skipped)
 	}
 }
 

@@ -76,7 +76,7 @@ type SourceInfo struct {
 	Status          SourceStatus `json:"status"`
 	Fingerprint     string       `json:"fingerprint,omitempty"`
 	Warnings        []string     `json:"warnings,omitempty"`
-	// Skipped records definitions this source declared but could not honour, so a
+	// Skipped records definitions this source declared but could not honor, so a
 	// caller can branch on the degradation instead of parsing Warnings prose.
 	// A source with Skipped entries and Status available loaded only in part.
 	Skipped []SkippedDefinition `json:"skipped,omitempty"`
@@ -110,6 +110,9 @@ type Provenance struct {
 	CanonicalPath  string     `json:"canonical_path,omitempty"`
 	Fingerprint    string     `json:"fingerprint,omitempty"`
 	Warnings       []string   `json:"warnings,omitempty"`
+	// Skipped mirrors SourceInfo.Skipped so a SourceInfo round-tripped through
+	// Provenance keeps the definitions this source could not honor.
+	Skipped []SkippedDefinition `json:"skipped,omitempty"`
 }
 
 // String returns the user-facing provenance label.
@@ -144,6 +147,7 @@ func (p Provenance) SourceInfo() SourceInfo {
 		Status:          SourceStatusAvailable,
 		Fingerprint:     p.Fingerprint,
 		Warnings:        append([]string(nil), p.Warnings...),
+		Skipped:         append([]SkippedDefinition(nil), p.Skipped...),
 	}
 	return info
 }
@@ -545,7 +549,13 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			return fail(err)
 		}
 		if len(categoryAgents) == 0 {
-			skipped = append(skipped, SkippedDefinition{Category: categoryName, Reason: "no usable agents"})
+			// When the agents skipped themselves they already carry the actionable
+			// detail; a second entry for the same root cause makes the operator read
+			// the failure twice, once without it. A category that declared nothing
+			// is a different situation and says so.
+			if len(agentSkips) == 0 {
+				skipped = append(skipped, SkippedDefinition{Category: categoryName, Reason: "declares no agents"})
+			}
 			continue
 		}
 		loadedAgent = true
@@ -582,7 +592,11 @@ func scopedToDefinition(err error, format string, args ...any) error {
 	if !errors.Is(err, gitprovider.ErrNotFound) {
 		return err
 	}
-	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
+	// Keep the provider error in the chain: these reasons reach the operator, and a
+	// NOT_FOUND raised for something other than an absent blob leaves nothing to
+	// diagnose with otherwise. Safe for classification — skipIfInvalid and
+	// classifyRepoCatalogError both test ErrInvalid first.
+	return fmt.Errorf("%w: %s: %w", ErrInvalid, fmt.Sprintf(format, args...), err)
 }
 
 func classifyRepoCatalogError(source SourceInfo, err error) (SourceInfo, bool) {
@@ -889,6 +903,7 @@ func provenanceFromSource(source SourceInfo) Provenance {
 		CanonicalPath:  source.CanonicalPath,
 		Fingerprint:    source.Fingerprint,
 		Warnings:       append([]string(nil), source.Warnings...),
+		Skipped:        append([]SkippedDefinition(nil), source.Skipped...),
 	}
 }
 
