@@ -505,7 +505,10 @@ func TestMissingRepoAgentsTreeIsEmptySource(t *testing.T) {
 	}
 }
 
-func TestRepoLoadClassifiesMissingNestedFilesAsUnreadableSource(t *testing.T) {
+// A file missing beneath an agent directory is now a malformed agent, not an
+// unreadable source — see scopedToDefinition. With that agent skipped and no
+// sibling to fall back on, the source has nothing usable and is invalid.
+func TestRepoLoadClassifiesMissingNestedFilesAsInvalidSource(t *testing.T) {
 	ref := testPRRef()
 	pr := testPR("base-sha", "head-sha")
 	reader := newRepoReader()
@@ -522,8 +525,8 @@ func TestRepoLoadClassifiesMissingNestedFilesAsUnreadableSource(t *testing.T) {
 	if len(catalog.Agents) != 0 {
 		t.Fatalf("agents = %#v, want none", catalog.Agents)
 	}
-	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusUnreadable || !catalog.Sources[0].Present || catalog.Sources[0].Error == "" {
-		t.Fatalf("sources = %#v, want unreadable repo source", catalog.Sources)
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusInvalid || !catalog.Sources[0].Present || catalog.Sources[0].Error == "" {
+		t.Fatalf("sources = %#v, want invalid repo source", catalog.Sources)
 	}
 }
 
@@ -576,13 +579,7 @@ func TestRepoLoadSkipsMalformedAgentAndKeepsSiblings(t *testing.T) {
 		t.Fatalf("sources = %#v, want a usable repo source", catalog.Sources)
 	}
 	// The skip must be visible; a silent one is how this went unnoticed.
-	var mentionsBad bool
-	for _, w := range catalog.Sources[0].Warnings {
-		if strings.Contains(w, "bad") {
-			mentionsBad = true
-		}
-	}
-	if !mentionsBad {
+	if !warningsMention(catalog.Sources[0].Warnings, "bad") {
 		t.Fatalf("warnings = %#v, want one naming the skipped agent", catalog.Sources[0].Warnings)
 	}
 }
@@ -610,6 +607,81 @@ func TestRepoLoadInvalidWhenEveryAgentIsMalformed(t *testing.T) {
 	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusInvalid {
 		t.Fatalf("sources = %#v, want invalid repo source", catalog.Sources)
 	}
+}
+
+// Category-level skips were untested: three branches in loadRepoSource skip a
+// category, and a regression turning one back into a whole-source failure would
+// have passed CI.
+func TestRepoLoadSkipsMalformedCategoryAndKeepsSiblingCategories(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	goodPath := repoAgentsRoot + "/good-cat"
+	badPath := repoAgentsRoot + "/bad-cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "good-cat", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "bad-cat", Type: "tree"})
+
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/index.yaml", []byte("name: good-cat\ndescription: c\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, goodPath, gitprovider.TreeEntry{Path: goodPath + "/agent", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/index.yaml", []byte(agentIndexYAML("agent", "desc", "medium", "medium")))
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/prompt.md", []byte("prompt"))
+
+	// Category index naming a different category: malformed at the category level.
+	reader.addFile(ref, pr.Base.SHA, badPath+"/index.yaml", []byte("name: mismatched\ndescription: c\nowner: owner\n"))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 1 || catalog.Agents[0].Category.Name != "good-cat" {
+		t.Fatalf("agents = %#v, want the sibling category's agent", catalog.Agents)
+	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status == SourceStatusInvalid {
+		t.Fatalf("sources = %#v, want a usable repo source", catalog.Sources)
+	}
+	if !warningsMention(catalog.Sources[0].Warnings, "bad-cat") {
+		t.Fatalf("warnings = %#v, want one naming the skipped category", catalog.Sources[0].Warnings)
+	}
+}
+
+// A file missing inside one agent directory is a malformed agent, not an
+// unreadable source: forgetting to commit prompt.md must not disarm the repo.
+func TestRepoLoadSkipsAgentMissingPromptAndKeepsSiblings(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	categoryPath := repoAgentsRoot + "/cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: c\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/good", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/no-prompt", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/good/index.yaml", []byte(agentIndexYAML("good", "desc", "medium", "medium")))
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/good/prompt.md", []byte("prompt"))
+	// index.yaml present and valid; prompt.md never committed.
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/no-prompt/index.yaml", []byte(agentIndexYAML("no-prompt", "desc", "medium", "medium")))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 1 || catalog.Agents[0].Name != "good" {
+		t.Fatalf("agents = %#v, want only the complete agent", catalog.Agents)
+	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusAvailable {
+		t.Fatalf("sources = %#v, want an available repo source", catalog.Sources)
+	}
+	if !warningsMention(catalog.Sources[0].Warnings, "no-prompt") {
+		t.Fatalf("warnings = %#v, want one naming the skipped agent", catalog.Sources[0].Warnings)
+	}
+}
+
+func warningsMention(warnings []string, needle string) bool {
+	for _, w := range warnings {
+		if strings.Contains(w, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLoadRejectsEmptyFilesystemSource(t *testing.T) {

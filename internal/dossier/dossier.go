@@ -1149,6 +1149,16 @@ func renderDossierRepoGuidance(repo dossierRepoContextArtifact) string {
 				out.WriteString("\n")
 			}
 		}
+		// A partially loaded source still reports "available", so without this the
+		// run reads as if every declared agent had been honoured. Skips belong where
+		// the run is observed, not only in the artifact.
+		for _, warning := range source.Warnings {
+			if msg := strings.TrimSpace(warning); msg != "" {
+				out.WriteString("Guidance not honoured: ")
+				out.WriteString(msg)
+				out.WriteString("\n")
+			}
+		}
 	}
 	if note := strings.TrimSpace(repo.RepoInfo.TrustNote()); note != "" {
 		out.WriteString("\n")

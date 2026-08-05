@@ -451,7 +451,12 @@ func readFileAgent(agentPath string, category Category, pathName string, provena
 
 func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance, allowSoftFailures bool) ([]Agent, SourceInfo, error) {
 	repoSource := provenance.SourceInfo()
+	var skipped []string
+	// Every exit flushes the skips collected so far. An early return that dropped
+	// them would reproduce, one layer down, the silent failure this loader exists
+	// to remove: a real problem hiding because nothing recorded it.
 	fail := func(err error) ([]Agent, SourceInfo, error) {
+		repoSource.Warnings = append(repoSource.Warnings, skipped...)
 		if classified, ok := classifyRepoCatalogError(repoSource, err); allowSoftFailures && ok {
 			return nil, classified, nil
 		}
@@ -483,7 +488,6 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 	sortTreeEntries(rootEntries)
 
 	var agents []Agent
-	var skipped []string
 	loadedAgent := false
 	for _, entry := range rootEntries {
 		if entry.Type != "tree" {
@@ -521,7 +525,6 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 		loadedAgent = true
 		agents = append(agents, categoryAgents...)
 	}
-	repoSource.Warnings = append(repoSource.Warnings, skipped...)
 	// Only a source with nothing usable is treated as invalid. One malformed
 	// definition disabling every other agent in the repo is what this avoids:
 	// the failure is indistinguishable from a review that ran and found
@@ -529,7 +532,21 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 	if !loadedAgent {
 		return fail(fmt.Errorf("%w: repo source %s contains no usable agents", ErrInvalid, repoAgentsRoot))
 	}
+	repoSource.Warnings = append(repoSource.Warnings, skipped...)
 	return agents, repoSource, nil
+}
+
+// scopedToDefinition reclassifies a missing file *beneath* one agent or category
+// directory as a malformed definition. Whether a failure disqualifies one agent or
+// the whole source is a question of path scope, not error class: forgetting to commit
+// prompt.md is as much a malformed agent as a bad field in index.yaml, and only the
+// caller here knows the path is agent-scoped. Reader failures on the tree itself, and
+// any non-NotFound transport error, are left alone and still fail the source.
+func scopedToDefinition(err error, format string, args ...any) error {
+	if !errors.Is(err, gitprovider.ErrNotFound) {
+		return err
+	}
+	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
 }
 
 func classifyRepoCatalogError(source SourceInfo, err error) (SourceInfo, bool) {
@@ -555,7 +572,7 @@ func repoSourceError(source SourceInfo, status SourceStatus, err error) SourceIn
 func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath, pathName string) (Category, error) {
 	var index categoryYAML
 	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(categoryPath, "index.yaml"), &index); err != nil {
-		return Category{}, err
+		return Category{}, scopedToDefinition(err, "category %s is missing or unreadable index.yaml", pathName)
 	}
 	if err := validateMatchingName("category", pathName, index.Name); err != nil {
 		return Category{}, err
@@ -567,6 +584,13 @@ func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PR
 // skipped. A malformed definition disqualifies that agent only — an unusable
 // agent is never selected, so skipping it is as safe as refusing the whole
 // source and leaves the rest of the repo's guidance working.
+//
+// This deliberately diverges from readFileAgents, which still fails on the first
+// bad agent. The difference is the trust boundary, not an oversight: profile
+// sources are the operator's own configuration, where failing loudly is what they
+// want, while repo sources are PR-adjacent content the operator does not own and
+// cannot fix in the run. One contributor's malformed agent should not silently
+// disarm review for everyone else's PRs.
 func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath string, category Category, provenance Provenance) ([]Agent, []string, error) {
 	entries, err := reader.ListTreeAtRef(ctx, ref, gitRef, categoryPath)
 	if err != nil {
@@ -608,7 +632,7 @@ func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRe
 func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, agentPath string, category Category, pathName string, provenance Provenance) (Agent, error) {
 	var index agentYAML
 	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(agentPath, "index.yaml"), &index); err != nil {
-		return Agent{}, err
+		return Agent{}, scopedToDefinition(err, "agent %s:%s is missing or unreadable index.yaml", category.Name, pathName)
 	}
 	if err := validateMatchingName("agent", pathName, index.Name); err != nil {
 		return Agent{}, err
@@ -618,7 +642,7 @@ func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef
 	}
 	prompt, err := reader.GetFileAtRef(ctx, ref, gitRef, path.Join(agentPath, "prompt.md"))
 	if err != nil {
-		return Agent{}, err
+		return Agent{}, scopedToDefinition(err, "agent %s:%s is missing prompt.md", category.Name, pathName)
 	}
 	return newAgent(category, pathName, index, string(prompt), provenance), nil
 }
