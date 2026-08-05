@@ -629,6 +629,7 @@ Supported values:
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
 | `llm.model_map` keys | `small`, `medium`, `large` |
+| `llm.max_effort` keys | `small`, `medium`, `large`; values `low`, `medium`, `high` |
 | `llm.reviewer_model_tier` | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
@@ -658,6 +659,39 @@ in the tier-floor calculation.
 Migration note: older releases treated reviewer `model_tier` as a direct map
 lookup. Current releases treat it as a minimum acceptable tier, so profiles can
 raise the reviewer baseline without editing shared agent catalogs.
+
+### Capping Effort Per Tier
+
+Agent catalogs declare an absolute `effort` (`low`, `medium`, `high`) that
+becomes the provider's reasoning-effort setting. `llm.max_effort` caps that
+value per tier so a deployment can bound spend on expensive models without
+editing shared catalogs:
+
+```yaml
+llm:
+  model_map:
+    large: openai-codex/gpt-5.6-sol
+    medium: openai-codex/gpt-5.6-terra
+  max_effort:
+    large: medium
+```
+
+A tier absent from `max_effort` is uncapped. The cap is a ceiling only: an agent
+declaring `low` under a `medium` ceiling still runs at `low`. Caps are keyed by
+the tier resolved after the floor calculation above, and they apply to internal
+stages (selection, synthesis, thread analysis) as well as reviewers, so capping
+`medium` affects more than reviewer agents.
+
+Four paths intentionally bypass the cap, because each is an explicit selection
+of a concrete model or effort:
+
+- `--reviewer-effort` and `--reviewer-model` on `cr review`
+- agent `model_id`, which selects an exact model and has no tier to cap
+- `cr benchmark run`, where `stages.reviewers.effort` is required so candidates
+  stay comparable
+
+`cr init` preserves `max_effort` but cannot yet edit it; set it by hand in
+`config.yml`.
 
 Dry-run and no-post runs also record selected reviewer runtime resolution in
 `agent-sources.json` for auditability. Each selected agent may include

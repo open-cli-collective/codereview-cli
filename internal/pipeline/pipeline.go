@@ -3141,7 +3141,7 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 	if err != nil {
 		return llmRuntimeConfig{}, err
 	}
-	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, resolved.ResolvedModel, agent.Effort), nil
+	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, resolved.ResolvedModel, resolved.ResolvedEffort), nil
 }
 
 func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string, error) {
@@ -3178,8 +3178,9 @@ func resolveAgentModel(profile config.Profile, baselineOverride string, agent ag
 			return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 		}
 		return reviewerRuntimeResolution{
-			Mode:          "exact_model",
-			ResolvedModel: resolved.Model,
+			Mode:           "exact_model",
+			ResolvedModel:  resolved.Model,
+			ResolvedEffort: resolved.Effort,
 		}, nil
 	}
 	floorTier := config.ModelTier(strings.TrimSpace(agent.ModelTier))
@@ -3206,6 +3207,7 @@ func resolveAgentModel(profile config.Profile, baselineOverride string, agent ag
 		BaselineTier:   string(baselineTier),
 		EffectiveTier:  string(resolved.Tier),
 		ResolvedModel:  resolved.Model,
+		ResolvedEffort: resolved.Effort,
 		ModelMapSource: resolved.Source,
 	}, nil
 }

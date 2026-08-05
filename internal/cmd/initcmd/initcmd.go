@@ -430,6 +430,7 @@ type initLLMRuntimeDraft struct {
 	CredentialStore   string
 	CredentialRef     string
 	ModelMap          config.ModelMap
+	MaxEffort         config.EffortMap
 	ReviewerModelTier config.ModelTier
 }
 
@@ -3404,6 +3405,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 			}
 			profile.LLM.ModelMap = modelMap
 		}
+		if previousProfile.LLM.MaxEffort != nil {
+			profile.LLM.MaxEffort = copyEffortMap(previousProfile.LLM.MaxEffort)
+		}
 		if !cmd.Flags().Changed("agent-source") {
 			profile.AgentSources = append([]string(nil), previousProfile.AgentSources...)
 		}
@@ -4541,6 +4545,7 @@ func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 		CredentialStore:   initCredentialStoreDraftValue(llm.Credential.Store),
 		CredentialRef:     strings.TrimSpace(llm.Credential.Name),
 		ModelMap:          copyModelMap(llm.ModelMap),
+		MaxEffort:         copyEffortMap(llm.MaxEffort),
 		ReviewerModelTier: llm.ReviewerModelTier,
 	}
 	if spec, ok := config.FindLLMRuntimeSpec(runtime.Provider, runtime.Auth, runtime.Adapter); ok &&
@@ -4559,6 +4564,7 @@ func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
 		Auth:              runtime.Auth,
 		Adapter:           runtime.Adapter,
 		ModelMap:          copyModelMap(runtime.ModelMap),
+		MaxEffort:         copyEffortMap(runtime.MaxEffort),
 		ReviewerModelTier: runtime.ReviewerModelTier,
 	}
 	if runtime.Auth == config.LLMAuthAPIKey {
@@ -4577,6 +4583,15 @@ func (runtime initLLMRuntimeDraft) identityKey() string {
 	for _, tier := range modelKeys {
 		models = append(models, tier+"="+strings.TrimSpace(runtime.ModelMap[tier]))
 	}
+	effortKeys := make([]string, 0, len(runtime.MaxEffort))
+	for tier := range runtime.MaxEffort {
+		effortKeys = append(effortKeys, tier)
+	}
+	sort.Strings(effortKeys)
+	efforts := make([]string, 0, len(effortKeys))
+	for _, tier := range effortKeys {
+		efforts = append(efforts, tier+"="+strings.TrimSpace(runtime.MaxEffort[tier]))
+	}
 	return strings.Join([]string{
 		string(runtime.Provider),
 		string(runtime.Auth),
@@ -4584,6 +4599,7 @@ func (runtime initLLMRuntimeDraft) identityKey() string {
 		initCredentialStoreDraftValue(runtime.CredentialStore),
 		strings.TrimSpace(runtime.CredentialRef),
 		strings.Join(models, "\x1f"),
+		strings.Join(efforts, "\x1f"),
 		string(runtime.ReviewerModelTier),
 	}, "\x00")
 }
@@ -4762,6 +4778,7 @@ func cloneInitLLMConfig(llm config.LLMConfig) config.LLMConfig {
 			cloned.ModelMap[tier] = model
 		}
 	}
+	cloned.MaxEffort = copyEffortMap(llm.MaxEffort)
 	return cloned
 }
 
@@ -5812,6 +5829,17 @@ func initCredentialWritePlanSatisfiesEntry(entry initCredentialPlanEntry, target
 		return false
 	}
 	return true
+}
+
+func copyEffortMap(effortMap config.EffortMap) config.EffortMap {
+	if len(effortMap) == 0 {
+		return nil
+	}
+	copied := make(config.EffortMap, len(effortMap))
+	for tier, ceiling := range effortMap {
+		copied[tier] = ceiling
+	}
+	return copied
 }
 
 func copyModelMap(modelMap config.ModelMap) config.ModelMap {

@@ -203,3 +203,75 @@ func TestResolveFirstAvailableUsesFirstConfiguredTier(t *testing.T) {
 		t.Fatalf("Effort = %q, want low", got.Effort)
 	}
 }
+
+func TestResolveStageModelCapsEffortAtTierCeiling(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		ModelMap:  config.ModelMap{"large": "expensive-model", "medium": "cheap-model"},
+		MaxEffort: config.EffortMap{"large": "medium"},
+	}}
+
+	got, err := ResolveStageModel(Request{
+		Profile:       profile,
+		Stage:         StageReviewer,
+		Tier:          config.ModelTierLarge,
+		DefaultEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("ResolveStageModel: %v", err)
+	}
+	if got.Model != "expensive-model" {
+		t.Fatalf("Model = %q, want expensive-model", got.Model)
+	}
+	if got.Effort != "medium" {
+		t.Fatalf("Effort = %q, want medium (capped)", got.Effort)
+	}
+}
+
+func TestResolveStageModelLeavesUncappedTiersUntouched(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		ModelMap:  config.ModelMap{"large": "expensive-model", "medium": "cheap-model"},
+		MaxEffort: config.EffortMap{"large": "medium"},
+	}}
+
+	got, err := ResolveStageModel(Request{
+		Profile:       profile,
+		Stage:         StageReviewer,
+		Tier:          config.ModelTierMedium,
+		DefaultEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("ResolveStageModel: %v", err)
+	}
+	if got.Effort != "high" {
+		t.Fatalf("Effort = %q, want high (uncapped tier)", got.Effort)
+	}
+}
+
+func TestResolveStageModelCeilingNeverRaisesEffort(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		ModelMap:  config.ModelMap{"large": "expensive-model"},
+		MaxEffort: config.EffortMap{"large": "high"},
+	}}
+
+	got, err := ResolveStageModel(Request{
+		Profile:       profile,
+		Stage:         StageReviewer,
+		Tier:          config.ModelTierLarge,
+		DefaultEffort: "low",
+	})
+	if err != nil {
+		t.Fatalf("ResolveStageModel: %v", err)
+	}
+	if got.Effort != "low" {
+		t.Fatalf("Effort = %q, want low; ceiling must not raise effort", got.Effort)
+	}
+}

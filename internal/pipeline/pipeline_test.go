@@ -1868,6 +1868,7 @@ func TestDryRunReviewerBaselineTierRaisesReviewerModelFloor(t *testing.T) {
 		BaselineTier:   "large",
 		EffectiveTier:  "large",
 		ResolvedModel:  "profile-large-model",
+		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceConfig,
 	})
 }
@@ -2727,6 +2728,7 @@ func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 		BaselineTier:   "large",
 		EffectiveTier:  "large",
 		ResolvedModel:  "profile-large-model",
+		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceConfig,
 	})
 }
@@ -2778,8 +2780,9 @@ func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 		}
 	}
 	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
-		Mode:          "exact_model",
-		ResolvedModel: "agent-provider-model",
+		Mode:           "exact_model",
+		ResolvedModel:  "agent-provider-model",
+		ResolvedEffort: "medium",
 	})
 }
 
@@ -2819,8 +2822,9 @@ func TestDryRunReviewerBaselineDoesNotAffectAgentModelID(t *testing.T) {
 		}
 	}
 	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
-		Mode:          "exact_model",
-		ResolvedModel: "agent-provider-model",
+		Mode:           "exact_model",
+		ResolvedModel:  "agent-provider-model",
+		ResolvedEffort: "medium",
 	})
 }
 
@@ -2849,6 +2853,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 		BaselineTier:   "small",
 		EffectiveTier:  "medium",
 		ResolvedModel:  "claude-sonnet-5",
+		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	}) {
 		t.Fatalf("reviewer runtime = %#v", runtime)
@@ -2859,6 +2864,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 		BaselineTier:   "small",
 		EffectiveTier:  "large",
 		ResolvedModel:  "claude-opus-5",
+		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	}) {
 		t.Fatalf("senior runtime = %#v", runtime)
@@ -3016,6 +3022,7 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 		BaselineTier:   "small",
 		EffectiveTier:  "medium",
 		ResolvedModel:  "claude-sonnet-5",
+		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 		Fast:           true,
 		FastIgnored:    true,
@@ -7305,4 +7312,53 @@ func (noopStore) DeleteReviewerCohort(context.Context, ledger.ReviewerCohortScop
 
 func (noopStore) CompleteRun(context.Context, string, ledger.Outcome, time.Time) error {
 	return nil
+}
+
+func TestReviewerRuntimeConfigCapsEffortAtConfiguredTierCeiling(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		ModelMap:  config.ModelMap{"small": "luna", "medium": "terra", "large": "sol"},
+		MaxEffort: config.EffortMap{"large": "medium"},
+	}}
+	large := agents.Agent{ID: "architecture:solid", ModelTier: "large", Effort: "high"}
+	medium := agents.Agent{ID: "policies:conventions", ModelTier: "medium", Effort: "high"}
+
+	gotLarge, err := resolveReviewerRuntimeConfig(Request{Profile: profile}, large)
+	if err != nil {
+		t.Fatalf("resolveReviewerRuntimeConfig(large): %v", err)
+	}
+	if gotLarge.model != "sol" || gotLarge.effort != "medium" {
+		t.Fatalf("large reviewer = %+v, want model sol effort medium", gotLarge)
+	}
+
+	gotMedium, err := resolveReviewerRuntimeConfig(Request{Profile: profile}, medium)
+	if err != nil {
+		t.Fatalf("resolveReviewerRuntimeConfig(medium): %v", err)
+	}
+	if gotMedium.model != "terra" || gotMedium.effort != "high" {
+		t.Fatalf("medium reviewer = %+v, want model terra effort high", gotMedium)
+	}
+}
+
+// agent.model_id intentionally bypasses the tier map, so a tier-keyed ceiling
+// has no tier to key on and must leave the agent's declared effort alone.
+func TestReviewerRuntimeConfigLeavesAgentModelIDUncapped(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		ModelMap:  config.ModelMap{"large": "sol"},
+		MaxEffort: config.EffortMap{"large": "medium"},
+	}}
+	agent := agents.Agent{ID: "vendor:pinned", ModelID: "sol", ModelTier: "large", Effort: "high"}
+
+	got, err := resolveReviewerRuntimeConfig(Request{Profile: profile}, agent)
+	if err != nil {
+		t.Fatalf("resolveReviewerRuntimeConfig: %v", err)
+	}
+	if got.model != "sol" || got.effort != "high" {
+		t.Fatalf("model_id reviewer = %+v, want model sol effort high (uncapped)", got)
+	}
 }

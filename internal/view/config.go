@@ -270,7 +270,11 @@ func renderConfigModelMap(w io.Writer, llm config.LLMConfig) error {
 		if model == "" {
 			model = "<unset>"
 		}
-		if _, err := fmt.Fprintf(w, "    %s: %s (%s)\n", row.Tier, model, row.Source); err != nil {
+		suffix := ""
+		if ceiling := strings.TrimSpace(llm.MaxEffort[row.Tier]); ceiling != "" {
+			suffix = fmt.Sprintf(" [max effort: %s]", ceiling)
+		}
+		if _, err := fmt.Fprintf(w, "    %s: %s (%s)%s\n", row.Tier, model, row.Source, suffix); err != nil {
 			return err
 		}
 	}

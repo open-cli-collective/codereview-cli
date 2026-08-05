@@ -20,3 +20,33 @@ func (e Effort) Valid() bool {
 		return false
 	}
 }
+
+// Rank orders effort values from cheapest to most expensive. Unknown values
+// rank 0 so they never win a comparison against a valid effort.
+func (e Effort) Rank() int {
+	switch e {
+	case EffortLow:
+		return 1
+	case EffortMedium:
+		return 2
+	case EffortHigh:
+		return 3
+	default:
+		return 0
+	}
+}
+
+// MinEffort returns the cheaper of left and right. Invalid values are ignored
+// so a missing ceiling leaves the requested effort untouched.
+func MinEffort(left, right Effort) Effort {
+	if !left.Valid() {
+		return right
+	}
+	if !right.Valid() {
+		return left
+	}
+	if left.Rank() <= right.Rank() {
+		return left
+	}
+	return right
+}

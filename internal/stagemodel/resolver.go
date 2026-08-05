@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 )
 
 // Stage identifies a durable LLM interaction point in the review system.
@@ -95,9 +96,23 @@ func ResolveStageModel(req Request) (Result, error) {
 		Stage:  stage,
 		Tier:   resolved.Tier,
 		Model:  resolved.Model,
-		Effort: effort,
+		Effort: applyMaxEffort(req.Profile.LLM, resolved.Tier, effort),
 		Source: resolved.Source,
 	}, nil
+}
+
+// applyMaxEffort clamps effort to the tier's configured ceiling. Tiers without a
+// ceiling, and efforts this CLI does not recognize, pass through unchanged.
+func applyMaxEffort(llm config.LLMConfig, tier config.ModelTier, effort string) string {
+	ceiling, ok := config.ResolveMaxEffort(llm, tier)
+	if !ok {
+		return effort
+	}
+	requested := modelprefs.Effort(strings.TrimSpace(effort))
+	if !requested.Valid() {
+		return effort
+	}
+	return string(modelprefs.MinEffort(requested, ceiling))
 }
 
 // ResolveFirstAvailable resolves the first mapped tier from tiers for req.

@@ -56,6 +56,13 @@ This boundary exists so model catalog data, provider capabilities, token costs,
 and profile-level tier floors can be added without touching individual review
 stages. Runtime hard-coding bypasses user preference and is a bug.
 
+The resolver also applies the profile's `llm.max_effort` ceiling, keyed by the
+tier it resolved. Because the ceiling is tier-keyed, it does not apply to paths
+that select a concrete model or effort directly: an explicit `ModelOverride`
+returns before the clamp, and `agent.model_id` has no tier to key on. Callers
+that override effort after the resolver returns, such as `--reviewer-effort`,
+also win over the ceiling by construction.
+
 Reviewer `agent.model_id` is an exact provider-specific model override. It must
 still enter runtime execution through `stagemodel.ResolveStageModel` as a model
 override rather than bypassing the resolver, but it intentionally bypasses the
