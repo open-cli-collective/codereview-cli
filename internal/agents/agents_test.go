@@ -547,6 +547,71 @@ func TestRepoLoadClassifiesInvalidCatalogAsInvalidSource(t *testing.T) {
 	}
 }
 
+// The real-world case this guards: one agent in a repo set `model:` instead of
+// `model_tier:`, which disqualified every other agent in that repo for two
+// months. The malformed agent is skipped; its siblings still load.
+func TestRepoLoadSkipsMalformedAgentAndKeepsSiblings(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	categoryPath := repoAgentsRoot + "/cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/good", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/bad", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/good/index.yaml", []byte(agentIndexYAML("good", "desc", "medium", "medium")))
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/good/prompt.md", []byte("good prompt"))
+	// Unknown field: the exact shape that broke two repos.
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/bad/index.yaml", []byte("name: bad\ndescription: d\nmodel: sonnet\neffort: medium\n"))
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/bad/prompt.md", []byte("bad prompt"))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 1 || catalog.Agents[0].Name != "good" {
+		t.Fatalf("agents = %#v, want only the good agent", catalog.Agents)
+	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status == SourceStatusInvalid {
+		t.Fatalf("sources = %#v, want a usable repo source", catalog.Sources)
+	}
+	// The skip must be visible; a silent one is how this went unnoticed.
+	var mentionsBad bool
+	for _, w := range catalog.Sources[0].Warnings {
+		if strings.Contains(w, "bad") {
+			mentionsBad = true
+		}
+	}
+	if !mentionsBad {
+		t.Fatalf("warnings = %#v, want one naming the skipped agent", catalog.Sources[0].Warnings)
+	}
+}
+
+// Skipping is per-agent, not a blanket pass: a source where nothing loads is
+// still invalid, so guidance never silently degrades to nothing.
+func TestRepoLoadInvalidWhenEveryAgentIsMalformed(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	categoryPath := repoAgentsRoot + "/cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "cat", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/index.yaml", []byte("name: cat\ndescription: cat category\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, categoryPath, gitprovider.TreeEntry{Path: categoryPath + "/bad", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/bad/index.yaml", []byte("name: bad\ndescription: d\nmodel: sonnet\neffort: medium\n"))
+	reader.addFile(ref, pr.Base.SHA, categoryPath+"/bad/prompt.md", []byte("bad prompt"))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 0 {
+		t.Fatalf("agents = %#v, want none", catalog.Agents)
+	}
+	if len(catalog.Sources) != 1 || catalog.Sources[0].Status != SourceStatusInvalid {
+		t.Fatalf("sources = %#v, want invalid repo source", catalog.Sources)
+	}
+}
+
 func TestLoadRejectsEmptyFilesystemSource(t *testing.T) {
 	_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{""}})
 	if !errors.Is(err, ErrInvalid) {

@@ -483,6 +483,7 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 	sortTreeEntries(rootEntries)
 
 	var agents []Agent
+	var skipped []string
 	loadedAgent := false
 	for _, entry := range rootEntries {
 		if entry.Type != "tree" {
@@ -493,25 +494,40 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			continue
 		}
 		if err := validateName("category", categoryName); err != nil {
+			if errors.Is(err, ErrInvalid) {
+				skipped = append(skipped, fmt.Sprintf("skipped category %q: %v", categoryName, err))
+				continue
+			}
 			return fail(err)
 		}
 		categoryPath := path.Join(repoAgentsRoot, categoryName)
 		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
 		if err != nil {
+			if errors.Is(err, ErrInvalid) {
+				skipped = append(skipped, fmt.Sprintf("skipped category %q: %v", categoryName, err))
+				continue
+			}
 			return fail(err)
 		}
-		categoryAgents, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
+		categoryAgents, agentSkips, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
+		skipped = append(skipped, agentSkips...)
 		if err != nil {
 			return fail(err)
 		}
 		if len(categoryAgents) == 0 {
-			return fail(fmt.Errorf("%w: repo source %s category %q contains no agents", ErrInvalid, repoAgentsRoot, categoryName))
+			skipped = append(skipped, fmt.Sprintf("skipped category %q: no usable agents", categoryName))
+			continue
 		}
 		loadedAgent = true
 		agents = append(agents, categoryAgents...)
 	}
+	repoSource.Warnings = append(repoSource.Warnings, skipped...)
+	// Only a source with nothing usable is treated as invalid. One malformed
+	// definition disabling every other agent in the repo is what this avoids:
+	// the failure is indistinguishable from a review that ran and found
+	// problems, so it can sit unnoticed for a long time.
 	if !loadedAgent {
-		return fail(fmt.Errorf("%w: repo source %s contains no agents", ErrInvalid, repoAgentsRoot))
+		return fail(fmt.Errorf("%w: repo source %s contains no usable agents", ErrInvalid, repoAgentsRoot))
 	}
 	return agents, repoSource, nil
 }
@@ -547,14 +563,19 @@ func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PR
 	return Category{Name: pathName, Description: index.Description, Owner: index.Owner}, nil
 }
 
-func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath string, category Category, provenance Provenance) ([]Agent, error) {
+// readRepoAgents returns the agents it could load, plus a message per agent it
+// skipped. A malformed definition disqualifies that agent only — an unusable
+// agent is never selected, so skipping it is as safe as refusing the whole
+// source and leaves the rest of the repo's guidance working.
+func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath string, category Category, provenance Provenance) ([]Agent, []string, error) {
 	entries, err := reader.ListTreeAtRef(ctx, ref, gitRef, categoryPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sortTreeEntries(entries)
 
 	var agents []Agent
+	var skipped []string
 	for _, entry := range entries {
 		if entry.Type != "tree" {
 			continue
@@ -564,16 +585,24 @@ func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRe
 			continue
 		}
 		if err := validateName("agent", agentName); err != nil {
-			return nil, err
+			if errors.Is(err, ErrInvalid) {
+				skipped = append(skipped, fmt.Sprintf("skipped agent %s/%s: %v", category.Name, agentName, err))
+				continue
+			}
+			return nil, skipped, err
 		}
 		agentPath := path.Join(categoryPath, agentName)
 		agent, err := readRepoAgent(ctx, reader, ref, gitRef, agentPath, category, agentName, provenance)
 		if err != nil {
-			return nil, err
+			if errors.Is(err, ErrInvalid) {
+				skipped = append(skipped, fmt.Sprintf("skipped agent %s/%s: %v", category.Name, agentName, err))
+				continue
+			}
+			return nil, skipped, err
 		}
 		agents = append(agents, agent)
 	}
-	return agents, nil
+	return agents, skipped, nil
 }
 
 func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, agentPath string, category Category, pathName string, provenance Provenance) (Agent, error) {
