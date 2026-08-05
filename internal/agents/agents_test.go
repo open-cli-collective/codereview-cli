@@ -675,6 +675,111 @@ func TestRepoLoadSkipsAgentMissingPromptAndKeepsSiblings(t *testing.T) {
 	}
 }
 
+// An unsafe category tree name is the third category-level skip branch; without a
+// healthy sibling it was only ever seen as a whole-source failure.
+func TestRepoLoadSkipsUnsafeCategoryNameAndKeepsSiblingCategories(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	goodPath := repoAgentsRoot + "/good-cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "good-cat", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "..", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/index.yaml", []byte("name: good-cat\ndescription: c\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, goodPath, gitprovider.TreeEntry{Path: goodPath + "/agent", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/index.yaml", []byte(agentIndexYAML("agent", "desc", "medium", "medium")))
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/prompt.md", []byte("prompt"))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 1 || catalog.Agents[0].Category.Name != "good-cat" {
+		t.Fatalf("agents = %#v, want the sibling category's agent", catalog.Agents)
+	}
+	if catalog.Sources[0].Status == SourceStatusInvalid {
+		t.Fatalf("sources = %#v, want a usable repo source", catalog.Sources)
+	}
+}
+
+// A category that parses but whose only agent is malformed is the third branch:
+// with a healthy sibling category the source must stay usable.
+func TestRepoLoadSkipsCategoryWithNoUsableAgentsAndKeepsSiblings(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	goodPath := repoAgentsRoot + "/good-cat"
+	emptyPath := repoAgentsRoot + "/empty-cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "good-cat", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "empty-cat", Type: "tree"})
+
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/index.yaml", []byte("name: good-cat\ndescription: c\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, goodPath, gitprovider.TreeEntry{Path: goodPath + "/agent", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/index.yaml", []byte(agentIndexYAML("agent", "desc", "medium", "medium")))
+	reader.addFile(ref, pr.Base.SHA, goodPath+"/agent/prompt.md", []byte("prompt"))
+
+	reader.addFile(ref, pr.Base.SHA, emptyPath+"/index.yaml", []byte("name: empty-cat\ndescription: c\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, emptyPath, gitprovider.TreeEntry{Path: emptyPath + "/bad", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, emptyPath+"/bad/index.yaml", []byte("name: bad\ndescription: d\nmodel: sonnet\neffort: medium\n"))
+	reader.addFile(ref, pr.Base.SHA, emptyPath+"/bad/prompt.md", []byte("p"))
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(catalog.Agents) != 1 || catalog.Agents[0].Category.Name != "good-cat" {
+		t.Fatalf("agents = %#v, want the sibling category's agent", catalog.Agents)
+	}
+	if !skippedMentions(catalog.Sources[0].Skipped, "empty-cat", "no usable agents") {
+		t.Fatalf("skipped = %#v, want the empty category recorded", catalog.Sources[0].Skipped)
+	}
+}
+
+// The flush-on-every-exit invariant: a skip recorded before a later hard failure
+// must survive into the returned SourceInfo. This was a real bug once.
+func TestRepoLoadKeepsSkipsWhenALaterCategoryFailsHard(t *testing.T) {
+	ref := testPRRef()
+	pr := testPR("base-sha", "head-sha")
+	reader := newRepoReader()
+	// "a-cat" sorts first and contributes a skip; "z-cat" then fails hard because
+	// its category tree is never registered, so ListTreeAtRef returns ErrNotFound.
+	aPath := repoAgentsRoot + "/a-cat"
+	zPath := repoAgentsRoot + "/z-cat"
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "a-cat", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, repoAgentsRoot, gitprovider.TreeEntry{Path: "z-cat", Type: "tree"})
+
+	reader.addFile(ref, pr.Base.SHA, aPath+"/index.yaml", []byte("name: a-cat\ndescription: c\nowner: owner\n"))
+	reader.addTree(ref, pr.Base.SHA, aPath, gitprovider.TreeEntry{Path: aPath + "/good", Type: "tree"})
+	reader.addTree(ref, pr.Base.SHA, aPath, gitprovider.TreeEntry{Path: aPath + "/bad", Type: "tree"})
+	reader.addFile(ref, pr.Base.SHA, aPath+"/good/index.yaml", []byte(agentIndexYAML("good", "desc", "medium", "medium")))
+	reader.addFile(ref, pr.Base.SHA, aPath+"/good/prompt.md", []byte("prompt"))
+	reader.addFile(ref, pr.Base.SHA, aPath+"/bad/index.yaml", []byte("name: bad\ndescription: d\nmodel: sonnet\neffort: medium\n"))
+	reader.addFile(ref, pr.Base.SHA, aPath+"/bad/prompt.md", []byte("p"))
+
+	reader.addFile(ref, pr.Base.SHA, zPath+"/index.yaml", []byte("name: z-cat\ndescription: c\nowner: owner\n"))
+	// No tree registered for zPath: readRepoAgents' ListTreeAtRef fails, and that
+	// is not routed through scopedToDefinition, so it reaches fail() directly.
+
+	catalog, err := Load(context.Background(), LoadOptions{Repo: &RepoSource{Reader: reader, Ref: ref, PR: pr}, AllowSoftRepoFailures: true})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !skippedMentions(catalog.Sources[0].Skipped, "a-cat", "bad") {
+		t.Fatalf("skipped = %#v, want the earlier skip to survive the later hard failure", catalog.Sources[0].Skipped)
+	}
+}
+
+func skippedMentions(skipped []SkippedDefinition, category, needle string) bool {
+	for _, entry := range skipped {
+		if entry.Category != category {
+			continue
+		}
+		if strings.Contains(entry.String(), needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func warningsMention(warnings []string, needle string) bool {
 	for _, w := range warnings {
 		if strings.Contains(w, needle) {
