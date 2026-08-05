@@ -524,8 +524,8 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			continue
 		}
 		if err := validateName("category", categoryName); err != nil {
-			if errors.Is(err, ErrInvalid) {
-				skipped = append(skipped, SkippedDefinition{Category: categoryName, Reason: err.Error()})
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: categoryName}); ok {
+				skipped = append(skipped, entry)
 				continue
 			}
 			return fail(err)
@@ -533,8 +533,8 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 		categoryPath := path.Join(repoAgentsRoot, categoryName)
 		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
 		if err != nil {
-			if errors.Is(err, ErrInvalid) {
-				skipped = append(skipped, SkippedDefinition{Category: categoryName, Reason: err.Error()})
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: categoryName}); ok {
+				skipped = append(skipped, entry)
 				continue
 			}
 			return fail(err)
@@ -559,6 +559,17 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 		return fail(fmt.Errorf("%w: repo source %s contains no usable agents", ErrInvalid, repoAgentsRoot))
 	}
 	return agents, repoSource, nil
+}
+
+// skipIfInvalid decides whether err disqualifies just this definition or the whole
+// source. Kept in one place so a future skip-safe error class, or a fix to the
+// classification itself, cannot reach three of the four call sites and miss one.
+func skipIfInvalid(err error, def SkippedDefinition) (SkippedDefinition, bool) {
+	if !errors.Is(err, ErrInvalid) {
+		return SkippedDefinition{}, false
+	}
+	def.Reason = err.Error()
+	return def, true
 }
 
 // scopedToDefinition reclassifies a missing file *beneath* one agent or category
@@ -634,8 +645,8 @@ func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRe
 			continue
 		}
 		if err := validateName("agent", agentName); err != nil {
-			if errors.Is(err, ErrInvalid) {
-				skipped = append(skipped, SkippedDefinition{Category: category.Name, Agent: agentName, Reason: err.Error()})
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: category.Name, Agent: agentName}); ok {
+				skipped = append(skipped, entry)
 				continue
 			}
 			return nil, skipped, err
@@ -643,8 +654,8 @@ func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRe
 		agentPath := path.Join(categoryPath, agentName)
 		agent, err := readRepoAgent(ctx, reader, ref, gitRef, agentPath, category, agentName, provenance)
 		if err != nil {
-			if errors.Is(err, ErrInvalid) {
-				skipped = append(skipped, SkippedDefinition{Category: category.Name, Agent: agentName, Reason: err.Error()})
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: category.Name, Agent: agentName}); ok {
+				skipped = append(skipped, entry)
 				continue
 			}
 			return nil, skipped, err
