@@ -1947,7 +1947,10 @@ func TestDryRunInvalidOrUnreadableRepoGuidanceForcesRequestChangesWithoutReviewe
 		wantState agents.SourceStatus
 	}{
 		{
-			name: "unreadable",
+			// A file missing beneath an agent directory is a malformed agent, not an
+			// unreadable source. The agent is skipped; with no sibling to fall back
+			// on the source has nothing usable, so it is invalid — and still blocking.
+			name: "agent missing prompt, nothing else to load",
 			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
 				t.Helper()
 				removeRepoAgentFixture(provider)
@@ -1957,8 +1960,8 @@ func TestDryRunInvalidOrUnreadableRepoGuidanceForcesRequestChangesWithoutReviewe
 				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath}] = []gitprovider.TreeEntry{{Path: categoryPath + "/agent", Type: "tree"}}
 				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/agent/index.yaml"}] = []byte("name: agent\ndescription: desc\nmodel_tier: medium\neffort: medium\n")
 			},
-			wantText:  "Base branch `.codereview/agents/` could not be read as trusted review guidance.",
-			wantState: agents.SourceStatusUnreadable,
+			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
+			wantState: agents.SourceStatusInvalid,
 		},
 		{
 			name: "invalid",

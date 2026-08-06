@@ -1149,6 +1149,14 @@ func renderDossierRepoGuidance(repo dossierRepoContextArtifact) string {
 				out.WriteString("\n")
 			}
 		}
+		// A partially loaded source still reports "available", so without this the
+		// run reads as if every declared agent had been honored. Skips belong where
+		// the run is observed, not only in the artifact.
+		for _, entry := range source.Skipped {
+			out.WriteString("Guidance not honored: ")
+			out.WriteString(entry.String())
+			out.WriteString("\n")
+		}
 	}
 	if note := strings.TrimSpace(repo.RepoInfo.TrustNote()); note != "" {
 		out.WriteString("\n")
@@ -1186,6 +1194,13 @@ func RepoGuidanceUnavailableReason(sources []agents.SourceInfo) string {
 	}
 	if msg := strings.TrimSpace(source.Error); msg != "" {
 		reason += " Source detail: " + msg
+	}
+	// The generic "contains no usable agents" error says nothing about which
+	// definitions failed or why. This is the blocking case, so the body that gets
+	// posted is exactly where that detail is needed — otherwise the operator has
+	// to re-run cr agents to learn what to fix.
+	for _, entry := range source.Skipped {
+		reason += " " + entry.String() + "."
 	}
 	return reason
 }

@@ -46,6 +46,7 @@ artifact directory. The file `dossier/final/repo-guidance.md` records:
 - the trust-boundary note that PR-head guidance changes do not affect that run
 - whether the base branch guidance source was available, missing, unreadable,
   or invalid
+- any declared agent that could not be honored and was skipped
 
 This file is intended for reviewers and operators who need to understand which
 repo guidance influenced a review without reading pipeline code.
@@ -54,6 +55,13 @@ Missing base-branch guidance is normal: `cr review` falls back to viable shared
 profile or flag agents. Unreadable or invalid repo guidance remains blocking
 because it indicates that maintainers attempted to declare authoritative
 review behavior that could not be honored.
+
+A source can also load *partially*. A malformed agent or category — a bad field,
+a missing `index.yaml` or `prompt.md` — disqualifies only itself; its siblings
+still load and the source reports as available. A skipped agent is warned, not
+blocking, and each skip is named in the dossier under "Guidance not honoured",
+because the declaration that could not be honored is scoped to that agent rather
+than to the repo. A source where *nothing* loads is still invalid.
 
 Without an explicit positive `--max-agents`, all applicable repo-local reviewers
 and all matching `required_on_match` reviewers run, and the orchestrator may
