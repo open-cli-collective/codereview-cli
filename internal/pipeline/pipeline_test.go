@@ -3110,6 +3110,14 @@ func TestDryRunFastPreflightResolvesEveryReviewerBeforeLLM(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	// Every built-in Claude CLI tier resolves, so the reviewer's tier has to be
+	// unmapped by the profile's own map for preflight to have anything to catch.
+	req.Profile.LLM = config.LLMConfig{
+		Provider: config.LLMProviderPi,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterPiRPC,
+		ModelMap: config.ModelMap{"medium": "pi-model", "large": "pi-model"},
+	}
 	writeAgentWithModelTier(t, req.Profile.AgentSources[0], "harness", "unmapped", "small")
 	req.ReviewerFast = true
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
