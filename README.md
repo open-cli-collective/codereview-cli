@@ -607,13 +607,18 @@ hooks.
 
 Every payload contains `event`, `pr_url`, `run_id`, `profile`, `pass_number`
 (the ledger attempt), `artifact_dir`, and `dry_run`; terminal events also contain
-`outcome`. `reviewer.completed` adds `reviewer_id` and `reviewer_status`,
+`outcome`. `author` carries the pull request author's git-host login (GitHub
+login, GitLab username) from the moment the run reads the pull request, which is
+every event after `run.started`, and is omitted when a run fails before that
+read. It is observed from the snapshot the run already fetches, so a hook that
+addresses the author costs no extra host call. `reviewer.completed` adds
+`reviewer_id` and `reviewer_status`,
 `posting.action` adds `action_kind` and the canonical `action_marker` when the
 provider call carries one, and `selection.completed` adds sorted `agents` plus
 an agent-to-model `models` object. Values not yet allocated at an early event,
 such as the run ID at `run.started`, are empty. The common fields are also
-available as `CR_EVENT`, `CR_PR_URL`, `CR_RUN_ID`, `CR_OUTCOME`, `CR_PROFILE`,
-`CR_PASS_NUMBER`, `CR_ARTIFACT_DIR`, and `CR_DRY_RUN`.
+available as `CR_EVENT`, `CR_PR_URL`, `CR_RUN_ID`, `CR_AUTHOR`, `CR_OUTCOME`,
+`CR_PROFILE`, `CR_PASS_NUMBER`, `CR_ARTIFACT_DIR`, and `CR_DRY_RUN`.
 
 Missing commands, non-zero exits, and timeouts write warnings to stderr with
 combined command output capped at 8 KiB. They never change the pipeline result
