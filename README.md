@@ -683,12 +683,14 @@ Built-in model maps:
 |----------|---------|-------|--------|-------|
 | `openai` | `codex_cli` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
 | `openai` | `openai_api` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
-| `anthropic` | `claude_cli` | unset | `claude-sonnet-5` | `claude-opus-5` |
+| `anthropic` | `claude_cli` | `claude-haiku-4-5` | `claude-sonnet-5` | `claude-opus-5` |
 | `anthropic` | `anthropic_api` | unset | unset | unset |
 | `pi` | `pi_rpc` | unset | unset | unset |
 
-`anthropic_api`, `pi_rpc`, and `claude_cli` small-tier usage require explicit
-`llm.model_map` entries.
+`anthropic_api` and `pi_rpc` require explicit `llm.model_map` entries for every
+tier an agent asks for; an unmapped tier fails the run and names the entry to
+add. A built-in mapping is a floor, not a recommendation: override the tier in
+`llm.model_map` when a stage deserves a stronger model than its tier implies.
 
 For Anthropic subscription profiles, `adapter: claude_cli` runs Claude Code
 background jobs, writes the full review task to `cr-prompt.txt` in an

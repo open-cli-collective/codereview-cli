@@ -209,7 +209,7 @@ LLM:
   Adapter: claude_cli
   Credential name: adapter-managed; not stored by cr
   Model map:
-    small: <unset> (unset)
+    small: claude-haiku-4-5 (built_in)
     medium: claude-sonnet-5 (built_in)
     large: claude-opus-5 (built_in)
 Credentials:

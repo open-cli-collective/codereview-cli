@@ -697,7 +697,7 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 			}
 			resolved, ok := config.ResolveModelTier(profile.LLM, tier)
 			if !ok {
-				return fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q", tier, profile.LLM.Provider, profile.LLM.Adapter)
+				return fmt.Errorf("model_tier %q is not mapped for provider %q adapter %q; add llm.model_map.%s to the profile's LLM runtime", tier, profile.LLM.Provider, profile.LLM.Adapter, tier)
 			}
 			result := modelResolveResult{
 				ActiveProfile: profileName,
