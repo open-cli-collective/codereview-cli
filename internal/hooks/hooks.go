@@ -23,9 +23,12 @@ const maxOutput = 8 << 10
 // set only for terminal events. The remaining optional fields are specific to
 // selection, reviewer, and posting events.
 type Payload struct {
-	Event          string            `json:"event"`
-	PRURL          string            `json:"pr_url"`
-	RunID          string            `json:"run_id"`
+	Event string `json:"event"`
+	PRURL string `json:"pr_url"`
+	RunID string `json:"run_id"`
+	// Author is the pull request author's git-host login, known once the run
+	// has read the pull request.
+	Author         string            `json:"author,omitempty"`
 	Outcome        string            `json:"outcome,omitempty"`
 	Profile        string            `json:"profile"`
 	PassNumber     int               `json:"pass_number"`
@@ -130,6 +133,7 @@ func payloadEnv(payload Payload) []string {
 		"CR_EVENT=" + payload.Event,
 		"CR_PR_URL=" + payload.PRURL,
 		"CR_RUN_ID=" + payload.RunID,
+		"CR_AUTHOR=" + payload.Author,
 		"CR_OUTCOME=" + payload.Outcome,
 		"CR_PROFILE=" + payload.Profile,
 		"CR_PASS_NUMBER=" + strconv.Itoa(payload.PassNumber),

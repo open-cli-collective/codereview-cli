@@ -173,7 +173,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		cleanup()
 		return Runtime{}, err
 	}
-	repoProvider = withProgressProvider(req.Progress, command, repoProvider)
+	repoProvider = withProgressProvider(req.Progress, dispatcher, command, repoProvider)
 	postingGit := gitConfigForReviewerAuth(profile)
 	_, postingProviderStore, err := stores.Open(postingGit.Credential)
 	if err != nil {
@@ -186,7 +186,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		return Runtime{}, err
 	}
 	rawPostingProvider := postingProvider
-	postingProvider = withProgressProvider(req.Progress, command, postingProvider)
+	postingProvider = withProgressProvider(req.Progress, dispatcher, command, postingProvider)
 	postingProvider = withHookProvider(dispatcher, postingProvider)
 	postingIdentity, err := deps.ResolvePostingIdentity(ctx, postingProvider, credential, postingProviderStore, profile)
 	if err != nil {
