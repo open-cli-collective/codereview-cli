@@ -177,7 +177,7 @@ func TestResolveStageModelMapsSmallTierForClaudeCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
 	}
-	if resolved.Model != "claude-haiku-4-5" || resolved.Source != config.ModelMapSourceBuiltIn {
+	if resolved.Model != "claude-sonnet-5" || resolved.Source != config.ModelMapSourceBuiltIn {
 		t.Fatalf("resolved = %#v, want the built-in Claude CLI small model", resolved)
 	}
 }

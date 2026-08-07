@@ -539,7 +539,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName: "claude-cli",
 		DisplayName:   "Claude CLI",
 		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "claude-haiku-4-5",
+			string(ModelTierSmall):  "claude-sonnet-5",
 			string(ModelTierMedium): "claude-sonnet-5",
 			string(ModelTierLarge):  "claude-opus-5",
 		},

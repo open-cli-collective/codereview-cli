@@ -10365,7 +10365,7 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap("monit", "github.com/SignalFT", llmRuntimes, "claude-work"), 160, 24)
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-haiku-4-5" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-sonnet-5" {
 		t.Fatalf("initial small model = %q, want Claude built-in", got)
 	}
 	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5" {
