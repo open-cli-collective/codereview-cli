@@ -271,12 +271,9 @@ var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\brequested reviewers?\b`),
 	regexp.MustCompile(`\brequested review\b`),
 	regexp.MustCompile(`\bci status\b`),
-	regexp.MustCompile(`\bci\s+(?:failed|has failed|had failed)\b`),
-	regexp.MustCompile(`\b(?:(?:ci|check|build)\s+(?:is|was|has been)|(?:checks|builds)\s+(?:are|were|have been))\s+failing\b`),
-	regexp.MustCompile(`\b(?:build|builds) failed\b`),
-	regexp.MustCompile(`\bfailed (?:build|builds)\b`),
-	regexp.MustCompile(`\bcheck(s)? failed\b`),
-	regexp.MustCompile(`\bfailed check(s)?\b`),
+	regexp.MustCompile(`\b(?:ci|build|check)\s+(?:failed|(?:has|had) failed|(?:is|was|has been) failing)\b`),
+	regexp.MustCompile(`\b(?:builds|checks)\s+(?:failed|(?:have|had) failed|(?:are|were|have been) failing)\b`),
+	regexp.MustCompile(`\bfailed (?:build|builds|check|checks)\b`),
 }
 
 // WriteRaw writes the source dossier artifacts used by Prepare.
