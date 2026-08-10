@@ -41,8 +41,8 @@ func TestHookHelperProcess(_ *testing.T) {
 		// #nosec G304,G703 -- the parent test supplies a t.TempDir capture path.
 		_ = os.WriteFile(path, []byte(strings.Join([]string{
 			os.Getenv("CR_EVENT"), os.Getenv("CR_PR_URL"), os.Getenv("CR_RUN_ID"),
-			os.Getenv("CR_OUTCOME"), os.Getenv("CR_PROFILE"), os.Getenv("CR_PASS_NUMBER"),
-			os.Getenv("CR_ARTIFACT_DIR"), os.Getenv("CR_DRY_RUN"),
+			os.Getenv("CR_AUTHOR"), os.Getenv("CR_OUTCOME"), os.Getenv("CR_PROFILE"),
+			os.Getenv("CR_PASS_NUMBER"), os.Getenv("CR_ARTIFACT_DIR"), os.Getenv("CR_DRY_RUN"),
 		}, "\n")), 0o600)
 	}
 	if code, _ := strconv.Atoi(os.Getenv("HOOK_HELPER_EXIT")); code != 0 {
@@ -60,7 +60,8 @@ func TestDispatcherWritesPayloadAndCommonEnvironment(t *testing.T) {
 	dispatcher := New([]config.Hook{{Event: "run.completed", Argv: helperArgv(), Timeout: "1s"}}, io.Discard)
 	want := Payload{
 		Event: "run.completed", PRURL: "https://github.com/acme/repo/pull/7", RunID: "run-7",
-		Outcome: "approved", Profile: "work", PassNumber: 2, ArtifactDir: "/tmp/run-7", DryRun: false,
+		Author: "piekstra", Outcome: "approved", Profile: "work", PassNumber: 2,
+		ArtifactDir: "/tmp/run-7", DryRun: false,
 	}
 	dispatcher.Dispatch(want)
 	dispatcher.Drain()
@@ -74,7 +75,7 @@ func TestDispatcherWritesPayloadAndCommonEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read env: %v", err)
 	}
-	wantEnv := "run.completed\nhttps://github.com/acme/repo/pull/7\nrun-7\napproved\nwork\n2\n/tmp/run-7\nfalse"
+	wantEnv := "run.completed\nhttps://github.com/acme/repo/pull/7\nrun-7\npiekstra\napproved\nwork\n2\n/tmp/run-7\nfalse"
 	if string(envBody) != wantEnv {
 		t.Fatalf("env = %q, want %q", envBody, wantEnv)
 	}

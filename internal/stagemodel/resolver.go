@@ -90,7 +90,7 @@ func ResolveStageModel(req Request) (Result, error) {
 	resolved, ok := config.ResolveModelTier(req.Profile.LLM, tier)
 	if !ok {
 		llmConfig := req.Profile.LLM
-		return Result{}, fmt.Errorf("stagemodel: stage %s: model_tier %q is not mapped for provider %q adapter %q", stage, tier, llmConfig.Provider, llmConfig.Adapter)
+		return Result{}, fmt.Errorf("stagemodel: stage %s: model_tier %q is not mapped for provider %q adapter %q; add llm.model_map.%s to the profile's LLM runtime", stage, tier, llmConfig.Provider, llmConfig.Adapter, tier)
 	}
 	return Result{
 		Stage:  stage,
