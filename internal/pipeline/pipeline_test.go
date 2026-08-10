@@ -5165,6 +5165,61 @@ func TestRebaseReviewerCohortAssignsNewFilesToPersistedBroadMember(t *testing.T)
 	}
 }
 
+func TestRebaseReviewerCohortLeavesInherentlyUnmatchedFilesUnassigned(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+		Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: "go-session",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"},
+	}}}
+
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go", ".github/workflows/ci.yml"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []llm.SelectedAgent{{
+		AgentID: "repo:go", Rationale: "reused reviewer cohort",
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+	}}
+	if !reflect.DeepEqual(selection.SelectedAgents, want) {
+		t.Fatalf("selected agents = %#v, want %#v", selection.SelectedAgents, want)
+	}
+	if !reflect.DeepEqual(resumes, map[string]string{"repo:go": "go-session"}) {
+		t.Fatalf("reviewer resumes = %#v, want exact saved session", resumes)
+	}
+	coverage := buildReviewerCoverage(
+		selection.SelectedAgents,
+		[]llm.Findings{{AgentID: "repo:go", InspectedFiles: []string{"main.go"}}},
+		nil,
+		[]string{"main.go", ".github/workflows/ci.yml"},
+	)
+	if len(coverage) != 2 || coverage[1].AgentID != "unassigned" || coverage[1].Status != reviewerCoverageIncompleteUnassigned ||
+		!reflect.DeepEqual(coverage[1].SkippedFiles, []string{".github/workflows/ci.yml"}) {
+		t.Fatalf("coverage = %#v, want workflow file unassigned", coverage)
+	}
+}
+
+func TestRebaseReviewerCohortRejectsFileCoveredByBroadCatalogAgent(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+		Model: "claude-sonnet-5", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}},
+		{ID: "shared:general", ModelTier: "medium", Effort: "medium"},
+	}}
+
+	_, _, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go", ".github/workflows/ci.yml"}, 0, "fake-llm")
+	if err == nil || !strings.Contains(err.Error(), ".github/workflows/ci.yml") || !strings.Contains(err.Error(), "--fresh-session") {
+		t.Fatalf("rebaseReviewerCohort error = %v, want broad catalog coverage to retain fresh-session guidance", err)
+	}
+}
+
 func TestPersistReviewerCohortTreatsFilesOnlyAssignmentAsScoped(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -5262,13 +5317,19 @@ func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate := cohort
+			candidateCatalog := catalog
+			if tc.name == "uncovered" {
+				candidateCatalog.Agents = append(candidateCatalog.Agents, agents.Agent{
+					ID: "repo:sql", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.sql"},
+				})
+			}
 			if tc.name == "max agents" {
 				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-5", Effort: "medium"})
-				catalog.Agents = append(catalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
+				candidateCatalog.Agents = append(candidateCatalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
 				tc.maxAgents = 1
 				tc.wantDetail = "--max-agents"
 			}
-			_, _, err := rebaseReviewerCohort(req, catalog, candidate, tc.files, tc.maxAgents, tc.adapter)
+			_, _, err := rebaseReviewerCohort(req, candidateCatalog, candidate, tc.files, tc.maxAgents, tc.adapter)
 			if err == nil || !strings.Contains(err.Error(), tc.wantDetail) || !strings.Contains(err.Error(), "--fresh-session") {
 				t.Fatalf("rebaseReviewerCohort error = %v, want %q and fresh-session guidance", err, tc.wantDetail)
 			}
