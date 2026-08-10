@@ -60,11 +60,12 @@ func ResolveStageModel(req Request) (Result, error) {
 		return Result{}, fmt.Errorf("stagemodel: stage %q is invalid", req.Stage)
 	}
 	tier := config.ModelTier(strings.TrimSpace(string(req.Tier)))
-	effort := strings.TrimSpace(req.EffortOverride)
-	if effort == "" {
-		effort = strings.TrimSpace(req.DefaultEffort)
-	}
+	effortOverride := strings.TrimSpace(req.EffortOverride)
 	if model := strings.TrimSpace(req.ModelOverride); model != "" {
+		effort := strings.TrimSpace(req.DefaultEffort)
+		if effortOverride != "" {
+			effort = effortOverride
+		}
 		return Result{
 			Stage:    stage,
 			Tier:     tier,
@@ -92,11 +93,15 @@ func ResolveStageModel(req Request) (Result, error) {
 		llmConfig := req.Profile.LLM
 		return Result{}, fmt.Errorf("stagemodel: stage %s: model_tier %q is not mapped for provider %q adapter %q; add llm.model_map.%s to the profile's LLM runtime", stage, tier, llmConfig.Provider, llmConfig.Adapter, tier)
 	}
+	effort := applyMaxEffort(req.Profile.LLM, resolved.Tier, strings.TrimSpace(req.DefaultEffort))
+	if effortOverride != "" {
+		effort = effortOverride
+	}
 	return Result{
 		Stage:  stage,
 		Tier:   resolved.Tier,
 		Model:  resolved.Model,
-		Effort: applyMaxEffort(req.Profile.LLM, resolved.Tier, effort),
+		Effort: effort,
 		Source: resolved.Source,
 	}, nil
 }

@@ -46,9 +46,10 @@ func TestResolveStageModelUsesConfiguredTierMapping(t *testing.T) {
 
 func TestResolveStageModelAppliesEffortOverrideWithoutBypassingTier(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
-		Provider: config.LLMProviderOpenAI,
-		Auth:     config.LLMAuthSubscription,
-		Adapter:  config.LLMAdapterCodexCLI,
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		MaxEffort: config.EffortMap{"medium": "low"},
 	}}
 
 	got, err := ResolveStageModel(Request{
@@ -106,17 +107,19 @@ func TestResolveStageModelAppliesTierFloor(t *testing.T) {
 
 func TestResolveStageModelBypassesTierForExplicitOverride(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
-		Provider: config.LLMProviderPi,
-		Auth:     config.LLMAuthSubscription,
-		Adapter:  config.LLMAdapterPiRPC,
+		Provider:  config.LLMProviderPi,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterPiRPC,
+		MaxEffort: config.EffortMap{"large": "medium"},
 	}}
 
 	got, err := ResolveStageModel(Request{
-		Profile:       profile,
-		Stage:         StageThreadAnalysis,
-		Tier:          config.ModelTierLarge,
-		ModelOverride: "operator-chosen-model",
-		DefaultEffort: "low",
+		Profile:        profile,
+		Stage:          StageThreadAnalysis,
+		Tier:           config.ModelTierLarge,
+		ModelOverride:  "operator-chosen-model",
+		EffortOverride: "high",
+		DefaultEffort:  "low",
 	})
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
@@ -124,8 +127,8 @@ func TestResolveStageModelBypassesTierForExplicitOverride(t *testing.T) {
 	if got.Model != "operator-chosen-model" {
 		t.Fatalf("Model = %q, want operator-chosen-model", got.Model)
 	}
-	if got.Effort != "low" {
-		t.Fatalf("Effort = %q, want low", got.Effort)
+	if got.Effort != "high" {
+		t.Fatalf("Effort = %q, want high", got.Effort)
 	}
 	if !got.Override {
 		t.Fatalf("Override = false, want true")
@@ -256,6 +259,30 @@ func TestResolveStageModelCapsEffortAtTierCeiling(t *testing.T) {
 	}
 	if got.Effort != "medium" {
 		t.Fatalf("Effort = %q, want medium (capped)", got.Effort)
+	}
+}
+
+func TestResolveStageModelCapsUsingPostFloorTier(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		ModelMap:  config.ModelMap{"large": "expensive-model"},
+		MaxEffort: config.EffortMap{"large": "medium"},
+	}}
+
+	got, err := ResolveStageModel(Request{
+		Profile:       profile,
+		Stage:         StageReviewer,
+		Tier:          config.ModelTierSmall,
+		FloorTier:     config.ModelTierLarge,
+		DefaultEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("ResolveStageModel: %v", err)
+	}
+	if got.Tier != config.ModelTierLarge || got.Model != "expensive-model" || got.Effort != "medium" {
+		t.Fatalf("resolved = %#v, want post-floor large model with medium effort", got)
 	}
 }
 

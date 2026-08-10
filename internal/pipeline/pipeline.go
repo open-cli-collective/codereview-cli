@@ -3128,6 +3128,14 @@ func resolveSynthesisRuntimeConfig(req Request) (llmRuntimeConfig, error) {
 }
 
 func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeConfig, error) {
+	resolved, err := resolveReviewerRuntime(req, agent)
+	if err != nil {
+		return llmRuntimeConfig{}, err
+	}
+	return llmRuntimeConfig{model: resolved.ResolvedModel, effort: resolved.ResolvedEffort}, nil
+}
+
+func resolveReviewerRuntime(req Request, agent agents.Agent) (reviewerRuntimeResolution, error) {
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
 		resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
 			Profile:        req.Profile,
@@ -3137,15 +3145,22 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 			DefaultEffort:  agent.Effort,
 		})
 		if err != nil {
-			return llmRuntimeConfig{}, err
+			return reviewerRuntimeResolution{}, err
 		}
-		return llmRuntimeConfig{model: resolved.Model, effort: resolved.Effort}, nil
+		return reviewerRuntimeResolution{
+			Mode:           "override",
+			ResolvedModel:  resolved.Model,
+			ResolvedEffort: resolved.Effort,
+		}, nil
 	}
 	resolved, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, agent)
 	if err != nil {
-		return llmRuntimeConfig{}, err
+		return reviewerRuntimeResolution{}, err
 	}
-	return applyStageRuntimeOverrides(req.ReviewerModelOverride, req.ReviewerEffortOverride, resolved.ResolvedModel, resolved.ResolvedEffort), nil
+	if effort := strings.TrimSpace(req.ReviewerEffortOverride); effort != "" {
+		resolved.ResolvedEffort = effort
+	}
+	return resolved, nil
 }
 
 func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string, error) {
@@ -3232,16 +3247,6 @@ func resolveReviewerBaselineTier(profile config.Profile, override string) (confi
 		return "", fmt.Errorf("reviewer baseline model_tier %q is invalid; must be one of small, medium, large", tier)
 	}
 	return tier, nil
-}
-
-func applyStageRuntimeOverrides(modelOverride, effortOverride, model, effort string) llmRuntimeConfig {
-	if override := strings.TrimSpace(modelOverride); override != "" {
-		model = override
-	}
-	if override := strings.TrimSpace(effortOverride); override != "" {
-		effort = override
-	}
-	return llmRuntimeConfig{model: model, effort: effort}
 }
 
 func sameIdentity(left, right gitprovider.Identity) bool {

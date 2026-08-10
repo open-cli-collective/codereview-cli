@@ -190,7 +190,9 @@ func TestRenderConfigTextAgentSourceStatus(t *testing.T) {
 
 func TestRenderConfigTextExactHomeShape(t *testing.T) {
 	var out bytes.Buffer
-	show := NewConfigShow("home", homeProfile(), dataConfig(), []CredentialStatus{
+	profile := homeProfile()
+	profile.LLM.MaxEffort = config.EffortMap{"medium": "low"}
+	show := NewConfigShow("home", profile, dataConfig(), []CredentialStatus{
 		credentialStatus("git", "codereview/home", "pat", "git_token", false),
 	})
 
@@ -210,7 +212,7 @@ LLM:
   Credential name: adapter-managed; not stored by cr
   Model map:
     small: claude-haiku-4-5 (built_in)
-    medium: claude-sonnet-5 (built_in)
+    medium: claude-sonnet-5 (built_in) [max effort: low]
     large: claude-opus-5 (built_in)
 Credentials:
   - git: codereview/home (pat)

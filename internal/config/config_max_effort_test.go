@@ -59,3 +59,43 @@ func TestResolveMaxEffortReportsUncappedTiers(t *testing.T) {
 		t.Fatalf("ResolveMaxEffort(bogus) reported a ceiling, want uncapped")
 	}
 }
+
+func TestLLMConfigNormalizedTrimsAndCopiesMaxEffort(t *testing.T) {
+	original := LLMConfig{MaxEffort: EffortMap{" large ": " medium "}}
+	normalized := original.normalized()
+	if got := normalized.MaxEffort["large"]; got != "medium" {
+		t.Fatalf("normalized max_effort = %q, want trimmed medium", got)
+	}
+	normalized.MaxEffort["large"] = "high"
+
+	if got := original.MaxEffort[" large "]; got != " medium " {
+		t.Fatalf("original max_effort changed through normalized copy: %q", got)
+	}
+	if got := normalized.MaxEffort["large"]; got != "high" {
+		t.Fatalf("normalized max_effort = %q, want independent copy", got)
+	}
+}
+
+func TestNormalizeProjectsInlineRuntimesWithDistinctMaxEffort(t *testing.T) {
+	base := Profile{LLM: LLMConfig{
+		Provider: LLMProviderOpenAI,
+		Auth:     LLMAuthSubscription,
+		Adapter:  LLMAdapterCodexCLI,
+		ModelMap: ModelMap{"large": "sol"},
+	}}
+	capped := base
+	capped.LLM.MaxEffort = EffortMap{"large": "medium"}
+
+	normalized := Normalize(File{Profiles: map[string]Profile{
+		"base":   base,
+		"capped": capped,
+	}})
+	baseRuntime := normalized.Profiles["base"].LLMRuntime
+	cappedRuntime := normalized.Profiles["capped"].LLMRuntime
+	if baseRuntime == "" || cappedRuntime == "" || baseRuntime == cappedRuntime {
+		t.Fatalf("inline runtime identities = %q/%q, want distinct runtimes", baseRuntime, cappedRuntime)
+	}
+	if got := normalized.LLMRuntimes[cappedRuntime].MaxEffort["large"]; got != "medium" {
+		t.Fatalf("capped runtime max_effort = %q, want medium", got)
+	}
+}

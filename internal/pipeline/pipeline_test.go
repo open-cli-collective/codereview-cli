@@ -2075,19 +2075,19 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 			modelOverride:  "bench-model",
 			effortOverride: "high",
 			wantModels:     []string{"bench-model", "claude-sonnet-5", "claude-sonnet-5"},
-			wantEfforts:    []string{"high", "medium", "medium"},
+			wantEfforts:    []string{"high", "low", "low"},
 		},
 		{
 			name:          "model only",
 			modelOverride: "bench-model",
 			wantModels:    []string{"bench-model", "claude-sonnet-5", "claude-sonnet-5"},
-			wantEfforts:   []string{"medium", "medium", "medium"},
+			wantEfforts:   []string{"medium", "low", "low"},
 		},
 		{
 			name:           "effort only",
 			effortOverride: "high",
 			wantModels:     []string{"claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5"},
-			wantEfforts:    []string{"high", "medium", "medium"},
+			wantEfforts:    []string{"high", "low", "low"},
 		},
 	}
 	for _, tt := range tests {
@@ -2096,6 +2096,7 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 			store := openPipelineStore(t)
 			defer closeStore(t, store)
 			provider, req := dryRunHarness(t)
+			req.Profile.LLM.MaxEffort = config.EffortMap{"medium": "low"}
 			req.SelectionModelOverride = tt.modelOverride
 			req.SelectionEffortOverride = tt.effortOverride
 			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
@@ -2157,8 +2158,8 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
-	req.ReviewerModelOverride = "bench-reviewer-model"
-	req.ReviewerEffortOverride = "low"
+	req.Profile.LLM.MaxEffort = config.EffortMap{"medium": "low"}
+	req.ReviewerEffortOverride = "high"
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
@@ -2180,8 +2181,8 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-5", "bench-reviewer-model", "claude-sonnet-5"}
-	wantEfforts := []string{"medium", "low", "medium"}
+	wantModels := []string{"claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5"}
+	wantEfforts := []string{"low", "high", "low"}
 	requests := adapter.Requests()
 	for i, request := range requests {
 		if request.Model != wantModels[i] || request.Effort != wantEfforts[i] {
@@ -2197,6 +2198,15 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 			t.Fatalf("session[%d] = model:%q effort:%v, want %s/%s", i, session.Model, session.Effort, wantModels[i], wantEfforts[i])
 		}
 	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:           "tier_floor",
+		FloorTier:      "medium",
+		BaselineTier:   "small",
+		EffectiveTier:  "medium",
+		ResolvedModel:  "claude-sonnet-5",
+		ResolvedEffort: "high",
+		ModelMapSource: config.ModelMapSourceBuiltIn,
+	})
 }
 
 func TestDryRunReviewerFailureIsolation(t *testing.T) {
@@ -2708,6 +2718,7 @@ func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	req.Profile.LLM.ModelMap = config.ModelMap{"large": "profile-large-model"}
+	req.Profile.LLM.MaxEffort = config.EffortMap{"large": "low"}
 	req.ReviewerModelTierOverride = "large"
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
@@ -2731,9 +2742,10 @@ func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 	}
 
 	wantModels := []string{"claude-sonnet-5", "profile-large-model", "claude-sonnet-5"}
+	wantEfforts := []string{"medium", "low", "medium"}
 	for i, request := range adapter.Requests() {
-		if request.Model != wantModels[i] {
-			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
+		if request.Model != wantModels[i] || request.Effort != wantEfforts[i] {
+			t.Fatalf("request[%d] = model:%q effort:%q, want %s/%s", i, request.Model, request.Effort, wantModels[i], wantEfforts[i])
 		}
 	}
 	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
@@ -2742,7 +2754,7 @@ func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 		BaselineTier:   "large",
 		EffectiveTier:  "large",
 		ResolvedModel:  "profile-large-model",
-		ResolvedEffort: "medium",
+		ResolvedEffort: "low",
 		ModelMapSource: config.ModelMapSourceConfig,
 	})
 }
@@ -2919,13 +2931,11 @@ func TestDryRunReviewerModelOverrideBypassesAgentModelID(t *testing.T) {
 			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
 		}
 	}
-	data, err := os.ReadFile(result.Artifacts.AgentSourcesJSON) // #nosec G304 -- test reads artifact paths returned by the pipeline under t.TempDir.
-	if err != nil {
-		t.Fatalf("ReadFile(%s): %v", result.Artifacts.AgentSourcesJSON, err)
-	}
-	if strings.Contains(string(data), "override-model") {
-		t.Fatalf("agent source artifact contains runtime override model: %s", data)
-	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:           "override",
+		ResolvedModel:  "override-model",
+		ResolvedEffort: "medium",
+	})
 }
 
 func TestDryRunFastAppliesOnlyToReviewerAndRecordsArtifact(t *testing.T) {
@@ -2962,11 +2972,12 @@ func TestDryRunFastAppliesOnlyToReviewerAndRecordsArtifact(t *testing.T) {
 		t.Fatalf("requests = %#v, want fast only on reviewer", requests)
 	}
 	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
-		Mode:          "override",
-		ResolvedModel: "claude-opus-4-8",
-		Fast:          true,
-		FastIgnored:   false,
-		FastDelivered: "standard",
+		Mode:           "override",
+		ResolvedModel:  "claude-opus-4-8",
+		ResolvedEffort: "medium",
+		Fast:           true,
+		FastIgnored:    false,
+		FastDelivered:  "standard",
 	})
 }
 
@@ -3115,11 +3126,12 @@ func TestDryRunFastFallsBackForUnsupportedRuntime(t *testing.T) {
 		t.Fatalf("requests = %#v, want normal-speed fallback", requests)
 	}
 	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
-		Mode:          "override",
-		ResolvedModel: "pi-model",
-		Fast:          true,
-		FastIgnored:   true,
-		FastDelivered: "unknown",
+		Mode:           "override",
+		ResolvedModel:  "pi-model",
+		ResolvedEffort: "medium",
+		Fast:           true,
+		FastIgnored:    true,
+		FastDelivered:  "unknown",
 	})
 }
 
@@ -7460,6 +7472,16 @@ func TestReviewerRuntimeConfigCapsEffortAtConfiguredTierCeiling(t *testing.T) {
 	}
 	if gotLarge.model != "sol" || gotLarge.effort != "medium" {
 		t.Fatalf("large reviewer = %+v, want model sol effort medium", gotLarge)
+	}
+	gotOverride, err := resolveReviewerRuntimeConfig(Request{
+		Profile:                profile,
+		ReviewerEffortOverride: "high",
+	}, large)
+	if err != nil {
+		t.Fatalf("resolveReviewerRuntimeConfig(override): %v", err)
+	}
+	if gotOverride.model != "sol" || gotOverride.effort != "high" {
+		t.Fatalf("overridden reviewer = %+v, want model sol effort high", gotOverride)
 	}
 
 	gotMedium, err := resolveReviewerRuntimeConfig(Request{Profile: profile}, medium)

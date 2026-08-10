@@ -1982,6 +1982,15 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 	for _, tier := range modelKeys {
 		models = append(models, tier+"="+strings.TrimSpace(llm.ModelMap[tier]))
 	}
+	effortKeys := make([]string, 0, len(llm.MaxEffort))
+	for tier := range llm.MaxEffort {
+		effortKeys = append(effortKeys, tier)
+	}
+	sort.Strings(effortKeys)
+	efforts := make([]string, 0, len(effortKeys))
+	for _, tier := range effortKeys {
+		efforts = append(efforts, tier+"="+strings.TrimSpace(llm.MaxEffort[tier]))
+	}
 	return strings.Join([]string{
 		string(llm.Provider),
 		string(llm.Auth),
@@ -1989,6 +1998,7 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 		llm.Credential.Store,
 		llm.Credential.Name,
 		strings.Join(models, "\x1f"),
+		strings.Join(efforts, "\x1f"),
 		string(llm.ReviewerModelTier),
 	}, "\x00")
 }
@@ -2285,6 +2295,13 @@ func (l LLMConfig) normalized() LLMConfig {
 		}
 		l.ModelMap = modelMap
 	}
+	if len(l.MaxEffort) > 0 {
+		maxEffort := make(EffortMap, len(l.MaxEffort))
+		for tier, effort := range l.MaxEffort {
+			maxEffort[strings.TrimSpace(tier)] = strings.TrimSpace(effort)
+		}
+		l.MaxEffort = maxEffort
+	}
 	return l
 }
 
@@ -2294,6 +2311,7 @@ func (l LLMConfig) empty() bool {
 		strings.TrimSpace(string(l.Adapter)) == "" &&
 		l.Credential.empty() &&
 		len(l.ModelMap) == 0 &&
+		len(l.MaxEffort) == 0 &&
 		strings.TrimSpace(string(l.ReviewerModelTier)) == ""
 }
 
