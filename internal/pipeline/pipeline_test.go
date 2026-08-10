@@ -219,12 +219,13 @@ func TestBuildPlanClassifiesActionIDFailureTerminalAcrossPaths(t *testing.T) {
 	}
 }
 
-func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWithFakes(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunAllowsDossierDomainVocabulary(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	provider.pr.Body = "Document the checkout-native review contract."
+	dossierDomainVocabulary := "Existing matching approval records remain retrievable after a run reaches a terminal state."
 	provider.threads = []gitprovider.InlineThread{{
 		ID:          "thread-1",
 		Resolved:    false,
@@ -241,6 +242,10 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 	provider.issueComments = []gitprovider.IssueComment{{
 		ID:     "issue-1",
 		Body:   "Top-level concern",
+		Author: gitprovider.Identity{Login: "maintainer"},
+	}, {
+		ID:     "issue-2",
+		Body:   dossierDomainVocabulary,
 		Author: gitprovider.Identity{Login: "maintainer"},
 	}}
 	provider.reviews = []gitprovider.Review{{
@@ -261,7 +266,7 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 		QuotaValue:                 llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
 		QuotaSupported:             true,
 	}
-	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
+	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body", dossierDomainVocabulary}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
 	baseAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	baseAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	baseAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
@@ -272,6 +277,7 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 				"Top-level concern",
 				"Inline concern",
 				"Review body",
+				dossierDomainVocabulary,
 			},
 		},
 		promptValidation{
@@ -332,6 +338,10 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 		t.Fatalf("DryRun: %v", err)
 	}
 	adapter.AssertConsumed(t)
+	dossierMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), dossierSummaryTaskID)
+	if err != nil || !ok || dossierMeta.Status != llmlifecycle.StatusSucceeded {
+		t.Fatalf("dossier metadata = %#v ok=%t err=%v, want succeeded task before selection", dossierMeta, ok, err)
+	}
 
 	if result.Run.RunID != "run-1" || result.Run.PostMode != ledger.PostModeDryRun {
 		t.Fatalf("run = %#v, want dry-run run-1", result.Run)
@@ -424,11 +434,12 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "main.go:2")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Top-level concern")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Review body")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), dossierDomainVocabulary)
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "Guidance provenance: repo@refs/heads/main:")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "Guidance source status: available")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "PR-head .codereview/agents changes do not affect this listing.")
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/discussion.md")
-	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval", "CI status", "Approved body should stay out of reviewer-facing discussion")
+	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval state", "CI status", "Approved body should stay out of reviewer-facing discussion")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "raw", "top-level-comments.json"), "Approved body should stay out of reviewer-facing discussion")
 	slicePath, err := result.Artifacts.SlicePatch("harness:reviewer", "main.go")
 	if err != nil {
