@@ -117,8 +117,13 @@ cr init --non-interactive \
 Setup with Pi's local RPC runtime. Install Pi's coding agent and make sure the
 `pi` binary is available on `PATH` before running `cr review`. New installs
 should use the current npm package (`@earendil-works/pi-coding-agent`); existing
-installs from the previous npm scope can also work if their `pi` binary supports
-the required `--mode rpc` and `--system-prompt` flags.
+installs from the previous npm scope can also work when CR's compatibility
+preflight confirms the reviewer controls it requires: RPC/system-prompt mode;
+`--no-builtin-tools` with an exact `--tools` allowlist; explicit `--extension` loading while
+`--no-extensions` disables discovery; and `--no-context-files`, `--no-approve`,
+`--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-session`.
+CR preflights these capabilities before starting a Pi reviewer and returns an
+incompatible-runtime error when any control is unavailable.
 
 ```bash
 cr init --non-interactive \
@@ -602,13 +607,18 @@ hooks.
 
 Every payload contains `event`, `pr_url`, `run_id`, `profile`, `pass_number`
 (the ledger attempt), `artifact_dir`, and `dry_run`; terminal events also contain
-`outcome`. `reviewer.completed` adds `reviewer_id` and `reviewer_status`,
+`outcome`. `author` carries the pull request author's git-host login (GitHub
+login, GitLab username) from the moment the run reads the pull request, which is
+every event after `run.started`, and is omitted when a run fails before that
+read. It is observed from the snapshot the run already fetches, so a hook that
+addresses the author costs no extra host call. `reviewer.completed` adds
+`reviewer_id` and `reviewer_status`,
 `posting.action` adds `action_kind` and the canonical `action_marker` when the
 provider call carries one, and `selection.completed` adds sorted `agents` plus
 an agent-to-model `models` object. Values not yet allocated at an early event,
 such as the run ID at `run.started`, are empty. The common fields are also
-available as `CR_EVENT`, `CR_PR_URL`, `CR_RUN_ID`, `CR_OUTCOME`, `CR_PROFILE`,
-`CR_PASS_NUMBER`, `CR_ARTIFACT_DIR`, and `CR_DRY_RUN`.
+available as `CR_EVENT`, `CR_PR_URL`, `CR_RUN_ID`, `CR_AUTHOR`, `CR_OUTCOME`,
+`CR_PROFILE`, `CR_PASS_NUMBER`, `CR_ARTIFACT_DIR`, and `CR_DRY_RUN`.
 
 Missing commands, non-zero exits, and timeouts write warnings to stderr with
 combined command output capped at 8 KiB. They never change the pipeline result
@@ -627,7 +637,7 @@ Supported values:
 | `llm.reviewer_model_tier` | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
-| `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. |
+| `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. Review-time pruning runs only when no other cr instance is mid-run (it requires the data-root active-runs lock exclusively) and is skipped, not queued, on contention. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
 logged-in CLI or local runtime. `api_key` LLM auth requires `llm.credential`
@@ -673,12 +683,14 @@ Built-in model maps:
 |----------|---------|-------|--------|-------|
 | `openai` | `codex_cli` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
 | `openai` | `openai_api` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
-| `anthropic` | `claude_cli` | unset | `claude-sonnet-4-6` | `claude-opus-4-8` |
+| `anthropic` | `claude_cli` | `claude-haiku-4-5` | `claude-sonnet-5` | `claude-opus-5` |
 | `anthropic` | `anthropic_api` | unset | unset | unset |
 | `pi` | `pi_rpc` | unset | unset | unset |
 
-`anthropic_api`, `pi_rpc`, and `claude_cli` small-tier usage require explicit
-`llm.model_map` entries.
+`anthropic_api` and `pi_rpc` require explicit `llm.model_map` entries for every
+tier an agent asks for; an unmapped tier fails the run and names the entry to
+add. A built-in mapping is a floor, not a recommendation: override the tier in
+`llm.model_map` when a stage deserves a stronger model than its tier implies.
 
 For Anthropic subscription profiles, `adapter: claude_cli` runs Claude Code
 background jobs, writes the full review task to `cr-prompt.txt` in an
@@ -1130,9 +1142,9 @@ Review selection and execution flags:
 | `--selection-model <model>` | Exact provider model ID passthrough for the selection stage only. Bypasses the default medium-tier selection model resolution. Requires `--dry-run` or `--no-post`. |
 | `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
 | `--selection-prompt <path>` | Load selection-stage instruction text from a file while preserving the structured JSON selection protocol. Requires `--dry-run` or `--no-post`. |
-| `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Available for dry-run, no-post, and live reviews. |
 | `--reviewer-model-tier <tier>` | Override the reviewer baseline tier only with `small`, `medium`, or `large`. This still respects higher agent `model_tier` floors. Requires `--dry-run` or `--no-post`. |
-| `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
+| `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Available for dry-run, no-post, and live reviews. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Override the PR's default orchestrator session with a named live-review session. Reviewer cohorts remain PR-scoped. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
@@ -1154,10 +1166,10 @@ Policy and output flags:
 Fast mode defaults off; set `fast: true` on a profile to enable it by default.
 `--fast` and `--no-fast` override the profile. Unsupported runtime/model
 combinations warn and continue at normal speed. Fast mode supports `claude_cli`
-and `anthropic_api` with `claude-opus-4-8` or `claude-opus-4-7`, and `codex_cli`
+and `anthropic_api` with `claude-opus-5` or `claude-opus-4-8`, and `codex_cli`
 with `gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`.
-Anthropic has deprecated Opus 4.7 fast mode and plans to remove it on July 24,
-2026. Claude CLI receives a per-session `fastMode` setting, Anthropic API
+Anthropic has removed Opus 4.7 fast mode. Claude CLI receives a per-session
+`fastMode` setting, Anthropic API
 requests use its fast-mode beta, and Codex CLI receives `service_tier="fast"`.
 Fast mode has premium pricing and applies only to reviewer agents, not
 selection, synthesis, approval-override classification, or `cr respond` thread
@@ -1387,7 +1399,14 @@ Flags:
 
 Prune deletes the ledger row first, then removes artifact directories best
 effort. Unsafe artifact paths and remove failures are reported as warnings after
-the ledger row is deleted.
+the ledger row is deleted. Orphan directories modified within the last 24 hours
+are exempt from the sweep: an unreferenced directory can belong to a run that is
+still being set up.
+
+A live (non-dry-run) prune refuses while any review or respond run on the
+machine holds the data-root active-runs lock, exiting with "another cr instance
+appears to be running; wait for it to finish and retry". `--dry-run` never takes
+the lock.
 
 When progress logging is enabled, `data prune` emits stderr brackets for layout
 resolution, optional legacy migration, ledger open, run selection, delete
@@ -1402,7 +1421,9 @@ cr data purge --dry-run [--json]
 
 Purges the whole local data root. `--yes` is required unless `--dry-run` is set.
 Purge does not open the ledger database, so it can remove a corrupt local data
-root. `--json` emits the data root, dry-run status, and removed status.
+root. `--json` emits the data root, dry-run status, and removed status. Like a
+live prune, purge refuses while any review or respond run on the machine holds
+the data-root active-runs lock.
 
 `data purge` emits progress on stderr for layout resolution and the purge
 action itself.

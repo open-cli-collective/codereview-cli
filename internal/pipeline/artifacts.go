@@ -13,15 +13,22 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
-func writeArtifacts(paths ArtifactPaths, rawDiff string, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string, reviewerRuntime map[string]reviewerRuntimeResolution) error {
+func writeReviewerInputArtifacts(paths ArtifactPaths, rawDiff string) error {
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		return fmt.Errorf("pipeline: create artifact dir: %w", err)
+	}
+	if err := fsatomic.WriteFileAtomic(paths.DiffPatch, []byte(rawDiff), 0o600); err != nil {
+		return fmt.Errorf("pipeline: write diff: %w", err)
+	}
+	return nil
+}
+
+func writeArtifacts(paths ArtifactPaths, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string, reviewerRuntime map[string]reviewerRuntimeResolution) error {
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create artifact dir: %w", err)
 	}
 	if err := os.MkdirAll(paths.SlicesDir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create slices dir: %w", err)
-	}
-	if err := fsatomic.WriteFileAtomic(paths.DiffPatch, []byte(rawDiff), 0o600); err != nil {
-		return fmt.Errorf("pipeline: write diff: %w", err)
 	}
 	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog, reviewerRuntime), "", "  ")
 	if err != nil {

@@ -207,6 +207,37 @@ func TestExtractRunMetricsReturnsEmptyWhenLogsAreAbsent(t *testing.T) {
 	}
 }
 
+func TestExtractRunMetricsAggregatesPiDiffEvidence(t *testing.T) {
+	artifactPath := t.TempDir()
+	logDir := filepath.Join(artifactPath, "agent-logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeLog(t, filepath.Join(logDir, "reviewer-success.jsonl"), `{"type":"turn_start"}
+codereview-pi-tool-evidence tool=cr_diff status=succeeded started=1 completed=1 failed=0
+`)
+	writeLog(t, filepath.Join(logDir, "reviewer-failed.jsonl"), `{"type":"turn_start"}
+codereview-pi-tool-evidence tool=cr_diff status=failed started=1 completed=1 failed=1 error="fixed diff unavailable"
+`)
+	writeLog(t, filepath.Join(logDir, "reviewer-not-invoked.jsonl"), `{"type":"turn_start"}
+codereview-pi-tool-evidence tool=cr_diff status=not_invoked started=0 completed=0 failed=0
+`)
+
+	metrics, err := ExtractRunMetrics(artifactPath)
+	if err != nil {
+		t.Fatalf("ExtractRunMetrics: %v", err)
+	}
+	if metrics.PiDiff == nil {
+		t.Fatal("PiDiff = nil, want aggregated evidence")
+	}
+	if metrics.PiDiff.Succeeded != 1 || metrics.PiDiff.Failed != 1 || metrics.PiDiff.NotInvoked != 1 || metrics.PiDiff.Incomplete != 0 {
+		t.Fatalf("PiDiff = %#v, want one success, failure, and non-invocation", metrics.PiDiff)
+	}
+	if len(metrics.Phases) != 3 {
+		t.Fatalf("phases = %d, want evidence-only phases retained", len(metrics.Phases))
+	}
+}
+
 func writeLog(t *testing.T, path string, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

@@ -65,7 +65,11 @@ type RunSummary struct {
 	ReviewerFailures  []ReviewerFailureSummary
 	ReviewerCoverage  []ReviewerCoverageSummary
 	WallDurationMS    *int64
-	Workstreams       []WorkstreamUsage
+	// Workstreams holds the stages that ran in this round; a stage skipped by
+	// reuse (e.g. selection under a reused reviewer cohort) is absent rather
+	// than present with empty usage, which is what lets AggregateUsage's
+	// every-workstream-reports rule produce totals for the round.
+	Workstreams []WorkstreamUsage
 }
 
 // ReviewerFailureSummary is a reviewer task diagnostic rendered in the rollup.
@@ -253,39 +257,140 @@ func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFa
 		return
 	}
 	out.WriteString("### Reviewer Diagnostics\n\n")
-	out.WriteString("| Reviewer | Status | Diagnostic |\n")
-	out.WriteString("|----------|--------|------------|\n")
 	for _, failure := range failures {
-		fmt.Fprintf(out, "| %s | failed | %s |\n", escapeCell(failure.AgentID), escapeCell(failure.Error))
+		fmt.Fprintf(out, "- %s — failed: %s\n", codeSpan(failure.AgentID), escapeCell(failure.Error))
 	}
 	out.WriteString("\n")
 }
 
+// GitHub tables offer no column-width control, so variable-length values
+// (paths, constraint prose) wrap mid-word and repeat per row. Coverage is
+// rendered as a list instead: shared inspected files collapse into one
+// details block, per-reviewer lines carry only deviations, and unknown
+// fields are omitted rather than rendered as "unavailable".
 func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerCoverageSummary) {
 	if len(coverage) == 0 {
 		return
 	}
 	out.WriteString("### Reviewer Coverage\n\n")
-	out.WriteString("| Reviewer | Status | Inspected | Skipped | Constraints |\n")
-	out.WriteString("|----------|--------|-----------|---------|-------------|\n")
+	union := inspectedFileUnion(coverage)
 	for _, entry := range coverage {
-		fmt.Fprintf(out, "| %s | %s | %s | %s | %s |\n",
-			escapeCell(entry.AgentID),
-			escapeCell(entry.Status),
-			escapeCell(orUnavailable(strings.Join(entry.InspectedFiles, ", "))),
-			escapeCell(orUnavailable(strings.Join(entry.SkippedFiles, ", "))),
-			escapeCell(coverageAnnotationCell(entry)),
-		)
+		fmt.Fprintf(out, "- %s — %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status))
+		var notes []string
+		if len(entry.InspectedFiles) > 0 && !stringSetsEqual(entry.InspectedFiles, union) {
+			assignedNoun := "files"
+			if len(entry.InspectedFiles) == 1 {
+				assignedNoun = "file"
+			}
+			notes = append(notes, fmt.Sprintf("inspected %d assigned %s (%d inspected across reviewers): %s",
+				len(entry.InspectedFiles), assignedNoun, len(union), codeSpanList(entry.InspectedFiles)))
+		}
+		if len(entry.SkippedFiles) > 0 {
+			notes = append(notes, "skipped: "+codeSpanList(entry.SkippedFiles))
+		} else if coverageResultProduced(entry.Status) {
+			notes = append(notes, "skipped: none")
+		}
+		if len(entry.Constraints) > 0 {
+			// Constraints are independent sentences of reviewer prose; a
+			// space joins them without stacking punctuation.
+			notes = append(notes, "constraints: "+escapeCell(strings.Join(entry.Constraints, " ")))
+		} else if coverageResultProduced(entry.Status) {
+			notes = append(notes, "constraints: none")
+		}
+		if strings.TrimSpace(entry.Diagnostic) != "" {
+			notes = append(notes, escapeCell(entry.Diagnostic))
+		}
+		if len(notes) > 0 {
+			out.WriteString("; ")
+			out.WriteString(strings.Join(notes, "; "))
+		}
+		out.WriteString("\n")
+	}
+	if len(union) > 0 {
+		fmt.Fprintf(out, "\n<details>\n<summary>Inspected files (%d)</summary>\n\n", len(union))
+		for _, file := range union {
+			fmt.Fprintf(out, "- %s\n", codeSpan(file))
+		}
+		out.WriteString("\n</details>\n")
 	}
 	out.WriteString("\n")
 }
 
-func coverageAnnotationCell(entry ReviewerCoverageSummary) string {
-	parts := append([]string(nil), entry.Constraints...)
-	if strings.TrimSpace(entry.Diagnostic) != "" {
-		parts = append(parts, entry.Diagnostic)
+func coverageResultProduced(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "complete_broad", "complete_constrained", "incomplete_skipped":
+		return true
+	default:
+		return false
 	}
-	return orUnavailable(strings.Join(parts, "; "))
+}
+
+// coverageStatusLabel humanizes the coverage status enum; the healthy states
+// stay quiet and the exceptional ones lead with a marker so they stand out
+// in the list. Unknown values pass through untranslated.
+func coverageStatusLabel(status string) string {
+	switch status {
+	case "complete_broad":
+		return "complete (broad)"
+	case "complete_constrained":
+		return "complete (constrained)"
+	case "incomplete_skipped":
+		return "⚠️ incomplete (skipped files)"
+	case "incomplete_tool":
+		return "⚠️ incomplete (tool failure)"
+	case "incomplete_failed":
+		return "⚠️ failed"
+	case "incomplete_unassigned":
+		return "⚠️ unassigned"
+	default:
+		return escapeCell(status)
+	}
+}
+
+func inspectedFileUnion(coverage []ReviewerCoverageSummary) []string {
+	seen := map[string]bool{}
+	var union []string
+	for _, entry := range coverage {
+		for _, file := range entry.InspectedFiles {
+			if !seen[file] {
+				seen[file] = true
+				union = append(union, file)
+			}
+		}
+	}
+	sort.Strings(union)
+	return union
+}
+
+func stringSetsEqual(a, b []string) bool {
+	set := map[string]bool{}
+	for _, value := range a {
+		set[value] = true
+	}
+	if len(set) != len(b) {
+		return false
+	}
+	for _, value := range b {
+		if !set[value] {
+			return false
+		}
+	}
+	return true
+}
+
+// codeSpan wraps a dynamic value in a markdown code span; backticks are
+// replaced so the value cannot terminate the span early.
+func codeSpan(value string) string {
+	cleaned := strings.NewReplacer("`", "'", "\n", " ", "\r", " ").Replace(sanitize(value))
+	return "`" + strings.TrimSpace(cleaned) + "`"
+}
+
+func codeSpanList(values []string) string {
+	spans := make([]string, 0, len(values))
+	for _, value := range values {
+		spans = append(spans, codeSpan(value))
+	}
+	return strings.Join(spans, ", ")
 }
 
 func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage) {
@@ -294,8 +399,13 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 	}
 	out.WriteString("\n---\n<details>\n<summary>Completed in ")
 	out.WriteString(formatDurationMS(run.WallDurationMS))
-	out.WriteString(" | ")
-	out.WriteString(formatUSDEst(totals.CostUSD, totals.CostEstimated))
+	// The summary line has no field labels, so an unknown cost is omitted
+	// rather than rendered as a bare "unavailable"; the labeled Cost row in
+	// the table below still reports it.
+	if totals.CostUSD != nil {
+		out.WriteString(" | ")
+		out.WriteString(formatUSDEst(totals.CostUSD, totals.CostEstimated))
+	}
 	out.WriteString(" | ")
 	out.WriteString(escapeCell(orUnavailable(run.Model)))
 	out.WriteString(" | cr ")
@@ -329,19 +439,19 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 
 	if len(run.Workstreams) > 0 {
 		out.WriteString("\n**Per-workstream usage**\n\n")
-		out.WriteString("| Workstream | Model | In | Out | Cache read | Cache create | Cost | Duration |\n")
-		out.WriteString("|---|---|---:|---:|---:|---:|---:|---:|\n")
+		// Nested bullets rather than an eight-column table: GitHub gives
+		// tables no width control, so workstream names and headers wrap
+		// mid-word. Labels make each value self-describing, so unknown
+		// values stay as "unavailable" here (unlike the unlabeled summary
+		// line, which omits them).
 		for _, workstream := range run.Workstreams {
-			fmt.Fprintf(out, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
-				escapeCell(workstream.Name),
-				escapeCell(orUnavailable(workstream.Model)),
-				formatTokens(workstream.TokensIn),
-				formatTokens(workstream.TokensOut),
-				formatTokens(workstream.CacheRead),
-				formatTokens(workstream.CacheCreate),
-				formatUSDEst(workstream.CostUSD, workstream.CostEstimated),
-				formatDurationMS(workstream.DurationMS),
-			)
+			fmt.Fprintf(out, "- %s — %s\n", codeSpan(workstream.Name), escapeCell(orUnavailable(workstream.Model)))
+			fmt.Fprintf(out, "  - In: %s\n", formatTokens(workstream.TokensIn))
+			fmt.Fprintf(out, "  - Out: %s\n", formatTokens(workstream.TokensOut))
+			fmt.Fprintf(out, "  - Cache read: %s\n", formatTokens(workstream.CacheRead))
+			fmt.Fprintf(out, "  - Cache create: %s\n", formatTokens(workstream.CacheCreate))
+			fmt.Fprintf(out, "  - Cost: %s\n", formatUSDEst(workstream.CostUSD, workstream.CostEstimated))
+			fmt.Fprintf(out, "  - Duration: %s\n", formatDurationMS(workstream.DurationMS))
 		}
 	}
 	out.WriteString("\n</details>\n")

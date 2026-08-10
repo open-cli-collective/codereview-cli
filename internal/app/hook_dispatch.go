@@ -27,6 +27,7 @@ type hookDispatcher struct {
 
 	mu            sync.Mutex
 	dryRun        bool
+	author        string
 	run           ledger.Run
 	once          map[string]bool
 	selectionSeen bool
@@ -83,6 +84,7 @@ func (d *hookDispatcher) emit(event string, extra hooks.Payload, run ledger.Run,
 		Event:       event,
 		PRURL:       d.prURL,
 		RunID:       run.RunID,
+		Author:      d.author,
 		Profile:     d.profile,
 		PassNumber:  run.Attempt,
 		ArtifactDir: run.ArtifactPath,
@@ -132,6 +134,22 @@ func (d *hookDispatcher) observeRunID(runID string) ledger.Run {
 		return ledger.Run{RunID: runID}
 	}
 	return run
+}
+
+// observeAuthor records the pull request author for every later event. The
+// first non-empty login wins: a run reads the pull request repeatedly, and a
+// later read that fails or returns an unauthored snapshot must not erase an
+// identity the hooks already reported.
+func (d *hookDispatcher) observeAuthor(login string) {
+	login = strings.TrimSpace(login)
+	if d == nil || login == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.author == "" {
+		d.author = login
+	}
 }
 
 func (d *hookDispatcher) observeRun(run ledger.Run) {

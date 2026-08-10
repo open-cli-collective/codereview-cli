@@ -549,24 +549,23 @@ func applyAdvisoryThreadResolutionWarning(ctx context.Context, opts Options, res
 	return nil
 }
 
+// pruneRetention runs automatic retention through the guarded entry point,
+// which owns the skip-on-contention and degrade-with-warning policy; a
+// non-nil error means the retention pass itself failed.
 func pruneRetention(ctx context.Context, opts Options) error {
 	if opts.RetentionManualOnly {
 		return nil
 	}
-	result, err := datalifecycle.Prune(ctx, datalifecycle.Options{
+	_, err := datalifecycle.PruneGuarded(ctx, datalifecycle.Options{
 		Layout: opts.Layout,
 		Store:  opts.Store,
 		Now:    opts.Now,
-	}, datalifecycle.PruneOptions{Retention: opts.Retention})
-	if err != nil {
-		return err
-	}
-	for _, warning := range result.Warnings {
+	}, datalifecycle.PruneOptions{Retention: opts.Retention}, func(warning string) {
 		if opts.Warnings != nil {
-			_, _ = fmt.Fprintf(opts.Warnings, "warning: %s\n", warning)
+			_, _ = fmt.Fprintln(opts.Warnings, warning)
 		}
-	}
-	return nil
+	})
+	return err
 }
 
 func reviewPostingUsesGitHubApp(profile config.Profile) bool {

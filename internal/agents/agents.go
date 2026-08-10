@@ -76,7 +76,27 @@ type SourceInfo struct {
 	Status          SourceStatus `json:"status"`
 	Fingerprint     string       `json:"fingerprint,omitempty"`
 	Warnings        []string     `json:"warnings,omitempty"`
-	Error           string       `json:"error,omitempty"`
+	// Skipped records definitions this source declared but could not honor, so a
+	// caller can branch on the degradation instead of parsing Warnings prose.
+	// A source with Skipped entries and Status available loaded only in part.
+	Skipped []SkippedDefinition `json:"skipped,omitempty"`
+	Error   string              `json:"error,omitempty"`
+}
+
+// SkippedDefinition is one agent or category that was declared but not loaded.
+// Agent is empty when the whole category was skipped.
+type SkippedDefinition struct {
+	Category string `json:"category"`
+	Agent    string `json:"agent,omitempty"`
+	Reason   string `json:"reason"`
+}
+
+// String renders the entry for display surfaces that take prose.
+func (s SkippedDefinition) String() string {
+	if s.Agent == "" {
+		return fmt.Sprintf("skipped category %q: %s", s.Category, s.Reason)
+	}
+	return fmt.Sprintf("skipped agent %s/%s: %s", s.Category, s.Agent, s.Reason)
 }
 
 // Provenance identifies the winning source for one loaded agent.
@@ -90,6 +110,9 @@ type Provenance struct {
 	CanonicalPath  string     `json:"canonical_path,omitempty"`
 	Fingerprint    string     `json:"fingerprint,omitempty"`
 	Warnings       []string   `json:"warnings,omitempty"`
+	// Skipped mirrors SourceInfo.Skipped so a SourceInfo round-tripped through
+	// Provenance keeps the definitions this source could not honor.
+	Skipped []SkippedDefinition `json:"skipped,omitempty"`
 }
 
 // String returns the user-facing provenance label.
@@ -124,6 +147,7 @@ func (p Provenance) SourceInfo() SourceInfo {
 		Status:          SourceStatusAvailable,
 		Fingerprint:     p.Fingerprint,
 		Warnings:        append([]string(nil), p.Warnings...),
+		Skipped:         append([]SkippedDefinition(nil), p.Skipped...),
 	}
 	return info
 }
@@ -449,8 +473,19 @@ func readFileAgent(agentPath string, category Category, pathName string, provena
 	return newAgent(category, pathName, index, string(prompt), provenance), nil
 }
 
-func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance, allowSoftFailures bool) ([]Agent, SourceInfo, error) {
+func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenance, allowSoftFailures bool) (loaded []Agent, info SourceInfo, err error) {
 	repoSource := provenance.SourceInfo()
+	var skipped []SkippedDefinition
+	// Flush on every return, including ones added later that do not go through
+	// fail(). Dropping the skip list would reproduce, one layer down, the silent
+	// failure this loader exists to remove — so the invariant is enforced here
+	// rather than left to each exit remembering.
+	defer func() {
+		for _, entry := range skipped {
+			info.Skipped = append(info.Skipped, entry)
+			info.Warnings = append(info.Warnings, entry.String())
+		}
+	}()
 	fail := func(err error) ([]Agent, SourceInfo, error) {
 		if classified, ok := classifyRepoCatalogError(repoSource, err); allowSoftFailures && ok {
 			return nil, classified, nil
@@ -493,27 +528,75 @@ func loadRepoSource(ctx context.Context, source RepoSource, provenance Provenanc
 			continue
 		}
 		if err := validateName("category", categoryName); err != nil {
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: categoryName}); ok {
+				skipped = append(skipped, entry)
+				continue
+			}
 			return fail(err)
 		}
 		categoryPath := path.Join(repoAgentsRoot, categoryName)
 		category, err := readRepoCategory(ctx, source.Reader, source.Ref, baseSHA, categoryPath, categoryName)
 		if err != nil {
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: categoryName}); ok {
+				skipped = append(skipped, entry)
+				continue
+			}
 			return fail(err)
 		}
-		categoryAgents, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
+		categoryAgents, agentSkips, err := readRepoAgents(ctx, source.Reader, source.Ref, baseSHA, categoryPath, category, provenance)
+		skipped = append(skipped, agentSkips...)
 		if err != nil {
 			return fail(err)
 		}
 		if len(categoryAgents) == 0 {
-			return fail(fmt.Errorf("%w: repo source %s category %q contains no agents", ErrInvalid, repoAgentsRoot, categoryName))
+			// When the agents skipped themselves they already carry the actionable
+			// detail; a second entry for the same root cause makes the operator read
+			// the failure twice, once without it. A category that declared nothing
+			// is a different situation and says so.
+			if len(agentSkips) == 0 {
+				skipped = append(skipped, SkippedDefinition{Category: categoryName, Reason: "declares no agents"})
+			}
+			continue
 		}
 		loadedAgent = true
 		agents = append(agents, categoryAgents...)
 	}
+	// Only a source with nothing usable is treated as invalid. One malformed
+	// definition disabling every other agent in the repo is what this avoids:
+	// the failure is indistinguishable from a review that ran and found
+	// problems, so it can sit unnoticed for a long time.
 	if !loadedAgent {
-		return fail(fmt.Errorf("%w: repo source %s contains no agents", ErrInvalid, repoAgentsRoot))
+		return fail(fmt.Errorf("%w: repo source %s contains no usable agents", ErrInvalid, repoAgentsRoot))
 	}
 	return agents, repoSource, nil
+}
+
+// skipIfInvalid decides whether err disqualifies just this definition or the whole
+// source. Kept in one place so a future skip-safe error class, or a fix to the
+// classification itself, cannot reach three of the four call sites and miss one.
+func skipIfInvalid(err error, def SkippedDefinition) (SkippedDefinition, bool) {
+	if !errors.Is(err, ErrInvalid) {
+		return SkippedDefinition{}, false
+	}
+	def.Reason = err.Error()
+	return def, true
+}
+
+// scopedToDefinition reclassifies a missing file *beneath* one agent or category
+// directory as a malformed definition. Whether a failure disqualifies one agent or
+// the whole source is a question of path scope, not error class: forgetting to commit
+// prompt.md is as much a malformed agent as a bad field in index.yaml, and only the
+// caller here knows the path is agent-scoped. Reader failures on the tree itself, and
+// any non-NotFound transport error, are left alone and still fail the source.
+func scopedToDefinition(err error, format string, args ...any) error {
+	if !errors.Is(err, gitprovider.ErrNotFound) {
+		return err
+	}
+	// Keep the provider error in the chain: these reasons reach the operator, and a
+	// NOT_FOUND raised for something other than an absent blob leaves nothing to
+	// diagnose with otherwise. Safe for classification — skipIfInvalid and
+	// classifyRepoCatalogError both test ErrInvalid first.
+	return fmt.Errorf("%w: %s: %w", ErrInvalid, fmt.Sprintf(format, args...), err)
 }
 
 func classifyRepoCatalogError(source SourceInfo, err error) (SourceInfo, bool) {
@@ -539,7 +622,7 @@ func repoSourceError(source SourceInfo, status SourceStatus, err error) SourceIn
 func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath, pathName string) (Category, error) {
 	var index categoryYAML
 	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(categoryPath, "index.yaml"), &index); err != nil {
-		return Category{}, err
+		return Category{}, scopedToDefinition(err, "category %s is missing or unreadable index.yaml", pathName)
 	}
 	if err := validateMatchingName("category", pathName, index.Name); err != nil {
 		return Category{}, err
@@ -547,14 +630,26 @@ func readRepoCategory(ctx context.Context, reader RepoReader, ref gitprovider.PR
 	return Category{Name: pathName, Description: index.Description, Owner: index.Owner}, nil
 }
 
-func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath string, category Category, provenance Provenance) ([]Agent, error) {
+// readRepoAgents returns the agents it could load, plus a message per agent it
+// skipped. A malformed definition disqualifies that agent only — an unusable
+// agent is never selected, so skipping it is as safe as refusing the whole
+// source and leaves the rest of the repo's guidance working.
+//
+// This deliberately diverges from readFileAgents, which still fails on the first
+// bad agent. The difference is the trust boundary, not an oversight: profile
+// sources are the operator's own configuration, where failing loudly is what they
+// want, while repo sources are PR-adjacent content the operator does not own and
+// cannot fix in the run. One contributor's malformed agent should not silently
+// disarm review for everyone else's PRs.
+func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, categoryPath string, category Category, provenance Provenance) ([]Agent, []SkippedDefinition, error) {
 	entries, err := reader.ListTreeAtRef(ctx, ref, gitRef, categoryPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sortTreeEntries(entries)
 
 	var agents []Agent
+	var skipped []SkippedDefinition
 	for _, entry := range entries {
 		if entry.Type != "tree" {
 			continue
@@ -564,22 +659,30 @@ func readRepoAgents(ctx context.Context, reader RepoReader, ref gitprovider.PRRe
 			continue
 		}
 		if err := validateName("agent", agentName); err != nil {
-			return nil, err
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: category.Name, Agent: agentName}); ok {
+				skipped = append(skipped, entry)
+				continue
+			}
+			return nil, skipped, err
 		}
 		agentPath := path.Join(categoryPath, agentName)
 		agent, err := readRepoAgent(ctx, reader, ref, gitRef, agentPath, category, agentName, provenance)
 		if err != nil {
-			return nil, err
+			if entry, ok := skipIfInvalid(err, SkippedDefinition{Category: category.Name, Agent: agentName}); ok {
+				skipped = append(skipped, entry)
+				continue
+			}
+			return nil, skipped, err
 		}
 		agents = append(agents, agent)
 	}
-	return agents, nil
+	return agents, skipped, nil
 }
 
 func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef, gitRef, agentPath string, category Category, pathName string, provenance Provenance) (Agent, error) {
 	var index agentYAML
 	if err := decodeRepoYAML(ctx, reader, ref, gitRef, path.Join(agentPath, "index.yaml"), &index); err != nil {
-		return Agent{}, err
+		return Agent{}, scopedToDefinition(err, "agent %s:%s is missing or unreadable index.yaml", category.Name, pathName)
 	}
 	if err := validateMatchingName("agent", pathName, index.Name); err != nil {
 		return Agent{}, err
@@ -589,7 +692,7 @@ func readRepoAgent(ctx context.Context, reader RepoReader, ref gitprovider.PRRef
 	}
 	prompt, err := reader.GetFileAtRef(ctx, ref, gitRef, path.Join(agentPath, "prompt.md"))
 	if err != nil {
-		return Agent{}, err
+		return Agent{}, scopedToDefinition(err, "agent %s:%s is missing prompt.md", category.Name, pathName)
 	}
 	return newAgent(category, pathName, index, string(prompt), provenance), nil
 }
@@ -800,6 +903,7 @@ func provenanceFromSource(source SourceInfo) Provenance {
 		CanonicalPath:  source.CanonicalPath,
 		Fingerprint:    source.Fingerprint,
 		Warnings:       append([]string(nil), source.Warnings...),
+		Skipped:        append([]SkippedDefinition(nil), source.Skipped...),
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/datalifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
@@ -218,7 +219,7 @@ func TestBuildPlanClassifiesActionIDFailureTerminalAcrossPaths(t *testing.T) {
 	}
 }
 
-func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWithFakes(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -254,9 +255,11 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 		Event:  review.ReviewEventApprove,
 	}}
 	baseAdapter := &llm.FakeAdapter{
-		NameValue:      "fake-llm",
-		QuotaValue:     llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
-		QuotaSupported: true,
+		NameValue:                  "pi_rpc",
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspacePermissionBounded,
+		QuotaValue:                 llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
+		QuotaSupported:             true,
 	}
 	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
 	baseAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
@@ -354,16 +357,16 @@ func TestReviewPipelineAcceptanceHarnessDryRunWithFakes(t *testing.T) {
 	}
 	assertPromptContains(t, requests[3].Prompt, "finding-1", "harness:reviewer", "main.go")
 	for _, request := range requests {
-		if request.Model != "claude-sonnet-4-6" || request.Effort != "medium" {
-			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-4-6/medium from agent config", request.Model, request.Effort)
+		if request.Model != "claude-sonnet-5" || request.Effort != "medium" {
+			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-5/medium from agent config", request.Model, request.Effort)
 		}
 		if request.Fast {
 			t.Fatalf("request = %#v, want fast omitted by default", request)
 		}
 	}
 	for _, session := range result.Sessions {
-		if session.Model != "claude-sonnet-4-6" || session.Effort == nil || *session.Effort != "medium" {
-			t.Fatalf("session = model:%q effort:%v, want claude-sonnet-4-6/medium from agent config", session.Model, session.Effort)
+		if session.Model != "claude-sonnet-5" || session.Effort == nil || *session.Effort != "medium" {
+			t.Fatalf("session = model:%q effort:%v, want claude-sonnet-5/medium from agent config", session.Model, session.Effort)
 		}
 	}
 	reviewerSession, ok := sessionWithProviderID(result.Sessions, "reviewer-session")
@@ -610,7 +613,9 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	firstAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 8, 2))
 	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
-	firstAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	reviewer := fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
+	reviewer.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusIncomplete}
+	firstAdapter.Queue(reviewer)
 	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
 	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
 	_, err := dryRunForTest(ctx, Options{
@@ -680,12 +685,15 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 		t.Fatalf("second adapter resumes = %#v, want only failed rollup retry session", resumes)
 	}
 	resumeReq := resumes[0].Request
-	if resumeReq.Model != "claude-sonnet-4-6" || resumeReq.Effort != "medium" {
-		t.Fatalf("resume request = model:%q effort:%q, want claude-sonnet-4-6/medium", resumeReq.Model, resumeReq.Effort)
+	if resumeReq.Model != "claude-sonnet-5" || resumeReq.Effort != "medium" {
+		t.Fatalf("resume request = model:%q effort:%q, want claude-sonnet-5/medium", resumeReq.Model, resumeReq.Effort)
 	}
 	assertPromptContains(t, resumeReq.Prompt, "finding-1", "harness:reviewer", "main.go")
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
 		t.Fatalf("result findings = %#v, want cached reviewer finding", result.Findings)
+	}
+	if len(result.ReviewerCoverage) != 1 || result.ReviewerCoverage[0].Status != reviewerCoverageIncompleteTool || result.ReviewerCoverage[0].Diagnostic != "cr_diff: tool incomplete" {
+		t.Fatalf("cached reviewer coverage = %#v, want incomplete typed tool evidence", result.ReviewerCoverage)
 	}
 	for taskID, want := range successMetadata {
 		got, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(artifacts), taskID)
@@ -996,6 +1004,57 @@ func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
 	}
 }
 
+func TestDryRunTypedReviewerToolEvidenceForcesIncompleteCoverage(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     llm.DiffToolStatus
+		diagnostic string
+		want       string
+	}{
+		{name: "not invoked", status: llm.DiffToolStatusNotInvoked, want: "cr_diff: not invoked"},
+		{name: "incomplete", status: llm.DiffToolStatusIncomplete, want: "cr_diff: tool incomplete"},
+		{name: "failed", status: llm.DiffToolStatusFailed, diagnostic: "fixed diff unavailable", want: "cr_diff: fixed diff unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+			adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
+			adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+			reviewer := fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", []string{"main.go"}, nil), 1, 1)
+			reviewer.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: tt.status, DiffDiagnostic: tt.diagnostic}
+			adapter.Queue(reviewer)
+			adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 1, 1))
+
+			result, err := dryRunForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewRunID:        func() string { return "run-typed-tool-evidence" },
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    findingSequence("finding"),
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+			}, req)
+			if err != nil {
+				t.Fatalf("DryRun: %v", err)
+			}
+			if result.Plan.Outcome != reviewplan.OutcomeComment {
+				t.Fatalf("outcome = %q, want comment despite approve rollup", result.Plan.Outcome)
+			}
+			coverage := result.Plan.Summary.Run.ReviewerCoverage
+			if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteTool || coverage[0].Diagnostic != tt.want {
+				t.Fatalf("coverage = %#v, want incomplete tool diagnostic %q", coverage, tt.want)
+			}
+		})
+	}
+}
+
 func TestDryRunNormalizesReviewerFindingsFileAlias(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -1113,8 +1172,9 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 	workspace := requests[1].ReviewerWorkspace
 	if !strings.Contains(workspace.RepoDir, filepath.Join("workbench", "reviewers")) ||
 		!strings.HasPrefix(workspace.ScratchDir, result.Artifacts.WorkbenchScratch+string(filepath.Separator)) ||
+		workspace.DiffPath != result.Artifacts.DiffPatch ||
 		workspace.MaxToolOutputBytes != 32*1024 {
-		t.Fatalf("reviewer workspace request = %#v, want disposable repo, scratch, and default cap", workspace)
+		t.Fatalf("reviewer workspace request = %#v, want disposable repo, scratch, fixed diff, and default cap", workspace)
 	}
 	if provider.threadCalls != 0 {
 		t.Fatalf("thread calls = %d, want no live thread reads for pinned review", provider.threadCalls)
@@ -1234,8 +1294,8 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 		result.ReviewBaseSHA != provider.pr.Base.SHA || result.ReviewHeadSHA != provider.pr.Head.SHA {
 		t.Fatalf("result SHAs = current %s/%s review %s/%s, want provider PR SHAs", result.CurrentBaseSHA, result.CurrentHeadSHA, result.ReviewBaseSHA, result.ReviewHeadSHA)
 	}
-	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "claude-sonnet-4-6" || result.SelectionSession.Effort != "medium" {
-		t.Fatalf("selection session = %#v, want selection-session claude-sonnet-4-6/medium", result.SelectionSession)
+	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "claude-sonnet-5" || result.SelectionSession.Effort != "medium" {
+		t.Fatalf("selection session = %#v, want selection-session claude-sonnet-5/medium", result.SelectionSession)
 	}
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/change-map.md")
 	expectedLog, err := expectedArtifacts.AgentLog("orchestrator-selection")
@@ -1612,7 +1672,7 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 		Now:      fixedNow,
 		Budget:   ContextBudget{MaxPromptBytes: 100},
 	}, selectionRequestFromReview(req, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection model claude-sonnet-4-6") {
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection model claude-sonnet-5") {
 		t.Fatalf("SelectionOnly error = %v, want selection budget failure", err)
 	}
 	if len(adapter.Requests()) != 0 {
@@ -1796,7 +1856,7 @@ func TestDryRunReviewerBaselineTierRaisesReviewerModelFloor(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-4-6", "profile-large-model", "claude-sonnet-4-6"}
+	wantModels := []string{"claude-sonnet-5", "profile-large-model", "claude-sonnet-5"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] {
 			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
@@ -1887,7 +1947,10 @@ func TestDryRunInvalidOrUnreadableRepoGuidanceForcesRequestChangesWithoutReviewe
 		wantState agents.SourceStatus
 	}{
 		{
-			name: "unreadable",
+			// A file missing beneath an agent directory is a malformed agent, not an
+			// unreadable source. The agent is skipped; with no sibling to fall back
+			// on the source has nothing usable, so it is invalid — and still blocking.
+			name: "agent missing prompt, nothing else to load",
 			setupRepo: func(t *testing.T, provider *readOnlyProvider) {
 				t.Helper()
 				removeRepoAgentFixture(provider)
@@ -1897,8 +1960,8 @@ func TestDryRunInvalidOrUnreadableRepoGuidanceForcesRequestChangesWithoutReviewe
 				provider.trees[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath}] = []gitprovider.TreeEntry{{Path: categoryPath + "/agent", Type: "tree"}}
 				provider.files[fileKey{gitRef: provider.pr.Base.SHA, path: categoryPath + "/agent/index.yaml"}] = []byte("name: agent\ndescription: desc\nmodel_tier: medium\neffort: medium\n")
 			},
-			wantText:  "Base branch `.codereview/agents/` could not be read as trusted review guidance.",
-			wantState: agents.SourceStatusUnreadable,
+			wantText:  "Base branch `.codereview/agents/` was invalid and could not be used as trusted review guidance.",
+			wantState: agents.SourceStatusInvalid,
 		},
 		{
 			name: "invalid",
@@ -1999,19 +2062,19 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 			name:           "model and effort",
 			modelOverride:  "bench-model",
 			effortOverride: "high",
-			wantModels:     []string{"bench-model", "claude-sonnet-4-6", "claude-sonnet-4-6"},
+			wantModels:     []string{"bench-model", "claude-sonnet-5", "claude-sonnet-5"},
 			wantEfforts:    []string{"high", "medium", "medium"},
 		},
 		{
 			name:          "model only",
 			modelOverride: "bench-model",
-			wantModels:    []string{"bench-model", "claude-sonnet-4-6", "claude-sonnet-4-6"},
+			wantModels:    []string{"bench-model", "claude-sonnet-5", "claude-sonnet-5"},
 			wantEfforts:   []string{"medium", "medium", "medium"},
 		},
 		{
 			name:           "effort only",
 			effortOverride: "high",
-			wantModels:     []string{"claude-sonnet-4-6", "claude-sonnet-4-6", "claude-sonnet-4-6"},
+			wantModels:     []string{"claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5"},
 			wantEfforts:    []string{"high", "medium", "medium"},
 		},
 	}
@@ -2105,7 +2168,7 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-4-6", "bench-reviewer-model", "claude-sonnet-4-6"}
+	wantModels := []string{"claude-sonnet-5", "bench-reviewer-model", "claude-sonnet-5"}
 	wantEfforts := []string{"medium", "low", "medium"}
 	requests := adapter.Requests()
 	for i, request := range requests {
@@ -2655,7 +2718,7 @@ func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-4-6", "profile-large-model", "claude-sonnet-4-6"}
+	wantModels := []string{"claude-sonnet-5", "profile-large-model", "claude-sonnet-5"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] {
 			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
@@ -2702,7 +2765,7 @@ func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
 	}
-	wantModels := []string{"claude-sonnet-4-6", "agent-provider-model", "claude-sonnet-4-6"}
+	wantModels := []string{"claude-sonnet-5", "agent-provider-model", "claude-sonnet-5"}
 	for i, request := range requests {
 		if request.Model != wantModels[i] || request.Effort != "medium" {
 			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
@@ -2752,7 +2815,7 @@ func TestDryRunReviewerBaselineDoesNotAffectAgentModelID(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-4-6", "agent-provider-model", "claude-sonnet-4-6"}
+	wantModels := []string{"claude-sonnet-5", "agent-provider-model", "claude-sonnet-5"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] {
 			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
@@ -2788,7 +2851,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 		FloorTier:      "medium",
 		BaselineTier:   "small",
 		EffectiveTier:  "medium",
-		ResolvedModel:  "claude-sonnet-4-6",
+		ResolvedModel:  "claude-sonnet-5",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	}) {
 		t.Fatalf("reviewer runtime = %#v", runtime)
@@ -2798,7 +2861,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 		FloorTier:      "large",
 		BaselineTier:   "small",
 		EffectiveTier:  "large",
-		ResolvedModel:  "claude-opus-4-8",
+		ResolvedModel:  "claude-opus-5",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	}) {
 		t.Fatalf("senior runtime = %#v", runtime)
@@ -2833,7 +2896,7 @@ func TestDryRunReviewerModelOverrideBypassesAgentModelID(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-4-6", "override-model", "claude-sonnet-4-6"}
+	wantModels := []string{"claude-sonnet-5", "override-model", "claude-sonnet-5"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] || request.Effort != "medium" {
 			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
@@ -2942,7 +3005,7 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
-	wantWarning := "warning: fast mode is unsupported for anthropic/subscription/claude_cli model claude-sonnet-4-6; continuing at normal speed\n"
+	wantWarning := "warning: fast mode is unsupported for anthropic/subscription/claude_cli model claude-sonnet-5; continuing at normal speed\n"
 	if warnings.String() != wantWarning {
 		t.Fatalf("warnings = %q, want %q", warnings.String(), wantWarning)
 	}
@@ -2955,7 +3018,7 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 		FloorTier:      "medium",
 		BaselineTier:   "small",
 		EffectiveTier:  "medium",
-		ResolvedModel:  "claude-sonnet-4-6",
+		ResolvedModel:  "claude-sonnet-5",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 		Fast:           true,
 		FastIgnored:    true,
@@ -3047,6 +3110,14 @@ func TestDryRunFastPreflightResolvesEveryReviewerBeforeLLM(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	// Every built-in Claude CLI tier resolves, so the reviewer's tier has to be
+	// unmapped by the profile's own map for preflight to have anything to catch.
+	req.Profile.LLM = config.LLMConfig{
+		Provider: config.LLMProviderPi,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterPiRPC,
+		ModelMap: config.ModelMap{"medium": "pi-model", "large": "pi-model"},
+	}
 	writeAgentWithModelTier(t, req.Profile.AgentSources[0], "harness", "unmapped", "small")
 	req.ReviewerFast = true
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
@@ -3172,6 +3243,8 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	req.ReviewerModelOverride = "openai-codex/gpt-5.6-luna"
+	req.ReviewerEffortOverride = "high"
 	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
 	if err != nil {
 		t.Fatalf("PRKey: %v", err)
@@ -3242,6 +3315,13 @@ func TestLivePlansPendingActionsWithoutCompletingRun(t *testing.T) {
 	if len(sessions) != 3 {
 		t.Fatalf("sessions len = %d, want selection/reviewer/rollup", len(sessions))
 	}
+	requests := adapter.Requests()
+	if len(requests) != 3 || requests[1].Model != "openai-codex/gpt-5.6-luna" || requests[1].Effort != "high" {
+		t.Fatalf("LLM requests = %#v, want exact Luna/high reviewer override", requests)
+	}
+	if requests[0].Model == "openai-codex/gpt-5.6-luna" || requests[2].Model == "openai-codex/gpt-5.6-luna" {
+		t.Fatalf("selection/rollup requests = %#v, want routing unchanged", requests)
+	}
 	assertFileContains(t, result.Artifacts.RollupMarkdown, "Automated PR Review")
 	assertAgentSourcesArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer")
 }
@@ -3257,8 +3337,6 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 		{name: "selection model", mutate: func(req *Request) { req.SelectionModelOverride = "bench-model" }},
 		{name: "selection effort", mutate: func(req *Request) { req.SelectionEffortOverride = "high" }},
 		{name: "selection prompt", mutate: func(req *Request) { req.SelectionPromptInstructions = "Use applies_when." }},
-		{name: "reviewer model", mutate: func(req *Request) { req.ReviewerModelOverride = "bench-model" }},
-		{name: "reviewer effort", mutate: func(req *Request) { req.ReviewerEffortOverride = "high" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3288,6 +3366,15 @@ func TestLiveRejectsStageRuntimeOverrides(t *testing.T) {
 				t.Fatalf("adapter requests = %#v, want none", adapter.Requests())
 			}
 		})
+	}
+}
+
+func TestLiveReviewerModelAndEffortOverridesAreNotDryRunOnly(t *testing.T) {
+	if hasDryRunStageOverrides(Request{ReviewerModelOverride: "openai-codex/gpt-5.6-luna", ReviewerEffortOverride: "high"}) {
+		t.Fatal("reviewer model and effort overrides are classified as dry-run-only")
+	}
+	if !hasDryRunStageOverrides(Request{SelectionModelOverride: "selection-model"}) {
+		t.Fatal("selection model override is not classified as dry-run-only")
 	}
 }
 
@@ -3364,8 +3451,14 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 		FakeAdapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
 		reviewerSessionID: "reviewer-dry",
 	}
-	liveAdapter.Queue(fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
-	liveAdapter.Queue(fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6))
+	reviewerLive := fakeLLMResult("reviewer-live", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
+	reviewerCost := 1.25
+	reviewerLive.Response.Usage.CostUSD = &reviewerCost
+	liveAdapter.Queue(reviewerLive)
+	rollupLive := fakeLLMResult("rollup-live", rollupJSON("comment", []string{"live-finding-1"}), 30, 6)
+	rollupCost := 2.0
+	rollupLive.Response.Usage.CostUSD = &rollupCost
+	liveAdapter.Queue(rollupLive)
 
 	liveResult, err := liveForTest(ctx, Options{
 		Provider:        provider,
@@ -3395,6 +3488,26 @@ func TestDefaultSessionPersistsCohortAndResumesReviewerOnLiveRerun(t *testing.T)
 	if liveResult.NamedSessionCandidate == nil || liveResult.NamedSessionCandidate.Name != stored.Name {
 		t.Fatalf("live candidate = %#v, want shared default key %q", liveResult.NamedSessionCandidate, stored.Name)
 	}
+	if liveResult.Plan.Summary.Run.Adapter != "fake-llm" {
+		t.Fatalf("live summary adapter = %q, want resumed run adapter", liveResult.Plan.Summary.Run.Adapter)
+	}
+	var workstreamNames []string
+	for _, workstream := range liveResult.Plan.Summary.Run.Workstreams {
+		workstreamNames = append(workstreamNames, workstream.Name)
+	}
+	if want := []string{"harness:reviewer", "orchestrator-rollup"}; !reflect.DeepEqual(workstreamNames, want) {
+		t.Fatalf("live summary workstreams = %#v, want only executed workstreams %#v", workstreamNames, want)
+	}
+	totals := liveResult.Plan.Summary.Totals
+	if totals.TokensIn == nil || *totals.TokensIn != 50 || totals.TokensOut == nil || *totals.TokensOut != 10 {
+		t.Fatalf("live summary token totals = %#v, want 50 in / 10 out", totals)
+	}
+	if totals.CostUSD == nil || *totals.CostUSD != 3.25 {
+		t.Fatalf("live summary cost total = %#v, want 3.25", totals)
+	}
+	if totals.ComputeDurationMS == nil || *totals.ComputeDurationMS != 246 {
+		t.Fatalf("live summary compute duration = %#v, want 246ms", totals)
+	}
 }
 
 func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
@@ -3416,7 +3529,7 @@ func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
 	if err := store.ReplaceReviewerCohort(ctx, ledger.ReviewerCohort{
 		Scope:   ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)},
 		Adapter: "fake-llm", CreatedAt: fixedNow().Add(-time.Hour), Members: []ledger.ReviewerCohortMember{{
-			AgentID: "harness:reviewer", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"main.go"}, Model: "claude-sonnet-4-6", Effort: "medium", ProviderSessionID: "old-reviewer-session",
+			AgentID: "harness:reviewer", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"main.go"}, Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: "old-reviewer-session",
 		}},
 	}); err != nil {
 		t.Fatalf("ReplaceReviewerCohort: %v", err)
@@ -3476,7 +3589,7 @@ func TestFreshSessionSkipsStoredNamedSession(t *testing.T) {
 	state, err := prepareNamedSession(ctx, Options{
 		Adapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
 		NamedSessions: store,
-	}, req, true, "claude-sonnet-4-6", fixedNow())
+	}, req, true, "claude-sonnet-5", fixedNow())
 	if err != nil {
 		t.Fatalf("prepareNamedSession: %v", err)
 	}
@@ -3489,7 +3602,7 @@ func TestFreshSessionSkipsStoredNamedSession(t *testing.T) {
 	if _, err := prepareNamedSession(ctx, Options{
 		Adapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
 		NamedSessions: store,
-	}, req, true, "claude-sonnet-4-6", fixedNow()); err != nil {
+	}, req, true, "claude-sonnet-5", fixedNow()); err != nil {
 		t.Fatalf("prepareNamedSession missing fresh row: %v", err)
 	}
 }
@@ -4425,7 +4538,7 @@ func TestDryRunPlanSummaryNamesWorkstreamsInSelectionOrder(t *testing.T) {
 	if reviewerCounts["harness:alpha"] != 1 || reviewerCounts["harness:beta"] != 1 {
 		t.Fatalf("reviewer counts = %#v, want one finding each", summary.Reviewers)
 	}
-	for _, want := range []string{"| Reviewer | Findings |", "Per-workstream usage", "| orchestrator-selection |"} {
+	for _, want := range []string{"| Reviewer | Findings |", "Per-workstream usage", "- `orchestrator-selection` —"} {
 		if !strings.Contains(result.Plan.RollupMarkdown, want) {
 			t.Fatalf("rollup markdown missing %q:\n%s", want, result.Plan.RollupMarkdown)
 		}
@@ -4569,7 +4682,7 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 
 	// Known model, adapter reported no cost → estimate is filled and marked.
 	draft := sessionDraft{
-		Model:    "claude-sonnet-4-6",
+		Model:    "claude-sonnet-5",
 		Response: llm.Response{Usage: llm.Usage{TokensIn: &in, TokensOut: &out}},
 	}
 	w := workstreamUsage("policies:conventions", draft)
@@ -4589,7 +4702,7 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 
 	// Adapter reported a real cost → passes through, not marked estimated.
 	realCost := 9.99
-	draft.Model = "claude-sonnet-4-6"
+	draft.Model = "claude-sonnet-5"
 	draft.Response.Usage.CostUSD = &realCost
 	w = workstreamUsage("z:w", draft)
 	if w.CostUSD == nil || *w.CostUSD != realCost || w.CostEstimated {
@@ -4600,10 +4713,11 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	agentID := "harness:alpha"
 	inputs := planRunInputs{
-		hasRun:    true,
-		selection: sessionDraft{Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 0}},
-		reviewers: []sessionDraft{{RowID: "row-1", AgentID: &agentID, Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
-		rollup:    sessionDraft{Model: "sonnet", StartedAt: fixedNow(), CompletedAt: fixedNow().Add(2 * time.Second)},
+		hasRun:       true,
+		selectionRan: true,
+		selection:    sessionDraft{Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 0}},
+		reviewers:    []sessionDraft{{RowID: "row-1", AgentID: &agentID, Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:       sessionDraft{Model: "sonnet", StartedAt: fixedNow(), CompletedAt: fixedNow().Add(2 * time.Second)},
 		selectedAgents: []llm.SelectedAgent{
 			{AgentID: agentID},
 			{AgentID: "harness:missing-draft"},
@@ -4611,7 +4725,7 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 		findingSessions: map[review.FindingID]string{"f-1": "row-1", "f-2": "row-unknown"},
 		startedAt:       fixedNow(),
 	}
-	summary, findingReviewers := Options{Now: fixedNow}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+	summary, findingReviewers := Options{Now: fixedNow, Adapter: &llm.FakeAdapter{NameValue: "fake"}}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
 
 	var names []string
 	for _, workstream := range summary.Workstreams {
@@ -4635,6 +4749,33 @@ func TestBuildRunSummaryWorkstreamBoundaries(t *testing.T) {
 	}
 	if !reflect.DeepEqual(findingReviewers, map[review.FindingID]string{"f-1": agentID}) {
 		t.Fatalf("finding reviewers = %#v, want unknown session unattributed", findingReviewers)
+	}
+}
+
+func TestBuildRunSummaryReusedCohortSkipsSelectionStage(t *testing.T) {
+	agentID := "harness:alpha"
+	inputs := planRunInputs{
+		hasRun:       true,
+		selection:    sessionDraft{},
+		selectionRan: false,
+		reviewers:    []sessionDraft{{RowID: "row-1", AgentID: &agentID, Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 25}}},
+		rollup:       sessionDraft{RowID: "row-2", Adapter: "fake", Model: "sonnet", Response: llm.Response{DurationMS: 30}},
+		selectedAgents: []llm.SelectedAgent{
+			{AgentID: agentID},
+		},
+		startedAt: fixedNow(),
+	}
+	summary, _ := Options{Now: fixedNow, Adapter: &llm.FakeAdapter{NameValue: "fake"}}.buildRunSummary(Request{ToolVersion: "t"}, inputs)
+
+	var names []string
+	for _, workstream := range summary.Workstreams {
+		names = append(names, workstream.Name)
+	}
+	if want := []string{agentID, "orchestrator-rollup"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("workstreams = %#v, want selection stage absent: %#v", names, want)
+	}
+	if summary.Adapter != "fake" {
+		t.Fatalf("adapter = %q, want the run adapter", summary.Adapter)
 	}
 }
 
@@ -4870,6 +5011,48 @@ func TestBuildReviewerCoverageStatuses(t *testing.T) {
 	}
 }
 
+func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *testing.T) {
+	got := buildReviewerCoverage(
+		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},
+		[]llm.Findings{{
+			AgentID:        "harness:reviewer",
+			InspectedFiles: []string{"main.go"},
+			Constraints:    []string{"cr_diff: fixed diff unavailable"},
+		}},
+		nil,
+		[]string{"main.go"},
+		map[string]*llm.ReviewerToolEvidence{
+			"harness:reviewer": {DiffStatus: llm.DiffToolStatusSucceeded},
+		},
+	)
+	if len(got) != 1 {
+		t.Fatalf("coverage entries = %#v", got)
+	}
+	if got[0].Status != reviewerCoverageCompleteBroad || got[0].Diagnostic != "" {
+		t.Fatalf("coverage = %#v, want complete coverage from successful typed evidence", got[0])
+	}
+	if !reflect.DeepEqual(got[0].Constraints, []string{"cr_diff: fixed diff unavailable"}) {
+		t.Fatalf("constraints = %#v, want unmodified reviewer constraints", got[0].Constraints)
+	}
+}
+
+func TestReviewerToolDiagnosticNormalizesPreciseFailure(t *testing.T) {
+	got := reviewerToolDiagnostic(&llm.ReviewerToolEvidence{
+		DiffStatus:     llm.DiffToolStatusFailed,
+		DiffDiagnostic: "fixed diff: open /private/artifacts/run/diff.patch: no such file or directory",
+	}, "")
+	want := "cr_diff: fixed diff: open <path> no such file or directory"
+	if got != want {
+		t.Fatalf("reviewerToolDiagnostic = %q, want %q", got, want)
+	}
+}
+
+func TestReviewerToolDiagnosticMarksDiffNotInvokedIncomplete(t *testing.T) {
+	if got := reviewerToolDiagnostic(&llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusNotInvoked}, t.TempDir()); got != "cr_diff: not invoked" {
+		t.Fatalf("reviewerToolDiagnostic = %q, want not invoked diagnostic", got)
+	}
+}
+
 func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", AllowedFiles: []string{"main.go", "other.go"}}},
@@ -4936,8 +5119,8 @@ func TestRebaseReviewerCohortKeepsOrderAndDropsEmptyScopeCalls(t *testing.T) {
 		{ID: "repo:docs", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"docs/**"}},
 	}}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{
-		{AgentID: "repo:docs", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"docs/old.md"}, AllowedFiles: []string{"docs/old.md"}, Model: "claude-sonnet-4-6", Effort: "medium"},
-		{AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"old.go"}, AllowedFiles: []string{"old.go"}, Model: "claude-sonnet-4-6", Effort: "medium", ProviderSessionID: "go-session"},
+		{AgentID: "repo:docs", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"docs/old.md"}, AllowedFiles: []string{"docs/old.md"}, Model: "claude-sonnet-5", Effort: "medium"},
+		{AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"old.go"}, AllowedFiles: []string{"old.go"}, Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: "go-session"},
 	}}
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 
@@ -4957,7 +5140,7 @@ func TestRebaseReviewerCohortKeepsOrderAndDropsEmptyScopeCalls(t *testing.T) {
 func TestRebaseReviewerCohortAssignsNewFilesToPersistedBroadMember(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
-		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad, Files: []string{"old.go"}, Model: "claude-sonnet-4-6", Effort: "medium",
+		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad, Files: []string{"old.go"}, Model: "claude-sonnet-5", Effort: "medium",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:general", ModelTier: "medium", Effort: "medium"}}}
 
@@ -5051,7 +5234,7 @@ func TestRestoreOrchestratorSessionFromInterruptedRunUsesLatestChainSession(t *t
 func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "old-adapter", Members: []ledger.ReviewerCohortMember{{
-		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Model: "claude-sonnet-4-6", Effort: "medium",
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Model: "claude-sonnet-5", Effort: "medium",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}}}}
 
@@ -5069,7 +5252,7 @@ func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate := cohort
 			if tc.name == "max agents" {
-				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-4-6", Effort: "medium"})
+				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-5", Effort: "medium"})
 				catalog.Agents = append(catalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
 				tc.maxAgents = 1
 				tc.wantDetail = "--max-agents"
@@ -5145,7 +5328,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				trustCurrentTempFixtures(t)
 				req.Profile.AgentSources = []string{dir}
 			},
-			want:  "context budget exceeded for selection model claude-sonnet-4-6",
+			want:  "context budget exceeded for selection model claude-sonnet-5",
 			runID: "run-budget-selection-default",
 		},
 		{
@@ -5699,6 +5882,7 @@ func gitCommandMustSucceed(t *testing.T, dir string, args ...string) string {
 func gitCommandOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Env = gittest.Env()
 	if strings.TrimSpace(dir) != "" {
 		cmd.Dir = dir
 	}
@@ -5735,6 +5919,7 @@ func workbenchGitCommandForTest(ref gitprovider.PRRef, repoDir string) func(cont
 			cmdArgs[2] = repoDir
 		}
 		cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd.Env = gittest.Env()
 		if strings.TrimSpace(dir) != "" {
 			cmd.Dir = dir
 		}
@@ -5824,7 +6009,9 @@ func trustCurrentTempFixtures(t *testing.T) {
 
 func initGitRepoForPipelineTest(t *testing.T, dir string) {
 	t.Helper()
-	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd := exec.Command("git", "init", dir) // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd.Env = gittest.Env()
+	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init %s: %v\n%s", dir, err, out)
 	}
 }
@@ -5859,7 +6046,7 @@ func namedSessionForRequest(req Request, providerSessionID string) ledger.NamedS
 		Profile:           req.ProfileName,
 		Provider:          string(req.Profile.LLM.Provider),
 		Adapter:           "fake-llm",
-		Model:             "claude-sonnet-4-6",
+		Model:             "claude-sonnet-5",
 		Host:              req.PRRef.Host,
 		ProviderSessionID: providerSessionID,
 		DurableSession:    true,
@@ -6027,38 +6214,47 @@ func assertRollupUsageRow(t *testing.T, path string, workstream string, wantCach
 	if err != nil {
 		t.Fatalf("read rollup markdown: %v", err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		cells := markdownTableCells(line)
-		if len(cells) < 8 || cells[0] != workstream {
+	lines := strings.Split(string(data), "\n")
+	// Coverage renders the same "- `name` —" bullet shape, so scope the
+	// scan to the usage section.
+	section := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "**Per-workstream usage**") {
+			section = i
+			break
+		}
+	}
+	if section < 0 {
+		t.Fatalf("rollup markdown %s missing per-workstream usage section:\n%s", path, data)
+	}
+	for i := section + 1; i < len(lines); i++ {
+		line := lines[i]
+		if !strings.HasPrefix(line, "- `"+workstream+"` — ") {
 			continue
 		}
-		for _, idx := range []int{2, 3, 4} {
-			if cells[idx] == "" || cells[idx] == "unavailable" {
-				t.Fatalf("rollup usage row %q cell %d = %q, want populated token/cache value in line %q", workstream, idx, cells[idx], line)
+		values := map[string]string{}
+		for _, sub := range lines[i+1:] {
+			if !strings.HasPrefix(sub, "  - ") {
+				break
+			}
+			if label, value, ok := strings.Cut(strings.TrimPrefix(sub, "  - "), ": "); ok {
+				values[label] = value
 			}
 		}
-		if wantCacheCreate && (cells[5] == "" || cells[5] == "unavailable") {
-			t.Fatalf("rollup usage row %q cache create = %q, want populated value in line %q", workstream, cells[5], line)
+		for _, label := range []string{"In", "Out", "Cache read"} {
+			if values[label] == "" || values[label] == "unavailable" {
+				t.Fatalf("rollup usage %q %s = %q, want populated token/cache value", workstream, label, values[label])
+			}
 		}
-		if !wantCacheCreate && cells[5] != "unavailable" {
-			t.Fatalf("rollup usage row %q cache create = %q, want unavailable when provider omitted it in line %q", workstream, cells[5], line)
+		if wantCacheCreate && (values["Cache create"] == "" || values["Cache create"] == "unavailable") {
+			t.Fatalf("rollup usage %q cache create = %q, want populated value", workstream, values["Cache create"])
+		}
+		if !wantCacheCreate && values["Cache create"] != "unavailable" {
+			t.Fatalf("rollup usage %q cache create = %q, want unavailable when provider omitted it", workstream, values["Cache create"])
 		}
 		return
 	}
-	t.Fatalf("rollup markdown %s missing usage row for %q:\n%s", path, workstream, data)
-}
-
-func markdownTableCells(line string) []string {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
-		return nil
-	}
-	parts := strings.Split(strings.Trim(line, "|"), "|")
-	cells := make([]string, 0, len(parts))
-	for _, part := range parts {
-		cells = append(cells, strings.TrimSpace(part))
-	}
-	return cells
+	t.Fatalf("rollup markdown %s missing usage entry for %q:\n%s", path, workstream, data)
 }
 
 func allocatePipelineRun(t *testing.T, store *ledger.Store, layout statepaths.Layout, runID string, mode ledger.PostMode, started time.Time) ledger.Run {

@@ -32,6 +32,18 @@ type Lock struct {
 // Acquire creates path's parent directory and takes a non-blocking exclusive
 // advisory lock on path.
 func Acquire(path string) (*Lock, error) {
+	return acquire(path, true)
+}
+
+// AcquireShared creates path's parent directory and takes a non-blocking
+// shared advisory lock on path. Any number of shared holders coexist; the
+// lock is refused only while an exclusive holder exists, and an exclusive
+// Acquire is refused while any shared holder exists.
+func AcquireShared(path string) (*Lock, error) {
+	return acquire(path, false)
+}
+
+func acquire(path string, exclusive bool) (*Lock, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("runlock: path is required")
 	}
@@ -47,7 +59,7 @@ func Acquire(path string) (*Lock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("runlock: open lock file: %w", err)
 	}
-	if err := lockFile(file); err != nil {
+	if err := lockFile(file, exclusive); err != nil {
 		closeErr := file.Close()
 		if closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("runlock: close unheld lock file: %w", closeErr))

@@ -200,28 +200,29 @@ func (d SessionDraft) ToLedger(runID string) ledger.Session {
 
 // Metadata is the durable descriptor for one structured LLM task.
 type Metadata struct {
-	SchemaVersion       int               `json:"schema_version"`
-	TaskID              string            `json:"task_id"`
-	Phase               string            `json:"phase"`
-	DependencyTaskIDs   []string          `json:"dependency_task_ids,omitempty"`
-	InputFingerprint    string            `json:"input_fingerprint"`
-	AgentID             string            `json:"agent_id,omitempty"`
-	Status              Status            `json:"status"`
-	SessionRowID        string            `json:"session_row_id,omitempty"`
-	ProviderSessionID   string            `json:"provider_session_id,omitempty"`
-	Adapter             string            `json:"adapter"`
-	Model               string            `json:"model"`
-	Effort              string            `json:"effort,omitempty"`
-	LogPath             string            `json:"log_path,omitempty"`
-	ValidatedOutputPath string            `json:"validated_output_path,omitempty"`
-	Error               string            `json:"error,omitempty"`
-	TokensIn            *int              `json:"tokens_in,omitempty"`
-	TokensOut           *int              `json:"tokens_out,omitempty"`
-	CacheRead           *int              `json:"cache_read,omitempty"`
-	CacheCreate         *int              `json:"cache_create,omitempty"`
-	CostUSD             *float64          `json:"cost_usd,omitempty"`
-	Speed               string            `json:"speed,omitempty"`
-	Attempts            []AttemptMetadata `json:"attempts,omitempty"`
+	SchemaVersion        int                       `json:"schema_version"`
+	TaskID               string                    `json:"task_id"`
+	Phase                string                    `json:"phase"`
+	DependencyTaskIDs    []string                  `json:"dependency_task_ids,omitempty"`
+	InputFingerprint     string                    `json:"input_fingerprint"`
+	AgentID              string                    `json:"agent_id,omitempty"`
+	Status               Status                    `json:"status"`
+	SessionRowID         string                    `json:"session_row_id,omitempty"`
+	ProviderSessionID    string                    `json:"provider_session_id,omitempty"`
+	Adapter              string                    `json:"adapter"`
+	Model                string                    `json:"model"`
+	Effort               string                    `json:"effort,omitempty"`
+	LogPath              string                    `json:"log_path,omitempty"`
+	ValidatedOutputPath  string                    `json:"validated_output_path,omitempty"`
+	Error                string                    `json:"error,omitempty"`
+	TokensIn             *int                      `json:"tokens_in,omitempty"`
+	TokensOut            *int                      `json:"tokens_out,omitempty"`
+	CacheRead            *int                      `json:"cache_read,omitempty"`
+	CacheCreate          *int                      `json:"cache_create,omitempty"`
+	CostUSD              *float64                  `json:"cost_usd,omitempty"`
+	Speed                string                    `json:"speed,omitempty"`
+	ReviewerToolEvidence *llm.ReviewerToolEvidence `json:"reviewer_tool_evidence,omitempty"`
+	Attempts             []AttemptMetadata         `json:"attempts,omitempty"`
 }
 
 // AttemptMetadata records one invalid structured-output attempt.
@@ -411,6 +412,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		draft := SessionDraftFromLedger(session)
 		draft.Response.Usage.Speed = meta.Speed
+		draft.Response.ReviewerToolEvidence = meta.ReviewerToolEvidence
 		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
@@ -675,24 +677,25 @@ func BaseMetadata(req Request, draft SessionDraft) Metadata {
 		fingerprint = Fingerprint(adapterName(req.Adapter), req.TaskID, req.Phase, req.Model, req.Effort, req.Prompt, req.DependencyTaskIDs)
 	}
 	return Metadata{
-		SchemaVersion:     SchemaVersion,
-		TaskID:            req.TaskID,
-		Phase:             req.Phase,
-		DependencyTaskIDs: append([]string(nil), req.DependencyTaskIDs...),
-		InputFingerprint:  fingerprint,
-		AgentID:           agentID,
-		SessionRowID:      draft.RowID,
-		ProviderSessionID: draft.ProviderSessionID,
-		Adapter:           adapterName(req.Adapter),
-		Model:             draft.Model,
-		Effort:            draft.Effort,
-		LogPath:           req.LogPath,
-		TokensIn:          draft.Response.Usage.TokensIn,
-		TokensOut:         draft.Response.Usage.TokensOut,
-		CacheRead:         draft.Response.Usage.CacheRead,
-		CacheCreate:       draft.Response.Usage.CacheCreate,
-		CostUSD:           draft.Response.Usage.CostUSD,
-		Speed:             draft.Response.Usage.Speed,
+		SchemaVersion:        SchemaVersion,
+		TaskID:               req.TaskID,
+		Phase:                req.Phase,
+		DependencyTaskIDs:    append([]string(nil), req.DependencyTaskIDs...),
+		InputFingerprint:     fingerprint,
+		AgentID:              agentID,
+		SessionRowID:         draft.RowID,
+		ProviderSessionID:    draft.ProviderSessionID,
+		Adapter:              adapterName(req.Adapter),
+		Model:                draft.Model,
+		Effort:               draft.Effort,
+		LogPath:              req.LogPath,
+		TokensIn:             draft.Response.Usage.TokensIn,
+		TokensOut:            draft.Response.Usage.TokensOut,
+		CacheRead:            draft.Response.Usage.CacheRead,
+		CacheCreate:          draft.Response.Usage.CacheCreate,
+		CostUSD:              draft.Response.Usage.CostUSD,
+		Speed:                draft.Response.Usage.Speed,
+		ReviewerToolEvidence: draft.Response.ReviewerToolEvidence,
 	}
 }
 
@@ -820,6 +823,7 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 		Model:                     meta.Model,
 		Effort:                    meta.Effort,
 		Response: llm.Response{
+			ReviewerToolEvidence: meta.ReviewerToolEvidence,
 			Usage: llm.Usage{
 				TokensIn:    meta.TokensIn,
 				TokensOut:   meta.TokensOut,
@@ -856,6 +860,7 @@ func loadOptionalTaskSession(ctx context.Context, store Store, runID string, met
 	}
 	draft := SessionDraftFromLedger(session)
 	draft.Response.Usage.Speed = meta.Speed
+	draft.Response.ReviewerToolEvidence = meta.ReviewerToolEvidence
 	return session, draft, nil
 }
 

@@ -36,6 +36,7 @@ type Adapter interface {
 // workspace.
 type ReviewerWorkspaceMode string
 
+// Diff tool evidence terminal states.
 const (
 	// ReviewerWorkspaceNone means the adapter cannot inspect a caller-provided workspace.
 	ReviewerWorkspaceNone ReviewerWorkspaceMode = "none"
@@ -59,6 +60,7 @@ type ReviewerWorkspaceCapable interface {
 type ReviewerWorkspaceRequest struct {
 	RepoDir            string
 	ScratchDir         string
+	DiffPath           string
 	Env                []string
 	AllowedFiles       []string
 	MaxToolOutputBytes int
@@ -125,9 +127,31 @@ type Stream interface {
 
 // Response is the completed LLM result.
 type Response struct {
-	StructuredOutput []byte
-	Usage            Usage
-	DurationMS       int64
+	StructuredOutput     []byte
+	Usage                Usage
+	DurationMS           int64
+	ReviewerToolEvidence *ReviewerToolEvidence
+}
+
+// DiffToolStatus records the terminal state of the required reviewer diff tool.
+type DiffToolStatus string
+
+const (
+	// DiffToolStatusNotInvoked means the reviewer never invoked cr_diff.
+	DiffToolStatusNotInvoked DiffToolStatus = "not_invoked"
+	// DiffToolStatusIncomplete means the reviewer started but did not complete cr_diff.
+	DiffToolStatusIncomplete DiffToolStatus = "incomplete"
+	// DiffToolStatusSucceeded means the reviewer completed cr_diff without failure.
+	DiffToolStatusSucceeded DiffToolStatus = "succeeded"
+	// DiffToolStatusFailed means the reviewer observed a cr_diff failure.
+	DiffToolStatusFailed DiffToolStatus = "failed"
+)
+
+// ReviewerToolEvidence records bounded, machine-significant reviewer tool state.
+// It is absent when the adapter does not provide reviewer tool evidence.
+type ReviewerToolEvidence struct {
+	DiffStatus     DiffToolStatus `json:"diff_status"`
+	DiffDiagnostic string         `json:"diff_diagnostic,omitempty"`
 }
 
 // Usage records nullable usage metrics.
@@ -189,7 +213,10 @@ func (e *StructuredValidationError) Is(target error) bool {
 }
 
 // RunStructuredWithSessionResume runs a structured request, starting from an
-// existing provider session ID when provided.
+// existing provider session ID when provided. A resume whose provider
+// conversation no longer exists is retried once as a fresh conversation
+// instead of failing; callers that store the session for later reuse must
+// persist the returned SessionID, which replaces a dangling stored one.
 func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter, resumeSessionID string, req Request, decode Decoder[T]) (StructuredResult[T], error) {
 	var zero T
 	sessionID, response, err := runOnceWithSession(ctx, adapter, resumeSessionID, req)
@@ -265,11 +292,29 @@ func decodeStructuredAccepted[T any](decode Decoder[T], data []byte) (T, []byte,
 // canceled context, or exhausting the retry budget returns the last error
 // (still wrapping ErrTransient when applicable, so a give-up remains
 // classifiable). Decode-validation retries are handled one layer up.
+//
+// A resume whose conversation no longer exists is retried once without it. That
+// case is not a provider failure and no amount of retrying the same call fixes
+// it, but starting a new conversation always can: reuse saves cost and carries
+// prior context, neither of which the review depends on. Without the fallback a
+// dangling session ID fails the task outright, and a whole round of reviewers
+// can fail before doing any work while still reporting zero findings.
 func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID string, req Request) (string, Response, error) {
+	sessionDropped := false
 	for attempt := 0; ; attempt++ {
 		sid, resp, err := runOnceAttempt(ctx, adapter, resumeSessionID, req)
 		if err == nil {
 			return sid, resp, nil
+		}
+		if !sessionDropped && strings.TrimSpace(resumeSessionID) != "" &&
+			errors.Is(err, ErrMissingProviderSession) && ctx.Err() == nil {
+			sessionDropped = true
+			resumeSessionID = ""
+			// The dropped resume is not a provider failure, so it must not
+			// spend the transient budget: -1 leaves attempt at 0 after the
+			// loop's increment.
+			attempt = -1
+			continue
 		}
 		if attempt >= activeRetryPolicy.MaxRetries || !errors.Is(err, ErrTransient) || ctx.Err() != nil {
 			return sid, resp, err

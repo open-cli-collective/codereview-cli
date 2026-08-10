@@ -154,6 +154,32 @@ func TestResolveStageModelErrorsForUnmappedTier(t *testing.T) {
 	if !strings.Contains(err.Error(), "thread_analysis") || !strings.Contains(err.Error(), "model_tier") {
 		t.Fatalf("error = %q, want stage and model_tier context", err)
 	}
+	// The tier an agent asked for is not the operator's vocabulary; the error
+	// has to name the config entry that resolves it.
+	if !strings.Contains(err.Error(), "llm.model_map.small") {
+		t.Fatalf("error = %q, want the config entry that fixes it", err)
+	}
+}
+
+func TestResolveStageModelMapsSmallTierForClaudeCLI(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+	}}
+
+	resolved, err := ResolveStageModel(Request{
+		Profile:       profile,
+		Stage:         StageReviewer,
+		Tier:          config.ModelTierSmall,
+		DefaultEffort: "medium",
+	})
+	if err != nil {
+		t.Fatalf("ResolveStageModel: %v", err)
+	}
+	if resolved.Model != "claude-haiku-4-5" || resolved.Source != config.ModelMapSourceBuiltIn {
+		t.Fatalf("resolved = %#v, want the built-in Claude CLI small model", resolved)
+	}
 }
 
 func TestResolveStageModelErrorsForInvalidTierBeforeApplyingFloor(t *testing.T) {
@@ -179,10 +205,13 @@ func TestResolveStageModelErrorsForInvalidTierBeforeApplyingFloor(t *testing.T) 
 }
 
 func TestResolveFirstAvailableUsesFirstConfiguredTier(t *testing.T) {
+	// anthropic_api ships no built-in map, so the profile's own entries are the
+	// whole map and small stays genuinely unmapped for the fallback to find.
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderAnthropic,
-		Auth:     config.LLMAuthSubscription,
-		Adapter:  config.LLMAdapterClaudeCLI,
+		Auth:     config.LLMAuthAPIKey,
+		Adapter:  config.LLMAdapterAnthropicAPI,
+		ModelMap: config.ModelMap{string(config.ModelTierMedium): "claude-sonnet-5"},
 	}}
 
 	got, ok := ResolveFirstAvailable(Request{
@@ -196,8 +225,8 @@ func TestResolveFirstAvailableUsesFirstConfiguredTier(t *testing.T) {
 	if got.Tier != config.ModelTierMedium {
 		t.Fatalf("Tier = %q, want %q", got.Tier, config.ModelTierMedium)
 	}
-	if got.Model != "claude-sonnet-4-6" {
-		t.Fatalf("Model = %q, want claude-sonnet-4-6", got.Model)
+	if got.Model != "claude-sonnet-5" {
+		t.Fatalf("Model = %q, want claude-sonnet-5", got.Model)
 	}
 	if got.Effort != "low" {
 		t.Fatalf("Effort = %q, want low", got.Effort)

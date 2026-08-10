@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -49,6 +50,10 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 		Response: llm.Response{
 			StructuredOutput: []byte(`Here is JSON: {"ok":true}`),
 			DurationMS:       123,
+			ReviewerToolEvidence: &llm.ReviewerToolEvidence{
+				DiffStatus:     llm.DiffToolStatusFailed,
+				DiffDiagnostic: "fixed diff unavailable",
+			},
 			Usage: llm.Usage{
 				TokensIn:    intPtr(10),
 				TokensOut:   intPtr(5),
@@ -102,6 +107,9 @@ func TestRunStructuredPersistsAndLoadsSucceededTask(t *testing.T) {
 	}
 	if !cached.Cached || !cached.Value.OK {
 		t.Fatalf("cached result = %#v, want cached ok", cached)
+	}
+	if got := cached.Draft.Response.ReviewerToolEvidence; got == nil || got.DiffStatus != llm.DiffToolStatusFailed || got.DiffDiagnostic != "fixed diff unavailable" {
+		t.Fatalf("cached reviewer tool evidence = %#v, want persisted failure evidence", got)
 	}
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
@@ -209,6 +217,31 @@ func TestSessionDraftFromMetadataRestoresAgentID(t *testing.T) {
 	empty := SessionDraftFromMetadata(Metadata{AgentID: "   "})
 	if empty.AgentID != nil {
 		t.Fatalf("empty.AgentID = %#v, want nil", empty.AgentID)
+	}
+}
+
+func TestSessionDraftFromMetadataRestoresReviewerToolEvidence(t *testing.T) {
+	evidence := &llm.ReviewerToolEvidence{
+		DiffStatus:     llm.DiffToolStatusFailed,
+		DiffDiagnostic: "fixed diff unavailable",
+	}
+	meta := BaseMetadata(lifecycleRequest(t, newLifecycleStore(), &llm.FakeAdapter{}), SessionDraft{
+		Response: llm.Response{ReviewerToolEvidence: evidence},
+	})
+	if !reflect.DeepEqual(meta.ReviewerToolEvidence, evidence) {
+		t.Fatalf("metadata reviewer tool evidence = %#v, want %#v", meta.ReviewerToolEvidence, evidence)
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("Marshal metadata: %v", err)
+	}
+	var restored Metadata
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatalf("Unmarshal metadata: %v", err)
+	}
+	draft := SessionDraftFromMetadata(restored)
+	if !reflect.DeepEqual(draft.Response.ReviewerToolEvidence, evidence) {
+		t.Fatalf("reviewer tool evidence = %#v, want %#v", draft.Response.ReviewerToolEvidence, evidence)
 	}
 }
 
@@ -512,6 +545,9 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":"still-not-bool"}`),
+			ReviewerToolEvidence: &llm.ReviewerToolEvidence{
+				DiffStatus: llm.DiffToolStatusIncomplete,
+			},
 			Usage: llm.Usage{
 				TokensIn:    intPtr(34),
 				TokensOut:   intPtr(13),
@@ -533,13 +569,16 @@ func TestRunStructuredLoadsIsolatedFailureWithoutRerun(t *testing.T) {
 	cachedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	progress.loads = nil
 	req.Adapter = cachedAdapter
-	_, err = RunStructured(ctx, req, decodeLifecyclePayload)
+	cached, err := RunStructured(ctx, req, decodeLifecyclePayload)
 	taskErr = nil
 	if !errors.As(err, &taskErr) || taskErr.Status() != StatusFailedIsolated {
 		t.Fatalf("RunStructured cached isolated error = %v, want cached isolated task error", err)
 	}
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
+	}
+	if got := cached.Draft.Response.ReviewerToolEvidence; got == nil || got.DiffStatus != llm.DiffToolStatusIncomplete {
+		t.Fatalf("cached isolated reviewer tool evidence = %#v, want incomplete evidence", got)
 	}
 	if len(progress.loads) != 1 {
 		t.Fatalf("cached isolated progress loads = %#v, want one cached progress result", progress.loads)

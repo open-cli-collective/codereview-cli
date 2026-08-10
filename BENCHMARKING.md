@@ -402,6 +402,9 @@ The MVP measures rather than grades. Current benchmark summary artifacts include
 - provider-reported usage from child review or selector agent logs when available,
   including LLM call count, turns, tool activity, tokens, cost, and per-phase
   agent log summaries;
+- CR-owned Pi `cr_diff` evidence counts when present, under `usage.pi_diff`:
+  `succeeded`, `failed`, `not_invoked`, and `incomplete` records aggregated
+  across the run's agent logs;
 - warning strings when child review output cannot be parsed or selector runs
   fail after partial execution;
 - benchmark artifact paths.
@@ -430,6 +433,7 @@ missing telemetry.
 | Cache read | Provider or adapter reported cache-read tokens, when present in child review agent logs. |
 | Cache create | Provider or adapter reported cache-write/create tokens, when present in child review agent logs. |
 | Cost | Provider or adapter reported cost only. Do not use baked-in benchmark price tables for v1. |
+| Pinned diff evidence | CR-owned `codereview-pi-tool-evidence tool=cr_diff` records only. `succeeded`, `failed`, `not_invoked`, and `incomplete` are counts per run; failed, not-invoked, or incomplete evidence is degraded tool execution and does not redefine the general benchmark quality grade. A missing `pi_diff` object means no qualifying evidence was observed, not zero successful calls. |
 | Selected agents | Selector-only benchmarks record selected reviewer IDs and files directly in suite summaries, JSONL, and comparison artifacts. Full-review benchmarks still rely on review artifacts and logs for downstream selection analysis. |
 | Observed SHAs | Record when available from review artifacts or downstream analysis. Expected SHAs in cases are comparison metadata. |
 | Anchor metrics | Computed by `comparison.json` and `comparison.md` when cases define anchors. They are placement-only. |

@@ -43,11 +43,15 @@ but does not receive a no-op LLM call.
 Plain follow-up runs and `--rerun` both load the original PR-scoped cohort,
 validate every member against the current catalog and reviewer runtime, and
 deterministically rebase assignments onto the current changed files. Selection
-does not run again. Active reviewers resume their exact saved provider session.
+does not run again. Active reviewers resume their exact saved provider session
+when its conversation still exists; a saved session whose conversation is gone
+falls back to a fresh conversation instead of failing the reviewer (see the
+failure behavior below).
 
 `--rerun` changes local gate behavior only: it bypasses approval, override,
 resume, and marker gates to allocate a new review attempt. It does not select a
-new cohort or start new provider conversations.
+new cohort, and it starts new provider conversations only through the same
+missing-conversation fallback.
 
 Reuse fails with `--fresh-session` guidance when a cohort member is missing or
 runtime-incompatible, `--max-agents` is smaller than the saved cohort, or the
@@ -77,6 +81,10 @@ not reached the PR.
 
 - Reviewer-local LLM failures remain isolated and retain any provider session
   ID reported by the failed attempt.
+- A resume or fork whose provider conversation no longer exists is retried once
+  as a new conversation instead of failing the task. Session reuse saves cost and
+  carries prior context; neither is required for a correct review, so a cleaned-up
+  conversation degrades rather than losing the reviewer.
 - Early posting failures remain pending and do not prevent reviewer execution.
   Final posting retries them.
 - A moved head or base stops checkpoint posting before reviewer work.

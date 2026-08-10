@@ -209,9 +209,9 @@ LLM:
   Adapter: claude_cli
   Credential name: adapter-managed; not stored by cr
   Model map:
-    small: <unset> (unset)
-    medium: claude-sonnet-4-6 (built_in)
-    large: claude-opus-4-8 (built_in)
+    small: claude-haiku-4-5 (built_in)
+    medium: claude-sonnet-5 (built_in)
+    large: claude-opus-5 (built_in)
 Credentials:
   - git: codereview/home (pat)
     git_token: missing

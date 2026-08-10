@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 )
 
 func TestResolveReturnsCanonicalGitRoot(t *testing.T) {
@@ -51,7 +53,9 @@ func TestResolveReturnsUnavailableOutsideGitRepo(t *testing.T) {
 
 func initGitRepoForReporootTest(t *testing.T, dir string) {
 	t.Helper()
-	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil { // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd := exec.Command("git", "init", dir) // #nosec G204 -- tests invoke git with fixed arguments.
+	initCmd.Env = gittest.Env()
+	if out, err := initCmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init %s: %v\n%s", dir, err, out)
 	}
 }

@@ -10324,8 +10324,9 @@ func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
 	), 160, 40)
 
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierSmall))
+	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
 	if !strings.Contains(model.View(), "> |") {
-		t.Fatalf("view missing editable cursor for empty small model field:\n%s", model.View())
+		t.Fatalf("view missing editable cursor for cleared small model field:\n%s", model.View())
 	}
 	model = typeInitProfileV2Text(t, model, "claude-haiku-custom")
 	model = focusInitProfileV2Field(t, model, initProfileV2FieldModelMap(config.ModelTierMedium))
@@ -10364,10 +10365,10 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap("monit", "github.com/SignalFT", llmRuntimes, "claude-work"), 160, 24)
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "" {
-		t.Fatalf("initial small model = %q, want unmapped Claude small model", got)
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-haiku-4-5" {
+		t.Fatalf("initial small model = %q, want Claude built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-4-6" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5" {
 		t.Fatalf("initial medium model = %q, want Claude built-in", got)
 	}
 

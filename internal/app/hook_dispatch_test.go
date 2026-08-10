@@ -58,6 +58,14 @@ func TestReviewHooksFanOutFromExistingProgressSeams(t *testing.T) {
 		PRURL: "https://github.com/acme/repo/pull/7",
 	}, store)
 	dispatcher.begin(false)
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "acme", Repo: "repo", Number: 7}
+	fake := &gitprovider.Fake{}
+	if err := fake.SetPR(ref, gitprovider.PR{Ref: ref, State: gitprovider.PRStateOpen, Author: gitprovider.Identity{Login: "piekstra", ID: "1795"}}); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if _, err := withProgressProvider(nil, dispatcher, "review", fake).GetPR(context.Background(), ref); err != nil {
+		t.Fatalf("GetPR: %v", err)
+	}
 	progress := newPipelineTaskProgress(nil, "review", dispatcher)
 	logPath := run.ArtifactPath + "/agent-logs/task.jsonl"
 
@@ -84,7 +92,6 @@ func TestReviewHooksFanOutFromExistingProgressSeams(t *testing.T) {
 		t.Fatalf("RenderAction: %v", err)
 	}
 	provider := withHookProvider(dispatcher, &gitprovider.Fake{})
-	ref := gitprovider.PRRef{Host: "github.com", Owner: "acme", Repo: "repo", Number: 7}
 	if _, err := provider.PostIssueComment(context.Background(), ref, rendered+"\n\nreview"); err != nil {
 		t.Fatalf("PostIssueComment: %v", err)
 	}
@@ -112,6 +119,52 @@ func TestReviewHooksFanOutFromExistingProgressSeams(t *testing.T) {
 	}
 	if got := byEvent["posting.action"][0]; got.ActionKind != marker.ActionKindRollupComment || got.ActionMarker != rendered {
 		t.Fatalf("posting payload = %#v", got)
+	}
+	if got := byEvent["run.started"][0]; got.Author != "" {
+		t.Fatalf("run.started carried an author before the pull request was read: %#v", got)
+	}
+	for _, event := range []string{"workspace.prepared", "dossier.ready", "selection.completed", "reviewer.completed", "plan.ready", "posting.action", "run.completed"} {
+		if got := byEvent[event][0]; got.Author != "piekstra" {
+			t.Fatalf("event %s author = %q, want piekstra", event, got.Author)
+		}
+	}
+}
+
+func TestHookAuthorKeepsTheFirstIdentityReadFromTheProvider(t *testing.T) {
+	capture := t.TempDir() + "/events.jsonl"
+	t.Setenv("GO_WANT_APP_HOOK_HELPER", "1")
+	t.Setenv("APP_HOOK_CAPTURE", capture)
+	dispatcher := newHookDispatcher(OpenRequest{
+		Profile: config.Profile{Hooks: hookEntries([]string{"run.completed"})}, ProfileName: "work", Command: "review",
+	}, hookStore{})
+	ref := gitprovider.PRRef{Host: "github.com", Owner: "acme", Repo: "repo", Number: 7}
+	fake := &gitprovider.Fake{}
+	provider := withProgressProvider(nil, dispatcher, "review", fake)
+	for _, pr := range []gitprovider.PR{
+		{Ref: ref, State: gitprovider.PRStateOpen, Author: gitprovider.Identity{Login: "piekstra"}},
+		{Ref: ref, State: gitprovider.PRStateOpen},
+	} {
+		if err := fake.SetPR(ref, pr); err != nil {
+			t.Fatalf("SetPR: %v", err)
+		}
+		if _, err := provider.GetPR(context.Background(), ref); err != nil {
+			t.Fatalf("GetPR: %v", err)
+		}
+	}
+	dispatcher.emit("run.completed", hooks.Payload{Outcome: "approved"}, ledger.Run{RunID: "run-1"}, true)
+	dispatcher.drain()
+
+	payloads := readAppHookPayloads(t, capture)
+	if len(payloads) != 1 || payloads[0].Author != "piekstra" {
+		t.Fatalf("payloads = %#v, want one carrying author piekstra", payloads)
+	}
+}
+
+func TestHookProviderWrapperIsSkippedWhenNoHooksAreConfigured(t *testing.T) {
+	dispatcher := newHookDispatcher(OpenRequest{ProfileName: "work", Command: "review"}, hookStore{})
+	fake := &gitprovider.Fake{}
+	if got := withProgressProvider(nil, dispatcher, "review", fake); got != gitprovider.GitProvider(fake) {
+		t.Fatalf("provider = %#v, want the unwrapped provider", got)
 	}
 }
 

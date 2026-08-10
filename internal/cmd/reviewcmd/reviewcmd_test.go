@@ -580,9 +580,7 @@ func TestReviewLiveRejectsStageOverridesBeforeRuntimeFactory(t *testing.T) {
 		{name: "selection model", args: []string{"--selection-model", "bench-model"}},
 		{name: "selection effort", args: []string{"--selection-effort", "high"}},
 		{name: "selection prompt", args: []string{"--selection-prompt", "selection.md"}},
-		{name: "reviewer model", args: []string{"--reviewer-model", "bench-model"}},
 		{name: "reviewer model tier", args: []string{"--reviewer-model-tier", "medium"}},
-		{name: "reviewer effort", args: []string{"--reviewer-effort", "high"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -894,6 +892,27 @@ func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	}
 	if !runner.liveRequests[0].Rerun || runner.liveRequests[0].FreshSession {
 		t.Fatalf("pipeline request = %#v, want rerun with reusable provider session", runner.liveRequests[0])
+	}
+}
+
+func TestReviewLivePassesReviewerModelAndEffortOverrides(t *testing.T) {
+	runner := &fakeRunner{liveResult: testLiveResult(false)}
+	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+	if err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--rerun",
+		"--reviewer-model", "openai-codex/gpt-5.6-luna",
+		"--reviewer-effort", "high",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.liveRequests) != 1 {
+		t.Fatalf("live runner calls = %d, want 1", len(runner.liveRequests))
+	}
+	req := runner.liveRequests[0]
+	if req.ReviewerModelOverride != "openai-codex/gpt-5.6-luna" || req.ReviewerEffortOverride != "high" {
+		t.Fatalf("reviewer overrides = model:%q effort:%q, want Luna/high", req.ReviewerModelOverride, req.ReviewerEffortOverride)
 	}
 }
 

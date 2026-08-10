@@ -22,6 +22,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
+	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
@@ -497,6 +498,7 @@ func TestOpenSelectionReturnsExecutableSelectionRuntime(t *testing.T) {
 	git := func(dir string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command("git", args...) // #nosec G204 -- test uses structured Git arguments.
+		cmd.Env = gittest.Env()
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -544,6 +546,7 @@ func TestOpenSelectionReturnsExecutableSelectionRuntime(t *testing.T) {
 						cmdArgs[2] = repoDir
 					}
 					cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- test uses structured Git arguments.
+					cmd.Env = gittest.Env()
 					cmd.Dir = dir
 					return cmd.CombinedOutput()
 				}, nil
@@ -947,8 +950,8 @@ func TestNewAdapterCreatesSupportedCLIAdapters(t *testing.T) {
 func TestAdapterConstructorsCoverLLMRuntimeSpecs(t *testing.T) {
 	want := make(map[config.LLMAdapter]struct{}, len(config.LLMRuntimeSpecs()))
 	wantFastModels := map[config.LLMAdapter][]string{
-		config.LLMAdapterClaudeCLI:    {"claude-opus-4-8", "claude-opus-4-7"},
-		config.LLMAdapterAnthropicAPI: {"claude-opus-4-8", "claude-opus-4-7"},
+		config.LLMAdapterClaudeCLI:    {"claude-opus-5", "claude-opus-4-8"},
+		config.LLMAdapterAnthropicAPI: {"claude-opus-5", "claude-opus-4-8"},
 		config.LLMAdapterCodexCLI:     {"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
 	}
 	for _, spec := range config.LLMRuntimeSpecs() {

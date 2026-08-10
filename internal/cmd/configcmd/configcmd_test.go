@@ -41,7 +41,7 @@ func TestConfigShowText(t *testing.T) {
 	if !strings.Contains(out.String(), "adapter-managed; not stored by cr") {
 		t.Fatalf("stdout = %q, want adapter-managed LLM note", out.String())
 	}
-	if !strings.Contains(out.String(), "medium: claude-sonnet-4-6 (built_in)") {
+	if !strings.Contains(out.String(), "medium: claude-sonnet-5 (built_in)") {
 		t.Fatalf("stdout = %q, want built-in model map", out.String())
 	}
 }
@@ -2130,9 +2130,9 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "list"}); err != nil {
 		t.Fatalf("Execute list: %v", err)
 	}
-	if !strings.Contains(out.String(), "small: <unset> (unset)") ||
-		!strings.Contains(out.String(), "medium: claude-sonnet-4-6 (built_in)") ||
-		!strings.Contains(out.String(), "large: claude-opus-4-8 (built_in)") {
+	if !strings.Contains(out.String(), "small: claude-haiku-4-5 (built_in)") ||
+		!strings.Contains(out.String(), "medium: claude-sonnet-5 (built_in)") ||
+		!strings.Contains(out.String(), "large: claude-opus-5 (built_in)") {
 		t.Fatalf("list stdout = %q, want effective Claude CLI defaults", out.String())
 	}
 
@@ -2144,7 +2144,7 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
 		t.Fatalf("Unmarshal list JSON: %v\n%s", err, out.String())
 	}
-	if listed.ActiveProfile != "home" || len(listed.Models) != 3 || listed.Models[1].Model != "claude-sonnet-4-6" || listed.Models[1].Source != "built_in" {
+	if listed.ActiveProfile != "home" || len(listed.Models) != 3 || listed.Models[1].Model != "claude-sonnet-5" || listed.Models[1].Source != "built_in" {
 		t.Fatalf("list JSON = %#v, want home built-in medium", listed)
 	}
 
@@ -2156,8 +2156,8 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &resolved); err != nil {
 		t.Fatalf("Unmarshal resolve JSON: %v\n%s", err, out.String())
 	}
-	if resolved.Model != "claude-sonnet-4-6" || resolved.Source != "built_in" || resolved.Tier != "medium" {
-		t.Fatalf("resolve JSON = %#v, want built-in medium claude-sonnet-4-6", resolved)
+	if resolved.Model != "claude-sonnet-5" || resolved.Source != "built_in" || resolved.Tier != "medium" {
+		t.Fatalf("resolve JSON = %#v, want built-in medium claude-sonnet-5", resolved)
 	}
 }
 

@@ -174,6 +174,13 @@ func (l Layout) LockFile(spec LockSpec) (string, error) {
 	return filepath.Join(l.DataRoot, "locks", prKey+"__"+spec.HeadSHA[:7]+"__"+keyHash+".lock"), nil
 }
 
+// ActiveRunsLock returns the data-root-wide advisory lock path that
+// serializes destructive retention against live runs: every review run holds
+// it shared for its duration, and pruning requires it exclusively.
+func (l Layout) ActiveRunsLock() string {
+	return filepath.Join(l.DataRoot, "locks", "active-runs.lock")
+}
+
 // SlicePatch returns the artifact path for an agent/file diff slice.
 func (p RunPaths) SlicePatch(agentID, filePath string) (string, error) {
 	if err := requireNonEmpty("agent ID", agentID); err != nil {

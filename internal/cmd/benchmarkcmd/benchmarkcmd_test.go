@@ -809,6 +809,7 @@ func TestRenderReportMarkdownTreatsActivityOnlyUsageAsUnavailable(t *testing.T) 
 				Usage: &benchmark.RunMetrics{
 					Tokens: benchmark.TokenMetrics{Available: true},
 					Cost:   benchmark.CostMetrics{Available: true},
+					PiDiff: &benchmark.PiDiffMetrics{Succeeded: 1, Failed: 2, NotInvoked: 3, Incomplete: 4},
 				},
 			},
 		},
@@ -828,7 +829,7 @@ func TestRenderReportMarkdownTreatsActivityOnlyUsageAsUnavailable(t *testing.T) 
 	if !strings.Contains(report, "| `run1` | `candidate1` | `case1` | 0 | 1 | n/a | n/a |") {
 		t.Fatalf("report missing activity-only n/a row:\n%s", report)
 	}
-	if !strings.Contains(report, "| `run2` | `candidate2` | `case2` | 0 | 0 | 0 | $0.000000 |") {
+	if !strings.Contains(report, "| `run2` | `candidate2` | `case2` | 0 | 0 | 0 | $0.000000 | succeeded=1; failed=2; not_invoked=3; incomplete=4 |") {
 		t.Fatalf("report missing explicit zero usage row:\n%s", report)
 	}
 }

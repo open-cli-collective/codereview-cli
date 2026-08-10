@@ -836,10 +836,10 @@ func renderReportMarkdown(summary benchmarkSuiteSummary) string {
 	}
 	var b strings.Builder
 	writeReportHeader(&b, "Benchmark Report", summary)
-	b.WriteString("| Run | Candidate | Case | Exit | Findings | Tokens | Cost |\n")
-	b.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: |\n")
+	b.WriteString("| Run | Candidate | Case | Exit | Findings | Tokens | Cost | Pi diff |\n")
+	b.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | --- |\n")
 	for _, run := range summary.Runs {
-		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d | %s | %s |\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount, usageTokensCell(run.Usage), usageCostCell(run.Usage))
+		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d | %s | %s | %s |\n", run.RunID, run.CandidateID, run.CaseID, run.ExitCode, run.FindingCount, usageTokensCell(run.Usage), usageCostCell(run.Usage), piDiffCell(run.Usage))
 	}
 	return b.String()
 }
@@ -871,6 +871,13 @@ func usageCostCell(usage *benchmark.RunMetrics) string {
 		return "n/a"
 	}
 	return fmt.Sprintf("$%.6f", usage.Cost.Total)
+}
+
+func piDiffCell(usage *benchmark.RunMetrics) string {
+	if usage == nil || usage.PiDiff == nil {
+		return "n/a"
+	}
+	return fmt.Sprintf("succeeded=%d; failed=%d; not_invoked=%d; incomplete=%d", usage.PiDiff.Succeeded, usage.PiDiff.Failed, usage.PiDiff.NotInvoked, usage.PiDiff.Incomplete)
 }
 
 func durationMS(duration time.Duration) int64 {

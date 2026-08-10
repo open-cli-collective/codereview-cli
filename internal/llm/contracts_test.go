@@ -1,9 +1,11 @@
 package llm
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
@@ -155,7 +157,6 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"skipped_files":["main.go"],"findings":[]}`, "both inspected and skipped")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["  "],"findings":[]}`, "constraints")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["one","two","three","four","five","six","seven","eight","nine","ten","eleven"],"findings":[]}`, "constraints cap exceeded")
-	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["`+strings.Repeat("x", defaultMaxCoverageConstraintRunes+1)+`"],"findings":[]}`, "constraints entry length")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":2,"agent_id":"agent-1","findings":[]`), "schema_version")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[],"extra":true`), "unknown field")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"missing","findings":[]`), "unknown findings agent")
@@ -177,6 +178,62 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: func() (review.FindingID, error) { return "", errors.New("id failed") }}, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]`), "id failed")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("").next}, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]`), "blank")
 	assertFindingsError(t, FindingsOptions{KnownAgents: baseOpts.KnownAgents, ChangedFiles: baseOpts.ChangedFiles, NewFindingID: newIDQueue("dup", "dup").next}, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"body"},{"severity":"minor","file_path":"main.go","anchor":{"kind":"file"},"body":"body"}]`), "duplicate")
+}
+
+func TestDecodeFindingsConstraintRuneBoundaries(t *testing.T) {
+	limits := DefaultFindingsConstraintLimits()
+	markerOpening := "<!-- codereview:"
+	markerAtLimit := markerOpening + strings.Repeat("x", limits.MaxRunesPerEntry-utf8.RuneCountInString(markerOpening))
+	multibyteAtLimit := strings.Repeat("界", limits.MaxRunesPerEntry)
+
+	for _, tt := range []struct {
+		name       string
+		constraint string
+		wantErr    string
+		wantClean  bool
+	}{
+		{name: "marker opening at limit", constraint: markerAtLimit, wantClean: true},
+		{name: "marker opening over limit", constraint: markerAtLimit + "x", wantErr: "constraints entry length"},
+		{name: "multibyte at limit", constraint: multibyteAtLimit},
+		{name: "multibyte over limit", constraint: multibyteAtLimit + "界", wantErr: "constraints entry length"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeFindingsWithConstraint(t, tt.constraint)
+			if tt.wantErr != "" {
+				assertErrContains(t, err, tt.wantErr)
+				return
+			}
+			if err != nil {
+				t.Fatalf("DecodeFindings: %v", err)
+			}
+			if len(got.Constraints) != 1 {
+				t.Fatalf("constraints = %#v, want one value", got.Constraints)
+			}
+			if tt.wantClean && strings.Contains(got.Constraints[0], markerOpening) {
+				t.Fatalf("constraint = %q, want sanitized marker opening", got.Constraints[0])
+			}
+		})
+	}
+}
+
+func decodeFindingsWithConstraint(t *testing.T, constraint string) (Findings, error) {
+	t.Helper()
+	payload := map[string]any{
+		"schema_version":  1,
+		"agent_id":        "agent-1",
+		"inspected_files": []string{"main.go"},
+		"constraints":     []string{constraint},
+		"findings":        []any{},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal(findings): %v", err)
+	}
+	return DecodeFindings(data, FindingsOptions{
+		KnownAgents:  map[string]bool{"agent-1": true},
+		ChangedFiles: map[string]bool{"main.go": true},
+		NewFindingID: newIDQueue("f-1").next,
+	})
 }
 
 func findingsFixture(fields string) string {

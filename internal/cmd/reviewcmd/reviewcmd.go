@@ -118,9 +118,9 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().StringVar(&flags.selectionModel, "selection-model", "", "Override selection model for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionEffort, "selection-effort", "", "Override selection effort for dry-run review")
 	cmd.Flags().StringVar(&flags.selectionPrompt, "selection-prompt", "", "Override selection instructions from a file for dry-run review")
-	cmd.Flags().StringVar(&flags.reviewerModel, "reviewer-model", "", "Override reviewer models for dry-run review")
+	cmd.Flags().StringVar(&flags.reviewerModel, "reviewer-model", "", "Override reviewer model for this review")
 	cmd.Flags().StringVar(&flags.reviewerModelTier, "reviewer-model-tier", "", "Override reviewer baseline model tier for dry-run review")
-	cmd.Flags().StringVar(&flags.reviewerEffort, "reviewer-effort", "", "Override reviewer effort for dry-run review")
+	cmd.Flags().StringVar(&flags.reviewerEffort, "reviewer-effort", "", "Override reviewer effort for this review")
 	cmd.Flags().StringVar(&flags.reviewBaseSHA, "review-base-sha", "", "Review this base commit SHA instead of the PR's current base SHA; requires --dry-run and --review-head-sha")
 	cmd.Flags().StringVar(&flags.reviewHeadSHA, "review-head-sha", "", "Review this head commit SHA instead of the PR's current head SHA; requires --dry-run and --review-base-sha")
 	cmd.Flags().IntVar(&flags.maxAgents, "max-agents", 0, "Maximum selected reviewer agents")
@@ -182,9 +182,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if reviewerEffortChanged && !modelprefs.Effort(reviewerEffort).Valid() {
 		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be one of low, medium, high"))
 	}
-	stageOverrideChanged := selectionModelChanged || selectionEffortChanged || selectionPromptChanged || reviewerModelChanged || reviewerModelTierChanged || reviewerEffortChanged
-	if stageOverrideChanged && !flags.dryRun {
-		return exitcode.Usage(fmt.Errorf("--selection-model, --selection-effort, --selection-prompt, --reviewer-model, --reviewer-model-tier, and --reviewer-effort require --dry-run or --no-post"))
+	dryRunOnlyOverrideChanged := selectionModelChanged || selectionEffortChanged || selectionPromptChanged || reviewerModelTierChanged
+	if dryRunOnlyOverrideChanged && !flags.dryRun {
+		return exitcode.Usage(fmt.Errorf("--selection-model, --selection-effort, --selection-prompt, and --reviewer-model-tier require --dry-run or --no-post"))
 	}
 	if reviewBaseChanged != reviewHeadChanged {
 		return exitcode.Usage(fmt.Errorf("--review-base-sha and --review-head-sha must be set together"))
