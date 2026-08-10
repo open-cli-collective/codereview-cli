@@ -65,10 +65,10 @@ func TestRESTWriteMethodsMapRequests(t *testing.T) {
 				t.Fatalf("review comment[0] = %#v, want object", comments[0])
 			}
 			requireJSONExact(t, comment, map[string]any{
-				"body":      "line body",
-				"path":      "dir/file.go",
-				"side":      "RIGHT",
-				"line":      float64(9),
+				"body": "line body",
+				"path": "dir/file.go",
+				"side": "RIGHT",
+				"line": float64(9),
 			})
 			writeJSON(t, w, map[string]any{"id": 301})
 		default:

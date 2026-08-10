@@ -24,10 +24,10 @@ const (
 	// default client. All responses here are JSON payloads, so two minutes is
 	// generous — the bound exists because an unbounded client parks the whole
 	// run indefinitely on a connection the server's edge silently abandoned.
-	defaultHTTPTimeout = 2 * time.Minute
-	gitHubAppRefreshSkew    = 5 * time.Minute
-	gitHubAppJWTBackdate    = 60 * time.Second
-	gitHubAppJWTLifetime    = 9 * time.Minute
+	defaultHTTPTimeout   = 2 * time.Minute
+	gitHubAppRefreshSkew = 5 * time.Minute
+	gitHubAppJWTBackdate = 60 * time.Second
+	gitHubAppJWTLifetime = 9 * time.Minute
 )
 
 var (

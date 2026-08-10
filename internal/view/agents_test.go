@@ -135,17 +135,17 @@ func TestRenderAgentsShowJSON(t *testing.T) {
 func testAgentsCatalog() agents.Catalog {
 	return agents.Catalog{
 		Agents: []agents.Agent{{
-			ID:          "harness:architecture",
-			Name:        "architecture",
-			Category:    agents.Category{Name: "harness", Description: "Engineering reviewers.", Owner: "rianjs"},
-			Description: "Reviews architecture.",
-			ModelTier:   "medium",
-			Effort:      "medium",
-			FileGlobs:   []string{"**/*.go"},
-			AppliesWhen: []string{"Go files changed"},
+			ID:              "harness:architecture",
+			Name:            "architecture",
+			Category:        agents.Category{Name: "harness", Description: "Engineering reviewers.", Owner: "rianjs"},
+			Description:     "Reviews architecture.",
+			ModelTier:       "medium",
+			Effort:          "medium",
+			FileGlobs:       []string{"**/*.go"},
+			AppliesWhen:     []string{"Go files changed"},
 			RequiredOnMatch: true,
-			Prompt:      "Read the diff carefully.\n",
-			Provenance:  agents.Provenance{Kind: agents.SourceRepo, Ref: "refs/heads/main", SHA: "abc123456789"},
+			Prompt:          "Read the diff carefully.\n",
+			Provenance:      agents.Provenance{Kind: agents.SourceRepo, Ref: "refs/heads/main", SHA: "abc123456789"},
 		}},
 		Repo: &agents.RepoInfo{Ref: "refs/heads/main", SHA: "abc123456789", Provenance: "repo@refs/heads/main:abc123456789"},
 	}
