@@ -263,7 +263,7 @@ const (
 const SummaryTaskID = dossierSummaryTaskID
 
 var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\b(?:provider[_ ]session[_ ]id|session[_ ]row[_ ]id|session[_ ]id|run[_ ]id|retry[_ ]state|cache[_ ]state|cache hit)\s*[:=]\s*\S+`),
+	regexp.MustCompile(`\b(?:provider[_ ]session[_ ]id|session[_ ]row[_ ]id|session[_ ]id|run[_ ]id|retry[_ ]state|cache[_ ]state|cache hit)(?:\s*[:=]\s*|\s+(?:is|was|has been|had been)\s+)\S+`),
 	regexp.MustCompile(`\b(?:pr|pull request)\b(?:'s)?\s+(?:(?:is|was|has been)\s+)?(?:approved(?:\s+by\s+\S+)?|a\s+draft|draft)\b`),
 	regexp.MustCompile(`\b(?:approved|draft)\s+(?:pr|pull request)\b`),
 	regexp.MustCompile(`\b(?:pr|pull request)\b(?:'s)?\s+(?:(?:is|was)\s+)?mergeab(?:le|ility)(?:\s+status)?\b`),
@@ -271,6 +271,7 @@ var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\brequested reviewers?\b`),
 	regexp.MustCompile(`\brequested review\b`),
 	regexp.MustCompile(`\bci status\b`),
+	regexp.MustCompile(`\bci\s+(?:failed|has failed|had failed)\b`),
 	regexp.MustCompile(`\b(?:(?:ci|check|build)\s+(?:is|was|has been)|(?:checks|builds)\s+(?:are|were|have been))\s+failing\b`),
 	regexp.MustCompile(`\b(?:build|builds) failed\b`),
 	regexp.MustCompile(`\bfailed (?:build|builds)\b`),
