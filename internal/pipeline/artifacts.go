@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
@@ -136,16 +135,6 @@ func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.
 	if fastRequested && fastDelivered != "fast" && fastDelivered != "standard" {
 		fastDelivered = "unknown"
 	}
-	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
-		if !fastRequested {
-			return nil
-		}
-		out := make(map[string]reviewerRuntimeResolution, len(selection.SelectedAgents))
-		for _, selected := range selection.SelectedAgents {
-			out[selected.AgentID] = reviewerRuntimeResolution{Mode: "override", ResolvedModel: strings.TrimSpace(req.ReviewerModelOverride), Fast: true, FastIgnored: fastIgnored, FastDelivered: fastDelivered}
-		}
-		return out
-	}
 	if len(selection.SelectedAgents) == 0 {
 		return nil
 	}
@@ -159,7 +148,7 @@ func reviewerRuntimeArtifact(req Request, catalog agents.Catalog, selection llm.
 		if !ok {
 			continue
 		}
-		resolution, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, agent)
+		resolution, err := resolveReviewerRuntime(req, agent)
 		if err != nil {
 			continue
 		}

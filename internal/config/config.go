@@ -18,6 +18,8 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedir"
 	"gopkg.in/yaml.v3"
+
+	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 )
 
 const (
@@ -356,11 +358,16 @@ type LLMConfig struct {
 	Adapter           LLMAdapter         `yaml:"adapter" json:"adapter"`
 	Credential        CredentialLocation `yaml:"credential,omitempty" json:"credential,omitempty"`
 	ModelMap          ModelMap           `yaml:"model_map,omitempty" json:"model_map,omitempty"`
+	MaxEffort         EffortMap          `yaml:"max_effort,omitempty" json:"max_effort,omitempty"`
 	ReviewerModelTier ModelTier          `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
 }
 
 // ModelMap maps portable model tiers to provider-specific model identifiers.
 type ModelMap map[string]string
+
+// EffortMap caps reasoning effort per model tier. A tier absent from the map is
+// uncapped, so the agent-declared or stage-default effort applies unchanged.
+type EffortMap map[string]string
 
 // ModelTier is a provider-neutral model slot.
 type ModelTier string
@@ -687,6 +694,27 @@ func ResolveModelTier(llm LLMConfig, tier ModelTier) (ModelMapResolution, bool) 
 	}
 	resolved, ok := EffectiveModelMap(llm)[tier]
 	return resolved, ok
+}
+
+// ResolveMaxEffort returns the configured effort ceiling for one portable tier.
+// It reports false when the tier is uncapped, which leaves the requested effort
+// unchanged.
+func ResolveMaxEffort(llm LLMConfig, tier ModelTier) (modelprefs.Effort, bool) {
+	tier = ModelTier(strings.TrimSpace(string(tier)))
+	if !tier.Valid() {
+		return "", false
+	}
+	for configured, ceiling := range llm.MaxEffort {
+		if ModelTier(strings.TrimSpace(configured)) != tier {
+			continue
+		}
+		effort := modelprefs.Effort(strings.TrimSpace(ceiling))
+		if !effort.Valid() {
+			return "", false
+		}
+		return effort, true
+	}
+	return "", false
 }
 
 // ReviewMajorEvent identifies how major findings affect the review event.
@@ -1416,6 +1444,18 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 			return invalid("%s.model_map.%s is required", field, tier)
 		}
 	}
+	for tier, ceiling := range llm.MaxEffort {
+		modelTier := ModelTier(tier)
+		if !modelTier.Valid() {
+			return invalid("%s.max_effort tier %q is invalid", field, tier)
+		}
+		if strings.TrimSpace(ceiling) == "" {
+			return invalid("%s.max_effort.%s is required", field, tier)
+		}
+		if !modelprefs.Effort(strings.TrimSpace(ceiling)).Valid() {
+			return invalid("%s.max_effort.%s %q is invalid; must be one of low, medium, high", field, tier, ceiling)
+		}
+	}
 	if llm.ReviewerModelTier != "" && !llm.ReviewerModelTier.Valid() {
 		return invalid("%s.reviewer_model_tier %q is invalid; must be one of small, medium, large", field, llm.ReviewerModelTier)
 	}
@@ -1942,6 +1982,15 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 	for _, tier := range modelKeys {
 		models = append(models, tier+"="+strings.TrimSpace(llm.ModelMap[tier]))
 	}
+	effortKeys := make([]string, 0, len(llm.MaxEffort))
+	for tier := range llm.MaxEffort {
+		effortKeys = append(effortKeys, tier)
+	}
+	sort.Strings(effortKeys)
+	efforts := make([]string, 0, len(effortKeys))
+	for _, tier := range effortKeys {
+		efforts = append(efforts, tier+"="+strings.TrimSpace(llm.MaxEffort[tier]))
+	}
 	return strings.Join([]string{
 		string(llm.Provider),
 		string(llm.Auth),
@@ -1949,6 +1998,7 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 		llm.Credential.Store,
 		llm.Credential.Name,
 		strings.Join(models, "\x1f"),
+		strings.Join(efforts, "\x1f"),
 		string(llm.ReviewerModelTier),
 	}, "\x00")
 }
@@ -2245,6 +2295,13 @@ func (l LLMConfig) normalized() LLMConfig {
 		}
 		l.ModelMap = modelMap
 	}
+	if len(l.MaxEffort) > 0 {
+		maxEffort := make(EffortMap, len(l.MaxEffort))
+		for tier, effort := range l.MaxEffort {
+			maxEffort[strings.TrimSpace(tier)] = strings.TrimSpace(effort)
+		}
+		l.MaxEffort = maxEffort
+	}
 	return l
 }
 
@@ -2254,6 +2311,7 @@ func (l LLMConfig) empty() bool {
 		strings.TrimSpace(string(l.Adapter)) == "" &&
 		l.Credential.empty() &&
 		len(l.ModelMap) == 0 &&
+		len(l.MaxEffort) == 0 &&
 		strings.TrimSpace(string(l.ReviewerModelTier)) == ""
 }
 

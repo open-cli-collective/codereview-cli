@@ -181,6 +181,25 @@ Retention is global config under `data.retention`, not profile config.
 #178 must add retention command tests for omitted/default vs explicit zero.
 #184 must use the same validation and reset behavior in interactive init.
 
+## LLM Effort Ceiling Ownership
+
+The canonical ceiling path is `llm_runtimes.<name>.max_effort`, and
+`profiles.<name>.llm_runtime` selects that runtime. The legacy
+`profiles.<name>.llm.max_effort` path is compatibility/projection only, not the
+canonical storage location. The map accepts `small`, `medium`, and `large`
+tier keys with `low`, `medium`, or `high` ceiling values. Interactive and
+non-interactive `cr init` must preserve an existing map, including when the
+profile or selected LLM runtime is staged and saved; init does not edit or
+remove it. Configure it by editing `config.yml` directly. Model-map JSON-row
+parity and init editing for this field are out of scope.
+
+At review time, reviewer floors apply only to reviewer resolution. Other
+tier-resolved internal stages use their own stage tier, and default effort is
+capped only after that final tier is resolved. Explicit `--selection-effort`
+and `--reviewer-effort` values win after the cap. Exact
+`--selection-model`, `--reviewer-model`, agent `model_id`, and benchmark stage
+model/effort overrides intentionally bypass tier resolution and the cap.
+
 ## Scripted Install Ownership
 
 Scripted installs should remain readable. The intended shape is:

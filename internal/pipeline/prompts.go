@@ -616,6 +616,7 @@ type reviewerRuntimeResolution struct {
 	BaselineTier   string                `json:"baseline_tier,omitempty"`
 	EffectiveTier  string                `json:"effective_tier,omitempty"`
 	ResolvedModel  string                `json:"resolved_model"`
+	ResolvedEffort string                `json:"resolved_effort,omitempty"`
 	ModelMapSource config.ModelMapSource `json:"model_map_source,omitempty"`
 	Fast           bool                  `json:"fast,omitempty"`
 	FastIgnored    bool                  `json:"fast_ignored,omitempty"`

@@ -43,28 +43,47 @@ session row, but they still use the same metadata schema and lifecycle runner.
 
 Runtime model choice must be resolved through `internal/stagemodel`. Code that
 executes an LLM stage must not hard-code model IDs and must not call
-`config.ResolveModelTier` directly.
+`config.ResolveModelTier` or `config.ResolveMaxEffort` directly.
 
 `stagemodel.ResolveStageModel` is the single runtime path from profile
 preferences and command overrides to a concrete model and effort. The request
 must include the named stage, requested tier, default effort, and any explicit
-operator override. The resolver applies user profile `llm.model_map` values,
+operator override. The resolver applies the selected runtime's `model_map` values,
 built-in provider defaults, and configured tier floors before returning the
 concrete runtime choice.
 
 This boundary exists so model catalog data, provider capabilities, token costs,
-and profile-level tier floors can be added without touching individual review
-stages. Runtime hard-coding bypasses user preference and is a bug.
+and reviewer-resolution tier floors can be added without touching individual
+review stages. Runtime hard-coding bypasses user preference and is a bug.
+
+For reviewer tier-based requests, the resolver's authoritative ordering is:
+resolve the effective tier after applying the profile reviewer-tier floor and
+agent floor; resolve the model for that tier; cap the default effort with the
+selected runtime's `max_effort` entry for that final tier; then apply
+`EffortOverride`. This means `--reviewer-model-tier` is still capped at the tier
+it ultimately resolves, while `--selection-effort` and `--reviewer-effort` win
+after the ceiling. Other tier-resolved internal stages use their own stage
+tier before applying `max_effort` at that final tier.
+
+An explicit `ModelOverride` returns with its requested effort or default effort
+while intentionally bypassing tier resolution and the `max_effort` cap.
+`--selection-model`, `--reviewer-model`, and agent `model_id` use this
+exact-model path. Benchmark stage model and effort overrides are explicit
+runtime inputs and retain the same ceiling bypass.
 
 Reviewer `agent.model_id` is an exact provider-specific model override. It must
 still enter runtime execution through `stagemodel.ResolveStageModel` as a model
 override rather than bypassing the resolver, but it intentionally bypasses the
 tier map because the agent author selected a concrete model.
 
-The direct `config.ResolveModelTier` exception is config inspection and the
-resolver implementation itself.
-`internal/architecture/model_resolution_test.go` enforces that direct
-`config.ResolveModelTier` calls stay inside approved packages. Hard-coded
+The reviewer execution request, cohort member, session row, and
+`agent-sources.json` reviewer provenance must all use the same final resolved
+model and effort, including explicit reviewer model and effort overrides.
+
+Direct `config.ResolveModelTier` and `config.ResolveMaxEffort` calls are
+allowed only for config inspection and inside the resolver implementation.
+`internal/architecture/model_resolution_test.go` enforces that both direct
+calls stay inside approved packages. Hard-coded
 runtime model IDs remain a code-review concern until model-catalog guardrails
 exist.
 

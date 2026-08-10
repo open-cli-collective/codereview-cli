@@ -164,6 +164,8 @@ type initDraft struct {
 	Routes                            []configedit.RepositoryRouteSpec
 	ModelMapSet                       bool
 	ModelMap                          config.ModelMap
+	MaxEffortSet                      bool
+	MaxEffort                         config.EffortMap
 	AgentSourcesSet                   bool
 	AgentSources                      []string
 	ReviewPolicySet                   bool
@@ -430,6 +432,7 @@ type initLLMRuntimeDraft struct {
 	CredentialStore   string
 	CredentialRef     string
 	ModelMap          config.ModelMap
+	MaxEffort         config.EffortMap
 	ReviewerModelTier config.ModelTier
 }
 
@@ -1115,6 +1118,12 @@ func completeInteractiveInitProfileV2Draft(ctx initPromptContext, draft initDraf
 			draft.ModelMap = copyModelMap(ctx.ExistingProfile.LLM.ModelMap)
 		}
 		draft.ModelMapSet = true
+	}
+	if !draft.MaxEffortSet {
+		if ctx.ExistingProfile != nil {
+			draft.MaxEffort = copyEffortMap(ctx.ExistingProfile.LLM.MaxEffort)
+		}
+		draft.MaxEffortSet = true
 	}
 	if !draft.AgentSourcesSet {
 		if ctx.ExistingProfile != nil {
@@ -2333,10 +2342,11 @@ func initReviewerModelTierOptions() []huh.Option[string] {
 
 func initProfileEditorModelMapLLM(draft initDraft, selectedLLMRuntime string, runtimes map[string]initLLMRuntimeDraft) config.LLMConfig {
 	llm := config.LLMConfig{
-		Provider: config.LLMProvider(draft.LLMProvider),
-		Auth:     config.LLMAuth(draft.LLMAuth),
-		Adapter:  config.LLMAdapter(draft.LLMAdapter),
-		ModelMap: copyModelMap(draft.ModelMap),
+		Provider:  config.LLMProvider(draft.LLMProvider),
+		Auth:      config.LLMAuth(draft.LLMAuth),
+		Adapter:   config.LLMAdapter(draft.LLMAdapter),
+		ModelMap:  copyModelMap(draft.ModelMap),
+		MaxEffort: copyEffortMap(draft.MaxEffort),
 	}
 	if runtime, ok := runtimes[selectedLLMRuntime]; ok {
 		llm.Provider = runtime.Provider
@@ -2540,6 +2550,7 @@ func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
 		Adapter:           config.LLMAdapter(draft.LLMAdapter),
 		Credential:        initCredentialLocationIfName(draft.LLMCredentialStore, draft.LLMCredentialRef),
 		ModelMap:          copyModelMap(draft.ModelMap),
+		MaxEffort:         copyEffortMap(draft.MaxEffort),
 		ReviewerModelTier: config.ModelTier(strings.TrimSpace(draft.LLMReviewerModelTier)),
 	})
 }
@@ -2699,6 +2710,8 @@ func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runti
 		draft.LLMAdapter = string(runtime.Adapter)
 		draft.ModelMap = copyModelMap(runtime.ModelMap)
 		draft.ModelMapSet = true
+		draft.MaxEffort = copyEffortMap(runtime.MaxEffort)
+		draft.MaxEffortSet = true
 		draft.LLMReviewerModelTier = string(runtime.ReviewerModelTier)
 		if !draft.AdvancedStorageLabels {
 			draft.LLMCredentialStore = initCredentialStoreDraftValue(runtime.CredentialStore)
@@ -3105,6 +3118,8 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		draft.LLMCredentialStore = initCredentialStoreDraftValue(existingProfile.LLM.Credential.Store)
 		draft.LLMCredentialRef = existingProfile.LLM.Credential.Name
 		draft.ModelMap = copyModelMap(existingProfile.LLM.ModelMap)
+		draft.MaxEffort = copyEffortMap(existingProfile.LLM.MaxEffort)
+		draft.MaxEffortSet = true
 		draft.AgentSources = append([]string(nil), existingProfile.AgentSources...)
 		draft.ReviewPolicy = existingProfile.ReviewPolicy
 		if existingProfile.Reviewer.GitHubAppInstallation != nil {
@@ -3403,6 +3418,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 				modelMap[tier] = model
 			}
 			profile.LLM.ModelMap = modelMap
+		}
+		if previousProfile.LLM.MaxEffort != nil {
+			profile.LLM.MaxEffort = copyEffortMap(previousProfile.LLM.MaxEffort)
 		}
 		if !cmd.Flags().Changed("agent-source") {
 			profile.AgentSources = append([]string(nil), previousProfile.AgentSources...)
@@ -4541,6 +4559,7 @@ func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 		CredentialStore:   initCredentialStoreDraftValue(llm.Credential.Store),
 		CredentialRef:     strings.TrimSpace(llm.Credential.Name),
 		ModelMap:          copyModelMap(llm.ModelMap),
+		MaxEffort:         copyEffortMap(llm.MaxEffort),
 		ReviewerModelTier: llm.ReviewerModelTier,
 	}
 	if spec, ok := config.FindLLMRuntimeSpec(runtime.Provider, runtime.Auth, runtime.Adapter); ok &&
@@ -4559,6 +4578,7 @@ func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
 		Auth:              runtime.Auth,
 		Adapter:           runtime.Adapter,
 		ModelMap:          copyModelMap(runtime.ModelMap),
+		MaxEffort:         copyEffortMap(runtime.MaxEffort),
 		ReviewerModelTier: runtime.ReviewerModelTier,
 	}
 	if runtime.Auth == config.LLMAuthAPIKey {
@@ -4577,6 +4597,15 @@ func (runtime initLLMRuntimeDraft) identityKey() string {
 	for _, tier := range modelKeys {
 		models = append(models, tier+"="+strings.TrimSpace(runtime.ModelMap[tier]))
 	}
+	effortKeys := make([]string, 0, len(runtime.MaxEffort))
+	for tier := range runtime.MaxEffort {
+		effortKeys = append(effortKeys, tier)
+	}
+	sort.Strings(effortKeys)
+	efforts := make([]string, 0, len(effortKeys))
+	for _, tier := range effortKeys {
+		efforts = append(efforts, tier+"="+strings.TrimSpace(runtime.MaxEffort[tier]))
+	}
 	return strings.Join([]string{
 		string(runtime.Provider),
 		string(runtime.Auth),
@@ -4584,6 +4613,7 @@ func (runtime initLLMRuntimeDraft) identityKey() string {
 		initCredentialStoreDraftValue(runtime.CredentialStore),
 		strings.TrimSpace(runtime.CredentialRef),
 		strings.Join(models, "\x1f"),
+		strings.Join(efforts, "\x1f"),
 		string(runtime.ReviewerModelTier),
 	}, "\x00")
 }
@@ -4762,6 +4792,7 @@ func cloneInitLLMConfig(llm config.LLMConfig) config.LLMConfig {
 			cloned.ModelMap[tier] = model
 		}
 	}
+	cloned.MaxEffort = copyEffortMap(llm.MaxEffort)
 	return cloned
 }
 
@@ -4848,6 +4879,9 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	profile.LLM.Auth = config.LLMAuth(draft.LLMAuth)
 	profile.LLM.Adapter = config.LLMAdapter(draft.LLMAdapter)
 	profile.LLM.ReviewerModelTier = config.ModelTier(strings.TrimSpace(draft.LLMReviewerModelTier))
+	if draft.MaxEffortSet {
+		profile.LLM.MaxEffort = copyEffortMap(draft.MaxEffort)
+	}
 	if profile.LLM.Auth == config.LLMAuthAPIKey {
 		llmRef := strings.TrimSpace(draft.LLMCredentialRef)
 		if llmRef == "" {
@@ -5812,6 +5846,17 @@ func initCredentialWritePlanSatisfiesEntry(entry initCredentialPlanEntry, target
 		return false
 	}
 	return true
+}
+
+func copyEffortMap(effortMap config.EffortMap) config.EffortMap {
+	if len(effortMap) == 0 {
+		return nil
+	}
+	copied := make(config.EffortMap, len(effortMap))
+	for tier, ceiling := range effortMap {
+		copied[tier] = ceiling
+	}
+	return copied
 }
 
 func copyModelMap(modelMap config.ModelMap) config.ModelMap {

@@ -6501,6 +6501,7 @@ func TestLoopInteractiveInitProfileV2DoesNotPromptForSelectedPrimitiveCredential
 func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	existing := basicProfile("work")
+	existing.LLM.MaxEffort = config.EffortMap{"large": "medium"}
 	cfg := config.File{
 		Profiles: map[string]config.Profile{
 			"work": existing,
@@ -6576,6 +6577,9 @@ func TestLoopInteractiveInitProfileV2AppliesInlineDetailDraftParity(t *testing.T
 	}
 	if !reflect.DeepEqual(profile.LLM.ModelMap, config.ModelMap{"medium": "gpt-custom"}) {
 		t.Fatalf("model_map = %#v, want v2 model-map edit", profile.LLM.ModelMap)
+	}
+	if profile.LLM.MaxEffort["large"] != "medium" {
+		t.Fatalf("max_effort = %#v, want preserved large=medium", profile.LLM.MaxEffort)
 	}
 	if !reflect.DeepEqual(profile.AgentSources, []string{"/tmp/agents"}) {
 		t.Fatalf("agent_sources = %#v, want normalized v2 agent sources", profile.AgentSources)
