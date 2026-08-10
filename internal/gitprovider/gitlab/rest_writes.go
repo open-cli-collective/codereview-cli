@@ -79,10 +79,21 @@ func (c *Client) SubmitReview(ctx context.Context, ref gitprovider.PRRef, reques
 	return gitprovider.ReviewID(stringIDFromInt(response.ID)), nil
 }
 
+// approve applies the caller's approval to the merge request. GitLab responds
+// 401 when the caller already holds a standing approval, indistinguishable by
+// status from a credential failure, so a standing approval is detected first
+// and treated as already satisfied.
 func (c *Client) approve(ctx context.Context, ref gitprovider.PRRef, commitSHA string) error {
 	op := gitprovider.OperationSubmitReview
+	approved, err := c.currentUserApproved(ctx, op, ref)
+	if err != nil {
+		return err
+	}
+	if approved {
+		return nil
+	}
 	endpoint := restURL(c.baseURL, "projects", projectSegment(ref), "merge_requests", fmt.Sprint(ref.Number), "approve")
-	err := c.doRESTJSON(ctx, op, http.MethodPost, endpoint, approveRequest{SHA: commitSHA}, nil)
+	err = c.doRESTJSON(ctx, op, http.MethodPost, endpoint, approveRequest{SHA: commitSHA}, nil)
 	switch {
 	case err == nil:
 		return nil
@@ -98,6 +109,36 @@ func (c *Client) approve(ctx context.Context, ref gitprovider.PRRef, commitSHA s
 	default:
 		return err
 	}
+}
+
+// currentUserApproved reports whether the authenticated user already has a
+// standing approval on the merge request. The current-user lookup only happens
+// when the merge request has approvals at all, so the common fresh-approve
+// path costs one extra read.
+func (c *Client) currentUserApproved(ctx context.Context, op gitprovider.Operation, ref gitprovider.PRRef) (bool, error) {
+	var approvals approvalsResponse
+	endpoint := restURL(c.baseURL, "projects", projectSegment(ref), "merge_requests", fmt.Sprint(ref.Number), "approvals")
+	if _, _, err := c.doREST(ctx, op, http.MethodGet, endpoint, acceptJSON, &approvals); err != nil {
+		return false, err
+	}
+	if len(approvals.ApprovedBy) == 0 {
+		return false, nil
+	}
+	var user userResponse
+	if _, _, err := c.doREST(ctx, op, http.MethodGet, restURL(c.baseURL, "user"), acceptJSON, &user); err != nil {
+		return false, err
+	}
+	if user.ID <= 0 {
+		// Without a usable current-user ID the standing approval cannot be
+		// attributed; fall through to the approve attempt.
+		return false, nil
+	}
+	for _, approval := range approvals.ApprovedBy {
+		if approval.User.ID == user.ID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (c *Client) unapprove(ctx context.Context, ref gitprovider.PRRef) error {

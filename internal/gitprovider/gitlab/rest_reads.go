@@ -53,10 +53,12 @@ type diffFileResponse struct {
 	Diff        string `json:"diff"`
 }
 
+type approvalEntryResponse struct {
+	User userResponse `json:"user"`
+}
+
 type approvalsResponse struct {
-	ApprovedBy []struct {
-		User userResponse `json:"user"`
-	} `json:"approved_by"`
+	ApprovedBy []approvalEntryResponse `json:"approved_by"`
 }
 
 type noteResponse struct {

@@ -35,16 +35,26 @@ func TestPostIssueCommentPostsNote(t *testing.T) {
 	}
 }
 
-func submitReviewServer(t *testing.T, headSHA string, approveStatus, unapproveStatus int, calls *[]string) *httptest.Server {
+func submitReviewServer(t *testing.T, headSHA string, approveStatus, unapproveStatus int, approverIDs []int64, calls *[]string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/user":
+			*calls = append(*calls, "user")
+			writeJSON(t, w, userResponse{ID: 7, Username: "review-bot"})
 		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/projects/"+testProjectPath()+"/merge_requests/42":
 			*calls = append(*calls, "get")
 			writeJSON(t, w, mergeRequestResponse{
 				State: "opened", SourceBranch: "feature", TargetBranch: "main",
 				DiffRefs: diffRefsResponse{BaseSHA: "basesha", StartSHA: "startsha", HeadSHA: headSHA},
 			})
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/projects/"+testProjectPath()+"/merge_requests/42/approvals":
+			*calls = append(*calls, "approvals")
+			var payload approvalsResponse
+			for _, id := range approverIDs {
+				payload.ApprovedBy = append(payload.ApprovedBy, approvalEntryResponse{User: userResponse{ID: id}})
+			}
+			writeJSON(t, w, payload)
 		case r.Method == http.MethodPost && r.URL.EscapedPath() == "/projects/"+testProjectPath()+"/merge_requests/42/approve":
 			var request approveRequest
 			decodeJSON(t, r.Body, &request)
@@ -74,7 +84,7 @@ func submitReviewServer(t *testing.T, headSHA string, approveStatus, unapproveSt
 
 func TestSubmitReviewApproveAppliesApprovalThenPostsSummaryNote(t *testing.T) {
 	var calls []string
-	server := submitReviewServer(t, "headsha", http.StatusCreated, http.StatusCreated, &calls)
+	server := submitReviewServer(t, "headsha", http.StatusCreated, http.StatusCreated, nil, &calls)
 	defer server.Close()
 	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
 	id, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
@@ -88,14 +98,54 @@ func TestSubmitReviewApproveAppliesApprovalThenPostsSummaryNote(t *testing.T) {
 	if id != gitprovider.ReviewID("88") {
 		t.Fatalf("id = %q, want 88", id)
 	}
-	if !reflect.DeepEqual(calls, []string{"get", "approve:headsha", "note:review summary"}) {
+	if !reflect.DeepEqual(calls, []string{"get", "approvals", "approve:headsha", "note:review summary"}) {
 		t.Fatalf("calls = %#v, want approval before summary note", calls)
+	}
+}
+
+func TestSubmitReviewApproveSkipsApproveWhenApprovalAlreadyStands(t *testing.T) {
+	var calls []string
+	// User 7 is the authenticated user served by /user; GitLab would respond
+	// 401 to a second approve, so the approve call must not happen at all.
+	server := submitReviewServer(t, "headsha", http.StatusUnauthorized, http.StatusCreated, []int64{7}, &calls)
+	defer server.Close()
+	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
+	id, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+		CommitSHA: "headsha",
+		Event:     review.ReviewEventApprove,
+		Body:      "review summary",
+	})
+	if err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	if id != gitprovider.ReviewID("88") {
+		t.Fatalf("id = %q, want 88", id)
+	}
+	if !reflect.DeepEqual(calls, []string{"get", "approvals", "user", "note:review summary"}) {
+		t.Fatalf("calls = %#v, want standing approval detected and approve skipped", calls)
+	}
+}
+
+func TestSubmitReviewApproveStillApprovesWhenOnlyOthersApproved(t *testing.T) {
+	var calls []string
+	server := submitReviewServer(t, "headsha", http.StatusCreated, http.StatusCreated, []int64{12}, &calls)
+	defer server.Close()
+	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
+	if _, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+		CommitSHA: "headsha",
+		Event:     review.ReviewEventApprove,
+		Body:      "review summary",
+	}); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"get", "approvals", "user", "approve:headsha", "note:review summary"}) {
+		t.Fatalf("calls = %#v, want approve despite other users' approvals", calls)
 	}
 }
 
 func TestSubmitReviewRequestChangesRevokesApprovalAndIgnoresMissingApproval(t *testing.T) {
 	var calls []string
-	server := submitReviewServer(t, "headsha", http.StatusCreated, http.StatusNotFound, &calls)
+	server := submitReviewServer(t, "headsha", http.StatusCreated, http.StatusNotFound, nil, &calls)
 	defer server.Close()
 	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
 	if _, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
@@ -112,7 +162,7 @@ func TestSubmitReviewRequestChangesRevokesApprovalAndIgnoresMissingApproval(t *t
 
 func TestSubmitReviewCommentOnlyPostsNote(t *testing.T) {
 	var calls []string
-	server := submitReviewServer(t, "headsha", http.StatusCreated, http.StatusCreated, &calls)
+	server := submitReviewServer(t, "headsha", http.StatusCreated, http.StatusCreated, nil, &calls)
 	defer server.Close()
 	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
 	if _, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
@@ -129,7 +179,7 @@ func TestSubmitReviewCommentOnlyPostsNote(t *testing.T) {
 
 func TestSubmitReviewRejectsStaleCommitBeforeWriting(t *testing.T) {
 	var calls []string
-	server := submitReviewServer(t, "newer-head", http.StatusCreated, http.StatusCreated, &calls)
+	server := submitReviewServer(t, "newer-head", http.StatusCreated, http.StatusCreated, nil, &calls)
 	defer server.Close()
 	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
 	_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
@@ -147,7 +197,7 @@ func TestSubmitReviewRejectsStaleCommitBeforeWriting(t *testing.T) {
 
 func TestSubmitReviewMapsApproveConflictToStaleSHA(t *testing.T) {
 	var calls []string
-	server := submitReviewServer(t, "headsha", http.StatusConflict, http.StatusCreated, &calls)
+	server := submitReviewServer(t, "headsha", http.StatusConflict, http.StatusCreated, nil, &calls)
 	defer server.Close()
 	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
 	_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
@@ -162,7 +212,7 @@ func TestSubmitReviewMapsApproveConflictToStaleSHA(t *testing.T) {
 
 func TestSubmitReviewMapsApproveUnauthorizedToPermission(t *testing.T) {
 	var calls []string
-	server := submitReviewServer(t, "headsha", http.StatusUnauthorized, http.StatusCreated, &calls)
+	server := submitReviewServer(t, "headsha", http.StatusUnauthorized, http.StatusCreated, nil, &calls)
 	defer server.Close()
 	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
 	_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
@@ -172,6 +222,38 @@ func TestSubmitReviewMapsApproveUnauthorizedToPermission(t *testing.T) {
 	})
 	if !errors.Is(err, gitprovider.ErrPermission) {
 		t.Fatalf("SubmitReview error = %v, want ErrPermission", err)
+	}
+}
+
+func TestSubmitReviewSurfacesAuthFailureFromApprovalsRead(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/projects/"+testProjectPath()+"/merge_requests/42":
+			calls = append(calls, "get")
+			writeJSON(t, w, mergeRequestResponse{
+				State: "opened", SourceBranch: "feature", TargetBranch: "main",
+				DiffRefs: diffRefsResponse{BaseSHA: "basesha", StartSHA: "startsha", HeadSHA: "headsha"},
+			})
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/projects/"+testProjectPath()+"/merge_requests/42/approvals":
+			calls = append(calls, "approvals")
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			t.Fatalf("unexpected request %s %q", r.Method, r.URL.EscapedPath())
+		}
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Host: "gitlab.example.com", BaseURL: server.URL})
+	_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+		CommitSHA: "headsha",
+		Event:     review.ReviewEventApprove,
+		Body:      "review summary",
+	})
+	if !errors.Is(err, gitprovider.ErrAuth) {
+		t.Fatalf("SubmitReview error = %v, want ErrAuth", err)
+	}
+	if !reflect.DeepEqual(calls, []string{"get", "approvals"}) {
+		t.Fatalf("calls = %#v, want no writes after credential failure", calls)
 	}
 }
 
