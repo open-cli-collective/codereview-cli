@@ -665,12 +665,24 @@ Migration note: older releases treated reviewer `model_tier` as a direct map
 lookup. Current releases treat it as a minimum acceptable tier, so profiles can
 raise the reviewer baseline without editing shared agent catalogs.
 
-### Capping Effort Per Tier
+### Model-Tier Floors and Effort Ceilings
 
 Agent catalogs declare an absolute `effort` (`low`, `medium`, `high`) that
-becomes the provider's reasoning-effort setting. `llm.max_effort` caps that
-value per tier so a deployment can bound spend on expensive models without
-editing shared catalogs:
+becomes the provider's reasoning-effort setting. Model tiers are different:
+`agent.model_tier` and `llm.reviewer_model_tier` are minimum floors for model
+selection, while `llm.max_effort` is a ceiling for the default effort at the
+resolved tier. They do not raise an agent's effort or select a model by
+themselves.
+
+For a tier-based stage, `cr` applies this order:
+
+1. Resolve the effective tier as the higher of the agent tier and the profile
+   reviewer-tier floor.
+2. Resolve `model_map[effective tier]`, including provider built-ins.
+3. Cap the agent or stage default effort with `max_effort[effective tier]`.
+4. Apply an explicit effort override, which wins over the ceiling.
+
+Configure ceilings manually in `config.yml`:
 
 ```yaml
 llm:
@@ -682,18 +694,28 @@ llm:
 ```
 
 A tier absent from `max_effort` is uncapped. The cap is a ceiling only: an agent
-declaring `low` under a `medium` ceiling still runs at `low`. Caps are keyed by
-the tier resolved after the floor calculation above, and they apply to internal
-stages (selection, synthesis, thread analysis) as well as reviewers, so capping
-`medium` affects more than reviewer agents.
+declaring `low` under a `medium` ceiling still runs at `low`. Caps use the tier
+after floor resolution and apply to internal stages (selection, synthesis, and
+thread analysis) as well as reviewers.
 
-Four paths intentionally bypass the cap, because each is an explicit selection
-of a concrete model or effort:
+The complete precedence and bypass table is:
 
-- `--reviewer-effort` and `--reviewer-model` on `cr review`
-- agent `model_id`, which selects an exact model and has no tier to cap
-- `cr benchmark run`, where `stages.reviewers.effort` is required so candidates
-  stay comparable
+| Input or path | Model selection | Default effort | `llm.max_effort` |
+|---------------|-----------------|----------------|-----------------|
+| Agent/stage tier with no explicit override | Effective tier after floors, then `model_map` | Agent/stage effort | Caps the default at the effective tier |
+| `--reviewer-model-tier` | Raises the reviewer baseline before the agent floor is applied | Agent effort | Caps at the final resolved tier |
+| `--selection-effort` or `--reviewer-effort` | Normal tier or exact-model selection | Requested effort | Explicit effort wins after the ceiling |
+| `--selection-model` or `--reviewer-model` | Exact requested model ID | Stage/agent effort or explicit effort | Bypassed; no tier is available |
+| Agent `model_id` | Exact agent model ID | Agent effort | Bypassed; no tier is available |
+| `cr benchmark run` stage model/effort overrides | Exact benchmark model when supplied; otherwise normal tier selection | Explicit benchmark effort when supplied | Explicit benchmark overrides bypass the profile ceiling |
+
+For example, with `agent.model_tier: small`, `effort: high`,
+`llm.reviewer_model_tier: large`, and `max_effort.large: medium`, the reviewer
+runs with the large model at medium effort. Adding `--reviewer-effort high`
+runs that same large model at high effort. Adding
+`--reviewer-model my-provider/model` selects that exact model and keeps high
+effort without applying the tier ceiling. `--selection-effort high` follows
+the same post-ceiling override rule for selection.
 
 `cr init` preserves `max_effort` but cannot yet edit it; set it by hand in
 `config.yml`.
@@ -704,11 +726,12 @@ Dry-run and no-post runs also record selected reviewer runtime resolution in
 
 | Field | Meaning |
 |-------|---------|
-| `mode` | `tier_floor` for portable tier resolution, `exact_model` for agent `model_id` passthrough |
+| `mode` | `tier_floor` for portable tier resolution, `exact_model` for agent `model_id` passthrough, or `override` for `--reviewer-model` |
 | `floor_tier` | Declared agent `model_tier` floor when `mode=tier_floor` |
 | `baseline_tier` | Effective operator baseline tier used for this run |
 | `effective_tier` | Higher of baseline and agent floor |
-| `resolved_model` | Resolved provider model, from the active model map for `tier_floor` or from agent `model_id` for `exact_model` |
+| `resolved_model` | Actual provider model, from the active model map for `tier_floor`, agent `model_id` for `exact_model`, or `--reviewer-model` for `override` |
+| `resolved_effort` | Actual reviewer effort after the tier ceiling and any explicit reviewer-effort override |
 | `model_map_source` | `built_in` or `config` for the resolved tier mapping |
 
 Built-in model maps:
