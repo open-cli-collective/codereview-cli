@@ -53,7 +53,7 @@ func TestRuntimeModelResolutionGoesThroughStageResolver(t *testing.T) {
 				return true
 			}
 			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || selector.Sel.Name != "ResolveModelTier" {
+			if !ok || selector.Sel.Name != "ResolveModelTier" && selector.Sel.Name != "ResolveMaxEffort" {
 				return true
 			}
 			ident, ok := selector.X.(*ast.Ident)
@@ -61,7 +61,7 @@ func TestRuntimeModelResolutionGoesThroughStageResolver(t *testing.T) {
 				return true
 			}
 			pos := fset.Position(selector.Pos())
-			t.Fatalf("%s calls config.ResolveModelTier directly; runtime model selection must use internal/stagemodel", pos)
+			t.Fatalf("%s calls config.%s directly; runtime model and effort resolution must use internal/stagemodel", pos, selector.Sel.Name)
 			return false
 		})
 		return nil
