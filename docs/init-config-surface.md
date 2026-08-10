@@ -183,18 +183,22 @@ Retention is global config under `data.retention`, not profile config.
 
 ## LLM Effort Ceiling Ownership
 
-`profiles.<name>.llm.max_effort` is manual configuration, not an init field or
-an init flag. It accepts `small`, `medium`, and `large` tier keys with `low`,
-`medium`, or `high` ceiling values. Interactive and non-interactive `cr init`
-must preserve an existing map, including when the profile or selected LLM
-runtime is staged and saved; init does not edit or remove it. Configure it by
-editing `config.yml` directly. Model-map JSON-row parity and init editing for
-this field are out of scope.
+The canonical ceiling path is `llm_runtimes.<name>.max_effort`, and
+`profiles.<name>.llm_runtime` selects that runtime. The legacy
+`profiles.<name>.llm.max_effort` path is compatibility/projection only, not the
+canonical storage location. The map accepts `small`, `medium`, and `large`
+tier keys with `low`, `medium`, or `high` ceiling values. Interactive and
+non-interactive `cr init` must preserve an existing map, including when the
+profile or selected LLM runtime is staged and saved; init does not edit or
+remove it. Configure it by editing `config.yml` directly. Model-map JSON-row
+parity and init editing for this field are out of scope.
 
-At review time, tier-based default effort is capped only after the final tier
-is resolved. Explicit `--selection-effort` and `--reviewer-effort` values win
-after that cap. Exact `--selection-model`, `--reviewer-model`, agent `model_id`,
-and benchmark stage model/effort overrides remain outside tier-keyed ceilings.
+At review time, reviewer floors apply only to reviewer resolution. Other
+tier-resolved internal stages use their own stage tier, and default effort is
+capped only after that final tier is resolved. Explicit `--selection-effort`
+and `--reviewer-effort` values win after the cap. Exact
+`--selection-model`, `--reviewer-model`, agent `model_id`, and benchmark stage
+model/effort overrides intentionally bypass tier resolution and the cap.
 
 ## Scripted Install Ownership
 

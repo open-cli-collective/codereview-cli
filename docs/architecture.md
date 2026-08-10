@@ -48,26 +48,28 @@ executes an LLM stage must not hard-code model IDs and must not call
 `stagemodel.ResolveStageModel` is the single runtime path from profile
 preferences and command overrides to a concrete model and effort. The request
 must include the named stage, requested tier, default effort, and any explicit
-operator override. The resolver applies user profile `llm.model_map` values,
+operator override. The resolver applies the selected runtime's `model_map` values,
 built-in provider defaults, and configured tier floors before returning the
 concrete runtime choice.
 
 This boundary exists so model catalog data, provider capabilities, token costs,
-and profile-level tier floors can be added without touching individual review
-stages. Runtime hard-coding bypasses user preference and is a bug.
+and reviewer-resolution tier floors can be added without touching individual
+review stages. Runtime hard-coding bypasses user preference and is a bug.
 
-The resolver's authoritative ordering for tier-based requests is: resolve the
-effective tier after applying the profile reviewer-tier floor and agent floor;
-resolve the model for that tier; cap the default effort with the
-`llm.max_effort` entry for that final tier; then apply `EffortOverride`. This
-means `--reviewer-model-tier` is still capped at the tier it ultimately
-resolves, while `--selection-effort` and `--reviewer-effort` win after the
-ceiling.
+For reviewer tier-based requests, the resolver's authoritative ordering is:
+resolve the effective tier after applying the profile reviewer-tier floor and
+agent floor; resolve the model for that tier; cap the default effort with the
+selected runtime's `max_effort` entry for that final tier; then apply
+`EffortOverride`. This means `--reviewer-model-tier` is still capped at the tier
+it ultimately resolves, while `--selection-effort` and `--reviewer-effort` win
+after the ceiling. Other tier-resolved internal stages use their own stage
+tier before applying `max_effort` at that final tier.
 
 An explicit `ModelOverride` returns with its requested effort or default effort
-without applying a tier ceiling. `--selection-model`, `--reviewer-model`, and
-agent `model_id` use this exact-model path. Benchmark stage model and effort
-overrides are explicit runtime inputs and retain the same ceiling bypass.
+while intentionally bypassing tier resolution and the `max_effort` cap.
+`--selection-model`, `--reviewer-model`, and agent `model_id` use this
+exact-model path. Benchmark stage model and effort overrides are explicit
+runtime inputs and retain the same ceiling bypass.
 
 Reviewer `agent.model_id` is an exact provider-specific model override. It must
 still enter runtime execution through `stagemodel.ResolveStageModel` as a model
