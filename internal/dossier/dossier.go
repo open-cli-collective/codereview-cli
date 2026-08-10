@@ -263,23 +263,17 @@ const (
 const SummaryTaskID = dossierSummaryTaskID
 
 var forbiddenDiscussionSummaryPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bprovider[_ ]session[_ ]id\b`),
-	regexp.MustCompile(`\bsession[_ ]row[_ ]id\b`),
-	regexp.MustCompile(`\bsession[_ ]id\b`),
-	regexp.MustCompile(`\brun[_ ]id\b`),
-	regexp.MustCompile(`\bretry[_ ]state\b`),
-	regexp.MustCompile(`\bcache[_ ]state\b`),
-	regexp.MustCompile(`\bcache hit\b`),
-	regexp.MustCompile(`\bledger\b`),
-	regexp.MustCompile(`\bmergeab(?:le|ility)\b`),
-	regexp.MustCompile(`\bdraft\b`),
-	regexp.MustCompile(`\bapprovals?\b`),
-	regexp.MustCompile(`\bapproved\b`),
+	regexp.MustCompile(`\b(?:provider[_ ]session[_ ]id|session[_ ]row[_ ]id|session[_ ]id|run[_ ]id|retry[_ ]state|cache[_ ]state|cache hit)(?:\s*[:=]\s*|\s+(?:is|was|has been|had been)\s+)\S+`),
+	regexp.MustCompile(`\b(?:pr|pull request)\b(?:'s)?\s+(?:(?:is|was|has been)\s+)?(?:approved(?:\s+by\s+\S+)?|a\s+draft|draft)\b`),
+	regexp.MustCompile(`\b(?:approved|draft)\s+(?:pr|pull request)\b`),
+	regexp.MustCompile(`\b(?:pr|pull request)\b(?:'s)?\s+(?:(?:is|was)\s+)?mergeab(?:le|ility)(?:\s+status)?\b`),
+	regexp.MustCompile(`\b(?:pr|pull request)\b(?:'s)?\s+approvals?\s+(?:state|status)\b`),
 	regexp.MustCompile(`\brequested reviewers?\b`),
 	regexp.MustCompile(`\brequested review\b`),
 	regexp.MustCompile(`\bci status\b`),
-	regexp.MustCompile(`\bbuild failed\b`),
-	regexp.MustCompile(`\bcheck(s)? failed\b`),
+	regexp.MustCompile(`\b(?:ci|build|check)\s+(?:failed|(?:has|had) failed|(?:is|was|has been) failing)\b`),
+	regexp.MustCompile(`\b(?:builds|checks)\s+(?:failed|(?:have|had) failed|(?:are|were|have been) failing)\b`),
+	regexp.MustCompile(`\bfailed (?:build|builds|check|checks)\b`),
 }
 
 // WriteRaw writes the source dossier artifacts used by Prepare.

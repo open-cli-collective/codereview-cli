@@ -1112,13 +1112,136 @@ func TestDecodeDossierDiscussionSummaryRejectsProcessState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
 	}
-	for _, text := range []string{"CI status is red", "Build failed in CI", "Approved by alice", "run_id=1234"} {
+	for _, text := range []string{"CI status is red", "Build failed in CI", "The pull request was approved by alice", "run_id=1234"} {
 		_, err := decodeDossierDiscussionSummary([]byte(fmt.Sprintf(`{
 			"schema_version": 1,
 			"top_level_comments": [{"summary": %q}]
 		}`, text)), promptData)
 		if err == nil || !strings.Contains(err.Error(), "excluded reviewer-facing process state") {
 			t.Fatalf("decodeDossierDiscussionSummary(%q) error = %v, want excluded process state", text, err)
+		}
+	}
+}
+
+func TestDossierDiscussionSummaryProcessVocabularyMatrix(t *testing.T) {
+	accepted := []string{
+		"Existing matching approval records remain retrievable after a run reaches a terminal state.",
+		"The approval request was approved by an administrator.",
+		"Draft invoices are stored in the ledger.",
+		"The session_id and run_id columns are indexed.",
+		"Cache hits update retry state transitions.",
+	}
+	rejected := []string{
+		"The PR is approved.",
+		"The PR is approved by alice.",
+		"The PR was approved by alice.",
+		"The pull request is approved by alice.",
+		"The pull request was approved by alice.",
+		"The pull request has been approved.",
+		"The pull request is a draft.",
+		"PR mergeability status is clean.",
+		"The PR is mergeable.",
+		"The PR was mergeable.",
+		"The pull request is mergeable.",
+		"The pull request was mergeable.",
+		"Requested reviewers are listed.",
+		"Requested review is pending.",
+		"CI is failing.",
+		"CI was failing.",
+		"CI has been failing.",
+		"Checks are failing.",
+		"Checks were failing.",
+		"Checks have been failing.",
+		"Build is failing.",
+		"Build was failing.",
+		"Build has been failing.",
+		"Builds are failing.",
+		"Builds were failing.",
+		"Builds have been failing.",
+		"CI failed.",
+		"CI has failed.",
+		"CI had failed.",
+		"Build has failed.",
+		"Checks have failed.",
+		"Builds had failed.",
+		"CI status is red.",
+		"Build failed in CI.",
+		"Checks failed in CI.",
+		"session_id=019fe123.",
+		"The session ID is 019fe123.",
+		"The run_id was abc.",
+		"retry_state: exhausted.",
+		"cache_state=hit.",
+	}
+	for i, text := range accepted {
+		t.Run(fmt.Sprintf("accept_%d", i), func(t *testing.T) {
+			promptData, err := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
+				TopLevelComments: []dossierTopLevelCommentArtifact{{Body: text}},
+			})
+			if err != nil {
+				t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
+			}
+			if len(promptData.Input.TopLevelComments) != 1 {
+				t.Fatalf("prompt comments = %#v, want accepted vocabulary", promptData.Input.TopLevelComments)
+			}
+			_, err = decodeDossierDiscussionSummary([]byte(fmt.Sprintf(`{
+				"schema_version": 1,
+				"top_level_comments": [{"summary": %q}]
+			}`, text)), promptData)
+			if err != nil {
+				t.Fatalf("decodeDossierDiscussionSummary(%q): %v, want accepted vocabulary", text, err)
+			}
+		})
+	}
+	for i, text := range rejected {
+		t.Run(fmt.Sprintf("reject_%d", i), func(t *testing.T) {
+			promptData, err := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
+				TopLevelComments: []dossierTopLevelCommentArtifact{{Body: text}},
+			})
+			if err != nil {
+				t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
+			}
+			if len(promptData.Input.TopLevelComments) != 0 {
+				t.Fatalf("prompt comments = %#v, want process state omitted", promptData.Input.TopLevelComments)
+			}
+			_, err = decodeDossierDiscussionSummary([]byte(fmt.Sprintf(`{
+				"schema_version": 1,
+				"top_level_comments": [{"summary": %q}]
+			}`, text)), promptData)
+			if err == nil || !strings.Contains(err.Error(), "excluded reviewer-facing process state") {
+				t.Fatalf("decodeDossierDiscussionSummary(%q) error = %v, want excluded process state", text, err)
+			}
+		})
+	}
+}
+
+func TestDossierDiscussionSummaryFiltersProcessStateFromInlineContent(t *testing.T) {
+	promptData, err := dossierDiscussionPromptInputFromDiscussion(dossierDiscussionArtifact{
+		InlineThreads: []dossierInlineThreadArtifact{
+			{
+				ID: "inline-comment", Path: "main.go", Side: "RIGHT", Line: 2, AnchorKind: "line",
+				Comments: []dossierThreadCommentArtifact{{Body: "Checks are failing."}},
+			},
+			{
+				ID: "cached-summary", Path: "other.go", Side: "RIGHT", Line: 4, AnchorKind: "line",
+				CachedSummary: &dossierCachedThreadSummaryArtifact{
+					ThreadID: "cached-summary", Body: "The pull request has been approved.",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("dossierDiscussionPromptInputFromDiscussion: %v", err)
+	}
+	if len(promptData.CachedInlineSummaries) != 0 {
+		t.Fatalf("cached inline summaries = %#v, want process state excluded", promptData.CachedInlineSummaries)
+	}
+	if len(promptData.Input.InlineThreads) != 2 {
+		t.Fatalf("inline threads = %#v, want both threads without excluded text", promptData.Input.InlineThreads)
+	}
+	for _, thread := range promptData.Input.InlineThreads {
+		if len(thread.Comments) != 0 {
+			t.Fatalf("inline thread %q comments = %#v, want process state excluded", thread.ThreadID, thread.Comments)
 		}
 	}
 }

@@ -219,12 +219,13 @@ func TestBuildPlanClassifiesActionIDFailureTerminalAcrossPaths(t *testing.T) {
 	}
 }
 
-func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWithFakes(t *testing.T) {
+func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunAllowsDossierDomainVocabulary(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	provider.pr.Body = "Document the checkout-native review contract."
+	dossierDomainVocabulary := "Existing matching approval records remain retrievable after a run reaches a terminal state."
 	provider.threads = []gitprovider.InlineThread{{
 		ID:          "thread-1",
 		Resolved:    false,
@@ -241,6 +242,10 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 	provider.issueComments = []gitprovider.IssueComment{{
 		ID:     "issue-1",
 		Body:   "Top-level concern",
+		Author: gitprovider.Identity{Login: "maintainer"},
+	}, {
+		ID:     "issue-2",
+		Body:   dossierDomainVocabulary,
 		Author: gitprovider.Identity{Login: "maintainer"},
 	}}
 	provider.reviews = []gitprovider.Review{{
@@ -261,7 +266,7 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 		QuotaValue:                 llm.Quota{BlockRemainingPct: 87, WeeklyRemainingPct: 64},
 		QuotaSupported:             true,
 	}
-	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body"}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
+	baseAdapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON([]string{"Top-level concern", "Review body", dossierDomainVocabulary}, []threadSummary{{path: "main.go", line: 2, status: "unresolved", summary: "Inline concern"}}), 8, 2))
 	baseAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	baseAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	baseAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
@@ -272,6 +277,7 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 				"Top-level concern",
 				"Inline concern",
 				"Review body",
+				dossierDomainVocabulary,
 			},
 		},
 		promptValidation{
@@ -332,6 +338,10 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 		t.Fatalf("DryRun: %v", err)
 	}
 	adapter.AssertConsumed(t)
+	dossierMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), dossierSummaryTaskID)
+	if err != nil || !ok || dossierMeta.Status != llmlifecycle.StatusSucceeded {
+		t.Fatalf("dossier metadata = %#v ok=%t err=%v, want succeeded task before selection", dossierMeta, ok, err)
+	}
 
 	if result.Run.RunID != "run-1" || result.Run.PostMode != ledger.PostModeDryRun {
 		t.Fatalf("run = %#v, want dry-run run-1", result.Run)
@@ -424,11 +434,12 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunCompletesWit
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "main.go:2")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Top-level concern")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "Review body")
+	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), dossierDomainVocabulary)
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "Guidance provenance: repo@refs/heads/main:")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "Guidance source status: available")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "final", "repo-guidance.md"), "PR-head .codereview/agents changes do not affect this listing.")
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/discussion.md")
-	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval", "CI status", "Approved body should stay out of reviewer-facing discussion")
+	assertFileOmits(t, filepath.Join(result.Artifacts.DossierDir, "final", "discussion.md"), "provider_session_id", "session_row_id", "mergeability", "approval state", "CI status", "Approved body should stay out of reviewer-facing discussion")
 	assertFileContains(t, filepath.Join(result.Artifacts.DossierDir, "raw", "top-level-comments.json"), "Approved body should stay out of reviewer-facing discussion")
 	slicePath, err := result.Artifacts.SlicePatch("harness:reviewer", "main.go")
 	if err != nil {
@@ -5154,6 +5165,107 @@ func TestRebaseReviewerCohortAssignsNewFilesToPersistedBroadMember(t *testing.T)
 	}
 }
 
+func TestRebaseReviewerCohortLeavesInherentlyUnmatchedFilesUnassigned(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+		Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: "go-session",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"},
+	}}}
+
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go", ".github/workflows/ci.yml"}, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []llm.SelectedAgent{{
+		AgentID: "repo:go", Rationale: "reused reviewer cohort",
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+	}}
+	if !reflect.DeepEqual(selection.SelectedAgents, want) {
+		t.Fatalf("selected agents = %#v, want %#v", selection.SelectedAgents, want)
+	}
+	if !reflect.DeepEqual(resumes, map[string]string{"repo:go": "go-session"}) {
+		t.Fatalf("reviewer resumes = %#v, want exact saved session", resumes)
+	}
+	coverage := buildReviewerCoverage(
+		selection.SelectedAgents,
+		[]llm.Findings{{AgentID: "repo:go", InspectedFiles: []string{"main.go"}}},
+		nil,
+		[]string{"main.go", ".github/workflows/ci.yml"},
+	)
+	if len(coverage) != 2 || coverage[1].AgentID != "unassigned" || coverage[1].Status != reviewerCoverageIncompleteUnassigned ||
+		!reflect.DeepEqual(coverage[1].SkippedFiles, []string{".github/workflows/ci.yml"}) {
+		t.Fatalf("coverage = %#v, want workflow file unassigned", coverage)
+	}
+}
+
+func TestRebaseReviewerCohortRejectsFileCoveredByBroadCatalogAgent(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+		Model: "claude-sonnet-5", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}},
+		{ID: "shared:general", ModelTier: "medium", Effort: "medium"},
+	}}
+
+	_, _, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go", ".github/workflows/ci.yml"}, 0, "fake-llm")
+	if err == nil || !strings.Contains(err.Error(), ".github/workflows/ci.yml") || !strings.Contains(err.Error(), "--fresh-session") {
+		t.Fatalf("rebaseReviewerCohort error = %v, want broad catalog coverage to retain fresh-session guidance", err)
+	}
+}
+
+func TestRebaseReviewerCohortOnlyInherentlyUnmatchedFileRemainsUnassigned(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+		Model: "claude-sonnet-5", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"},
+	}}}
+	changedFiles := []string{".github/workflows/ci.yml"}
+
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, changedFiles, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	if len(selection.SelectedAgents) != 0 || len(resumes) != 0 {
+		t.Fatalf("reused cohort selection = %#v resumes = %#v, want no assigned reviewers or resumes", selection.SelectedAgents, resumes)
+	}
+	coverage := buildReviewerCoverage(selection.SelectedAgents, nil, nil, changedFiles)
+	wantCoverage := []reviewplan.ReviewerCoverageSummary{{
+		AgentID:      "unassigned",
+		Status:       reviewerCoverageIncompleteUnassigned,
+		SkippedFiles: changedFiles,
+		Diagnostic:   "changed files were not assigned to a selected reviewer",
+	}}
+	if !reflect.DeepEqual(coverage, wantCoverage) {
+		t.Fatalf("coverage = %#v, want exactly %#v", coverage, wantCoverage)
+	}
+	plan, err := reviewplan.Build(reviewplan.Request{
+		PostMode: reviewplan.PostModeDryRun,
+		Rollup:   review.Rollup{ReviewEvent: review.ReviewEventApprove},
+		RunSummary: reviewplan.RunSummary{
+			ReviewerCoverage: coverage,
+		},
+		Now:         fixedNow,
+		NewActionID: actionSequence(),
+	})
+	if err != nil {
+		t.Fatalf("reviewplan.Build: %v", err)
+	}
+	if plan.Outcome == reviewplan.OutcomeApproved {
+		t.Fatalf("plan outcome = %q, want incomplete coverage to prevent approval", plan.Outcome)
+	}
+}
+
 func TestPersistReviewerCohortTreatsFilesOnlyAssignmentAsScoped(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -5251,13 +5363,19 @@ func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			candidate := cohort
+			candidateCatalog := catalog
+			if tc.name == "uncovered" {
+				candidateCatalog.Agents = append(candidateCatalog.Agents, agents.Agent{
+					ID: "repo:sql", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.sql"},
+				})
+			}
 			if tc.name == "max agents" {
 				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-5", Effort: "medium"})
-				catalog.Agents = append(catalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
+				candidateCatalog.Agents = append(candidateCatalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
 				tc.maxAgents = 1
 				tc.wantDetail = "--max-agents"
 			}
-			_, _, err := rebaseReviewerCohort(req, catalog, candidate, tc.files, tc.maxAgents, tc.adapter)
+			_, _, err := rebaseReviewerCohort(req, candidateCatalog, candidate, tc.files, tc.maxAgents, tc.adapter)
 			if err == nil || !strings.Contains(err.Error(), tc.wantDetail) || !strings.Contains(err.Error(), "--fresh-session") {
 				t.Fatalf("rebaseReviewerCohort error = %v, want %q and fresh-session guidance", err, tc.wantDetail)
 			}

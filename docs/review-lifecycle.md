@@ -54,8 +54,12 @@ new cohort, and it starts new provider conversations only through the same
 missing-conversation fallback.
 
 Reuse fails with `--fresh-session` guidance when a cohort member is missing or
-runtime-incompatible, `--max-agents` is smaller than the saved cohort, or the
-cohort cannot cover every changed file.
+runtime-incompatible, `--max-agents` is smaller than the saved cohort, or a
+changed file is coverable by a current catalog agent (broad with no file globs
+or matching a file glob) but no saved cohort member can take it. If no current
+catalog agent can cover a changed file, reuse leaves it unassigned and the
+downstream coverage gate reports `incomplete_unassigned` without forcing a
+fresh session.
 
 ## `--fresh-session`
 

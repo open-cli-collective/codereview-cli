@@ -1655,7 +1655,11 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 			break
 		}
 		if !assigned {
-			return freshError("saved reviewer cohort leaves changed file %q uncovered", file)
+			for _, current := range catalog.Agents {
+				if len(current.FileGlobs) == 0 || globsMatchFile(current.FileGlobs, file) {
+					return freshError("saved reviewer cohort leaves changed file %q uncovered", file)
+				}
+			}
 		}
 	}
 
@@ -2434,7 +2438,7 @@ func reviewerToolEvidenceByAgent(sessions []sessionDraft) map[string]*llm.Review
 }
 
 func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
-	if len(selected) == 0 {
+	if len(selected) == 0 && len(changedFiles) == 0 {
 		return nil
 	}
 	resultByAgent := make(map[string]llm.Findings, len(results))
