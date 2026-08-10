@@ -5220,6 +5220,52 @@ func TestRebaseReviewerCohortRejectsFileCoveredByBroadCatalogAgent(t *testing.T)
 	}
 }
 
+func TestRebaseReviewerCohortOnlyInherentlyUnmatchedFileRemainsUnassigned(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
+		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
+		Model: "claude-sonnet-5", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"},
+	}}}
+	changedFiles := []string{".github/workflows/ci.yml"}
+
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, changedFiles, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	if len(selection.SelectedAgents) != 0 || len(resumes) != 0 {
+		t.Fatalf("reused cohort selection = %#v resumes = %#v, want no assigned reviewers or resumes", selection.SelectedAgents, resumes)
+	}
+	coverage := buildReviewerCoverage(selection.SelectedAgents, nil, nil, changedFiles)
+	wantCoverage := []reviewplan.ReviewerCoverageSummary{{
+		AgentID:      "unassigned",
+		Status:       reviewerCoverageIncompleteUnassigned,
+		SkippedFiles: changedFiles,
+		Diagnostic:   "changed files were not assigned to a selected reviewer",
+	}}
+	if !reflect.DeepEqual(coverage, wantCoverage) {
+		t.Fatalf("coverage = %#v, want exactly %#v", coverage, wantCoverage)
+	}
+	plan, err := reviewplan.Build(reviewplan.Request{
+		PostMode: reviewplan.PostModeDryRun,
+		Rollup:   review.Rollup{ReviewEvent: review.ReviewEventApprove},
+		RunSummary: reviewplan.RunSummary{
+			ReviewerCoverage: coverage,
+		},
+		Now:         fixedNow,
+		NewActionID: actionSequence(),
+	})
+	if err != nil {
+		t.Fatalf("reviewplan.Build: %v", err)
+	}
+	if plan.Outcome == reviewplan.OutcomeApproved {
+		t.Fatalf("plan outcome = %q, want incomplete coverage to prevent approval", plan.Outcome)
+	}
+}
+
 func TestPersistReviewerCohortTreatsFilesOnlyAssignmentAsScoped(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)

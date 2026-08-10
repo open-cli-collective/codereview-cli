@@ -2438,7 +2438,7 @@ func reviewerToolEvidenceByAgent(sessions []sessionDraft) map[string]*llm.Review
 }
 
 func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
-	if len(selected) == 0 {
+	if len(selected) == 0 && len(changedFiles) == 0 {
 		return nil
 	}
 	resultByAgent := make(map[string]llm.Findings, len(results))
