@@ -2938,6 +2938,62 @@ func TestDryRunReviewerModelOverrideBypassesAgentModelID(t *testing.T) {
 	})
 }
 
+func TestDryRunReviewerModelAndEffortOverridesBypassMaxEffortProvenance(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.Profile.LLM.MaxEffort = config.EffortMap{"medium": "low"}
+	req.ReviewerModelOverride = "override-model"
+	req.ReviewerEffortOverride = "high"
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-reviewer-model-effort-override" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
+	}
+	if request := requests[1]; request.Model != "override-model" || request.Effort != "high" {
+		t.Fatalf("reviewer request = model:%q effort:%q, want override-model/high", request.Model, request.Effort)
+	}
+
+	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	reviewerSession, ok := sessionWithProviderID(sessions, "reviewer-session")
+	if !ok {
+		t.Fatalf("sessions = %#v, want reviewer-session", sessions)
+	}
+	if reviewerSession.Model != "override-model" || reviewerSession.Effort == nil || *reviewerSession.Effort != "high" {
+		t.Fatalf("reviewer session = model:%q effort:%v, want override-model/high", reviewerSession.Model, reviewerSession.Effort)
+	}
+
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:           "override",
+		ResolvedModel:  "override-model",
+		ResolvedEffort: "high",
+	})
+}
+
 func TestDryRunFastAppliesOnlyToReviewerAndRecordsArtifact(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
