@@ -639,7 +639,7 @@ func validateAgentYAML(categoryName, agentName string, index agentYAML) error {
 		}
 		for _, pattern := range index.FileGlobs {
 			if _, err := glob.Compile(pattern, '/'); err != nil {
-			return fmt.Errorf("%w: agent %s:%s file_glob %q is invalid: %w", ErrInvalid, categoryName, agentName, pattern, err)
+				return fmt.Errorf("%w: agent %s:%s file_glob %q is invalid: %w", ErrInvalid, categoryName, agentName, pattern, err)
 			}
 		}
 	}
