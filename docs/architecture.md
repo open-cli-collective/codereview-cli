@@ -43,7 +43,7 @@ session row, but they still use the same metadata schema and lifecycle runner.
 
 Runtime model choice must be resolved through `internal/stagemodel`. Code that
 executes an LLM stage must not hard-code model IDs and must not call
-`config.ResolveModelTier` directly.
+`config.ResolveModelTier` or `config.ResolveMaxEffort` directly.
 
 `stagemodel.ResolveStageModel` is the single runtime path from profile
 preferences and command overrides to a concrete model and effort. The request
@@ -80,10 +80,10 @@ The reviewer execution request, cohort member, session row, and
 `agent-sources.json` reviewer provenance must all use the same final resolved
 model and effort, including explicit reviewer model and effort overrides.
 
-The direct `config.ResolveModelTier` exception is config inspection and the
-resolver implementation itself.
-`internal/architecture/model_resolution_test.go` enforces that direct
-`config.ResolveModelTier` calls stay inside approved packages. Hard-coded
+Direct `config.ResolveModelTier` and `config.ResolveMaxEffort` calls are
+allowed only for config inspection and inside the resolver implementation.
+`internal/architecture/model_resolution_test.go` enforces that both direct
+calls stay inside approved packages. Hard-coded
 runtime model IDs remain a code-review concern until model-catalog guardrails
 exist.
 
