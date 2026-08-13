@@ -724,3 +724,44 @@ func (smokeStream) SessionID() string { return "workspace-smoke-session" }
 func (s smokeStream) Wait(context.Context) (llm.Response, error) {
 	return llm.Response{StructuredOutput: []byte(s.output)}, nil
 }
+
+// The workbench is cloned once per reviewer. Everything that builds it fetches
+// by SHA and checks out detached, so without an explicit ref the directory has
+// no refs/ at all -- git then refuses to call it a repository and every
+// per-reviewer clone fails. A reviewer that cannot start reports zero findings,
+// which a rollup renders as a clean review, so this failure is silent and
+// actively misleading.
+func TestPrepareLeavesWorkbenchClonable(t *testing.T) {
+	ctx := context.Background()
+	fixture := newWorkbenchGitFixture(t)
+	artifacts := runartifact.FromDir(t.TempDir())
+
+	if err := Prepare(ctx, Deps{
+		GitCommand: testGitRunner(t, map[string]string{
+			"https://github.com/open-cli-collective/codereview-cli.git": fixture.repoDir,
+		}),
+	}, Request{
+		PRRef:        fixture.pr.Ref,
+		ReviewPR:     fixture.pr,
+		ChangedFiles: []string{"main.go"},
+		Artifacts:    artifacts,
+	}); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	// The head must be reachable through a real ref, not only FETCH_HEAD.
+	if got := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "rev-parse", workbenchHeadRef)); got != fixture.headSHA {
+		t.Fatalf("%s = %q, want head %q", workbenchHeadRef, got, fixture.headSHA)
+	}
+
+	// The property that actually matters: it can be cloned, the way each
+	// reviewer workspace is created.
+	dest := filepath.Join(t.TempDir(), "reviewer")
+	out, err := exec.CommandContext(ctx, "git", "clone", "--no-hardlinks", artifacts.WorkbenchRepoDir, dest).CombinedOutput()
+	if err != nil {
+		t.Fatalf("clone workbench: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(gitCommandOutput(t, dest, "rev-parse", "HEAD")); got != fixture.headSHA {
+		t.Fatalf("cloned HEAD = %q, want %q", got, fixture.headSHA)
+	}
+}

@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	metadataSchemaVersion                   = 2
-	checkoutModeArtifactClone               = "artifact-clone"
+	metadataSchemaVersion     = 2
+	checkoutModeArtifactClone = "artifact-clone"
+	// workbenchHeadRef gives the workbench a ref so it is a clonable repository.
+	workbenchHeadRef                        = "refs/heads/cr-review-head"
 	defaultReviewerWorkspaceToolOutputBytes = 32 * 1024
 )
 
@@ -141,6 +143,16 @@ func (p *RunPreparer) Prepare(ctx context.Context, req Request) error {
 	}
 	if _, err := p.deps.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "checkout", "--detach", req.ReviewPR.Head.SHA); err != nil {
 		return fmt.Errorf("pipeline: checkout workbench head %s: %w", prref.ShortSHA(req.ReviewPR.Head.SHA), err)
+	}
+	// Give the workbench at least one ref.
+	//
+	// Everything above fetches by SHA and checks out detached, so the repo ends
+	// up with FETCH_HEAD and no refs/ at all. Git does not consider such a
+	// directory a repository, so the per-reviewer `git clone` of this workbench
+	// fails with "repository does not exist" -- and a reviewer that cannot start
+	// reports zero findings, which the rollup renders as a clean review.
+	if _, err := p.deps.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "update-ref", workbenchHeadRef, req.ReviewPR.Head.SHA); err != nil {
+		return fmt.Errorf("pipeline: record workbench head ref: %w", err)
 	}
 	if err := verifyClean(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head.SHA); err != nil {
 		return err
