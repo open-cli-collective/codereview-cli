@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	metadataSchemaVersion                   = 2
-	checkoutModeArtifactClone               = "artifact-clone"
+	metadataSchemaVersion     = 2
+	checkoutModeArtifactClone = "artifact-clone"
+	// workbenchHeadRef gives the workbench a ref so it is a clonable repository.
+	workbenchHeadRef                        = "refs/heads/cr-review-head"
 	defaultReviewerWorkspaceToolOutputBytes = 32 * 1024
 )
 
@@ -142,6 +144,16 @@ func (p *RunPreparer) Prepare(ctx context.Context, req Request) error {
 	if _, err := p.deps.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "checkout", "--detach", req.ReviewPR.Head.SHA); err != nil {
 		return fmt.Errorf("pipeline: checkout workbench head %s: %w", prref.ShortSHA(req.ReviewPR.Head.SHA), err)
 	}
+	// Give the workbench at least one ref.
+	//
+	// Everything above fetches by SHA and checks out detached, so the repo ends
+	// up with FETCH_HEAD and no refs/ at all. Git does not consider such a
+	// directory a repository, so the per-reviewer `git clone` of this workbench
+	// fails with "repository does not exist" -- and a reviewer that cannot start
+	// reports zero findings, which the rollup renders as a clean review.
+	if _, err := p.deps.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "update-ref", workbenchHeadRef, req.ReviewPR.Head.SHA); err != nil {
+		return fmt.Errorf("pipeline: record workbench head ref: %w", err)
+	}
 	if err := verifyClean(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head.SHA); err != nil {
 		return err
 	}
@@ -207,10 +219,27 @@ func (p *RunPreparer) reusable(ctx context.Context, req Request) (bool, error) {
 	if err := verifyClean(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head.SHA); err != nil {
 		return false, nil
 	}
+	// Both exits from Prepare must leave a clonable workbench, so the reuse
+	// path asserts the same postcondition the build path establishes.
+	//
+	// A workbench missing refs/ entirely is already rejected above, because
+	// commitPresent and verifyClean shell out to git and fail in a directory
+	// git does not consider a repository. What this catches is the narrower
+	// and likelier case: refs/ present but the head ref absent, which every
+	// other check happily accepts.
+	if !refPresent(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, workbenchHeadRef) {
+		return false, nil
+	}
 	if err := os.MkdirAll(req.Artifacts.WorkbenchScratch, 0o700); err != nil {
 		return false, fmt.Errorf("pipeline: create workbench scratch dir: %w", err)
 	}
 	return true, nil
+}
+
+// refPresent reports whether ref resolves to a commit in repoDir.
+func refPresent(ctx context.Context, deps Deps, repoDir, ref string) bool {
+	_, err := deps.gitCommand(ctx, repoDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	return err == nil
 }
 
 func branchRemoteURL(branch gitprovider.PRBranchRef) (string, error) {
