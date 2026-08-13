@@ -272,10 +272,7 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 	if err := validateCoverageFileDisjoint(inspected, skipped); err != nil {
 		return Findings{}, err
 	}
-	constraints, err := decodeCoverageStrings("constraints", wire.Constraints)
-	if err != nil {
-		return Findings{}, err
-	}
+	constraints := decodeCoverageStrings(wire.Constraints)
 
 	result := Findings{
 		AgentID:        wire.AgentID,
@@ -352,27 +349,31 @@ func decodeCoverageFiles(name string, files []string, changedFiles map[string]bo
 	return out, nil
 }
 
-func decodeCoverageStrings(name string, values []string) ([]string, error) {
+// decodeCoverageStrings cleans reviewer coverage constraints. These are
+// informational notes ("couldn't verify X against source-of-truth docs"), not
+// a contract, so a malformed or verbose entry is degraded — the count is
+// capped, an over-long entry is truncated, and empties/duplicates are dropped —
+// rather than failing the decode. Failing here sinks the whole reviewer as
+// "completed without a result file" and blocks approval on an otherwise-clean
+// review, which a single legitimate ~300-rune constraint once did.
+func decodeCoverageStrings(values []string) []string {
 	if len(values) > defaultMaxCoverageConstraints {
-		return nil, fmt.Errorf("llm: %s cap exceeded", name)
+		values = values[:defaultMaxCoverageConstraints]
 	}
 	out := make([]string, 0, len(values))
 	seen := map[string]bool{}
 	for _, value := range values {
 		if utf8.RuneCountInString(value) > defaultMaxCoverageConstraintRunes {
-			return nil, fmt.Errorf("llm: %s entry length out of bounds", name)
+			value = truncateRunes(value, defaultMaxCoverageConstraintRunes)
 		}
 		value = sanitize(value)
-		if strings.TrimSpace(value) == "" {
-			return nil, fmt.Errorf("llm: %s entries must be non-empty", name)
-		}
-		if seen[value] {
-			return nil, fmt.Errorf("llm: duplicate %s entry %q", name, value)
+		if strings.TrimSpace(value) == "" || seen[value] {
+			continue
 		}
 		seen[value] = true
 		out = append(out, value)
 	}
-	return out, nil
+	return out
 }
 
 func validateCoverageFileDisjoint(inspected, skipped []string) error {
