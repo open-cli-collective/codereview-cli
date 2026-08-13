@@ -35,6 +35,11 @@ type ReviewSummary struct {
 type ReviewReviewerSummary struct {
 	Name     string `json:"name"`
 	Findings int    `json:"findings"`
+	// Ran is false when the reviewer produced no result. Without it a failed
+	// reviewer serializes as findings: 0, which a consumer cannot tell from a
+	// genuinely clean one. Omitted when coverage says nothing either way, so an
+	// unknown status is not reported as a failure.
+	Ran *bool `json:"ran,omitempty"`
 }
 
 // ReviewReviewerCoverageSummary describes reviewer coverage rendered in the
@@ -253,8 +258,13 @@ func newReviewSummary(summary reviewplan.Summary) ReviewSummary {
 			ComputeDurationMS: summary.Totals.ComputeDurationMS,
 		},
 	}
+	produced := reviewplan.ReviewersProducedResults(summary.Run.ReviewerCoverage)
 	for _, reviewer := range summary.Reviewers {
-		out.Reviewers = append(out.Reviewers, ReviewReviewerSummary{Name: reviewer.Name, Findings: reviewer.Findings})
+		row := ReviewReviewerSummary{Name: reviewer.Name, Findings: reviewer.Findings}
+		if ran, known := produced[reviewer.Name]; known {
+			row.Ran = &ran
+		}
+		out.Reviewers = append(out.Reviewers, row)
 	}
 	for _, coverage := range summary.Run.ReviewerCoverage {
 		out.Run.ReviewerCoverage = append(out.Run.ReviewerCoverage, ReviewReviewerCoverageSummary{

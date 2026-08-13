@@ -335,6 +335,18 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 	out.WriteString("\n")
 }
 
+// ReviewersProducedResults maps each reviewer to whether it actually produced
+// a result. Both the rendered rollup and the JSON view derive their
+// "did not run" state from this, so the two cannot disagree -- which is what
+// Summary's contract promises and what a markdown-only fix would have broken.
+func ReviewersProducedResults(coverage []ReviewerCoverageSummary) map[string]bool {
+	produced := make(map[string]bool, len(coverage))
+	for _, entry := range coverage {
+		produced[entry.AgentID] = coverageResultProduced(entry.Status)
+	}
+	return produced
+}
+
 func coverageResultProduced(status string) bool {
 	switch strings.TrimSpace(status) {
 	case "complete_broad", "complete_constrained", "incomplete_skipped":
