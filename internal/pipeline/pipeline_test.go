@@ -5097,6 +5097,31 @@ func TestBuildReviewerCoverageStatuses(t *testing.T) {
 	}
 }
 
+func TestBuildReviewerCoverageExemptsGeneratedLockfiles(t *testing.T) {
+	// A reviewer that inspects the real change and skips only the churned
+	// Cargo.lock is complete, not incomplete_skipped — a lockfile is not a
+	// review obligation. An unassigned lockfile (yarn.lock) likewise must not
+	// surface as incomplete_unassigned and block approval.
+	selected := []llm.SelectedAgent{
+		{AgentID: "rust:impl", Files: []string{"main.go", "Cargo.lock"}, AllowedFiles: []string{"main.go", "Cargo.lock"}},
+	}
+	results := []llm.Findings{
+		{AgentID: "rust:impl", InspectedFiles: []string{"main.go"}, SkippedFiles: []string{"Cargo.lock"}},
+	}
+	got := buildReviewerCoverage(selected, results, nil, []string{"main.go", "Cargo.lock", "yarn.lock"})
+	if len(got) != 1 {
+		t.Fatalf("coverage = %#v, want a single reviewer entry (no lockfile coverage rows)", got)
+	}
+	if got[0].AgentID != "rust:impl" || got[0].Status != reviewerCoverageCompleteConstrained {
+		t.Fatalf("coverage = %#v, want rust:impl complete_constrained", got)
+	}
+	if len(got[0].SkippedFiles) != 0 {
+		t.Fatalf("skipped files = %#v, want none (Cargo.lock is exempt from coverage)", got[0].SkippedFiles)
+	}
+	// complete_constrained is an approvable status; had Cargo.lock counted, this
+	// would be reviewerCoverageIncompleteSkipped, which blocks approval.
+}
+
 func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},
