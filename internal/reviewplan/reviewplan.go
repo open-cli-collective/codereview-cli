@@ -821,7 +821,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 	var out strings.Builder
 	rollupHeader(&out, b.req)
 	if len(summary.Reviewers) > 0 {
-		writeReviewerTable(&out, summary.Reviewers)
+		writeReviewerTable(&out, summary.Reviewers, summary.Run.ReviewerCoverage)
 		b.writeReviewerSections(&out, anchored, summary.Reviewers)
 		writeReviewerCoverageDiagnostics(&out, summary.Run.ReviewerCoverage)
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)

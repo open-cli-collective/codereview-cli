@@ -243,10 +243,29 @@ func sumDurations(workstreams []WorkstreamUsage, field func(WorkstreamUsage) *in
 	return &total
 }
 
-func writeReviewerTable(out *strings.Builder, reviewers []ReviewerSummary) {
+// writeReviewerTable renders the headline per-reviewer counts.
+//
+// A reviewer that never produced a result must not be shown as "0". Zero
+// findings and "did not run" are the same number and opposite meanings: the
+// first says the code is clean, the second says nothing was examined. Rendering
+// both as 0 let a run where four of five reviewers failed to start read as a
+// clean review, with the failure visible only further down in the coverage
+// section that a reader skimming the summary never reaches.
+func writeReviewerTable(out *strings.Builder, reviewers []ReviewerSummary, coverage []ReviewerCoverageSummary) {
+	produced := make(map[string]bool, len(coverage))
+	for _, entry := range coverage {
+		produced[entry.AgentID] = coverageResultProduced(entry.Status)
+	}
 	out.WriteString("| Reviewer | Findings |\n")
 	out.WriteString("|----------|----------|\n")
 	for _, reviewer := range reviewers {
+		// Absent from coverage means nothing was reported either way; only an
+		// explicit non-producing status is called out, so this cannot mask a
+		// genuine zero.
+		if ran, known := produced[reviewer.Name]; known && !ran {
+			fmt.Fprintf(out, "| %s | ⚠️ did not run |\n", escapeCell(reviewer.Name))
+			continue
+		}
 		fmt.Fprintf(out, "| %s | %d |\n", escapeCell(reviewer.Name), reviewer.Findings)
 	}
 	out.WriteString("\n")
