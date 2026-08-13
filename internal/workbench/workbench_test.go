@@ -757,11 +757,72 @@ func TestPrepareLeavesWorkbenchClonable(t *testing.T) {
 	// The property that actually matters: it can be cloned, the way each
 	// reviewer workspace is created.
 	dest := filepath.Join(t.TempDir(), "reviewer")
-	out, err := exec.CommandContext(ctx, "git", "clone", "--no-hardlinks", artifacts.WorkbenchRepoDir, dest).CombinedOutput()
-	if err != nil {
-		t.Fatalf("clone workbench: %v: %s", err, out)
-	}
+	cloneWorkbench(t, artifacts.WorkbenchRepoDir, dest)
 	if got := strings.TrimSpace(gitCommandOutput(t, dest, "rev-parse", "HEAD")); got != fixture.headSHA {
 		t.Fatalf("cloned HEAD = %q, want %q", got, fixture.headSHA)
 	}
+}
+
+// The reuse fast path must re-establish the head ref rather than skip past a
+// workbench that lacks it.
+//
+// The discriminating assertion is that the ref comes *back*, not that the repo
+// is clonable: deleting only the ref leaves refs/ in place, which git still
+// accepts, so a clonability check here passes with or without the gate and
+// proves nothing. Without the gate, Prepare takes the reuse path and the ref
+// stays deleted.
+func TestPrepareRestoresHeadRefOnReuse(t *testing.T) {
+	ctx := context.Background()
+	fixture := newWorkbenchGitFixture(t)
+	artifacts := runartifact.FromDir(t.TempDir())
+	deps := Deps{
+		GitCommand: testGitRunner(t, map[string]string{
+			"https://github.com/open-cli-collective/codereview-cli.git": fixture.repoDir,
+		}),
+	}
+	req := Request{
+		PRRef:        fixture.pr.Ref,
+		ReviewPR:     fixture.pr,
+		ChangedFiles: []string{"main.go"},
+		Artifacts:    artifacts,
+	}
+	if err := Prepare(ctx, deps, req); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	// Simulate a workbench written by a binary that predates the ref, leaving
+	// everything else the reuse gate inspects intact and matching.
+	gitCommandOutput(t, artifacts.WorkbenchRepoDir, "update-ref", "-d", workbenchHeadRef)
+	if gitCommandSucceeds(artifacts.WorkbenchRepoDir, "rev-parse", "--verify", "--quiet", workbenchHeadRef+"^{commit}") {
+		t.Fatal("premise broken: head ref still resolves after deletion")
+	}
+
+	if err := Prepare(ctx, deps, req); err != nil {
+		t.Fatalf("Prepare (reuse): %v", err)
+	}
+
+	if got := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "rev-parse", workbenchHeadRef)); got != fixture.headSHA {
+		t.Fatalf("%s = %q after reuse, want head %q -- the reuse path skipped past a workbench with no head ref", workbenchHeadRef, got, fixture.headSHA)
+	}
+	cloneWorkbench(t, artifacts.WorkbenchRepoDir, filepath.Join(t.TempDir(), "reviewer"))
+}
+
+// cloneWorkbench performs the clone a reviewer workspace is created with, so
+// tests assert the property rather than a proxy for it.
+func cloneWorkbench(t *testing.T, src, dest string) {
+	t.Helper()
+	cmd := exec.Command("git", "clone", "--no-hardlinks", src, dest) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Env = gittest.Env()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("clone workbench: %v: %s", err, out)
+	}
+}
+
+// gitCommandSucceeds reports whether a git command exits zero, for assertions
+// about a command that is expected to fail.
+func gitCommandSucceeds(dir string, args ...string) bool {
+	cmd := exec.Command("git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd.Env = gittest.Env()
+	cmd.Dir = dir
+	return cmd.Run() == nil
 }

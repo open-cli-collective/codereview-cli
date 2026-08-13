@@ -224,9 +224,9 @@ func (p *RunPreparer) reusable(ctx context.Context, req Request) (bool, error) {
 	//
 	// A workbench missing refs/ entirely is already rejected above, because
 	// commitPresent and verifyClean shell out to git and fail in a directory
-	// git does not consider a repository. This is belt-and-braces for the
-	// narrower case -- refs/ present but the head ref gone -- and so that a
-	// future change to those checks cannot quietly drop clonability.
+	// git does not consider a repository. What this catches is the narrower
+	// and likelier case: refs/ present but the head ref absent, which every
+	// other check happily accepts.
 	if !refPresent(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, workbenchHeadRef) {
 		return false, nil
 	}
