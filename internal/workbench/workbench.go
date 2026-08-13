@@ -219,10 +219,27 @@ func (p *RunPreparer) reusable(ctx context.Context, req Request) (bool, error) {
 	if err := verifyClean(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, req.ReviewPR.Head.SHA); err != nil {
 		return false, nil
 	}
+	// Both exits from Prepare must leave a clonable workbench, so the reuse
+	// path asserts the same postcondition the build path establishes.
+	//
+	// A workbench missing refs/ entirely is already rejected above, because
+	// commitPresent and verifyClean shell out to git and fail in a directory
+	// git does not consider a repository. This is belt-and-braces for the
+	// narrower case -- refs/ present but the head ref gone -- and so that a
+	// future change to those checks cannot quietly drop clonability.
+	if !refPresent(ctx, p.deps, req.Artifacts.WorkbenchRepoDir, workbenchHeadRef) {
+		return false, nil
+	}
 	if err := os.MkdirAll(req.Artifacts.WorkbenchScratch, 0o700); err != nil {
 		return false, fmt.Errorf("pipeline: create workbench scratch dir: %w", err)
 	}
 	return true, nil
+}
+
+// refPresent reports whether ref resolves to a commit in repoDir.
+func refPresent(ctx context.Context, deps Deps, repoDir, ref string) bool {
+	_, err := deps.gitCommand(ctx, repoDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	return err == nil
 }
 
 func branchRemoteURL(branch gitprovider.PRBranchRef) (string, error) {

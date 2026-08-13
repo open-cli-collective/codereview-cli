@@ -74,7 +74,15 @@ Notes:
 - `dossier/summary/` holds durable normalized discussion artifacts.
 - `dossier/final/` holds the reviewer-facing dossier files used by the
   orchestrator and specialists.
-- `workbench/repo/` is a clean pinned checkout at the PR head SHA.
+- `workbench/repo/` is a clean pinned checkout at the PR head SHA, carrying
+  `refs/heads/cr-review-head` at that SHA. The ref is load-bearing: the
+  per-reviewer workspace is created with `git clone` from this directory, and
+  git does not treat a directory without `refs/` as a repository. Only the head
+  is given a ref, so the base commit is not transferred into reviewer
+  workspaces when base is not an ancestor of head; reviewers are handed the
+  provider-generated `diff.patch` and nothing in the pipeline resolves the base
+  SHA inside the workspace. That is a decision, not an oversight -- add
+  `refs/heads/cr-review-base` if a reviewer ever needs `git log base..HEAD`.
 - `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
 - `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
   cache roots.
