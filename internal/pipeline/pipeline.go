@@ -1576,6 +1576,12 @@ func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog,
 		if covered[file] {
 			continue
 		}
+		// Generated lockfiles are not a coverage obligation (see
+		// buildReviewerCoverage): don't force-assign one to an agent, or its
+		// prompt scope would list a file the accounting layer then exempts.
+		if isGeneratedLockfile(file) {
+			continue
+		}
 		for i := range selection.SelectedAgents {
 			selected := &selection.SelectedAgents[i]
 			candidate, ok := agentByID[selected.AgentID]
@@ -2521,7 +2527,10 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			out = append(out, entry)
 			continue
 		}
-		entry.InspectedFiles = copySortedStrings(result.InspectedFiles)
+		// Draw both scope and coverage rows from the same lockfile-exempt set,
+		// so a reviewer that did read a lockfile doesn't emit an inspected file
+		// outside its scope.
+		entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
 		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
 		entry.Constraints = copySortedStrings(result.Constraints)
 		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {

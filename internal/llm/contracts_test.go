@@ -210,6 +210,10 @@ func TestDecodeFindingsConstraintRuneBoundaries(t *testing.T) {
 			if tt.wantTruncated && !strings.HasSuffix(got.Constraints[0], "...") {
 				t.Fatalf("constraint = %q, want truncated (ends with ...), not rejected", got.Constraints[0])
 			}
+			// Truncation (ellipsis included) must stay within the documented cap.
+			if n := utf8.RuneCountInString(got.Constraints[0]); n > limits.MaxRunesPerEntry {
+				t.Fatalf("constraint = %d runes, want ≤ %d (ellipsis must fit the cap)", n, limits.MaxRunesPerEntry)
+			}
 		})
 	}
 }

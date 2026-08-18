@@ -37,8 +37,10 @@ type FindingsConstraintLimits struct {
 	MaxRunesPerEntry int
 }
 
-// DefaultFindingsConstraintLimits returns the fixed reviewer-constraint
-// limits enforced by DecodeFindings.
+// DefaultFindingsConstraintLimits returns the fixed reviewer-constraint limits.
+// DecodeFindings applies them by capping the count and truncating over-long
+// entries (see decodeCoverageConstraints), not by failing — constraints are
+// informational, so a verbose one must not sink the reviewer.
 func DefaultFindingsConstraintLimits() FindingsConstraintLimits {
 	return FindingsConstraintLimits{
 		MaxEntries:       defaultMaxCoverageConstraints,
@@ -272,7 +274,7 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 	if err := validateCoverageFileDisjoint(inspected, skipped); err != nil {
 		return Findings{}, err
 	}
-	constraints := decodeCoverageStrings(wire.Constraints)
+	constraints := decodeCoverageConstraints(wire.Constraints)
 
 	result := Findings{
 		AgentID:        wire.AgentID,
@@ -349,24 +351,27 @@ func decodeCoverageFiles(name string, files []string, changedFiles map[string]bo
 	return out, nil
 }
 
-// decodeCoverageStrings cleans reviewer coverage constraints. These are
+// decodeCoverageConstraints cleans reviewer coverage constraints. These are
 // informational notes ("couldn't verify X against source-of-truth docs"), not
 // a contract, so a malformed or verbose entry is degraded — the count is
 // capped, an over-long entry is truncated, and empties/duplicates are dropped —
 // rather than failing the decode. Failing here sinks the whole reviewer as
 // "completed without a result file" and blocks approval on an otherwise-clean
 // review, which a single legitimate ~300-rune constraint once did.
-func decodeCoverageStrings(values []string) []string {
+func decodeCoverageConstraints(values []string) []string {
 	if len(values) > defaultMaxCoverageConstraints {
 		values = values[:defaultMaxCoverageConstraints]
 	}
 	out := make([]string, 0, len(values))
 	seen := map[string]bool{}
 	for _, value := range values {
-		if utf8.RuneCountInString(value) > defaultMaxCoverageConstraintRunes {
-			value = truncateRunes(value, defaultMaxCoverageConstraintRunes)
-		}
+		// Sanitize first (it can rewrite/grow a marker), then clamp the final
+		// length so the result always fits the per-entry cap. truncateRunes
+		// appends a 3-rune "...", so reserve that width.
 		value = sanitize(value)
+		if utf8.RuneCountInString(value) > defaultMaxCoverageConstraintRunes {
+			value = truncateRunes(value, defaultMaxCoverageConstraintRunes-3)
+		}
 		if strings.TrimSpace(value) == "" || seen[value] {
 			continue
 		}
