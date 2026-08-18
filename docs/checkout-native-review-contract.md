@@ -336,9 +336,19 @@ silently.
 
 Coverage uses two related scopes:
 
-- readable files: all changed files in the workbench
+- readable files: all changed files in the workbench, **except generated
+  dependency lockfiles** (`Cargo.lock`, `package-lock.json`, `go.sum`, and the
+  well-known peers — see `isGeneratedLockfile`). Lockfiles are machine-written
+  and reviewed, if at all, through the manifest change that produced them, so
+  they are exempt from the coverage universe: neither a reviewer that skips one
+  nor an unassigned lockfile counts as incomplete coverage. The exemption is
+  applied in one place — the orchestrator's glob-coverage assigner does not
+  force-assign a lockfile, and the coverage accounting drops lockfiles from both
+  scope and inspected/skipped rows — so scope and coverage are drawn from the
+  same set.
 - assignment scope: `allowed_files` when present, otherwise `files` when the
-  orchestrator supplied them, otherwise all changed files
+  orchestrator supplied them, otherwise all changed files (lockfiles exempt, as
+  above)
 
 The coverage status values are:
 

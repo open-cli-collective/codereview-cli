@@ -1576,6 +1576,12 @@ func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog,
 		if covered[file] {
 			continue
 		}
+		// Generated lockfiles are not a coverage obligation (see
+		// buildReviewerCoverage): don't force-assign one to an agent, or its
+		// prompt scope would list a file the accounting layer then exempts.
+		if isGeneratedLockfile(file) {
+			continue
+		}
 		for i := range selection.SelectedAgents {
 			selected := &selection.SelectedAgents[i]
 			candidate, ok := agentByID[selected.AgentID]
@@ -2437,10 +2443,56 @@ func reviewerToolEvidenceByAgent(sessions []sessionDraft) map[string]*llm.Review
 	return out
 }
 
+// generatedLockfiles are dependency lockfiles: machine-written by a package
+// manager and reviewed (if at all) through the manifest change that produced
+// them, never line by line. A reviewer that skips one is behaving correctly, so
+// they are excluded from the coverage universe — otherwise a skipped lockfile
+// marks the reviewer incomplete_skipped and blocks approval on an otherwise
+// clean review. (A real PR stalled exactly this way: a Cargo.lock churned by a
+// dependency bump was the only file left "unreviewed".)
+var generatedLockfiles = map[string]bool{
+	"Cargo.lock":          true,
+	"package-lock.json":   true,
+	"npm-shrinkwrap.json": true,
+	"yarn.lock":           true,
+	"pnpm-lock.yaml":      true,
+	"bun.lockb":           true,
+	"go.sum":              true,
+	"Gemfile.lock":        true,
+	"poetry.lock":         true,
+	"Pipfile.lock":        true,
+	"composer.lock":       true,
+	"Podfile.lock":        true,
+	"flake.lock":          true,
+	"mix.lock":            true,
+}
+
+// isGeneratedLockfile reports whether path is a dependency lockfile a reviewer
+// is not expected to read line by line.
+func isGeneratedLockfile(path string) bool {
+	return generatedLockfiles[filepath.Base(path)]
+}
+
+// filterReviewableFiles drops generated lockfiles from a file list so they do
+// not become a coverage obligation.
+func filterReviewableFiles(files []string) []string {
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		if isGeneratedLockfile(file) {
+			continue
+		}
+		out = append(out, file)
+	}
+	return out
+}
+
 func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
 	if len(selected) == 0 && len(changedFiles) == 0 {
 		return nil
 	}
+	// Generated lockfiles are not a review obligation: exclude them so neither a
+	// reviewer that skips one nor an unassigned lockfile blocks approval.
+	changedFiles = filterReviewableFiles(changedFiles)
 	resultByAgent := make(map[string]llm.Findings, len(results))
 	for _, result := range results {
 		resultByAgent[result.AgentID] = result
@@ -2452,7 +2504,9 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	assigned := map[string]bool{}
 	out := make([]reviewplan.ReviewerCoverageSummary, 0, len(selected)+1)
 	for _, agent := range selected {
-		scope := reviewerAssignmentScope(agent, changedFiles)
+		// A lockfile explicitly assigned to an agent is exempt too — the scope
+		// is what the reviewer is held to, and lockfiles are not reviewable.
+		scope := filterReviewableFiles(reviewerAssignmentScope(agent, changedFiles))
 		for _, file := range scope {
 			assigned[file] = true
 		}
@@ -2473,7 +2527,10 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			out = append(out, entry)
 			continue
 		}
-		entry.InspectedFiles = copySortedStrings(result.InspectedFiles)
+		// Draw both scope and coverage rows from the same lockfile-exempt set,
+		// so a reviewer that did read a lockfile doesn't emit an inspected file
+		// outside its scope.
+		entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
 		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
 		entry.Constraints = copySortedStrings(result.Constraints)
 		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {

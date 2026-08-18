@@ -155,8 +155,6 @@ func TestDecodeFindings(t *testing.T) {
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go","main.go"],"findings":[]}`, "duplicate inspected_files")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"skipped_files":["other.go"],"findings":[]}`, "skipped_files entry")
 	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"skipped_files":["main.go"],"findings":[]}`, "both inspected and skipped")
-	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["  "],"findings":[]}`, "constraints")
-	assertFindingsError(t, baseOpts, `{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"constraints":["one","two","three","four","five","six","seven","eight","nine","ten","eleven"],"findings":[]}`, "constraints cap exceeded")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":2,"agent_id":"agent-1","findings":[]`), "schema_version")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"agent-1","findings":[],"extra":true`), "unknown field")
 	assertFindingsError(t, baseOpts, findingsFixture(`"schema_version":1,"agent_id":"missing","findings":[]`), "unknown findings agent")
@@ -187,32 +185,79 @@ func TestDecodeFindingsConstraintRuneBoundaries(t *testing.T) {
 	multibyteAtLimit := strings.Repeat("界", limits.MaxRunesPerEntry)
 
 	for _, tt := range []struct {
-		name       string
-		constraint string
-		wantErr    string
-		wantClean  bool
+		name          string
+		constraint    string
+		wantTruncated bool
 	}{
-		{name: "marker opening at limit", constraint: markerAtLimit, wantClean: true},
-		{name: "marker opening over limit", constraint: markerAtLimit + "x", wantErr: "constraints entry length"},
+		{name: "marker opening at limit", constraint: markerAtLimit},
+		// Over-limit entries are truncated, not rejected: a verbose (but valid)
+		// coverage note must not fail the whole reviewer and block approval.
+		{name: "marker opening over limit", constraint: markerAtLimit + "x", wantTruncated: true},
 		{name: "multibyte at limit", constraint: multibyteAtLimit},
-		{name: "multibyte over limit", constraint: multibyteAtLimit + "界", wantErr: "constraints entry length"},
+		{name: "multibyte over limit", constraint: multibyteAtLimit + "界", wantTruncated: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := decodeFindingsWithConstraint(t, tt.constraint)
-			if tt.wantErr != "" {
-				assertErrContains(t, err, tt.wantErr)
-				return
-			}
 			if err != nil {
 				t.Fatalf("DecodeFindings: %v", err)
 			}
 			if len(got.Constraints) != 1 {
 				t.Fatalf("constraints = %#v, want one value", got.Constraints)
 			}
-			if tt.wantClean && strings.Contains(got.Constraints[0], markerOpening) {
+			if strings.Contains(got.Constraints[0], markerOpening) {
 				t.Fatalf("constraint = %q, want sanitized marker opening", got.Constraints[0])
 			}
+			if tt.wantTruncated && !strings.HasSuffix(got.Constraints[0], "...") {
+				t.Fatalf("constraint = %q, want truncated (ends with ...), not rejected", got.Constraints[0])
+			}
+			// Truncation (ellipsis included) must stay within the documented cap.
+			if n := utf8.RuneCountInString(got.Constraints[0]); n > limits.MaxRunesPerEntry {
+				t.Fatalf("constraint = %d runes, want ≤ %d (ellipsis must fit the cap)", n, limits.MaxRunesPerEntry)
+			}
 		})
+	}
+}
+
+func TestDecodeFindingsConstraintsDegradeInsteadOfFailing(t *testing.T) {
+	// Coverage constraints are informational: an over-count list, a
+	// whitespace-only entry, and a duplicate are cleaned rather than failing
+	// the whole reviewer (which surfaced as "completed without a result file"
+	// and blocked approval on an otherwise-clean review).
+	payload := map[string]any{
+		"schema_version":  1,
+		"agent_id":        "agent-1",
+		"inspected_files": []string{"main.go"},
+		"constraints": []string{
+			"a", "  ", "b", "a", // whitespace-only and duplicate, within the cap
+			"c", "d", "e", "f", "g", "h", "i", "j", // pushes the list over the cap of 10
+		},
+		"findings": []any{},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got, err := DecodeFindings(data, FindingsOptions{
+		KnownAgents:  map[string]bool{"agent-1": true},
+		ChangedFiles: map[string]bool{"main.go": true},
+		NewFindingID: newIDQueue("f-1").next,
+	})
+	if err != nil {
+		t.Fatalf("DecodeFindings degraded to an error: %v", err)
+	}
+	lim := DefaultFindingsConstraintLimits()
+	if len(got.Constraints) > lim.MaxEntries {
+		t.Fatalf("constraints = %#v, want ≤ %d after capping", got.Constraints, lim.MaxEntries)
+	}
+	seen := map[string]bool{}
+	for _, c := range got.Constraints {
+		if strings.TrimSpace(c) == "" {
+			t.Fatalf("kept a whitespace-only constraint: %#v", got.Constraints)
+		}
+		if seen[c] {
+			t.Fatalf("kept a duplicate constraint: %#v", got.Constraints)
+		}
+		seen[c] = true
 	}
 }
 
