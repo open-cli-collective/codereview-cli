@@ -5120,6 +5120,37 @@ func TestBuildReviewerCoverageExemptsGeneratedLockfiles(t *testing.T) {
 	}
 	// complete_constrained is an approvable status; had Cargo.lock counted, this
 	// would be reviewerCoverageIncompleteSkipped, which blocks approval.
+
+	// A reviewer that reports *inspecting* a lockfile: it must be dropped from
+	// the coverage row too, so scope and inspected files come from one set.
+	inspectedLock := buildReviewerCoverage(
+		[]llm.SelectedAgent{{AgentID: "rust:impl", Files: []string{"main.go"}}},
+		[]llm.Findings{{AgentID: "rust:impl", InspectedFiles: []string{"Cargo.lock", "main.go"}}},
+		nil,
+		[]string{"main.go", "Cargo.lock"},
+	)
+	if len(inspectedLock) != 1 || !reflect.DeepEqual(inspectedLock[0].InspectedFiles, []string{"main.go"}) {
+		t.Fatalf("inspected files = %#v, want [main.go] with the lockfile dropped", inspectedLock)
+	}
+}
+
+func TestEnsureSelectedGlobCoverageSkipsLockfiles(t *testing.T) {
+	// A changed lockfile that matches an agent's globs must NOT be force-assigned
+	// into that agent's scope — it is exempt from the coverage universe. Without
+	// the skip the reviewer would be told to cover Cargo.lock, which the
+	// accounting layer then exempts, reintroducing the split this fix removes.
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "rust:impl", FileGlobs: []string{"**/*.lock", "**/*.rs"}},
+	}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{
+		{AgentID: "rust:impl", Files: []string{"main.rs"}},
+	}}
+	got := ensureSelectedGlobCoverage(selection, catalog, []string{"main.rs", "Cargo.lock"})
+	for _, f := range got.SelectedAgents[0].Files {
+		if f == "Cargo.lock" {
+			t.Fatalf("Cargo.lock was force-assigned into agent scope: %#v", got.SelectedAgents[0].Files)
+		}
+	}
 }
 
 func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *testing.T) {
