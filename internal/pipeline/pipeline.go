@@ -861,7 +861,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	result.Findings = findings
 	result.ReviewerFailures = reviewerFailures
 	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerSessions)
-	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles, reviewerToolEvidenceByAgent(reviewerSessions))
+	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles, deletedPatchPaths(prepared.parsed.Patches), reviewerToolEvidenceByAgent(reviewerSessions))
 	result.ReviewerCoverage = reviewerCoverage
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
 
@@ -2486,13 +2486,46 @@ func filterReviewableFiles(files []string) []string {
 	return out
 }
 
-func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
+// deletedPatchPaths returns the set of paths removed by the diff. A deleted file
+// has no content at head for a reviewer to inspect, so it is exempt from
+// coverage accounting just like a generated lockfile — otherwise a skipped
+// deletion marks the reviewer incomplete_skipped and blocks approval on an
+// otherwise clean review.
+func deletedPatchPaths(patches []FilePatch) map[string]bool {
+	var deleted map[string]bool
+	for _, patch := range patches {
+		if patch.Deleted {
+			if deleted == nil {
+				deleted = map[string]bool{}
+			}
+			deleted[patch.Path] = true
+		}
+	}
+	return deleted
+}
+
+// excludeFiles returns values with any member of exclude removed, preserving order.
+func excludeFiles(values []string, exclude map[string]bool) []string {
+	if len(exclude) == 0 {
+		return values
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if !exclude[value] {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, deleted map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
 	if len(selected) == 0 && len(changedFiles) == 0 {
 		return nil
 	}
-	// Generated lockfiles are not a review obligation: exclude them so neither a
-	// reviewer that skips one nor an unassigned lockfile blocks approval.
-	changedFiles = filterReviewableFiles(changedFiles)
+	// Generated lockfiles and deleted files are not a review obligation: exclude
+	// them so neither a reviewer that skips one nor an unassigned one blocks
+	// approval. (Deleted files have no content at head to inspect.)
+	changedFiles = excludeFiles(filterReviewableFiles(changedFiles), deleted)
 	resultByAgent := make(map[string]llm.Findings, len(results))
 	for _, result := range results {
 		resultByAgent[result.AgentID] = result
@@ -2504,9 +2537,10 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	assigned := map[string]bool{}
 	out := make([]reviewplan.ReviewerCoverageSummary, 0, len(selected)+1)
 	for _, agent := range selected {
-		// A lockfile explicitly assigned to an agent is exempt too — the scope
-		// is what the reviewer is held to, and lockfiles are not reviewable.
-		scope := filterReviewableFiles(reviewerAssignmentScope(agent, changedFiles))
+		// A lockfile or deleted file explicitly assigned to an agent is exempt
+		// too — the scope is what the reviewer is held to, and neither is
+		// reviewable content at head.
+		scope := excludeFiles(filterReviewableFiles(reviewerAssignmentScope(agent, changedFiles)), deleted)
 		for _, file := range scope {
 			assigned[file] = true
 		}
