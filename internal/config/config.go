@@ -43,6 +43,9 @@ var (
 	ErrInvalid = errors.New("config: invalid")
 	// ErrUnsupported means the config uses a known v2-only option.
 	ErrUnsupported = errors.New("config: not supported in v1")
+	// ErrUnsupportedEffort means the selected LLM runtime cannot honor an
+	// otherwise valid effort level.
+	ErrUnsupportedEffort = errors.New("config: unsupported effort")
 )
 
 // IsConfigSelection reports whether err identifies an invalid or missing
@@ -648,17 +651,17 @@ func ValidateEffortForRuntime(llm LLMConfig, effort string) error {
 	}
 	requested := modelprefs.Effort(effort)
 	if !requested.Valid() {
-		return fmt.Errorf("effort %q is invalid; must be one of low, medium, high, xhigh, max", effort)
+		return fmt.Errorf("%w: effort %q is invalid; must be one of low, medium, high, xhigh, max", ErrInvalid, effort)
 	}
 	spec, ok := FindLLMRuntimeSpec(llm.Provider, llm.Auth, llm.Adapter)
 	if !ok && llm.Auth == "" {
 		spec, ok = findLLMRuntimeSpecByProviderAdapter(llm.Provider, llm.Adapter)
 	}
 	if !ok {
-		return fmt.Errorf("effort %q cannot be validated for unknown runtime %s/%s/%s", effort, llm.Provider, llm.Auth, llm.Adapter)
+		return fmt.Errorf("%w: effort %q cannot be validated for unknown runtime %s/%s/%s", ErrInvalid, effort, llm.Provider, llm.Auth, llm.Adapter)
 	}
 	if requested.Rank() > spec.MaximumEffort.Rank() {
-		return fmt.Errorf("effort %q is unsupported for runtime %s/%s/%s; maximum is %s", effort, llm.Provider, llm.Auth, llm.Adapter, spec.MaximumEffort)
+		return fmt.Errorf("%w: effort %q is unsupported for runtime %s/%s/%s; maximum is %s", ErrUnsupportedEffort, effort, llm.Provider, llm.Auth, llm.Adapter, spec.MaximumEffort)
 	}
 	return nil
 }

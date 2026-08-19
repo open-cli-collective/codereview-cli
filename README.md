@@ -717,7 +717,8 @@ The complete precedence and bypass table is:
 | `--reviewer-model-tier` | Raises the reviewer baseline before the agent floor is applied | Agent effort | Caps at the final resolved tier |
 | Other tier-resolved internal stage | That stage's own tier, then `model_map` | Stage effort | Caps the default at the stage's final tier |
 | `--selection-effort` or `--reviewer-effort` | Normal tier or exact-model selection | Requested effort | Explicit effort wins after the ceiling |
-| `--selection-model` or `--reviewer-model` | Exact requested model ID | Stage/agent effort or explicit effort | Bypassed; exact model overrides intentionally bypass tier resolution and the cap |
+| `--selection-model` | Exact requested model ID | Stage effort or explicit effort | Bypassed; selection exact-model overrides do not carry a reviewer tier |
+| `--reviewer-model` | Exact requested model ID | Agent effort or explicit effort | Inherited agent effort is capped at the effective reviewer tier; explicit effort bypasses the cap |
 | Agent `model_id` | Exact agent model ID | Agent effort | Bypassed; exact model selection intentionally bypasses tier resolution and the cap |
 | `cr benchmark run` stage model/effort overrides | Exact benchmark model when supplied; otherwise normal tier selection | Explicit benchmark effort when supplied; inherited agent effort when reviewer effort is omitted | Explicit benchmark overrides bypass the profile ceiling; inherited reviewer effort retains it |
 
@@ -725,10 +726,11 @@ For example, with `agent.model_tier: small`, `effort: high`,
 `llm.reviewer_model_tier: large`, and the selected runtime's
 `max_effort.large: medium`, the reviewer
 runs with the large model at medium effort. Adding `--reviewer-effort high`
-runs that same large model at high effort. Adding
-`--reviewer-model my-provider/model` selects that exact model and keeps high
-effort without applying the tier ceiling. `--selection-effort high` follows
-the same post-ceiling override rule for selection.
+runs that same large model at high effort. Adding only
+`--reviewer-model my-provider/model` selects that exact model while retaining
+the inherited medium ceiling; combining it with `--reviewer-effort high`
+selects the exact model at high effort. `--selection-effort high` follows the
+same post-ceiling override rule for selection.
 
 `cr init` preserves runtime `max_effort` but cannot yet edit it; set
 `llm_runtimes.<name>.max_effort` by hand in `config.yml`.

@@ -197,9 +197,10 @@ parity and init editing for this field are out of scope.
 At review time, reviewer floors apply only to reviewer resolution. Other
 tier-resolved internal stages use their own stage tier, and default effort is
 capped only after that final tier is resolved. Explicit `--selection-effort`
-and `--reviewer-effort` values win after the cap. Exact
-`--selection-model`, `--reviewer-model`, agent `model_id`, and benchmark stage
-model/effort overrides intentionally bypass tier resolution and the cap.
+and `--reviewer-effort` values win after the cap. Exact model overrides bypass
+model-map resolution. `--selection-model` and agent `model_id` remain uncapped;
+`--reviewer-model` retains the effective reviewer-tier cap when effort is
+inherited, including benchmark reviewer model overrides.
 
 ## Scripted Install Ownership
 

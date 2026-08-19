@@ -1329,6 +1329,24 @@ func TestSummarizeCandidatesRecordsReviewerEffortSource(t *testing.T) {
 	}
 }
 
+func TestSummarizeCandidatesOmitsReviewerEffortSourceWithoutReviewerRecipe(t *testing.T) {
+	candidates := []benchmark.Candidate{{
+		ID: "selector-only",
+		Stages: benchmark.CandidateStages{
+			Selection: benchmark.SelectionStage{Model: "selector", Effort: "medium"},
+		},
+	}}
+
+	got := summarizeCandidates(t.TempDir(), candidates)
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"effort_source"`) {
+		t.Fatalf("candidate JSON = %s, want no reviewer effort source", data)
+	}
+}
+
 func writeExecutableCRBin(t *testing.T) string {
 	t.Helper()
 	name := "cr"

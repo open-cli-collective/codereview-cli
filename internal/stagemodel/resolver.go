@@ -61,22 +61,6 @@ func ResolveStageModel(req Request) (Result, error) {
 	}
 	tier := config.ModelTier(strings.TrimSpace(string(req.Tier)))
 	effortOverride := strings.TrimSpace(req.EffortOverride)
-	if model := strings.TrimSpace(req.ModelOverride); model != "" {
-		effort := strings.TrimSpace(req.DefaultEffort)
-		if effortOverride != "" {
-			effort = effortOverride
-		}
-		if err := config.ValidateEffortForRuntime(req.Profile.LLM, effort); err != nil {
-			return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
-		}
-		return Result{
-			Stage:    stage,
-			Tier:     tier,
-			Model:    model,
-			Effort:   effort,
-			Override: true,
-		}, nil
-	}
 	if tier != "" && !tier.Valid() {
 		return Result{}, fmt.Errorf("stagemodel: stage %s: model_tier %q is invalid; must be one of small, medium, large", stage, tier)
 	}
@@ -89,6 +73,24 @@ func ResolveStageModel(req Request) (Result, error) {
 			tier = floorTier
 		}
 		tier = maxModelTier(tier, floorTier)
+	}
+	if model := strings.TrimSpace(req.ModelOverride); model != "" {
+		effort := strings.TrimSpace(req.DefaultEffort)
+		if effortOverride != "" {
+			effort = effortOverride
+		} else if stage == StageReviewer && tier != "" {
+			effort = applyMaxEffort(req.Profile.LLM, tier, effort)
+		}
+		if err := config.ValidateEffortForRuntime(req.Profile.LLM, effort); err != nil {
+			return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
+		}
+		return Result{
+			Stage:    stage,
+			Tier:     tier,
+			Model:    model,
+			Effort:   effort,
+			Override: true,
+		}, nil
 	}
 
 	resolved, ok := config.ResolveModelTier(req.Profile.LLM, tier)

@@ -121,7 +121,7 @@ type benchmarkReviewerStage struct {
 	Model        string              `json:"model,omitempty"`
 	ModelTier    string              `json:"model_tier,omitempty"`
 	Effort       string              `json:"effort,omitempty"`
-	EffortSource string              `json:"effort_source"`
+	EffortSource string              `json:"effort_source,omitempty"`
 	AgentDirs    []benchmarkAgentDir `json:"agent_dirs,omitempty"`
 }
 
@@ -519,6 +519,10 @@ func summaryMode(summary benchmarkSuiteSummary) string {
 func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []benchmarkCandidate {
 	out := make([]benchmarkCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
+		effortSource := ""
+		if candidate.Stages.ReviewersConfigured() {
+			effortSource = reviewerEffortSource(candidate.Stages.Reviewers.Effort)
+		}
 		out = append(out, benchmarkCandidate{
 			ID:      candidate.ID,
 			Profile: candidate.Profile,
@@ -532,7 +536,7 @@ func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []be
 					Model:        candidate.Stages.Reviewers.Model,
 					ModelTier:    candidate.Stages.Reviewers.ModelTier,
 					Effort:       candidate.Stages.Reviewers.Effort,
-					EffortSource: reviewerEffortSource(candidate.Stages.Reviewers.Effort),
+					EffortSource: effortSource,
 					AgentDirs:    summarizeAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
 				},
 				Synthesis: summarizeOptionalSynthesisStage(suiteDir, candidate.Stages.Synthesis),

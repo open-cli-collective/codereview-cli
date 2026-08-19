@@ -698,7 +698,7 @@ func TestReviewRejectsExtendedEffortUnsupportedByProfileBeforeRuntimeFactory(t *
 		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
 		"--dry-run", "--reviewer-effort", "xhigh",
 	})
-	if err == nil || !strings.Contains(err.Error(), `--reviewer-effort: effort "xhigh" is unsupported`) {
+	if err == nil || !strings.Contains(err.Error(), `--reviewer-effort: config: unsupported effort: effort "xhigh" is unsupported`) {
 		t.Fatalf("Execute error = %v", err)
 	}
 	if factoryCalled {

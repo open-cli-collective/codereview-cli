@@ -172,7 +172,7 @@ func TestResolveStageModelRejectsExtendedEffortForUnsupportedRuntime(t *testing.
 		ModelOverride:  "claude-opus-5",
 		EffortOverride: "xhigh",
 	})
-	if err == nil || !strings.Contains(err.Error(), `stage reviewer: effort "xhigh" is unsupported`) {
+	if err == nil || !strings.Contains(err.Error(), `stage reviewer: config: unsupported effort: effort "xhigh" is unsupported`) {
 		t.Fatalf("ResolveStageModel error = %v", err)
 	}
 }

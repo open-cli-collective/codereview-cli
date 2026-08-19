@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,7 @@ func TestValidateEffortForRuntimeRejectsExtendedEffortForOtherRuntimes(t *testin
 		Adapter:  LLMAdapterClaudeCLI,
 	}
 	err := ValidateEffortForRuntime(llm, "xhigh")
-	if err == nil || !strings.Contains(err.Error(), `effort "xhigh" is unsupported`) || !strings.Contains(err.Error(), "claude_cli") {
+	if err == nil || !errors.Is(err, ErrUnsupportedEffort) || !strings.Contains(err.Error(), `effort "xhigh" is unsupported`) || !strings.Contains(err.Error(), "claude_cli") {
 		t.Fatalf("ValidateEffortForRuntime error = %v", err)
 	}
 }
@@ -37,7 +38,7 @@ func TestValidateEffortForRuntimeRejectsUnknownEffort(t *testing.T) {
 		Adapter:  LLMAdapterPiRPC,
 	}
 	err := ValidateEffortForRuntime(llm, "ultra")
-	if err == nil || !strings.Contains(err.Error(), `effort "ultra" is invalid`) {
+	if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `effort "ultra" is invalid`) {
 		t.Fatalf("ValidateEffortForRuntime error = %v", err)
 	}
 }

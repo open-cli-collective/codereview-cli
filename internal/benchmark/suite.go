@@ -61,6 +61,12 @@ type CandidateStages struct {
 	synthesisSet bool
 }
 
+// ReviewersConfigured reports whether a reviewer-stage recipe was present or
+// was constructed programmatically with reviewer values.
+func (s CandidateStages) ReviewersConfigured() bool {
+	return s.reviewersSet || s.Reviewers.Model != "" || s.Reviewers.ModelTier != "" || s.Reviewers.Effort != "" || s.Reviewers.AgentDirs != nil
+}
+
 // SelectionStage configures the benchmark selection/orchestration phase.
 type SelectionStage struct {
 	Model  string `yaml:"model,omitempty" json:"model,omitempty"`
