@@ -421,6 +421,35 @@ func TestDoctorReportsInheritedReviewerEffort(t *testing.T) {
 	}
 }
 
+func TestDoctorReportOmitsReviewerEffortSourceWithoutReviewerRecipe(t *testing.T) {
+	suite := benchmark.SuiteFile{
+		Path:  filepath.Join(t.TempDir(), "suite.yml"),
+		Suite: benchmark.Suite{ID: "selector-only"},
+		Candidates: []benchmark.Candidate{{
+			ID:      "selector",
+			Profile: "home",
+			Stages: benchmark.CandidateStages{
+				Selection: benchmark.SelectionStage{Model: "selector", Effort: "medium"},
+			},
+		}},
+	}
+
+	report, err := buildDoctorReport(suite, testConfig(), doctorFlags{})
+	if err != nil {
+		t.Fatalf("buildDoctorReport: %v", err)
+	}
+	if len(report.Candidates) != 1 || report.Candidates[0].Stages.Reviewers.EffortSource != "" {
+		t.Fatalf("reviewer stage = %#v, want no effort source", report.Candidates)
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"effort_source"`) {
+		t.Fatalf("doctor JSON = %s, want no reviewer effort source", data)
+	}
+}
+
 func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	cmd, out := newTestCommand(t)
 	suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))

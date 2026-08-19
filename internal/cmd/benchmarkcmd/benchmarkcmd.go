@@ -64,7 +64,7 @@ type doctorReviewerStage struct {
 	Model        string           `json:"model,omitempty"`
 	ModelTier    string           `json:"model_tier,omitempty"`
 	Effort       string           `json:"effort,omitempty"`
-	EffortSource string           `json:"effort_source"`
+	EffortSource string           `json:"effort_source,omitempty"`
 	AgentDirs    []doctorAgentDir `json:"agent_dirs"`
 }
 
@@ -202,6 +202,10 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 	suiteDir := filepath.Dir(suite.Path)
 	for _, candidate := range selectedCandidates {
 		profile, ok := cfg.Profiles[candidate.Profile]
+		effortSource := ""
+		if candidate.Stages.ReviewersConfigured() {
+			effortSource = reviewerEffortSource(candidate.Stages.Reviewers.Effort)
+		}
 		out := doctorCandidate{
 			ID:               candidate.ID,
 			Profile:          candidate.Profile,
@@ -216,7 +220,7 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 					Model:        candidate.Stages.Reviewers.Model,
 					ModelTier:    candidate.Stages.Reviewers.ModelTier,
 					Effort:       candidate.Stages.Reviewers.Effort,
-					EffortSource: reviewerEffortSource(candidate.Stages.Reviewers.Effort),
+					EffortSource: effortSource,
 					AgentDirs:    make([]doctorAgentDir, 0, len(candidate.Stages.Reviewers.AgentDirs)),
 				},
 				Synthesis: summarizeDoctorOptionalStage(candidate.Stages.Synthesis),
