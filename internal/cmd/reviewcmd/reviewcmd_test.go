@@ -652,8 +652,8 @@ func TestReviewEmptyStageOverrideErrorPrecedence(t *testing.T) {
 		"--selection-effort", "xhigh",
 		"--selection-prompt", " ",
 	})
-	if err == nil || err.Error() != "--selection-effort must be one of low, medium, high" {
-		t.Fatalf("Execute error = %v, want selection-effort precedence", err)
+	if err == nil || err.Error() != "--selection-prompt must be non-empty" {
+		t.Fatalf("Execute error = %v, want empty selection-prompt error", err)
 	}
 }
 
@@ -662,8 +662,8 @@ func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
 		name string
 		args []string
 	}{
-		{name: "selection", args: []string{"--dry-run", "--selection-effort", "xhigh"}},
-		{name: "reviewer", args: []string{"--dry-run", "--reviewer-effort", "xhigh"}},
+		{name: "selection", args: []string{"--dry-run", "--selection-effort", "ultra"}},
+		{name: "reviewer", args: []string{"--dry-run", "--reviewer-effort", "ultra"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -684,6 +684,55 @@ func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
 				t.Fatal("runtime factory was called for invalid effort")
 			}
 		})
+	}
+}
+
+func TestReviewRejectsExtendedEffortUnsupportedByProfileBeforeRuntimeFactory(t *testing.T) {
+	var factoryCalled bool
+	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
+		factoryCalled = true
+		return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+	})
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run", "--reviewer-effort", "xhigh",
+	})
+	if err == nil || !strings.Contains(err.Error(), `--reviewer-effort: effort "xhigh" is unsupported`) {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if factoryCalled {
+		t.Fatal("runtime factory was called for unsupported effort")
+	}
+}
+
+func TestReviewPassesExtendedPiEffortOverrides(t *testing.T) {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.LLM = config.LLMConfig{
+		Provider: config.LLMProviderPi,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterPiRPC,
+	}
+	cfg.Profiles["home"] = profile
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	cmd, _ := newTestCommand(t, cfg, fakeFactory(runner))
+
+	err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run",
+		"--selection-effort", "xhigh",
+		"--reviewer-effort", "max",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	req := runner.requests[0]
+	if req.SelectionEffortOverride != "xhigh" || req.ReviewerEffortOverride != "max" {
+		t.Fatalf("effort overrides = %q/%q, want xhigh/max", req.SelectionEffortOverride, req.ReviewerEffortOverride)
 	}
 }
 

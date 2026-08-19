@@ -69,7 +69,11 @@ An explicit `ModelOverride` returns with its requested effort or default effort
 while intentionally bypassing tier resolution and the `max_effort` cap.
 `--selection-model`, `--reviewer-model`, and agent `model_id` use this
 exact-model path. Benchmark stage model and effort overrides are explicit
-runtime inputs and retain the same ceiling bypass.
+runtime inputs and retain the same ceiling bypass. A benchmark reviewer stage
+without an effort override follows normal per-agent effort resolution and its
+runtime ceiling. Runtime capability validation happens after stage resolution,
+before adapter startup, so unsupported extended effort levels fail without
+opening a model session.
 
 Reviewer `agent.model_id` is an exact provider-specific model override. It must
 still enter runtime execution through `stagemodel.ResolveStageModel` as a model

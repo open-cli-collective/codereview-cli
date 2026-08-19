@@ -535,6 +535,7 @@ type LLMRuntimeSpec struct {
 	DisplayName           string
 	BuiltInModelMap       ModelMap
 	FastModeModels        []string
+	MaximumEffort         modelprefs.Effort
 	RequiresCredentialRef bool
 }
 
@@ -551,6 +552,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 			string(ModelTierLarge):  "claude-opus-5",
 		},
 		FastModeModels: []string{"claude-opus-5", "claude-opus-4-8"},
+		MaximumEffort:  modelprefs.EffortHigh,
 	},
 	{
 		Provider:              LLMProviderAnthropic,
@@ -560,6 +562,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		DisplayName:           "Anthropic API",
 		BuiltInModelMap:       ModelMap{},
 		FastModeModels:        []string{"claude-opus-5", "claude-opus-4-8"},
+		MaximumEffort:         modelprefs.EffortHigh,
 		RequiresCredentialRef: true,
 	},
 	{
@@ -574,6 +577,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 			string(ModelTierLarge):  "gpt-5.5",
 		},
 		FastModeModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
+		MaximumEffort:  modelprefs.EffortHigh,
 	},
 	{
 		Provider:      LLMProviderOpenAI,
@@ -587,6 +591,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 			string(ModelTierLarge):  "gpt-5.5",
 		},
 		RequiresCredentialRef: true,
+		MaximumEffort:         modelprefs.EffortHigh,
 	},
 	{
 		Provider:        LLMProviderPi,
@@ -595,6 +600,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName:   "pi-local",
 		DisplayName:     "Pi RPC",
 		BuiltInModelMap: ModelMap{},
+		MaximumEffort:   modelprefs.EffortMax,
 	},
 }
 
@@ -631,6 +637,30 @@ func (s LLMRuntimeSpec) SupportsFastMode(model string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateEffortForRuntime checks a reasoning effort against the selected
+// runtime before an adapter is opened or invoked.
+func ValidateEffortForRuntime(llm LLMConfig, effort string) error {
+	effort = strings.TrimSpace(effort)
+	if effort == "" {
+		return nil
+	}
+	requested := modelprefs.Effort(effort)
+	if !requested.Valid() {
+		return fmt.Errorf("effort %q is invalid; must be one of low, medium, high, xhigh, max", effort)
+	}
+	spec, ok := FindLLMRuntimeSpec(llm.Provider, llm.Auth, llm.Adapter)
+	if !ok && llm.Auth == "" {
+		spec, ok = findLLMRuntimeSpecByProviderAdapter(llm.Provider, llm.Adapter)
+	}
+	if !ok {
+		return fmt.Errorf("effort %q cannot be validated for unknown runtime %s/%s/%s", effort, llm.Provider, llm.Auth, llm.Adapter)
+	}
+	if requested.Rank() > spec.MaximumEffort.Rank() {
+		return fmt.Errorf("effort %q is unsupported for runtime %s/%s/%s; maximum is %s", effort, llm.Provider, llm.Auth, llm.Adapter, spec.MaximumEffort)
+	}
+	return nil
 }
 
 func findLLMRuntimeSpecByProviderAdapter(provider LLMProvider, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
@@ -1452,8 +1482,8 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 		if strings.TrimSpace(ceiling) == "" {
 			return invalid("%s.max_effort.%s is required", field, tier)
 		}
-		if !modelprefs.Effort(strings.TrimSpace(ceiling)).Valid() {
-			return invalid("%s.max_effort.%s %q is invalid; must be one of low, medium, high", field, tier, ceiling)
+		if err := ValidateEffortForRuntime(llm, ceiling); err != nil {
+			return invalid("%s.max_effort.%s: %v", field, tier, err)
 		}
 	}
 	if llm.ReviewerModelTier != "" && !llm.ReviewerModelTier.Valid() {

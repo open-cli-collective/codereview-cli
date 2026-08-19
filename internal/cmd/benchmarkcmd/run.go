@@ -118,10 +118,11 @@ type benchmarkSelectionStage struct {
 type benchmarkSynthesisStage = benchmarkSelectionStage
 
 type benchmarkReviewerStage struct {
-	Model     string              `json:"model,omitempty"`
-	ModelTier string              `json:"model_tier,omitempty"`
-	Effort    string              `json:"effort,omitempty"`
-	AgentDirs []benchmarkAgentDir `json:"agent_dirs,omitempty"`
+	Model        string              `json:"model,omitempty"`
+	ModelTier    string              `json:"model_tier,omitempty"`
+	Effort       string              `json:"effort,omitempty"`
+	EffortSource string              `json:"effort_source"`
+	AgentDirs    []benchmarkAgentDir `json:"agent_dirs,omitempty"`
 }
 
 type benchmarkPromptFile struct {
@@ -528,10 +529,11 @@ func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []be
 					Prompt: summarizePromptFile(suiteDir, candidate.Stages.Selection.Prompt),
 				},
 				Reviewers: benchmarkReviewerStage{
-					Model:     candidate.Stages.Reviewers.Model,
-					ModelTier: candidate.Stages.Reviewers.ModelTier,
-					Effort:    candidate.Stages.Reviewers.Effort,
-					AgentDirs: summarizeAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
+					Model:        candidate.Stages.Reviewers.Model,
+					ModelTier:    candidate.Stages.Reviewers.ModelTier,
+					Effort:       candidate.Stages.Reviewers.Effort,
+					EffortSource: reviewerEffortSource(candidate.Stages.Reviewers.Effort),
+					AgentDirs:    summarizeAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
 				},
 				Synthesis: summarizeOptionalSynthesisStage(suiteDir, candidate.Stages.Synthesis),
 			},
@@ -540,6 +542,13 @@ func summarizeCandidates(suiteDir string, candidates []benchmark.Candidate) []be
 		})
 	}
 	return out
+}
+
+func reviewerEffortSource(effort string) string {
+	if strings.TrimSpace(effort) == "" {
+		return "inherited"
+	}
+	return "override"
 }
 
 func summarizeOptionalSynthesisStage(suiteDir string, stage benchmark.SelectionStage) *benchmarkSynthesisStage {

@@ -3,11 +3,14 @@ package modelprefs
 import "testing"
 
 func TestEffortRankOrdersCheapestFirst(t *testing.T) {
-	if EffortLow.Rank() >= EffortMedium.Rank() || EffortMedium.Rank() >= EffortHigh.Rank() {
-		t.Fatalf("effort ranks are not ordered: low=%d medium=%d high=%d", EffortLow.Rank(), EffortMedium.Rank(), EffortHigh.Rank())
+	ordered := []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax}
+	for i := 1; i < len(ordered); i++ {
+		if ordered[i-1].Rank() >= ordered[i].Rank() {
+			t.Fatalf("effort ranks are not ordered: %q=%d %q=%d", ordered[i-1], ordered[i-1].Rank(), ordered[i], ordered[i].Rank())
+		}
 	}
-	if Effort("xhigh").Rank() != 0 {
-		t.Fatalf("unknown effort rank = %d, want 0", Effort("xhigh").Rank())
+	if Effort("ultra").Rank() != 0 {
+		t.Fatalf("unknown effort rank = %d, want 0", Effort("ultra").Rank())
 	}
 }
 
@@ -18,10 +21,11 @@ func TestMinEffort(t *testing.T) {
 		want        Effort
 	}{
 		{name: "ceiling lowers", left: EffortHigh, right: EffortMedium, want: EffortMedium},
+		{name: "extended ceiling lowers", left: EffortMax, right: EffortXHigh, want: EffortXHigh},
 		{name: "ceiling does not raise", left: EffortLow, right: EffortHigh, want: EffortLow},
 		{name: "equal", left: EffortMedium, right: EffortMedium, want: EffortMedium},
 		{name: "invalid left ignored", left: "", right: EffortHigh, want: EffortHigh},
-		{name: "invalid right ignored", left: EffortHigh, right: "xhigh", want: EffortHigh},
+		{name: "invalid right ignored", left: EffortHigh, right: "ultra", want: EffortHigh},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

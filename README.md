@@ -634,7 +634,7 @@ Supported values:
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
 | `llm.model_map` keys | `small`, `medium`, `large` |
-| `llm_runtimes.<name>.max_effort` keys | `small`, `medium`, `large`; values `low`, `medium`, `high` |
+| `llm_runtimes.<name>.max_effort` keys | `small`, `medium`, `large`; values `low`, `medium`, `high`, plus `xhigh` and `max` for runtimes that support them (currently `pi_rpc`) |
 | `llm.reviewer_model_tier` | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
@@ -667,7 +667,8 @@ raise the reviewer baseline without editing shared agent catalogs.
 
 ### Model-Tier Floors and Effort Ceilings
 
-Agent catalogs declare an absolute `effort` (`low`, `medium`, `high`) that
+Agent catalogs declare an absolute `effort` (`low`, `medium`, `high`, `xhigh`,
+or `max`) that
 becomes the provider's reasoning-effort setting. For reviewer resolution,
 `agent.model_tier` and `llm.reviewer_model_tier` are minimum floors for model
 selection. The selected runtime's `max_effort`
@@ -718,7 +719,7 @@ The complete precedence and bypass table is:
 | `--selection-effort` or `--reviewer-effort` | Normal tier or exact-model selection | Requested effort | Explicit effort wins after the ceiling |
 | `--selection-model` or `--reviewer-model` | Exact requested model ID | Stage/agent effort or explicit effort | Bypassed; exact model overrides intentionally bypass tier resolution and the cap |
 | Agent `model_id` | Exact agent model ID | Agent effort | Bypassed; exact model selection intentionally bypasses tier resolution and the cap |
-| `cr benchmark run` stage model/effort overrides | Exact benchmark model when supplied; otherwise normal tier selection | Explicit benchmark effort when supplied | Explicit benchmark overrides bypass the profile ceiling |
+| `cr benchmark run` stage model/effort overrides | Exact benchmark model when supplied; otherwise normal tier selection | Explicit benchmark effort when supplied; inherited agent effort when reviewer effort is omitted | Explicit benchmark overrides bypass the profile ceiling; inherited reviewer effort retains it |
 
 For example, with `agent.model_tier: small`, `effort: high`,
 `llm.reviewer_model_tier: large`, and the selected runtime's
@@ -1209,11 +1210,11 @@ Review selection and execution flags:
 | `--max-agents <n>` | Set a hard total reviewer limit. Omit the flag or pass `0` to run all applicable repo-local reviewers and all matching `required_on_match` reviewers, plus up to 5 optional shared reviewers. A positive value below that combined required set fails. Negative values are rejected. |
 | `--max-concurrency <n>` | Limit concurrent reviewer agents. Omit the flag or pass `0` for the default limit of 5. Negative values are rejected. |
 | `--selection-model <model>` | Exact provider model ID passthrough for the selection stage only. Bypasses the default medium-tier selection model resolution. Requires `--dry-run` or `--no-post`. |
-| `--selection-effort <effort>` | Override selection-stage effort only with `low`, `medium`, or `high`. Requires `--dry-run` or `--no-post`. |
+| `--selection-effort <effort>` | Override selection-stage effort with `low`, `medium`, `high`, `xhigh`, or `max`, subject to runtime support. Requires `--dry-run` or `--no-post`. |
 | `--selection-prompt <path>` | Load selection-stage instruction text from a file while preserving the structured JSON selection protocol. Requires `--dry-run` or `--no-post`. |
 | `--reviewer-model <model>` | Exact provider model ID passthrough for reviewer stages only. Bypasses reviewer agent `model_tier`, `model_id`, and profile model-map resolution. Available for dry-run, no-post, and live reviews. |
 | `--reviewer-model-tier <tier>` | Override the reviewer baseline tier only with `small`, `medium`, or `large`. This still respects higher agent `model_tier` floors. Requires `--dry-run` or `--no-post`. |
-| `--reviewer-effort <effort>` | Override reviewer-stage effort only with `low`, `medium`, or `high`. Available for dry-run, no-post, and live reviews. |
+| `--reviewer-effort <effort>` | Override reviewer-stage effort with `low`, `medium`, `high`, `xhigh`, or `max`, subject to runtime support. Available for dry-run, no-post, and live reviews. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
 | `--session <name>` | Override the PR's default orchestrator session with a named live-review session. Reviewer cohorts remain PR-scoped. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
@@ -1341,8 +1342,9 @@ and `stages.selection.effort` map to `--selection-model` and
 `--selection-effort`; optional `stages.selection.prompt` maps to
 `--selection-prompt`. `stages.reviewers.model` remains the exact-model bypass,
 while `stages.reviewers.model_tier` maps to `--reviewer-model-tier`.
-`stages.reviewers.effort` and `stages.reviewers.agent_dirs[]` map to
-`--reviewer-effort` and repeated `--agents-dir` flags. Case YAML fields
+When present, `stages.reviewers.effort` maps to `--reviewer-effort`; when
+omitted, reviewer effort is inherited from normal agent/profile resolution.
+`stages.reviewers.agent_dirs[]` maps to repeated `--agents-dir` flags. Case YAML fields
 `review_base_sha` and `review_head_sha` pin the exact base/head commit pair
 reviewed by the dry-run child command. Optional `stages.synthesis` metadata is
 reserved for future benchmark support and does not change `benchmark run`

@@ -66,6 +66,9 @@ func ResolveStageModel(req Request) (Result, error) {
 		if effortOverride != "" {
 			effort = effortOverride
 		}
+		if err := config.ValidateEffortForRuntime(req.Profile.LLM, effort); err != nil {
+			return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
+		}
 		return Result{
 			Stage:    stage,
 			Tier:     tier,
@@ -96,6 +99,9 @@ func ResolveStageModel(req Request) (Result, error) {
 	effort := applyMaxEffort(req.Profile.LLM, resolved.Tier, strings.TrimSpace(req.DefaultEffort))
 	if effortOverride != "" {
 		effort = effortOverride
+	}
+	if err := config.ValidateEffortForRuntime(req.Profile.LLM, effort); err != nil {
+		return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
 	}
 	return Result{
 		Stage:  stage,

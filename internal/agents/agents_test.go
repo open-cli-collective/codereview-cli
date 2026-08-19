@@ -107,8 +107,8 @@ func TestLoadRejectsInvalidAgentModelMetadata(t *testing.T) {
 		},
 		{
 			name:  "invalid effort",
-			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: xhigh\n",
-			want:  `effort "xhigh" is invalid`,
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: ultra\n",
+			want:  `effort "ultra" is invalid`,
 		},
 		{
 			name:  "legacy model field",

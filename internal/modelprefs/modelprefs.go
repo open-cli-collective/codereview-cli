@@ -9,12 +9,14 @@ const (
 	EffortLow    Effort = "low"
 	EffortMedium Effort = "medium"
 	EffortHigh   Effort = "high"
+	EffortXHigh  Effort = "xhigh"
+	EffortMax    Effort = "max"
 )
 
 // Valid reports whether e is a known effort value.
 func (e Effort) Valid() bool {
 	switch e {
-	case EffortLow, EffortMedium, EffortHigh:
+	case EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
 		return true
 	default:
 		return false
@@ -31,6 +33,10 @@ func (e Effort) Rank() int {
 		return 2
 	case EffortHigh:
 		return 3
+	case EffortXHigh:
+		return 4
+	case EffortMax:
+		return 5
 	default:
 		return 0
 	}
