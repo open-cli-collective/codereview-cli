@@ -5060,6 +5060,7 @@ func TestBuildReviewerCoverageStatuses(t *testing.T) {
 		[]llm.Findings{{AgentID: "harness:broad", InspectedFiles: []string{"main.go", "other.go"}}},
 		nil,
 		[]string{"main.go", "other.go"},
+		nil,
 	)
 	if len(broad) != 1 || broad[0].Status != reviewerCoverageCompleteBroad {
 		t.Fatalf("broad coverage = %#v, want complete broad", broad)
@@ -5076,7 +5077,7 @@ func TestBuildReviewerCoverageStatuses(t *testing.T) {
 	}
 	failures := []ReviewerFailure{{AgentID: "harness:failed", Error: "model failed"}}
 
-	got := buildReviewerCoverage(selected, results, failures, []string{"api.go", "db.sql", "unassigned.go", "worker.go"})
+	got := buildReviewerCoverage(selected, results, failures, []string{"api.go", "db.sql", "unassigned.go", "worker.go"}, nil)
 	byAgent := map[string]reviewplan.ReviewerCoverageSummary{}
 	for _, entry := range got {
 		byAgent[entry.AgentID] = entry
@@ -5108,7 +5109,7 @@ func TestBuildReviewerCoverageExemptsGeneratedLockfiles(t *testing.T) {
 	results := []llm.Findings{
 		{AgentID: "rust:impl", InspectedFiles: []string{"main.go"}, SkippedFiles: []string{"Cargo.lock"}},
 	}
-	got := buildReviewerCoverage(selected, results, nil, []string{"main.go", "Cargo.lock", "yarn.lock"})
+	got := buildReviewerCoverage(selected, results, nil, []string{"main.go", "Cargo.lock", "yarn.lock"}, nil)
 	if len(got) != 1 {
 		t.Fatalf("coverage = %#v, want a single reviewer entry (no lockfile coverage rows)", got)
 	}
@@ -5128,10 +5129,40 @@ func TestBuildReviewerCoverageExemptsGeneratedLockfiles(t *testing.T) {
 		[]llm.Findings{{AgentID: "rust:impl", InspectedFiles: []string{"Cargo.lock", "main.go"}}},
 		nil,
 		[]string{"main.go", "Cargo.lock"},
+		nil,
 	)
 	if len(inspectedLock) != 1 || !reflect.DeepEqual(inspectedLock[0].InspectedFiles, []string{"main.go"}) {
 		t.Fatalf("inspected files = %#v, want [main.go] with the lockfile dropped", inspectedLock)
 	}
+}
+
+func TestBuildReviewerCoverageExemptsDeletedFiles(t *testing.T) {
+	// A reviewer that skips a deleted file (no content at head to inspect) is
+	// complete, not incomplete_skipped, and a deleted file left unassigned is
+	// not incomplete_unassigned — same coverage exemption as a lockfile.
+	deleted := map[string]bool{"removed.go": true, "gone.go": true}
+	got := buildReviewerCoverage(
+		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go", "removed.go"}}},
+		[]llm.Findings{{
+			AgentID:        "harness:reviewer",
+			InspectedFiles: []string{"main.go"},
+			SkippedFiles:   []string{"removed.go"},
+		}},
+		nil,
+		[]string{"main.go", "removed.go", "gone.go"},
+		deleted,
+	)
+	if len(got) != 1 {
+		t.Fatalf("coverage = %#v, want a single reviewer entry (no deleted-file rows)", got)
+	}
+	if got[0].AgentID != "harness:reviewer" || got[0].Status != reviewerCoverageCompleteBroad {
+		t.Fatalf("coverage = %#v, want complete despite skipped deletion", got)
+	}
+	if len(got[0].SkippedFiles) != 0 {
+		t.Fatalf("skipped files = %#v, want none (removed.go is exempt from coverage)", got[0].SkippedFiles)
+	}
+	// gone.go (deleted, unassigned) must not surface as an incomplete_unassigned
+	// coverage row that would block approval.
 }
 
 func TestEnsureSelectedGlobCoverageSkipsLockfiles(t *testing.T) {
@@ -5163,6 +5194,7 @@ func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *t
 		}},
 		nil,
 		[]string{"main.go"},
+		nil,
 		map[string]*llm.ReviewerToolEvidence{
 			"harness:reviewer": {DiffStatus: llm.DiffToolStatusSucceeded},
 		},
@@ -5201,6 +5233,7 @@ func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
 		[]llm.Findings{{AgentID: "harness:reviewer", InspectedFiles: []string{"main.go"}}},
 		nil,
 		[]string{"main.go", "other.go"},
+		nil,
 	)
 	if len(got) != 1 {
 		t.Fatalf("coverage entries = %#v", got)
@@ -5326,6 +5359,7 @@ func TestRebaseReviewerCohortLeavesInherentlyUnmatchedFilesUnassigned(t *testing
 		[]llm.Findings{{AgentID: "repo:go", InspectedFiles: []string{"main.go"}}},
 		nil,
 		[]string{"main.go", ".github/workflows/ci.yml"},
+		nil,
 	)
 	if len(coverage) != 2 || coverage[1].AgentID != "unassigned" || coverage[1].Status != reviewerCoverageIncompleteUnassigned ||
 		!reflect.DeepEqual(coverage[1].SkippedFiles, []string{".github/workflows/ci.yml"}) {
@@ -5370,7 +5404,7 @@ func TestRebaseReviewerCohortOnlyInherentlyUnmatchedFileRemainsUnassigned(t *tes
 	if len(selection.SelectedAgents) != 0 || len(resumes) != 0 {
 		t.Fatalf("reused cohort selection = %#v resumes = %#v, want no assigned reviewers or resumes", selection.SelectedAgents, resumes)
 	}
-	coverage := buildReviewerCoverage(selection.SelectedAgents, nil, nil, changedFiles)
+	coverage := buildReviewerCoverage(selection.SelectedAgents, nil, nil, changedFiles, nil)
 	wantCoverage := []reviewplan.ReviewerCoverageSummary{{
 		AgentID:      "unassigned",
 		Status:       reviewerCoverageIncompleteUnassigned,
@@ -5526,6 +5560,7 @@ func TestBuildReviewerCoverageAllowsBroadReviewerSplitAssignments(t *testing.T) 
 		},
 		nil,
 		[]string{"main.go", "other.go"},
+		nil,
 	)
 	if len(got) != 2 {
 		t.Fatalf("coverage entries = %#v, want two reviewer entries", got)
@@ -5543,6 +5578,7 @@ func TestBuildReviewerCoverageIgnoresSkippedFilesOutsideAssignmentScope(t *testi
 		[]llm.Findings{{AgentID: "harness:reviewer", InspectedFiles: []string{"main.go"}, SkippedFiles: []string{"other.go"}}},
 		nil,
 		[]string{"main.go", "other.go"},
+		nil,
 	)
 	if len(got) != 2 {
 		t.Fatalf("coverage entries = %#v, want reviewer plus unassigned other.go", got)
