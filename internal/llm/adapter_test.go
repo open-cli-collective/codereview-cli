@@ -405,6 +405,98 @@ func assertValidationAttempts(t *testing.T, attempts []StructuredValidationAttem
 	}
 }
 
+func TestRunStructuredTruncatedResponseGetsExtraAttempt(t *testing.T) {
+	type probe struct {
+		OK bool `json:"ok"`
+	}
+	decodeProbe := func(data []byte) (probe, error) {
+		var p probe
+		if err := json.NewDecoder(bytes.NewReader(data)).Decode(&p); err != nil {
+			return probe{}, err
+		}
+		return p, nil
+	}
+
+	t.Run("recovers on a third attempt after two truncated responses", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`{"ok":true,"ex`)}})
+		adapter.Queue(FakeResult{SessionID: "s2", Response: Response{StructuredOutput: []byte(`{"ok":true,"ex`)}})
+		adapter.Queue(FakeResult{SessionID: "s3", Response: Response{StructuredOutput: []byte(`{"ok":true}`)}})
+
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
+		if err != nil {
+			t.Fatalf("RunStructuredWithSessionResume: %v", err)
+		}
+		if !result.Value.OK {
+			t.Fatalf("value = %#v, want recovered object", result.Value)
+		}
+		if requests := len(adapter.Requests()); requests != 3 {
+			t.Fatalf("requests = %d, want three attempts for a repeatedly truncated response", requests)
+		}
+		if len(result.ValidationAttempts) != 2 {
+			t.Fatalf("validation attempts = %#v, want two recorded failures before recovery", result.ValidationAttempts)
+		}
+		if result.ValidationAttempts[0].Label != "initial" || result.ValidationAttempts[1].Label != "retry" {
+			t.Fatalf("validation attempt labels = %#v, want initial then retry", result.ValidationAttempts)
+		}
+		if !errors.Is(result.ValidationAttempts[0].DecodeError, io.ErrUnexpectedEOF) ||
+			!errors.Is(result.ValidationAttempts[1].DecodeError, io.ErrUnexpectedEOF) {
+			t.Fatalf("validation attempt decode errors = %#v, want unexpected EOF", result.ValidationAttempts)
+		}
+	})
+
+	t.Run("fails after three truncated attempts", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`{"ok":true,"ex`)}})
+		adapter.Queue(FakeResult{SessionID: "s2", Response: Response{StructuredOutput: []byte(`{"ok":true,"ex`)}})
+		adapter.Queue(FakeResult{SessionID: "s3", Response: Response{StructuredOutput: []byte(`{"ok":true,"ex`)}})
+
+		_, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
+		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+			t.Fatalf("RunStructuredWithSessionResume error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+		}
+		var validationErr *StructuredValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("error type = %T, want StructuredValidationError", err)
+		}
+		if len(validationErr.Attempts) != 3 {
+			t.Fatalf("attempts = %#v, want three recorded attempts", validationErr.Attempts)
+		}
+		if validationErr.Attempts[2].Label != "retry_2" {
+			t.Fatalf("attempts[2].Label = %q, want retry_2", validationErr.Attempts[2].Label)
+		}
+		if !strings.Contains(err.Error(), "third:") {
+			t.Fatalf("error = %q, want a third summary once a third attempt ran", err.Error())
+		}
+		if requests := len(adapter.Requests()); requests != 3 {
+			t.Fatalf("requests = %d, want exactly three attempts, not unbounded retry", requests)
+		}
+	})
+
+	t.Run("does not extend a retry that fails on a genuine schema violation", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{StructuredOutput: []byte(`{"ok":true,"ex`)}})
+		adapter.Queue(FakeResult{SessionID: "s2", Response: Response{StructuredOutput: []byte(`{"ok":false}`)}})
+
+		_, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func(data []byte) (probe, error) {
+			p, err := decodeProbe(data)
+			if err != nil {
+				return probe{}, err
+			}
+			if !p.OK {
+				return probe{}, errors.New("ok must be true")
+			}
+			return p, nil
+		})
+		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+			t.Fatalf("RunStructuredWithSessionResume error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+		}
+		if requests := len(adapter.Requests()); requests != 2 {
+			t.Fatalf("requests = %d, want the retry budget unchanged once the response is complete-but-wrong", requests)
+		}
+	})
+}
+
 func TestRunStructuredProseRecovery(t *testing.T) {
 	type probe struct {
 		OK bool `json:"ok"`

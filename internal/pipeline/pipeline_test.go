@@ -5864,7 +5864,7 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 		if attempt > 1 {
 			sessionID = "beta-retry-session"
 		}
-		return staticStream{sessionID: sessionID, output: `{"schema_version": 1, "agent_id": "harness:beta", "findings": [`}, nil
+		return staticStream{sessionID: sessionID, output: `{"schema_version": 1, "agent_id": "harness:beta", "findings": []}`}, nil
 	case strings.Contains(req.Prompt, `"id": "harness:gamma"`):
 		a.waitReviewerStart("harness:gamma")
 		return staticStream{sessionID: "gamma-session", output: findingsJSON("harness:gamma", "main.go", "minor", 2, "gamma finding")}, nil

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -204,7 +205,11 @@ func (e *StructuredValidationError) Error() string {
 	if len(e.Attempts) > 1 && e.Attempts[1].DecodeError != nil {
 		second = e.Attempts[1].DecodeError.Error()
 	}
-	return fmt.Sprintf("%s: first: %s; second: %s", ErrStructuredOutputInvalidAfterRetry, first, second)
+	msg := fmt.Sprintf("%s: first: %s; second: %s", ErrStructuredOutputInvalidAfterRetry, first, second)
+	if len(e.Attempts) > 2 && e.Attempts[2].DecodeError != nil {
+		msg += fmt.Sprintf("; third: %s", e.Attempts[2].DecodeError.Error())
+	}
+	return msg
 }
 
 // Is matches ErrStructuredOutputInvalidAfterRetry for errors.Is callers.
@@ -253,16 +258,62 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 		return StructuredResult[T]{Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, err
 	}
 	retryValue, retryAcceptedOutput, retryErr := decodeStructuredAccepted(decode, retryResponse.StructuredOutput)
-	if retryErr != nil {
-		attempts = append(attempts, StructuredValidationAttempt{
-			Label:       "retry",
-			SessionID:   retrySessionID,
-			Response:    cloneResponse(retryResponse),
-			DecodeError: retryErr,
-		})
+	if retryErr == nil {
+		return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts, AcceptedOutput: retryAcceptedOutput}, nil
+	}
+	attempts = append(attempts, StructuredValidationAttempt{
+		Label:       "retry",
+		SessionID:   retrySessionID,
+		Response:    cloneResponse(retryResponse),
+		DecodeError: retryErr,
+	})
+
+	// A retry that still decodes as an incomplete JSON value - empty, or cut
+	// off mid-token - means the response never finished, not that its content
+	// was wrong. The "your JSON was invalid" retry prompt only addresses the
+	// latter, so a truncated retry earns one more independent attempt instead
+	// of failing the whole task on what may be a one-off cut stream.
+	if !isTruncatedStructuredOutput(retryErr) {
 		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, &StructuredValidationError{Attempts: attempts}
 	}
-	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts, AcceptedOutput: retryAcceptedOutput}, nil
+	secondRetryReq := retryReq
+	if secondRetryReq.OnValidationRetry != nil {
+		if err := secondRetryReq.OnValidationRetry(&secondRetryReq); err != nil {
+			return StructuredResult[T]{Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, err
+		}
+	}
+	secondRetryReq.Prompt = retryPrompt(req.Prompt, retryErr)
+	secondRetryResumeSessionID := ""
+	if !secondRetryReq.FreshValidationRetrySession {
+		secondRetryResumeSessionID = retrySessionID
+	}
+	if strings.TrimSpace(secondRetryResumeSessionID) == "" && !secondRetryReq.FreshValidationRetrySession {
+		secondRetryResumeSessionID = resumeSessionID
+	}
+	secondRetrySessionID, secondRetryResponse, err := runOnceWithSession(ctx, adapter, secondRetryResumeSessionID, secondRetryReq)
+	if err != nil {
+		return StructuredResult[T]{Response: secondRetryResponse, SessionID: secondRetrySessionID, ValidationAttempts: attempts}, err
+	}
+	secondRetryValue, secondRetryAcceptedOutput, secondRetryErr := decodeStructuredAccepted(decode, secondRetryResponse.StructuredOutput)
+	if secondRetryErr != nil {
+		attempts = append(attempts, StructuredValidationAttempt{
+			Label:       "retry_2",
+			SessionID:   secondRetrySessionID,
+			Response:    cloneResponse(secondRetryResponse),
+			DecodeError: secondRetryErr,
+		})
+		return StructuredResult[T]{Value: zero, Response: secondRetryResponse, SessionID: secondRetrySessionID, ValidationAttempts: attempts}, &StructuredValidationError{Attempts: attempts}
+	}
+	return StructuredResult[T]{Value: secondRetryValue, Response: secondRetryResponse, SessionID: secondRetrySessionID, ValidationAttempts: attempts, AcceptedOutput: secondRetryAcceptedOutput}, nil
+}
+
+// isTruncatedStructuredOutput reports whether decodeErr means the response
+// ended before a complete JSON value was written - empty, or cut off
+// mid-token - as opposed to a well-formed value that simply failed schema
+// validation. strict decoding via encoding/json.Decoder surfaces this class
+// as io.EOF (nothing was read) or io.ErrUnexpectedEOF (stopped mid-value).
+func isTruncatedStructuredOutput(err error) bool {
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
 }
 
 // decodeStructuredAccepted strict-decodes data, then on failure recovers a
