@@ -61,6 +61,12 @@ type CandidateStages struct {
 	synthesisSet bool
 }
 
+// ReviewersConfigured reports whether a reviewer-stage recipe was present or
+// was constructed programmatically with reviewer values.
+func (s CandidateStages) ReviewersConfigured() bool {
+	return s.reviewersSet || s.Reviewers.Model != "" || s.Reviewers.ModelTier != "" || s.Reviewers.Effort != "" || s.Reviewers.AgentDirs != nil
+}
+
 // SelectionStage configures the benchmark selection/orchestration phase.
 type SelectionStage struct {
 	Model  string `yaml:"model,omitempty" json:"model,omitempty"`
@@ -403,7 +409,8 @@ func validateCandidates(candidates []Candidate, cfg config.File) error {
 		if candidate.Profile == "" {
 			return fmt.Errorf("%w: candidate %q profile is required", ErrInvalid, candidate.ID)
 		}
-		if _, ok := cfg.Profiles[candidate.Profile]; !ok {
+		profile, ok := cfg.Profiles[candidate.Profile]
+		if !ok {
 			return fmt.Errorf("%w: candidate %q references unknown profile %q", ErrInvalid, candidate.ID, candidate.Profile)
 		}
 		if !candidate.stagesSet {
@@ -418,11 +425,34 @@ func validateCandidates(candidates []Candidate, cfg config.File) error {
 		if err := validateSynthesisStageStructural(candidate.ID, candidate.Stages); err != nil {
 			return err
 		}
+		if err := validateCandidateEfforts(candidate, profile); err != nil {
+			return err
+		}
 		if candidate.MaxAgents < 0 {
 			return fmt.Errorf("%w: candidate %q max_agents must be non-negative", ErrInvalid, candidate.ID)
 		}
 		if candidate.MaxConcurrency < 0 {
 			return fmt.Errorf("%w: candidate %q max_concurrency must be non-negative", ErrInvalid, candidate.ID)
+		}
+	}
+	return nil
+}
+
+func validateCandidateEfforts(candidate Candidate, profile config.Profile) error {
+	stages := []struct {
+		name   string
+		effort string
+	}{
+		{name: "selection", effort: candidate.Stages.Selection.Effort},
+		{name: "reviewers", effort: candidate.Stages.Reviewers.Effort},
+		{name: "synthesis", effort: candidate.Stages.Synthesis.Effort},
+	}
+	for _, stage := range stages {
+		if strings.TrimSpace(stage.effort) == "" {
+			continue
+		}
+		if err := config.ValidateEffortForRuntime(profile.LLM, stage.effort); err != nil {
+			return fmt.Errorf("%w: candidate %q stages.%s.effort: %w", ErrInvalid, candidate.ID, stage.name, err)
 		}
 	}
 	return nil
@@ -442,7 +472,7 @@ func validateSelectionStage(candidateID string, stages CandidateStages) error {
 		return fmt.Errorf("%w: candidate %q stages.selection.prompt must be non-empty when present", ErrInvalid, candidateID)
 	}
 	if stages.Selection.Effort != "" && !modelprefs.Effort(stages.Selection.Effort).Valid() {
-		return fmt.Errorf("%w: candidate %q stages.selection.effort must be one of low, medium, high", ErrInvalid, candidateID)
+		return fmt.Errorf("%w: candidate %q stages.selection.effort must be one of low, medium, high, xhigh, max", ErrInvalid, candidateID)
 	}
 	return nil
 }
@@ -467,7 +497,7 @@ func validateReviewerStageStructural(candidateID string, stages CandidateStages)
 		return fmt.Errorf("%w: candidate %q stages.reviewers.effort must be non-empty when present", ErrInvalid, candidateID)
 	}
 	if stages.Reviewers.Effort != "" && !modelprefs.Effort(stages.Reviewers.Effort).Valid() {
-		return fmt.Errorf("%w: candidate %q stages.reviewers.effort must be one of low, medium, high", ErrInvalid, candidateID)
+		return fmt.Errorf("%w: candidate %q stages.reviewers.effort must be one of low, medium, high, xhigh, max", ErrInvalid, candidateID)
 	}
 	if !stages.Reviewers.agentDirsSet {
 		return nil
@@ -494,7 +524,7 @@ func validateSynthesisStageStructural(candidateID string, stages CandidateStages
 		return fmt.Errorf("%w: candidate %q stages.synthesis.prompt must be non-empty when present", ErrInvalid, candidateID)
 	}
 	if !modelprefs.Effort(stages.Synthesis.Effort).Valid() {
-		return fmt.Errorf("%w: candidate %q stages.synthesis.effort must be one of low, medium, high", ErrInvalid, candidateID)
+		return fmt.Errorf("%w: candidate %q stages.synthesis.effort must be one of low, medium, high, xhigh, max", ErrInvalid, candidateID)
 	}
 	return nil
 }
@@ -510,9 +540,6 @@ func validateRunCandidates(suite SuiteFile) error {
 		}
 		if candidate.Stages.Reviewers.Model == "" && candidate.Stages.Reviewers.ModelTier == "" {
 			return fmt.Errorf("%w: candidate %q stages.reviewers.model or stages.reviewers.model_tier is required for benchmark run", ErrInvalid, candidate.ID)
-		}
-		if candidate.Stages.Reviewers.Effort == "" {
-			return fmt.Errorf("%w: candidate %q stages.reviewers.effort is required for benchmark run", ErrInvalid, candidate.ID)
 		}
 		if !candidate.Stages.Reviewers.agentDirsSet {
 			return fmt.Errorf("%w: candidate %q stages.reviewers.agent_dirs is required for benchmark run", ErrInvalid, candidate.ID)

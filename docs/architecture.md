@@ -65,11 +65,13 @@ it ultimately resolves, while `--selection-effort` and `--reviewer-effort` win
 after the ceiling. Other tier-resolved internal stages use their own stage
 tier before applying `max_effort` at that final tier.
 
-An explicit `ModelOverride` returns with its requested effort or default effort
-while intentionally bypassing tier resolution and the `max_effort` cap.
-`--selection-model`, `--reviewer-model`, and agent `model_id` use this
-exact-model path. Benchmark stage model and effort overrides are explicit
-runtime inputs and retain the same ceiling bypass.
+An explicit `ModelOverride` bypasses model-map resolution. Explicit effort
+still bypasses `max_effort`; inherited reviewer effort is capped when the
+request carries an effective reviewer tier. `--reviewer-model` uses that tier,
+including benchmark reviewer model overrides. `--selection-model` and agent
+`model_id` do not carry one and remain uncapped. Runtime capability validation
+happens after stage resolution, before adapter startup, so unsupported extended
+effort levels fail without opening a model session.
 
 Reviewer `agent.model_id` is an exact provider-specific model override. It must
 still enter runtime execution through `stagemodel.ResolveStageModel` as a model

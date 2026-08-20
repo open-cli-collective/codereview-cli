@@ -16,7 +16,8 @@ import (
 // Config maps config package errors to scriptable command errors.
 func Config(err error) error {
 	switch {
-	case errors.Is(err, config.ErrInvalid):
+	case errors.Is(err, config.ErrInvalid),
+		errors.Is(err, config.ErrUnsupportedEffort):
 		return exitcode.Usage(err)
 	case errors.Is(err, config.ErrNotConfigured),
 		errors.Is(err, config.ErrProfileNotFound),

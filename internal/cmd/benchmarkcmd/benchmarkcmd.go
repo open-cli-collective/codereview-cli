@@ -61,10 +61,11 @@ type doctorSelectionStage struct {
 }
 
 type doctorReviewerStage struct {
-	Model     string           `json:"model,omitempty"`
-	ModelTier string           `json:"model_tier,omitempty"`
-	Effort    string           `json:"effort,omitempty"`
-	AgentDirs []doctorAgentDir `json:"agent_dirs"`
+	Model        string           `json:"model,omitempty"`
+	ModelTier    string           `json:"model_tier,omitempty"`
+	Effort       string           `json:"effort,omitempty"`
+	EffortSource string           `json:"effort_source,omitempty"`
+	AgentDirs    []doctorAgentDir `json:"agent_dirs"`
 }
 
 type doctorAgentDir struct {
@@ -201,6 +202,10 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 	suiteDir := filepath.Dir(suite.Path)
 	for _, candidate := range selectedCandidates {
 		profile, ok := cfg.Profiles[candidate.Profile]
+		effortSource := ""
+		if candidate.Stages.ReviewersConfigured() {
+			effortSource = reviewerEffortSource(candidate.Stages.Reviewers.Effort)
+		}
 		out := doctorCandidate{
 			ID:               candidate.ID,
 			Profile:          candidate.Profile,
@@ -212,10 +217,11 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 					Prompt: candidate.Stages.Selection.Prompt,
 				},
 				Reviewers: doctorReviewerStage{
-					Model:     candidate.Stages.Reviewers.Model,
-					ModelTier: candidate.Stages.Reviewers.ModelTier,
-					Effort:    candidate.Stages.Reviewers.Effort,
-					AgentDirs: make([]doctorAgentDir, 0, len(candidate.Stages.Reviewers.AgentDirs)),
+					Model:        candidate.Stages.Reviewers.Model,
+					ModelTier:    candidate.Stages.Reviewers.ModelTier,
+					Effort:       candidate.Stages.Reviewers.Effort,
+					EffortSource: effortSource,
+					AgentDirs:    make([]doctorAgentDir, 0, len(candidate.Stages.Reviewers.AgentDirs)),
 				},
 				Synthesis: summarizeDoctorOptionalStage(candidate.Stages.Synthesis),
 			},
@@ -262,6 +268,10 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 		if candidate.Stages.Reviewers.ModelTier != "" {
 			reviewerModel = "tier:" + candidate.Stages.Reviewers.ModelTier
 		}
+		reviewerEffort := candidate.Stages.Reviewers.Effort
+		if candidate.Stages.Reviewers.EffortSource == "inherited" {
+			reviewerEffort = "inherited"
+		}
 		w.printf(
 			"- candidate %s profile=%s available=%t selection=%s/%s reviewers=%s/%s reviewer_agent_dirs=%d%s\n",
 			candidate.ID,
@@ -270,7 +280,7 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 			candidate.Stages.Selection.Model,
 			candidate.Stages.Selection.Effort,
 			reviewerModel,
-			candidate.Stages.Reviewers.Effort,
+			reviewerEffort,
 			len(candidate.Stages.Reviewers.AgentDirs),
 			synthesisText,
 		)

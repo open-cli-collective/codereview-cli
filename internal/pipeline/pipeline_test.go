@@ -7641,6 +7641,56 @@ func TestReviewerRuntimeConfigCapsEffortAtConfiguredTierCeiling(t *testing.T) {
 	}
 }
 
+func TestReviewerRuntimeConfigCapsInheritedEffortForExactModelOverride(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider:  config.LLMProviderOpenAI,
+		Auth:      config.LLMAuthSubscription,
+		Adapter:   config.LLMAdapterCodexCLI,
+		MaxEffort: config.EffortMap{"large": "medium"},
+	}}
+	agent := agents.Agent{ID: "architecture:solid", ModelTier: "large", Effort: "high"}
+
+	got, err := resolveReviewerRuntimeConfig(Request{
+		Profile:               profile,
+		ReviewerModelOverride: "operator-model",
+	}, agent)
+	if err != nil {
+		t.Fatalf("resolveReviewerRuntimeConfig(inherited): %v", err)
+	}
+	if got.model != "operator-model" || got.effort != "medium" {
+		t.Fatalf("inherited exact-model reviewer = %+v, want operator-model/medium", got)
+	}
+
+	got, err = resolveReviewerRuntimeConfig(Request{
+		Profile:                profile,
+		ReviewerModelOverride:  "operator-model",
+		ReviewerEffortOverride: "high",
+	}, agent)
+	if err != nil {
+		t.Fatalf("resolveReviewerRuntimeConfig(explicit): %v", err)
+	}
+	if got.model != "operator-model" || got.effort != "high" {
+		t.Fatalf("explicit exact-model reviewer = %+v, want operator-model/high", got)
+	}
+}
+
+func TestReviewerRuntimeConfigRejectsUnsupportedTierEffortOverride(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+	}}
+	agent := agents.Agent{ID: "go:implementation-tests", ModelTier: "small", Effort: "medium"}
+
+	_, err := resolveReviewerRuntimeConfig(Request{
+		Profile:                profile,
+		ReviewerEffortOverride: "xhigh",
+	}, agent)
+	if err == nil || !errors.Is(err, config.ErrUnsupportedEffort) {
+		t.Fatalf("resolveReviewerRuntimeConfig error = %v, want unsupported effort", err)
+	}
+}
+
 // agent.model_id intentionally bypasses the tier map, so a tier-keyed ceiling
 // has no tier to key on and must leave the agent's declared effort alone.
 func TestReviewerRuntimeConfigLeavesAgentModelIDUncapped(t *testing.T) {

@@ -23,6 +23,7 @@ func TestMapRunError(t *testing.T) {
 		is   error
 	}{
 		{name: "invalid config", err: config.ErrInvalid, want: exitcode.UsageError, is: config.ErrInvalid},
+		{name: "unsupported effort", err: config.ErrUnsupportedEffort, want: exitcode.UsageError, is: config.ErrUnsupportedEffort},
 		{name: "missing config", err: config.ErrNotConfigured, want: exitcode.AuthConfigError, is: config.ErrNotConfigured},
 		{name: "ambiguous repository profile", err: config.ErrRepositoryProfileAmbiguous, want: exitcode.AuthConfigError, is: config.ErrRepositoryProfileAmbiguous},
 		{name: "unsafe agent source", err: agents.ErrUnsafeSource, want: exitcode.UsageError, is: agents.ErrUnsafeSource},

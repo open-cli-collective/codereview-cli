@@ -161,7 +161,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.Usage(err)
 	}
 	if selectionEffortChanged && !modelprefs.Effort(selectionEffort).Valid() {
-		return exitcode.Usage(fmt.Errorf("--selection-effort must be one of low, medium, high"))
+		return exitcode.Usage(fmt.Errorf("--selection-effort must be one of low, medium, high, xhigh, max"))
 	}
 	if err := validateNonEmptyChangedFlags(cmd,
 		[2]string{"selection-prompt", flags.selectionPrompt},
@@ -180,7 +180,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return exitcode.Usage(err)
 	}
 	if reviewerEffortChanged && !modelprefs.Effort(reviewerEffort).Valid() {
-		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be one of low, medium, high"))
+		return exitcode.Usage(fmt.Errorf("--reviewer-effort must be one of low, medium, high, xhigh, max"))
 	}
 	dryRunOnlyOverrideChanged := selectionModelChanged || selectionEffortChanged || selectionPromptChanged || reviewerModelTierChanged
 	if dryRunOnlyOverrideChanged && !flags.dryRun {
@@ -267,6 +267,16 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 	if err := prref.MatchProvider(urlProvider, string(profile.Git.ProviderKind())); err != nil {
 		return exitcode.Usage(profileSpan.End(err))
+	}
+	if selectionEffortChanged {
+		if err := config.ValidateEffortForRuntime(profile.LLM, selectionEffort); err != nil {
+			return exitcode.Usage(profileSpan.End(fmt.Errorf("--selection-effort: %w", err)))
+		}
+	}
+	if reviewerEffortChanged {
+		if err := config.ValidateEffortForRuntime(profile.LLM, reviewerEffort); err != nil {
+			return exitcode.Usage(profileSpan.End(fmt.Errorf("--reviewer-effort: %w", err)))
+		}
 	}
 	_ = profileSpan.End(nil)
 	reviewerFast := profile.Fast

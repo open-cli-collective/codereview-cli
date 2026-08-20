@@ -152,8 +152,12 @@ Candidate `profile` must reference a configured profile. Candidate PR hosts must
 match the candidate profile's Git host. For the current full-pipeline
 `validate`, `doctor`, and `run` commands, candidates must declare explicit
 selection `model` and `effort`. Reviewer candidates must declare reviewer
-`effort`, `agent_dirs`, and one reviewer model selector: either exact
+`agent_dirs` and one reviewer model selector: either exact
 `stages.reviewers.model` or floor-based `stages.reviewers.model_tier`.
+Reviewer `effort` is optional. When omitted, the benchmark does not pass a
+`--reviewer-effort` override, so each selected agent keeps the effort resolved
+from its catalog entry and the profile runtime's `max_effort` ceiling. When
+present, reviewer `effort` is an explicit override.
 Selector-only `benchmark select` still requires explicit
 `stages.selection.model` and `stages.selection.effort`, but it allows the
 reviewer stage to be omitted. `stages.selection.prompt` is optional, but when
@@ -255,7 +259,7 @@ When set on the candidate, `run` also passes:
 | `stages.selection.prompt` | `--selection-prompt <path>` |
 | `stages.reviewers.model` | `--reviewer-model <model>` |
 | `stages.reviewers.model_tier` | `--reviewer-model-tier <tier>` |
-| `stages.reviewers.effort` | `--reviewer-effort <effort>` |
+| `stages.reviewers.effort` | `--reviewer-effort <effort>` when present; omitted to inherit agent/profile resolution |
 | `stages.reviewers.agent_dirs[]` | `--agents-dir <path>` |
 | `max_agents` | `--max-agents <n>` |
 | `max_concurrency` | `--max-concurrency <n>` |
@@ -267,7 +271,15 @@ When set on the case, `run` also passes:
 | `review_base_sha` | `--review-base-sha <sha>` |
 | `review_head_sha` | `--review-head-sha <sha>` |
 
-Unset fields are omitted. Posting, retry, approval, thread-resolution, session,
+Unset fields are omitted. Benchmark candidate artifacts record reviewer
+`effort_source` as `inherited` or `override`, so reports can distinguish the
+two execution recipes even when the inherited effort is resolved later per
+agent. Effort values are `low`, `medium`, `high`, `xhigh`, or `max`; validation
+rejects levels unsupported by the candidate profile's runtime. Pi RPC supports
+the full range, while the other built-in runtimes currently support through
+`high`.
+
+Posting, retry, approval, thread-resolution, session,
 and live-review flags are never taken from the suite.
 
 `--cr-bin <path>` selects the binary used for child review runs. If omitted,

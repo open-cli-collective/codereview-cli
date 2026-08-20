@@ -35,14 +35,38 @@ func TestValidateRejectsUnknownMaxEffortTier(t *testing.T) {
 func TestValidateRejectsUnknownMaxEffortValue(t *testing.T) {
 	cfg := validFile()
 	runtime := cfg.LLMRuntimes["home-llm"]
-	runtime.MaxEffort = EffortMap{"large": "xhigh"}
+	runtime.MaxEffort = EffortMap{"large": "ultra"}
 	cfg.LLMRuntimes["home-llm"] = runtime
 	err := Validate(cfg)
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("Validate error = %v, want ErrInvalid", err)
 	}
-	if !strings.Contains(err.Error(), "low, medium, high") {
+	if !strings.Contains(err.Error(), "low, medium, high, xhigh, max") {
 		t.Fatalf("Validate error = %v, want valid-value mention", err)
+	}
+}
+
+func TestValidateRejectsMaxEffortUnsupportedByRuntime(t *testing.T) {
+	cfg := validFile()
+	runtime := cfg.LLMRuntimes["home-llm"]
+	runtime.MaxEffort = EffortMap{"large": "xhigh"}
+	cfg.LLMRuntimes["home-llm"] = runtime
+	err := Validate(cfg)
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `effort "xhigh" is unsupported`) {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestValidateAcceptsExtendedMaxEffortForPiRPC(t *testing.T) {
+	cfg := validFile()
+	cfg.LLMRuntimes["home-llm"] = LLMConfig{
+		Provider:  LLMProviderPi,
+		Auth:      LLMAuthSubscription,
+		Adapter:   LLMAdapterPiRPC,
+		MaxEffort: EffortMap{"small": "max"},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate error = %v", err)
 	}
 }
 

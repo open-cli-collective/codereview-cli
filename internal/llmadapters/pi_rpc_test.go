@@ -30,7 +30,7 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 
 	stream, err := adapter.Start(ctx, Request{
 		Model:   "opencode-go/kimi-k2.6",
-		Effort:  "high",
+		Effort:  "max",
 		Prompt:  "review this diff",
 		LogPath: logPath,
 	})
@@ -69,6 +69,7 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	record := readPiRPCRecord(t, recordPath)
 	assertFlagValue(t, record.AdapterArgs, "--mode", "rpc")
 	assertFlagValue(t, record.AdapterArgs, "--model", "opencode-go/kimi-k2.6")
+	assertFlagValue(t, record.AdapterArgs, "--thinking", "max")
 	assertFlagValue(t, record.AdapterArgs, "--system-prompt", piRPCSystemPrompt)
 	for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(record.AdapterArgs, flag) {

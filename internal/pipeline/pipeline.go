@@ -3228,9 +3228,15 @@ func resolveReviewerRuntimeConfig(req Request, agent agents.Agent) (llmRuntimeCo
 
 func resolveReviewerRuntime(req Request, agent agents.Agent) (reviewerRuntimeResolution, error) {
 	if strings.TrimSpace(req.ReviewerModelOverride) != "" {
+		baselineTier, err := resolveReviewerBaselineTier(req.Profile, req.ReviewerModelTierOverride)
+		if err != nil {
+			return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
+		}
 		resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
 			Profile:        req.Profile,
 			Stage:          stagemodel.StageReviewer,
+			Tier:           baselineTier,
+			FloorTier:      config.ModelTier(strings.TrimSpace(agent.ModelTier)),
 			ModelOverride:  req.ReviewerModelOverride,
 			EffortOverride: req.ReviewerEffortOverride,
 			DefaultEffort:  agent.Effort,
@@ -3244,12 +3250,9 @@ func resolveReviewerRuntime(req Request, agent agents.Agent) (reviewerRuntimeRes
 			ResolvedEffort: resolved.Effort,
 		}, nil
 	}
-	resolved, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, agent)
+	resolved, err := resolveAgentModel(req.Profile, req.ReviewerModelTierOverride, req.ReviewerEffortOverride, agent)
 	if err != nil {
 		return reviewerRuntimeResolution{}, err
-	}
-	if effort := strings.TrimSpace(req.ReviewerEffortOverride); effort != "" {
-		resolved.ResolvedEffort = effort
 	}
 	return resolved, nil
 }
@@ -3276,13 +3279,14 @@ func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string,
 	return warning == "", warning, nil
 }
 
-func resolveAgentModel(profile config.Profile, baselineOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {
+func resolveAgentModel(profile config.Profile, baselineOverride, effortOverride string, agent agents.Agent) (reviewerRuntimeResolution, error) {
 	if modelID := strings.TrimSpace(agent.ModelID); modelID != "" {
 		resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
-			Profile:       profile,
-			Stage:         stagemodel.StageReviewer,
-			ModelOverride: modelID,
-			DefaultEffort: agent.Effort,
+			Profile:        profile,
+			Stage:          stagemodel.StageReviewer,
+			ModelOverride:  modelID,
+			EffortOverride: effortOverride,
+			DefaultEffort:  agent.Effort,
 		})
 		if err != nil {
 			return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
@@ -3302,11 +3306,12 @@ func resolveAgentModel(profile config.Profile, baselineOverride string, agent ag
 		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)
 	}
 	resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
-		Profile:       profile,
-		Stage:         stagemodel.StageReviewer,
-		Tier:          baselineTier,
-		FloorTier:     floorTier,
-		DefaultEffort: agent.Effort,
+		Profile:        profile,
+		Stage:          stagemodel.StageReviewer,
+		Tier:           baselineTier,
+		FloorTier:      floorTier,
+		EffortOverride: effortOverride,
+		DefaultEffort:  agent.Effort,
 	})
 	if err != nil {
 		return reviewerRuntimeResolution{}, fmt.Errorf("pipeline: agent %s: %w", agent.ID, err)

@@ -114,6 +114,31 @@ func TestValidateForRunAcceptsEmptyReviewerAgentDirsField(t *testing.T) {
 	}
 }
 
+func TestValidateForRunAcceptsInheritedReviewerEffort(t *testing.T) {
+	suite := loadSuite(t, strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        agent_dirs:", 1))
+	if err := ValidateForRun(suite, testConfig()); err != nil {
+		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
+func TestValidateForRunAcceptsExtendedPiEffort(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), "model: gpt-5.4\n        effort: high\n        prompt:", "model: openai-codex/gpt-5.6-luna\n        effort: xhigh\n        prompt:", 1)
+	body = strings.Replace(body, "model: gpt-5.4\n        effort: high\n        agent_dirs:", "model: openai-codex/gpt-5.6-luna\n        effort: max\n        agent_dirs:", 1)
+	suite := loadSuite(t, body)
+	if err := ValidateForRun(suite, runtimeTestConfig(config.LLMProviderPi, config.LLMAuthSubscription, config.LLMAdapterPiRPC)); err != nil {
+		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
+func TestValidateForRunRejectsExtendedEffortForUnsupportedRuntime(t *testing.T) {
+	body := strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: xhigh\n        agent_dirs:", 1)
+	suite := loadSuite(t, body)
+	err := ValidateForRun(suite, runtimeTestConfig(config.LLMProviderAnthropic, config.LLMAuthSubscription, config.LLMAdapterClaudeCLI))
+	if err == nil || !strings.Contains(err.Error(), `candidate "cand1" stages.reviewers.effort: config: unsupported effort: effort "xhigh" is unsupported`) {
+		t.Fatalf("ValidateForRun error = %v", err)
+	}
+}
+
 func TestValidateForRunAcceptsReviewerModelTierWithoutReviewerModel(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), "      reviewers:\n        model: gpt-5.4\n        effort: high\n", "      reviewers:\n        model_tier: medium\n        effort: high\n", 1)
 	suite := loadSuite(t, body)
@@ -340,9 +365,9 @@ cases:
 		{name: "blank selection model when present", body: replaceSuiteLine(validSuiteYAML(), "        model: gpt-5.4", `        model: "  "`), want: "stages.selection.model must be non-empty"},
 		{name: "blank selection effort when present", body: replaceSuiteLine(validSuiteYAML(), "        effort: high", `        effort: "  "`), want: "stages.selection.effort must be non-empty"},
 		{name: "missing synthesis model", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        effort: low\n"), want: "stages.synthesis.model is required when stages.synthesis is set"},
-		{name: "invalid synthesis effort", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.4\n        effort: invalid\n"), want: "stages.synthesis.effort must be one of low, medium, high"},
+		{name: "invalid synthesis effort", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.4\n        effort: invalid\n"), want: "stages.synthesis.effort must be one of low, medium, high, xhigh, max"},
 		{name: "blank synthesis prompt", body: withRawSynthesisStage(validSuiteYAML(), "      synthesis:\n        model: gpt-5.4\n        effort: low\n        prompt: \"  \"\n"), want: "stages.synthesis.prompt must be non-empty when present"},
-		{name: "invalid reviewer effort", body: strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: invalid\n        agent_dirs:", 1), want: "stages.reviewers.effort must be one of low, medium, high"},
+		{name: "invalid reviewer effort", body: strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: invalid\n        agent_dirs:", 1), want: "stages.reviewers.effort must be one of low, medium, high, xhigh, max"},
 		{name: "invalid review base sha", body: replaceSuiteLine(validSuiteYAML(), "    review_base_sha: 1111111", "    review_base_sha: notsha"), want: "review_base_sha"},
 		{name: "blank review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222", `    review_head_sha: "  "`), want: "review_head_sha must be non-empty"},
 		{name: "missing review head sha", body: replaceSuiteLine(validSuiteYAML(), "    review_head_sha: 2222222\n", ""), want: "must be set together"},
@@ -520,6 +545,21 @@ func testConfig() config.File {
 	return configtest.File(
 		configtest.WithoutSecrets(),
 		configtest.WithoutRepositoryProfiles(),
-		configtest.HomeProfile(config.Profile{Git: config.GitConfig{Host: "github.com"}}),
+		configtest.HomeProfile(config.Profile{
+			Git: config.GitConfig{Host: "github.com"},
+			LLM: config.LLMConfig{
+				Provider: config.LLMProviderAnthropic,
+				Auth:     config.LLMAuthSubscription,
+				Adapter:  config.LLMAdapterClaudeCLI,
+			},
+		}),
 	)
+}
+
+func runtimeTestConfig(provider config.LLMProvider, auth config.LLMAuth, adapter config.LLMAdapter) config.File {
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.LLM = config.LLMConfig{Provider: provider, Auth: auth, Adapter: adapter}
+	cfg.Profiles["home"] = profile
+	return cfg
 }

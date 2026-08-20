@@ -138,6 +138,45 @@ func TestResolveStageModelBypassesTierForExplicitOverride(t *testing.T) {
 	}
 }
 
+func TestResolveStageModelAllowsExtendedPiEffort(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider: config.LLMProviderPi,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterPiRPC,
+	}}
+
+	got, err := ResolveStageModel(Request{
+		Profile:        profile,
+		Stage:          StageReviewer,
+		ModelOverride:  "openai-codex/gpt-5.6-luna",
+		EffortOverride: "max",
+	})
+	if err != nil {
+		t.Fatalf("ResolveStageModel: %v", err)
+	}
+	if got.Effort != "max" {
+		t.Fatalf("Effort = %q, want max", got.Effort)
+	}
+}
+
+func TestResolveStageModelRejectsExtendedEffortForUnsupportedRuntime(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider: config.LLMProviderAnthropic,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterClaudeCLI,
+	}}
+
+	_, err := ResolveStageModel(Request{
+		Profile:        profile,
+		Stage:          StageReviewer,
+		ModelOverride:  "claude-opus-5",
+		EffortOverride: "xhigh",
+	})
+	if err == nil || !strings.Contains(err.Error(), `stage reviewer: config: unsupported effort: effort "xhigh" is unsupported`) {
+		t.Fatalf("ResolveStageModel error = %v", err)
+	}
+}
+
 func TestResolveStageModelErrorsForUnmappedTier(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderPi,

@@ -88,7 +88,8 @@ func TestDoctorJSONReportsSelectedReadiness(t *testing.T) {
 		got.Candidates[0].Stages.Selection.Model != "kimi" ||
 		got.Candidates[0].Stages.Selection.Effort != "low" ||
 		got.Candidates[0].Stages.Reviewers.Model != "kimi" ||
-		got.Candidates[0].Stages.Reviewers.Effort != "low" {
+		got.Candidates[0].Stages.Reviewers.Effort != "low" ||
+		got.Candidates[0].Stages.Reviewers.EffortSource != "override" {
 		t.Fatalf("candidates = %#v, want selected second", got.Candidates)
 	}
 	if !got.Candidates[0].ProfileAvailable || got.Candidates[0].GitHost != "github.com" {
@@ -392,6 +393,60 @@ func TestDoctorTextUsesDefaultResultsDir(t *testing.T) {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout = %q, want substring %q", stdout, want)
 		}
+	}
+}
+
+func TestDoctorReportsInheritedReviewerEffort(t *testing.T) {
+	body := strings.Replace(validBenchmarkSuite(t), "        effort: high\n        agent_dirs:", "        agent_dirs:", 1)
+	suitePath := writeBenchmarkSuite(t, body)
+
+	cmd, out := newTestCommand(t)
+	if err := root.Execute(cmd, []string{"benchmark", "doctor", suitePath, "--candidate", "first", "--json"}); err != nil {
+		t.Fatalf("Execute JSON: %v", err)
+	}
+	var got doctorReport
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	}
+	if len(got.Candidates) != 1 || got.Candidates[0].Stages.Reviewers.Effort != "" || got.Candidates[0].Stages.Reviewers.EffortSource != "inherited" {
+		t.Fatalf("reviewer stage = %#v, want inherited effort", got.Candidates)
+	}
+
+	cmd, out = newTestCommand(t)
+	if err := root.Execute(cmd, []string{"benchmark", "doctor", suitePath, "--candidate", "first"}); err != nil {
+		t.Fatalf("Execute text: %v", err)
+	}
+	if !strings.Contains(out.String(), "reviewers=claude-sonnet-4-6/inherited") {
+		t.Fatalf("stdout = %q, want inherited reviewer effort", out.String())
+	}
+}
+
+func TestDoctorReportOmitsReviewerEffortSourceWithoutReviewerRecipe(t *testing.T) {
+	suite := benchmark.SuiteFile{
+		Path:  filepath.Join(t.TempDir(), "suite.yml"),
+		Suite: benchmark.Suite{ID: "selector-only"},
+		Candidates: []benchmark.Candidate{{
+			ID:      "selector",
+			Profile: "home",
+			Stages: benchmark.CandidateStages{
+				Selection: benchmark.SelectionStage{Model: "selector", Effort: "medium"},
+			},
+		}},
+	}
+
+	report, err := buildDoctorReport(suite, testConfig(), doctorFlags{})
+	if err != nil {
+		t.Fatalf("buildDoctorReport: %v", err)
+	}
+	if len(report.Candidates) != 1 || report.Candidates[0].Stages.Reviewers.EffortSource != "" {
+		t.Fatalf("reviewer stage = %#v, want no effort source", report.Candidates)
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"effort_source"`) {
+		t.Fatalf("doctor JSON = %s, want no reviewer effort source", data)
 	}
 }
 
@@ -1235,6 +1290,18 @@ func TestReviewArgsMapsExplicitStageRecipesToReviewFlags(t *testing.T) {
 			forbidden: []string{"--reviewer-model"},
 		},
 		{
+			name: "inherited reviewer effort",
+			candidate: benchmark.Candidate{
+				Profile: "home",
+				Stages: benchmark.CandidateStages{
+					Selection: benchmark.SelectionStage{Model: "selector", Effort: "medium"},
+					Reviewers: benchmark.ReviewerStage{ModelTier: "small", AgentDirs: []string{}},
+				},
+			},
+			required:  []string{"--selection-model", "selector", "--selection-effort", "medium", "--reviewer-model-tier", "small"},
+			forbidden: []string{"--reviewer-effort"},
+		},
+		{
 			name: "review shas",
 			candidate: benchmark.Candidate{
 				Profile: "home",
@@ -1261,6 +1328,51 @@ func TestReviewArgsMapsExplicitStageRecipesToReviewFlags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSummarizeCandidatesRecordsReviewerEffortSource(t *testing.T) {
+	candidates := []benchmark.Candidate{
+		{
+			ID: "inherited",
+			Stages: benchmark.CandidateStages{
+				Selection: benchmark.SelectionStage{Model: "selector", Effort: "medium"},
+				Reviewers: benchmark.ReviewerStage{ModelTier: "small", AgentDirs: []string{}},
+			},
+		},
+		{
+			ID: "override",
+			Stages: benchmark.CandidateStages{
+				Selection: benchmark.SelectionStage{Model: "selector", Effort: "medium"},
+				Reviewers: benchmark.ReviewerStage{Model: "reviewer", Effort: "max", AgentDirs: []string{}},
+			},
+		},
+	}
+
+	got := summarizeCandidates(t.TempDir(), candidates)
+	if got[0].Stages.Reviewers.EffortSource != "inherited" || got[0].Stages.Reviewers.Effort != "" {
+		t.Fatalf("inherited reviewer summary = %#v", got[0].Stages.Reviewers)
+	}
+	if got[1].Stages.Reviewers.EffortSource != "override" || got[1].Stages.Reviewers.Effort != "max" {
+		t.Fatalf("override reviewer summary = %#v", got[1].Stages.Reviewers)
+	}
+}
+
+func TestSummarizeCandidatesOmitsReviewerEffortSourceWithoutReviewerRecipe(t *testing.T) {
+	candidates := []benchmark.Candidate{{
+		ID: "selector-only",
+		Stages: benchmark.CandidateStages{
+			Selection: benchmark.SelectionStage{Model: "selector", Effort: "medium"},
+		},
+	}}
+
+	got := summarizeCandidates(t.TempDir(), candidates)
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"effort_source"`) {
+		t.Fatalf("candidate JSON = %s, want no reviewer effort source", data)
 	}
 }
 

@@ -148,6 +148,11 @@ func TestInProcessExecutorOpensAndCleansRuntimePerCell(t *testing.T) {
 	if pipelineRequests[1].ReviewBaseSHA != "1111111" || pipelineRequests[1].ReviewHeadSHA != "2222222" {
 		t.Fatalf("second pipeline request = %#v, want case SHAs", pipelineRequests[1])
 	}
+	for _, req := range pipelineRequests {
+		if req.ReviewerEffortOverride != "" {
+			t.Fatalf("reviewer effort override = %q, want inherited effort", req.ReviewerEffortOverride)
+		}
+	}
 }
 
 func TestInProcessExecutorRecoversPipelinePanicAfterCleanup(t *testing.T) {
