@@ -378,6 +378,71 @@ func coverageStatusLabel(status string) string {
 	}
 }
 
+// uninspectedFiles returns the paths this run left unread: every file a
+// reviewer skipped or that reached no reviewer at all, minus anything some
+// other reviewer did inspect.
+//
+// The subtraction matters. Coverage is an obligation on the review, not on each
+// reviewer individually, so a file that one reviewer declined and another read
+// is covered and does not belong in this list. Reporting it anyway would send a
+// reader looking for a gap that is already closed.
+func uninspectedFiles(coverage []ReviewerCoverageSummary) []string {
+	inspected := map[string]bool{}
+	for _, entry := range coverage {
+		for _, file := range entry.InspectedFiles {
+			inspected[file] = true
+		}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, entry := range coverage {
+		for _, file := range entry.SkippedFiles {
+			if inspected[file] || seen[file] {
+				continue
+			}
+			seen[file] = true
+			out = append(out, file)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// writeApprovalWithheld names the reviewers that failed and the files that went
+// unread when coverage, rather than a finding, is what kept an otherwise-clean
+// review from approving.
+//
+// The two outcomes are otherwise indistinguishable at a glance: a review that
+// approved and a review that found nothing but could not approve both render as
+// a table of zeros, with the cause visible only to a reader who reaches the
+// coverage list and already knows that incomplete coverage downgrades the
+// event. Re-running does not clear it either, since a reviewer that declined a
+// file declines it again, so a reader given no cause has no next step.
+func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSummary, uninspected []string) {
+	if len(failures) == 0 && len(uninspected) == 0 {
+		return
+	}
+	out.WriteString("### Approval Withheld\n\n")
+	out.WriteString("No blocking or major findings were reported. Approval is withheld because this run did not cover the change:\n\n")
+	for _, failure := range failures {
+		fmt.Fprintf(out, "- %s did not produce a result: %s\n", codeSpan(failure.AgentID), escapeCell(failure.Error))
+	}
+	if len(uninspected) > 0 {
+		fmt.Fprintf(out, "- %s inspected by no reviewer:\n", pluralFiles(len(uninspected)))
+		for _, file := range uninspected {
+			fmt.Fprintf(out, "  - %s\n", codeSpan(file))
+		}
+	}
+	out.WriteString("\nRe-running the same review reproduces this: a reviewer that declined a file declines it again. Closing the gap means bringing these paths into the remit of a reviewer that will read them, or establishing that they need no review.\n\n")
+}
+
+func pluralFiles(n int) string {
+	if n == 1 {
+		return "1 file"
+	}
+	return fmt.Sprintf("%d files", n)
+}
+
 func inspectedFileUnion(coverage []ReviewerCoverageSummary) []string {
 	seen := map[string]bool{}
 	var union []string

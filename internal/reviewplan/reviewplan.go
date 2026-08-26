@@ -447,8 +447,10 @@ func (b *builder) buildReview() (Plan, error) {
 		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", event)
 	}
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
+	approvalWithheld := false
 	if event == review.ReviewEventApprove && (len(b.req.RunSummary.ReviewerFailures) > 0 || hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)) {
 		event = review.ReviewEventComment
+		approvalWithheld = true
 	}
 	outcome, err := OutcomeFromReviewEvent(event)
 	if err != nil {
@@ -478,7 +480,7 @@ func (b *builder) buildReview() (Plan, error) {
 
 	anchored := b.anchoredForOrdered(ordered)
 	summary := b.deriveSummary(ordered)
-	rollupBody := b.renderRollup(ordered, anchored, summary)
+	rollupBody := b.renderRollup(ordered, anchored, summary, approvalWithheld)
 	submit, err := b.newAction(ActionKindSubmitReview)
 	if err != nil {
 		return Plan{}, err
@@ -817,11 +819,19 @@ func firstFallbackHunk(file DiffFile) (DiffHunk, bool) {
 	return DiffHunk{}, false
 }
 
-func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFinding, summary Summary) string {
+func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFinding, summary Summary, approvalWithheld bool) string {
 	var out strings.Builder
 	rollupHeader(&out, b.req)
+	// Rendered after the counts, not before them: the table of zeros is what
+	// misleads, so the explanation has to be the next thing read.
+	withheld := func() {
+		if approvalWithheld {
+			writeApprovalWithheld(&out, summary.Run.ReviewerFailures, uninspectedFiles(summary.Run.ReviewerCoverage))
+		}
+	}
 	if len(summary.Reviewers) > 0 {
 		writeReviewerTable(&out, summary.Reviewers, summary.Run.ReviewerCoverage)
+		withheld()
 		b.writeReviewerSections(&out, anchored, summary.Reviewers)
 		writeReviewerCoverageDiagnostics(&out, summary.Run.ReviewerCoverage)
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
@@ -837,6 +847,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 			out.WriteString(" |\n")
 		}
 		out.WriteString("\n")
+		withheld()
 		for _, finding := range anchored {
 			writeFindingBlock(&out, finding)
 		}

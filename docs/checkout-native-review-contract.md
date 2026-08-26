@@ -334,6 +334,15 @@ reviewer failures, skipped files, missing reviewer results, and unassigned
 changed files are incomplete coverage and must not turn into a clean approval
 silently.
 
+When incomplete coverage is what downgraded an approving review to a comment,
+the rollup says so under an **Approval Withheld** heading, naming the reviewers
+that produced no result and every changed file no reviewer inspected. Without
+it, a review that approved and a review that found nothing but could not approve
+render identically as a table of zeros, and re-running is not a remedy: a
+reviewer that declined a file declines it again. The list subtracts files some
+other reviewer did inspect, because coverage is an obligation on the review
+rather than on each reviewer separately.
+
 Coverage uses two related scopes:
 
 - readable files: all changed files in the workbench, **except generated
