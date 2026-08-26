@@ -344,12 +344,23 @@ declined a file declines it again.
 
 The section renders whenever that coercion fired, rather than deciding again
 from the evidence, so it cannot disagree with the gate about whether coverage
-was incomplete. The unread-file list is each reviewer's obligation minus what
-some reviewer inspected. Obligation is the reviewer's scope, not its skip list:
-a reviewer that failed carries a scope and no file lists, and one that omitted a
-file from both lists carries the paths only in its diagnostic. The subtraction
-runs across reviewers because coverage is an obligation on the review rather
-than on each reviewer separately.
+was incomplete. `coverageStatusComplete` is the one classification of the status
+enum, read by both the gate and the section, so a status neither knows fails
+toward withholding approval and toward being explained.
+
+Every reviewer with a non-complete status gets a line, so the section always
+carries evidence. That includes a reviewer whose skipped file another reviewer
+read: the gate is evaluated one reviewer at a time while the unread-file list is
+computed across the review, and in that state no file is unread yet approval is
+still withheld. The section says so outright rather than introducing a list and
+listing nothing.
+
+The unread-file list is each reviewer's obligation minus what some reviewer
+inspected. Obligation is the reviewer's scope, not its skip list: a reviewer
+that failed carries a scope and no file lists, and one that omitted a file from
+both lists carries the paths only in its diagnostic. A reviewer's skipped paths
+are spelled out on its own line only where the unread list does not already
+carry them.
 
 Coverage uses two related scopes:
 

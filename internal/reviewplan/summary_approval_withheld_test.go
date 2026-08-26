@@ -160,13 +160,20 @@ func TestRollupApprovalWithheld(t *testing.T) {
 		if plan.Outcome != OutcomeComment {
 			t.Fatalf("outcome = %q, want comment", plan.Outcome)
 		}
-		mustContain(t, plan.RollupMarkdown,
+		md := plan.RollupMarkdown
+		mustContain(t, md,
 			"### Approval Withheld",
 			"No blocking or major findings were reported.",
+			"`structure:repo-health` — ⚠️ incomplete (skipped files)",
 			"1 file inspected by no reviewer:",
 			"`big_test.py`",
 			"Re-running the same review reproduces this",
 		)
+		// The path is the unread-file list's to state; repeating it on the
+		// attribution line above prints it twice in a four-line block.
+		if strings.Count(md[strings.Index(md, "### Approval Withheld"):strings.Index(md, "Re-running")], "big_test.py") != 1 {
+			t.Fatalf("unread path printed more than once in the section:\n%s", md)
+		}
 	})
 
 	// The gate coerces on coverage status, so every status it coerces on has to
@@ -267,6 +274,75 @@ func TestRollupApprovalWithheld(t *testing.T) {
 			t.Fatalf("test did not reach the no-reviewer-table branch:\n%s", md)
 		}
 		mustContain(t, md, "### Approval Withheld", "`orphan.sh`")
+	})
+
+	// The gate is per reviewer while the unread-file list is per review, so a
+	// reviewer can withhold approval over a file another reviewer read. The
+	// section still has to say what happened rather than render a bare colon.
+	t.Run("carries evidence when every file was read by someone", func(t *testing.T) {
+		req := cleanApproveRequest()
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"structure:repo-health", "go:implementation-tests"},
+			ReviewerCoverage: []ReviewerCoverageSummary{
+				{
+					AgentID:      "structure:repo-health",
+					Status:       "incomplete_skipped",
+					Scope:        []string{"f.go"},
+					SkippedFiles: []string{"f.go"},
+				},
+				{
+					AgentID:        "go:implementation-tests",
+					Status:         "complete_broad",
+					Scope:          []string{"f.go"},
+					InspectedFiles: []string{"f.go"},
+				},
+			},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment", plan.Outcome)
+		}
+		md := plan.RollupMarkdown
+		mustContain(t, md,
+			"### Approval Withheld",
+			"`structure:repo-health` — ⚠️ incomplete (skipped files); skipped: `f.go`",
+			"Every changed file was read by some reviewer.",
+		)
+		if strings.Contains(md, "inspected by no reviewer") {
+			t.Fatalf("claims unread files when every file was read:\n%s", md)
+		}
+		if strings.Contains(md, "the change:\n\n\n") {
+			t.Fatalf("section introduces its list and then lists nothing:\n%s", md)
+		}
+	})
+
+	// The gate and the explanation read the same classification, so a status
+	// neither knows fails toward withholding and toward being explained.
+	t.Run("an unknown status withholds and is still explained", func(t *testing.T) {
+		req := cleanApproveRequest()
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"structure:repo-health"},
+			ReviewerCoverage: []ReviewerCoverageSummary{{
+				AgentID:        "structure:repo-health",
+				Status:         "incomplete_something_new",
+				Scope:          []string{"main.go"},
+				InspectedFiles: []string{"main.go"},
+			}},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment; an unknown status must not bypass the gate", plan.Outcome)
+		}
+		mustContain(t, plan.RollupMarkdown,
+			"### Approval Withheld",
+			"`structure:repo-health` — incomplete_something_new",
+		)
 	})
 
 	t.Run("a clean approving review says nothing about withholding", func(t *testing.T) {

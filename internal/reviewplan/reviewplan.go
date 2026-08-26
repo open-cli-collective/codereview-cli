@@ -336,16 +336,13 @@ func applySelfApprovalPolicy(event review.ReviewEvent, opts EventOptions) review
 	return event
 }
 
+// hasIncompleteReviewerCoverage reports whether any reviewer fell short of its
+// coverage obligation. The status classification lives in
+// coverageStatusComplete, shared with the explanation this decision produces, so
+// a new status cannot be complete for the gate and incomplete for the rollup.
 func hasIncompleteReviewerCoverage(coverage []ReviewerCoverageSummary) bool {
 	for _, entry := range coverage {
-		switch entry.Status {
-		case "", "complete_broad", "complete_constrained":
-			continue
-		case "incomplete_skipped", "incomplete_failed", "incomplete_unassigned":
-			return true
-		default:
-			// Unknown coverage statuses are treated conservatively so a new
-			// incomplete state cannot silently bypass approval coercion.
+		if !coverageStatusComplete(entry.Status) {
 			return true
 		}
 	}
