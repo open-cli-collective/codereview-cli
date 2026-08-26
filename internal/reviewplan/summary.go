@@ -378,14 +378,19 @@ func coverageStatusLabel(status string) string {
 	}
 }
 
-// uninspectedFiles returns the paths this run left unread: every file a
-// reviewer skipped or that reached no reviewer at all, minus anything some
-// other reviewer did inspect.
+// uninspectedFiles returns the paths this run left unread: everything any
+// reviewer was accountable for, minus everything some reviewer inspected.
 //
-// The subtraction matters. Coverage is an obligation on the review, not on each
-// reviewer individually, so a file that one reviewer declined and another read
-// is covered and does not belong in this list. Reporting it anyway would send a
-// reader looking for a gap that is already closed.
+// Accountability is the reviewer's scope, not its skip list. A reviewer that
+// crashed carries a scope and no skip list at all, and one that omitted a file
+// from both its inspected and skipped lists carries the paths only in its
+// diagnostic; reading skips alone would drop the files those two cases left
+// unread, which are the cases most in need of naming.
+//
+// The subtraction matters in the other direction. Coverage is an obligation on
+// the review rather than on each reviewer separately, so a file one reviewer
+// declined and another read is covered and does not belong in this list.
+// Reporting it anyway would send a reader looking for a gap already closed.
 func uninspectedFiles(coverage []ReviewerCoverageSummary) []string {
 	inspected := map[string]bool{}
 	for _, entry := range coverage {
@@ -396,7 +401,9 @@ func uninspectedFiles(coverage []ReviewerCoverageSummary) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, entry := range coverage {
-		for _, file := range entry.SkippedFiles {
+		// Scope is empty on the unassigned pseudo-entry, which carries its
+		// paths as skips instead, so both lists feed the obligation set.
+		for _, file := range append(append([]string(nil), entry.Scope...), entry.SkippedFiles...) {
 			if inspected[file] || seen[file] {
 				continue
 			}
@@ -408,26 +415,55 @@ func uninspectedFiles(coverage []ReviewerCoverageSummary) []string {
 	return out
 }
 
-// writeApprovalWithheld names the reviewers that failed and the files that went
-// unread when coverage, rather than a finding, is what kept an otherwise-clean
-// review from approving.
-//
-// The two outcomes are otherwise indistinguishable at a glance: a review that
-// approved and a review that found nothing but could not approve both render as
-// a table of zeros, with the cause visible only to a reader who reaches the
-// coverage list and already knows that incomplete coverage downgrades the
-// event. Re-running does not clear it either, since a reviewer that declined a
-// file declines it again, so a reader given no cause has no next step.
-func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSummary, uninspected []string) {
-	if len(failures) == 0 && len(uninspected) == 0 {
-		return
+// incompleteCoverageDiagnostics returns one line per reviewer whose coverage
+// status is not a complete one and that recorded a diagnostic, skipping any
+// reviewer already named in failures so a crash is not reported twice.
+func incompleteCoverageDiagnostics(coverage []ReviewerCoverageSummary, failures []ReviewerFailureSummary) []string {
+	failed := make(map[string]bool, len(failures))
+	for _, failure := range failures {
+		failed[failure.AgentID] = true
 	}
+	var out []string
+	for _, entry := range coverage {
+		switch entry.Status {
+		case "", "complete_broad", "complete_constrained":
+			continue
+		}
+		if failed[entry.AgentID] || strings.TrimSpace(entry.Diagnostic) == "" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("- %s — %s: %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status), escapeCell(entry.Diagnostic)))
+	}
+	return out
+}
+
+// writeApprovalWithheld says why an otherwise-clean review did not approve.
+//
+// The caller decides whether to render this: it is called exactly when the
+// approve-to-comment coercion in buildReview fired, so the section can never
+// disagree with the gate about whether coverage was incomplete. Deciding that
+// again from the evidence would put the definition of incomplete coverage in
+// two places, and the states the two definitions disagreed about are the ones
+// most in need of an explanation.
+//
+// Something has to be said in every such run, because the two outcomes are
+// otherwise indistinguishable at a glance: a review that approved and a review
+// that found nothing but could not approve both render as a table of zeros,
+// with the cause visible only to a reader who reaches the coverage list and
+// already knows that incomplete coverage downgrades the event. Re-running does
+// not clear it either, since a reviewer that declined a file declines it again,
+// so a reader given no cause has no next step.
+func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSummary, coverage []ReviewerCoverageSummary) {
 	out.WriteString("### Approval Withheld\n\n")
 	out.WriteString("No blocking or major findings were reported. Approval is withheld because this run did not cover the change:\n\n")
 	for _, failure := range failures {
 		fmt.Fprintf(out, "- %s did not produce a result: %s\n", codeSpan(failure.AgentID), escapeCell(failure.Error))
 	}
-	if len(uninspected) > 0 {
+	for _, line := range incompleteCoverageDiagnostics(coverage, failures) {
+		out.WriteString(line)
+		out.WriteString("\n")
+	}
+	if uninspected := uninspectedFiles(coverage); len(uninspected) > 0 {
 		fmt.Fprintf(out, "- %s inspected by no reviewer:\n", pluralFiles(len(uninspected)))
 		for _, file := range uninspected {
 			fmt.Fprintf(out, "  - %s\n", codeSpan(file))

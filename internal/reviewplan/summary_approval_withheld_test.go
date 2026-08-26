@@ -13,12 +13,14 @@ func TestUninspectedFiles(t *testing.T) {
 			{
 				AgentID:        "structure:repo-health",
 				Status:         "incomplete_skipped",
+				Scope:          []string{"main.go", "schema.sql"},
 				InspectedFiles: []string{"main.go"},
 				SkippedFiles:   []string{"schema.sql"},
 			},
 			{
 				AgentID:        "database:schema",
 				Status:         "complete_constrained",
+				Scope:          []string{"schema.sql"},
 				InspectedFiles: []string{"schema.sql"},
 			},
 		})
@@ -32,12 +34,14 @@ func TestUninspectedFiles(t *testing.T) {
 			{
 				AgentID:        "structure:repo-health",
 				Status:         "incomplete_skipped",
+				Scope:          []string{"main.go", "vendor_dump.sql"},
 				InspectedFiles: []string{"main.go"},
 				SkippedFiles:   []string{"vendor_dump.sql"},
 			},
 			{
 				AgentID:        "architecture:solid",
 				Status:         "complete_constrained",
+				Scope:          []string{"main.go"},
 				InspectedFiles: []string{"main.go"},
 			},
 		})
@@ -46,16 +50,56 @@ func TestUninspectedFiles(t *testing.T) {
 		}
 	})
 
+	// buildReviewerCoverage sets incomplete_skipped when assigned files were
+	// neither inspected nor skipped; the paths live in the scope and the
+	// diagnostic, and the skip list stays empty.
+	t.Run("assigned files reported in neither list are uninspected", func(t *testing.T) {
+		got := uninspectedFiles([]ReviewerCoverageSummary{{
+			AgentID:        "structure:repo-health",
+			Status:         "incomplete_skipped",
+			Scope:          []string{"main.go", "forgotten.py"},
+			InspectedFiles: []string{"main.go"},
+			Diagnostic:     "assigned files were neither inspected nor skipped: forgotten.py",
+		}})
+		if len(got) != 1 || got[0] != "forgotten.py" {
+			t.Fatalf("uninspectedFiles = %v, want [forgotten.py]", got)
+		}
+	})
+
+	// A reviewer that crashed gets a coverage entry carrying its scope and no
+	// file lists at all, so its uniquely assigned files are unread.
+	t.Run("a failed reviewer leaves its whole scope uninspected", func(t *testing.T) {
+		got := uninspectedFiles([]ReviewerCoverageSummary{
+			{
+				AgentID:    "structure:repo-health",
+				Status:     "incomplete_failed",
+				Scope:      []string{"a.sh", "shared.go"},
+				Diagnostic: "adapter exited 1",
+			},
+			{
+				AgentID:        "go:implementation-tests",
+				Status:         "complete_constrained",
+				Scope:          []string{"shared.go"},
+				InspectedFiles: []string{"shared.go"},
+			},
+		})
+		if len(got) != 1 || got[0] != "a.sh" {
+			t.Fatalf("uninspectedFiles = %v, want [a.sh]; shared.go was read by the other reviewer", got)
+		}
+	})
+
 	t.Run("unassigned files count and duplicates collapse", func(t *testing.T) {
 		got := uninspectedFiles([]ReviewerCoverageSummary{
 			{
 				AgentID:      "structure:repo-health",
 				Status:       "incomplete_skipped",
+				Scope:        []string{"b.sh", "a.sh"},
 				SkippedFiles: []string{"b.sh", "a.sh"},
 			},
 			{
 				AgentID:      "policies:conventions",
 				Status:       "incomplete_skipped",
+				Scope:        []string{"a.sh"},
 				SkippedFiles: []string{"a.sh"},
 			},
 			{
@@ -88,6 +132,15 @@ func TestRollupApprovalWithheld(t *testing.T) {
 		return req
 	}
 
+	mustContain := func(t *testing.T, md string, wants ...string) {
+		t.Helper()
+		for _, want := range wants {
+			if !strings.Contains(md, want) {
+				t.Fatalf("rollup missing %q:\n%s", want, md)
+			}
+		}
+	}
+
 	t.Run("names the unread files when coverage withholds approval", func(t *testing.T) {
 		req := cleanApproveRequest()
 		req.RunSummary = RunSummary{
@@ -107,50 +160,113 @@ func TestRollupApprovalWithheld(t *testing.T) {
 		if plan.Outcome != OutcomeComment {
 			t.Fatalf("outcome = %q, want comment", plan.Outcome)
 		}
-		md := plan.RollupMarkdown
-		for _, want := range []string{
+		mustContain(t, plan.RollupMarkdown,
 			"### Approval Withheld",
 			"No blocking or major findings were reported.",
 			"1 file inspected by no reviewer:",
 			"`big_test.py`",
 			"Re-running the same review reproduces this",
-		} {
-			if !strings.Contains(md, want) {
-				t.Fatalf("rollup missing %q:\n%s", want, md)
-			}
-		}
+		)
 	})
 
-	t.Run("a reviewer failure is named even with no unread files", func(t *testing.T) {
+	// The gate coerces on coverage status, so every status it coerces on has to
+	// produce an explanation. These are the statuses that carry no skip list.
+	t.Run("explains a status whose evidence is only a diagnostic", func(t *testing.T) {
 		req := cleanApproveRequest()
 		req.RunSummary = RunSummary{
 			SelectedReviewers: []string{"structure:repo-health"},
-			ReviewerFailures: []ReviewerFailureSummary{{
-				AgentID: "structure:repo-health",
-				Error:   "adapter exited 1",
-			}},
 			ReviewerCoverage: []ReviewerCoverageSummary{{
-				AgentID:        "architecture:solid",
-				Status:         "complete_broad",
+				AgentID:        "structure:repo-health",
+				Status:         "incomplete_tool",
+				Scope:          []string{"main.go"},
 				InspectedFiles: []string{"main.go"},
+				Diagnostic:     "diff tool did not succeed",
 			}},
 		}
 		plan, err := Build(req)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment", plan.Outcome)
+		}
+		mustContain(t, plan.RollupMarkdown,
+			"### Approval Withheld",
+			"`structure:repo-health` — ⚠️ incomplete (tool failure): diff tool did not succeed",
+		)
+	})
+
+	t.Run("a failed reviewer's assigned files are named as unread", func(t *testing.T) {
+		req := cleanApproveRequest()
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"structure:repo-health", "go:implementation-tests"},
+			ReviewerFailures: []ReviewerFailureSummary{{
+				AgentID: "structure:repo-health",
+				Error:   "adapter exited 1",
+			}},
+			ReviewerCoverage: []ReviewerCoverageSummary{
+				{
+					AgentID:    "structure:repo-health",
+					Status:     "incomplete_failed",
+					Scope:      []string{"deploy.sh"},
+					Diagnostic: "adapter exited 1",
+				},
+				{
+					AgentID:        "go:implementation-tests",
+					Status:         "complete_constrained",
+					Scope:          []string{"main.go"},
+					InspectedFiles: []string{"main.go"},
+				},
+			},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
 		md := plan.RollupMarkdown
-		for _, want := range []string{
+		mustContain(t, md,
 			"### Approval Withheld",
 			"`structure:repo-health` did not produce a result: adapter exited 1",
-		} {
-			if !strings.Contains(md, want) {
-				t.Fatalf("rollup missing %q:\n%s", want, md)
-			}
+			"1 file inspected by no reviewer:",
+			"`deploy.sh`",
+		)
+		// Within this section the crash is one event: it is reported as a
+		// failure, not also as a coverage diagnostic. The rollup's separate
+		// Reviewer Diagnostics section names it again, which is its job.
+		section := md[strings.Index(md, "### Approval Withheld"):]
+		if end := strings.Index(section[1:], "\n### "); end >= 0 {
+			section = section[:end+1]
 		}
-		if strings.Contains(md, "inspected by no reviewer") {
-			t.Fatalf("rollup claims unread files when there are none:\n%s", md)
+		if strings.Count(section, "adapter exited 1") != 1 {
+			t.Fatalf("failed reviewer reported twice inside the section:\n%s", section)
 		}
+	})
+
+	// summary.Reviewers is derived from SelectedReviewers, while the coercion
+	// reads ReviewerCoverage, so a withheld run can reach the rollup's
+	// no-reviewer-table branch.
+	t.Run("renders in the rollup shape that has no reviewer table", func(t *testing.T) {
+		req := cleanApproveRequest()
+		req.RunSummary = RunSummary{
+			ReviewerCoverage: []ReviewerCoverageSummary{{
+				AgentID:      "unassigned",
+				Status:       "incomplete_unassigned",
+				SkippedFiles: []string{"orphan.sh"},
+				Diagnostic:   "changed files were not assigned to a selected reviewer",
+			}},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment", plan.Outcome)
+		}
+		md := plan.RollupMarkdown
+		if strings.Contains(md, "| Reviewer | Findings |") {
+			t.Fatalf("test did not reach the no-reviewer-table branch:\n%s", md)
+		}
+		mustContain(t, md, "### Approval Withheld", "`orphan.sh`")
 	})
 
 	t.Run("a clean approving review says nothing about withholding", func(t *testing.T) {
@@ -160,6 +276,7 @@ func TestRollupApprovalWithheld(t *testing.T) {
 			ReviewerCoverage: []ReviewerCoverageSummary{{
 				AgentID:        "structure:repo-health",
 				Status:         "complete_broad",
+				Scope:          []string{"main.go"},
 				InspectedFiles: []string{"main.go"},
 			}},
 		}
@@ -182,6 +299,7 @@ func TestRollupApprovalWithheld(t *testing.T) {
 			ReviewerCoverage: []ReviewerCoverageSummary{{
 				AgentID:        "structure:repo-health",
 				Status:         "incomplete_skipped",
+				Scope:          []string{"main.go", "big_test.py"},
 				InspectedFiles: []string{"main.go"},
 				SkippedFiles:   []string{"big_test.py"},
 			}},

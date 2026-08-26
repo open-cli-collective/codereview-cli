@@ -336,12 +336,20 @@ silently.
 
 When incomplete coverage is what downgraded an approving review to a comment,
 the rollup says so under an **Approval Withheld** heading, naming the reviewers
-that produced no result and every changed file no reviewer inspected. Without
-it, a review that approved and a review that found nothing but could not approve
-render identically as a table of zeros, and re-running is not a remedy: a
-reviewer that declined a file declines it again. The list subtracts files some
-other reviewer did inspect, because coverage is an obligation on the review
-rather than on each reviewer separately.
+that produced no result, the coverage diagnostics behind any other incomplete
+status, and every changed file no reviewer inspected. Without it, a review that
+approved and a review that found nothing but could not approve render
+identically as a table of zeros, and re-running is not a remedy: a reviewer that
+declined a file declines it again.
+
+The section renders whenever that coercion fired, rather than deciding again
+from the evidence, so it cannot disagree with the gate about whether coverage
+was incomplete. The unread-file list is each reviewer's obligation minus what
+some reviewer inspected. Obligation is the reviewer's scope, not its skip list:
+a reviewer that failed carries a scope and no file lists, and one that omitted a
+file from both lists carries the paths only in its diagnostic. The subtraction
+runs across reviewers because coverage is an obligation on the review rather
+than on each reviewer separately.
 
 Coverage uses two related scopes:
 

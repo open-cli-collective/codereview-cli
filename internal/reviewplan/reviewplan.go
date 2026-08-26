@@ -826,7 +826,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 	// misleads, so the explanation has to be the next thing read.
 	withheld := func() {
 		if approvalWithheld {
-			writeApprovalWithheld(&out, summary.Run.ReviewerFailures, uninspectedFiles(summary.Run.ReviewerCoverage))
+			writeApprovalWithheld(&out, summary.Run.ReviewerFailures, summary.Run.ReviewerCoverage)
 		}
 	}
 	if len(summary.Reviewers) > 0 {
