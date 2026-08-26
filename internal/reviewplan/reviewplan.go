@@ -336,16 +336,13 @@ func applySelfApprovalPolicy(event review.ReviewEvent, opts EventOptions) review
 	return event
 }
 
+// hasIncompleteReviewerCoverage reports whether any reviewer fell short of its
+// coverage obligation. The status classification lives in
+// coverageStatusComplete, shared with the explanation this decision produces, so
+// a new status cannot be complete for the gate and incomplete for the rollup.
 func hasIncompleteReviewerCoverage(coverage []ReviewerCoverageSummary) bool {
 	for _, entry := range coverage {
-		switch entry.Status {
-		case "", "complete_broad", "complete_constrained":
-			continue
-		case "incomplete_skipped", "incomplete_failed", "incomplete_unassigned":
-			return true
-		default:
-			// Unknown coverage statuses are treated conservatively so a new
-			// incomplete state cannot silently bypass approval coercion.
+		if !coverageStatusComplete(entry.Status) {
 			return true
 		}
 	}
@@ -447,8 +444,10 @@ func (b *builder) buildReview() (Plan, error) {
 		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", event)
 	}
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
+	approvalWithheld := false
 	if event == review.ReviewEventApprove && (len(b.req.RunSummary.ReviewerFailures) > 0 || hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)) {
 		event = review.ReviewEventComment
+		approvalWithheld = true
 	}
 	outcome, err := OutcomeFromReviewEvent(event)
 	if err != nil {
@@ -478,7 +477,7 @@ func (b *builder) buildReview() (Plan, error) {
 
 	anchored := b.anchoredForOrdered(ordered)
 	summary := b.deriveSummary(ordered)
-	rollupBody := b.renderRollup(ordered, anchored, summary)
+	rollupBody := b.renderRollup(ordered, anchored, summary, approvalWithheld)
 	submit, err := b.newAction(ActionKindSubmitReview)
 	if err != nil {
 		return Plan{}, err
@@ -817,11 +816,19 @@ func firstFallbackHunk(file DiffFile) (DiffHunk, bool) {
 	return DiffHunk{}, false
 }
 
-func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFinding, summary Summary) string {
+func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFinding, summary Summary, approvalWithheld bool) string {
 	var out strings.Builder
 	rollupHeader(&out, b.req)
+	// Rendered after the counts, not before them: the table of zeros is what
+	// misleads, so the explanation has to be the next thing read.
+	withheld := func() {
+		if approvalWithheld {
+			writeApprovalWithheld(&out, summary.Run.ReviewerFailures, summary.Run.ReviewerCoverage)
+		}
+	}
 	if len(summary.Reviewers) > 0 {
 		writeReviewerTable(&out, summary.Reviewers, summary.Run.ReviewerCoverage)
+		withheld()
 		b.writeReviewerSections(&out, anchored, summary.Reviewers)
 		writeReviewerCoverageDiagnostics(&out, summary.Run.ReviewerCoverage)
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
@@ -837,6 +844,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 			out.WriteString(" |\n")
 		}
 		out.WriteString("\n")
+		withheld()
 		for _, finding := range anchored {
 			writeFindingBlock(&out, finding)
 		}
