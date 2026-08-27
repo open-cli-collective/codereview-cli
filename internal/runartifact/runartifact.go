@@ -12,6 +12,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
@@ -56,11 +57,11 @@ func ForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, 
 	if err != nil {
 		return Paths{}, err
 	}
-	scope, err := statepaths.ResumeScope(profile, postingIdentity)
-	if err != nil {
+	if _, err := statepaths.ResumeScope(profile, postingIdentity); err != nil {
 		return Paths{}, err
 	}
-	dir := filepath.Join(layout.DataRoot, "runs", prKey, pr.Head.SHA, pr.Base.SHA, scope, "run-"+statepaths.Encode(runID))
+	scopeHash := statepaths.KeyHash(prKey, pr.Head.SHA, pr.Base.SHA, profile, postingIdentity)
+	dir := filepath.Join(layout.DataRoot, "runs", prKey, prref.ShortSHA(pr.Head.SHA), prref.ShortSHA(pr.Base.SHA), scopeHash, "run-"+statepaths.Encode(runID))
 	return FromDir(dir), nil
 }
 
