@@ -29,6 +29,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
+	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
@@ -1158,8 +1159,8 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 		result.ReviewBaseSHA != reviewBaseSHA || result.ReviewHeadSHA != reviewHeadSHA {
 		t.Fatalf("result SHAs = current %s/%s review %s/%s", result.CurrentBaseSHA, result.CurrentHeadSHA, result.ReviewBaseSHA, result.ReviewHeadSHA)
 	}
-	if !strings.Contains(result.Artifacts.Dir, reviewHeadSHA) || !strings.Contains(result.Artifacts.Dir, reviewBaseSHA) {
-		t.Fatalf("artifact dir = %s, want pinned head/base SHAs", result.Artifacts.Dir)
+	if !strings.Contains(result.Artifacts.Dir, prref.ShortSHA(reviewHeadSHA)) || !strings.Contains(result.Artifacts.Dir, prref.ShortSHA(reviewBaseSHA)) {
+		t.Fatalf("artifact dir = %s, want pinned short head/base SHAs", result.Artifacts.Dir)
 	}
 	for _, call := range provider.fileCalls {
 		if call.path == "main.go" && (call.gitRef == reviewBaseSHA || call.gitRef == reviewHeadSHA) {
