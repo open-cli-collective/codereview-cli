@@ -101,6 +101,10 @@ type SubprocessAdapter struct {
 	scratchDirFactory      ScratchDirFactory
 	allowBestEffortNoTools bool
 	fastModeModels         []string
+	// sessionIDGrace is how long a completed job is given to publish a
+	// session id. A field rather than the constant so a test can exercise
+	// the paths behind it without waiting out the real grace window.
+	sessionIDGrace time.Duration
 }
 
 // Claude CLI and Codex CLI share this concrete implementation.
@@ -1509,7 +1513,11 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 
 func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID string, lastState map[string]any) (string, map[string]any) {
 	statePath := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "state.json")
-	deadline := time.NewTimer(claudeBGSessionIDGrace)
+	grace := a.sessionIDGrace
+	if grace <= 0 {
+		grace = claudeBGSessionIDGrace
+	}
+	deadline := time.NewTimer(grace)
 	defer deadline.Stop()
 	ticker := time.NewTicker(claudeBGPollInterval)
 	defer ticker.Stop()

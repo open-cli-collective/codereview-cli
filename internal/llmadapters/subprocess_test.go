@@ -1648,6 +1648,9 @@ func runClaudeBGHelper(mode string, args []string) {
 	case "bg-result-without-session":
 		state = map[string]any{"state": "done"}
 		result = `{"done":true}`
+	case "bg-nothing-left-behind":
+		state = map[string]any{"state": "done"}
+		writeResult = false
 	case "bg-failed":
 		state = map[string]any{"state": "failed", "error": "model failed"}
 		writeResult = false
@@ -2393,3 +2396,32 @@ type stubStream struct {
 func (s stubStream) SessionID() string { return s.sessionID }
 
 func (s stubStream) Wait(context.Context) (Response, error) { return s.response, s.err }
+
+// The one shape that can mean the job service accepted the task and never ran
+// it: a job that finished with neither a session id nor a result. It is the
+// case the transport marking exists for, so it has to be retried.
+func TestSubprocessClaudeBackgroundNothingLeftBehindIsRetried(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-nothing-left-behind", recordPath, configDir, 5*time.Second)
+	// The job is already done, so waiting out the real grace window would
+	// only make the test slow.
+	adapter.sessionIDGrace = 20 * time.Millisecond
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, err = stream.Wait(context.Background())
+	if err == nil {
+		t.Fatal("Wait: want a failure, the job produced nothing")
+	}
+	if !errors.Is(err, ErrClaudeBGTransport) {
+		t.Fatalf("Wait error = %v, want ErrClaudeBGTransport", err)
+	}
+	// The foreground helper has no case for this mode, so the retry fails
+	// too and the primary error is what surfaces — but it must have been
+	// attempted.
+	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), true)
+}
