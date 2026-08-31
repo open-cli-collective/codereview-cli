@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -627,13 +628,35 @@ func assertPiRPCMessageUpdatesCompacted(t *testing.T, logged []byte) {
 		if _, ok := event["message"]; ok {
 			t.Fatalf("message_update = %#v, want redundant root message stripped", event)
 		}
+		if event["sessionId"] != "session-1" {
+			t.Fatalf("message_update sessionId = %#v, want session-1", event["sessionId"])
+		}
 		assistantEvent, ok := event["assistantMessageEvent"].(map[string]any)
 		if !ok {
 			t.Fatalf("message_update = %#v, want assistantMessageEvent", event)
 		}
+		if assistantEvent["type"] != "thinking_delta" {
+			t.Fatalf("assistantMessageEvent.type = %#v, want thinking_delta", assistantEvent["type"])
+		}
+		if assistantEvent["contentIndex"] != float64(0) {
+			t.Fatalf("assistantMessageEvent.contentIndex = %#v, want 0", assistantEvent["contentIndex"])
+		}
+		if assistantEvent["delta"] != "x" {
+			t.Fatalf("assistantMessageEvent.delta = %#v, want x", assistantEvent["delta"])
+		}
 		partial, ok := assistantEvent["partial"].(map[string]any)
 		if !ok {
 			t.Fatalf("message_update = %#v, want compact partial metadata", event)
+		}
+		wantPartial := map[string]any{
+			"role":       "assistant",
+			"provider":   "opencode-go",
+			"model":      "deepseek-v4-pro",
+			"api":        "openai-completions",
+			"stopReason": "stop",
+		}
+		if !reflect.DeepEqual(partial, wantPartial) {
+			t.Fatalf("partial = %#v, want exact compact metadata %#v", partial, wantPartial)
 		}
 		if _, ok := partial["content"]; ok {
 			t.Fatalf("partial = %#v, want content stripped", partial)
@@ -708,6 +731,109 @@ func TestNormalizePiRPCLogLinePreservesRootMessageForUnrecognizedPartial(t *test
 	}
 	if message["role"] != "assistant" {
 		t.Fatalf("root message = %#v, want assistant message preserved", message)
+	}
+	assistantEvent, ok := event["assistantMessageEvent"].(map[string]any)
+	if !ok {
+		t.Fatalf("normalized message_update = %#v, want assistantMessageEvent", event)
+	}
+	if _, ok := assistantEvent["partial"]; ok {
+		t.Fatalf("assistantMessageEvent = %#v, want unrecognized partial removed", assistantEvent)
+	}
+}
+
+func TestNormalizePiRPCLogLinePreservesRootMessageForInvalidAssistantEvent(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		eventType string
+		role      string
+	}{
+		{name: "unknown event type", eventType: "future_or_bad_event", role: "assistant"},
+		{name: "invalid partial role", eventType: "thinking_delta", role: "user"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			partial := map[string]any{
+				"role":       tt.role,
+				"provider":   "opencode-go",
+				"model":      "deepseek-v4-pro",
+				"api":        "openai-completions",
+				"stopReason": "stop",
+				"content":    []map[string]any{{"type": "thinking", "thinking": "cumulative"}},
+				"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+			}
+			event := map[string]any{
+				"type":    "message_update",
+				"message": partial,
+				"assistantMessageEvent": map[string]any{
+					"type":         tt.eventType,
+					"contentIndex": 0,
+					"delta":        "x",
+					"partial":      partial,
+				},
+			}
+			line, err := json.Marshal(event)
+			if err != nil {
+				t.Fatalf("Marshal(event): %v", err)
+			}
+			normalized := normalizePiRPCLogLine(line)
+			var decoded map[string]any
+			if err := json.Unmarshal(normalized, &decoded); err != nil {
+				t.Fatalf("Unmarshal(normalized): %v", err)
+			}
+			if _, ok := decoded["message"]; !ok {
+				t.Fatalf("normalized message_update = %#v, want root message preserved", decoded)
+			}
+		})
+	}
+}
+
+func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
+	partial := map[string]any{
+		"role":       "assistant",
+		"provider":   "opencode-go",
+		"model":      "deepseek-v4-pro",
+		"api":        "openai-completions",
+		"stopReason": "stop",
+		"content":    []map[string]any{{"type": "thinking", "thinking": "partial"}},
+		"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+	}
+	event := map[string]any{
+		"type": "message_update",
+		"message": map[string]any{
+			"role":       "assistant",
+			"provider":   "opencode-go",
+			"model":      "deepseek-v4-pro",
+			"api":        "openai-completions",
+			"stopReason": "stop",
+			"content":    []map[string]any{{"type": "thinking", "thinking": "root"}},
+			"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+		},
+		"assistantMessageEvent": map[string]any{
+			"type":         "thinking_delta",
+			"contentIndex": 0,
+			"delta":        "x",
+			"partial":      partial,
+		},
+	}
+	line, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal(event): %v", err)
+	}
+	normalized := normalizePiRPCLogLine(line)
+	var decoded map[string]any
+	if err := json.Unmarshal(normalized, &decoded); err != nil {
+		t.Fatalf("Unmarshal(normalized): %v", err)
+	}
+	message, ok := decoded["message"].(map[string]any)
+	if !ok {
+		t.Fatalf("normalized message_update = %#v, want nonidentical root message preserved", decoded)
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("root message = %#v, want root content preserved", message)
+	}
+	contentBlock, ok := content[0].(map[string]any)
+	if !ok || contentBlock["thinking"] != "root" {
+		t.Fatalf("root message = %#v, want root snapshot preserved", message)
 	}
 }
 
@@ -1013,6 +1139,7 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 				"role":       "assistant",
 				"provider":   "opencode-go",
 				"model":      "deepseek-v4-pro",
+				"api":        "openai-completions",
 				"stopReason": "stop",
 				"content":    []map[string]any{{"type": "thinking", "thinking": thinking}},
 				"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},

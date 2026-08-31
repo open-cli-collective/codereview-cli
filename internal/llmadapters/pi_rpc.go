@@ -2,6 +2,7 @@ package llmadapters
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -754,7 +755,7 @@ func normalizePiRPCLogLine(line []byte) []byte {
 		return append(logLine, '\n')
 	}
 	event["assistantMessageEvent"] = normalizedAssistantEvent
-	if len(compactPartial) > 0 {
+	if len(compactPartial) > 0 && piRPCMessageUpdateRootIsRedundant(event, assistantEvent, partialRaw, compactPartial) {
 		delete(event, "message")
 	}
 	normalized, err := json.Marshal(event)
@@ -762,6 +763,27 @@ func normalizePiRPCLogLine(line []byte) []byte {
 		return append(logLine, '\n')
 	}
 	return append(normalized, '\n')
+}
+
+func piRPCMessageUpdateRootIsRedundant(event, assistantEvent map[string]json.RawMessage, partialRaw, compactPartial json.RawMessage) bool {
+	if !isKnownPiRPCAssistantMessageEventType(rawString(assistantEvent, "type")) {
+		return false
+	}
+	var compact map[string]json.RawMessage
+	if err := json.Unmarshal(compactPartial, &compact); err != nil || rawString(compact, "role") != "assistant" {
+		return false
+	}
+	rootRaw, ok := event["message"]
+	return ok && bytes.Equal(rootRaw, partialRaw)
+}
+
+func isKnownPiRPCAssistantMessageEventType(eventType string) bool {
+	switch eventType {
+	case "text_start", "text_delta", "text_end", "thinking_start", "thinking_delta", "thinking_end", "toolcall_start", "toolcall_delta", "toolcall_end":
+		return true
+	default:
+		return false
+	}
 }
 
 func compactPiRPCPartialForLog(partialRaw json.RawMessage) json.RawMessage {
