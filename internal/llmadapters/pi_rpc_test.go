@@ -588,6 +588,9 @@ func TestPiRPCLogStripsCumulativeStreamingPartials(t *testing.T) {
 	if string(response.StructuredOutput) != `{"ok":true}` {
 		t.Fatalf("StructuredOutput = %s, want final assistant text", response.StructuredOutput)
 	}
+	if stream.SessionID() != "session-1" {
+		t.Fatalf("SessionID = %q, want session-1", stream.SessionID())
+	}
 
 	logged, err := os.ReadFile(logPath) // #nosec G304 -- test reads the log path it created with t.TempDir.
 	if err != nil {
@@ -604,6 +607,7 @@ func TestPiRPCLogStripsCumulativeStreamingPartials(t *testing.T) {
 		t.Fatalf("log = %s, want final RPC events preserved", logText)
 	}
 	assertPiRPCMessageUpdatesCompacted(t, logged)
+	assertPiRPCFinalEventsPreserved(t, logged)
 	if len(logged) > 10_000 {
 		t.Fatalf("log size = %d bytes, want normalized bounded log", len(logged))
 	}
@@ -619,6 +623,9 @@ func assertPiRPCMessageUpdatesCompacted(t *testing.T, logged []byte) {
 		}
 		if event["type"] != "message_update" {
 			continue
+		}
+		if _, ok := event["message"]; ok {
+			t.Fatalf("message_update = %#v, want redundant root message stripped", event)
 		}
 		assistantEvent, ok := event["assistantMessageEvent"].(map[string]any)
 		if !ok {
@@ -637,6 +644,53 @@ func assertPiRPCMessageUpdatesCompacted(t *testing.T, logged []byte) {
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("Scan(log): %v", err)
+	}
+}
+
+func assertPiRPCFinalEventsPreserved(t *testing.T, logged []byte) {
+	t.Helper()
+	scanner := bufio.NewScanner(strings.NewReader(string(logged)))
+	var messageEndFound, agentEndFound bool
+	for scanner.Scan() {
+		var event map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("Unmarshal(log line): %v", err)
+		}
+		switch event["type"] {
+		case "message_end":
+			message, ok := event["message"].(map[string]any)
+			if !ok {
+				t.Fatalf("message_end = %#v, want message", event)
+			}
+			content, ok := message["content"].([]any)
+			if !ok || len(content) == 0 {
+				t.Fatalf("message_end.message = %#v, want final content", message)
+			}
+			contentBlock, ok := content[0].(map[string]any)
+			if !ok || contentBlock["text"] != `{"ok":true}` {
+				t.Fatalf("message_end.message = %#v, want final structured content", message)
+			}
+			usage, ok := message["usage"].(map[string]any)
+			if !ok || usage["tokensIn"] != float64(100) || usage["tokensOut"] != float64(50) {
+				t.Fatalf("message_end.message = %#v, want final usage", message)
+			}
+			messageEndFound = true
+		case "agent_end":
+			messages, ok := event["messages"].([]any)
+			if !ok || len(messages) == 0 {
+				t.Fatalf("agent_end = %#v, want messages", event)
+			}
+			agentEndFound = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("Scan(log): %v", err)
+	}
+	if !messageEndFound {
+		t.Fatal("log missing message_end with final message content and usage")
+	}
+	if !agentEndFound {
+		t.Fatal("log missing agent_end messages")
 	}
 }
 
@@ -938,20 +992,23 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		thinking := ""
 		for i := 0; i < 25; i++ {
 			thinking += strings.Repeat("x", 200)
+			partial := map[string]any{
+				"role":       "assistant",
+				"provider":   "opencode-go",
+				"model":      "deepseek-v4-pro",
+				"stopReason": "stop",
+				"content":    []map[string]any{{"type": "thinking", "thinking": thinking}},
+				"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+			}
 			event := map[string]any{
-				"type": "message_update",
+				"type":      "message_update",
+				"message":   partial,
+				"sessionId": "session-1",
 				"assistantMessageEvent": map[string]any{
 					"type":         "thinking_delta",
 					"contentIndex": 0,
 					"delta":        "x",
-					"partial": map[string]any{
-						"role":       "assistant",
-						"provider":   "opencode-go",
-						"model":      "deepseek-v4-pro",
-						"stopReason": "stop",
-						"content":    []map[string]any{{"type": "thinking", "thinking": thinking}},
-						"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
-					},
+					"partial":      partial,
 				},
 			}
 			data, _ := json.Marshal(event)

@@ -753,6 +753,7 @@ func normalizePiRPCLogLine(line []byte) []byte {
 		return append(logLine, '\n')
 	}
 	event["assistantMessageEvent"] = normalizedAssistantEvent
+	delete(event, "message")
 	normalized, err := json.Marshal(event)
 	if err != nil {
 		return append(logLine, '\n')
