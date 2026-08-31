@@ -883,6 +883,35 @@ func TestNormalizePiRPCLogLinePreservesOriginalForProjectionFailures(t *testing.
 	}
 }
 
+func TestNormalizePiRPCLogLinePreservesOriginalForDifferentlyEncodedEqualRoot(t *testing.T) {
+	line := []byte(`{"type":"message_update","message":{"role": "assistant", "provider": "opencode-go", "model": "deepseek-v4-pro", "api": "openai-completions", "stopReason": "stop", "content": [], "usage": {"input": 100}, "timestamp": 1700000000000},"assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"x","partial":{"timestamp":1700000000000,"usage":{"input":100},"content":[],"stopReason":"stop","api":"openai-completions","model":"deepseek-v4-pro","provider":"opencode-go","role":"assistant"}}}`)
+
+	var event map[string]json.RawMessage
+	if err := json.Unmarshal(line, &event); err != nil {
+		t.Fatalf("Unmarshal(line): %v", err)
+	}
+	var root, partial any
+	if err := json.Unmarshal(event["message"], &root); err != nil {
+		t.Fatalf("Unmarshal(root): %v", err)
+	}
+	var assistantEvent map[string]json.RawMessage
+	if err := json.Unmarshal(event["assistantMessageEvent"], &assistantEvent); err != nil {
+		t.Fatalf("Unmarshal(assistantMessageEvent): %v", err)
+	}
+	if err := json.Unmarshal(assistantEvent["partial"], &partial); err != nil {
+		t.Fatalf("Unmarshal(partial): %v", err)
+	}
+	if !reflect.DeepEqual(root, partial) {
+		t.Fatalf("root and partial differ semantically: root=%#v partial=%#v", root, partial)
+	}
+
+	normalized := normalizePiRPCLogLine(line)
+	want := append(append([]byte(nil), line...), '\n')
+	if !bytes.Equal(normalized, want) {
+		t.Fatalf("normalized = %s, want exact original line preserved", normalized)
+	}
+}
+
 func TestNormalizePiRPCLogLineCompactsProjectionWithMalformedCumulativeFields(t *testing.T) {
 	event, partial, _ := piRPCProjectionEventFixture("thinking_delta")
 	partial["content"] = map[string]any{"unexpected": true}
