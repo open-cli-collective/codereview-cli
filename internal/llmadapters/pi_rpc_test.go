@@ -773,7 +773,6 @@ func TestNormalizePiRPCLogLinePreservesRootMessageForInvalidAssistantEvent(t *te
 						"cacheWrite": 0,
 						"total":      0,
 					},
-					"timestamp": 1700000000000,
 				},
 			}
 			event := map[string]any{
@@ -824,7 +823,6 @@ func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
 				"cacheWrite": 0,
 				"total":      0,
 			},
-			"timestamp": 1700000000000,
 		},
 	}
 	event := map[string]any{
@@ -850,7 +848,6 @@ func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
 					"cacheWrite": 0,
 					"total":      0,
 				},
-				"timestamp": 1700000000000,
 			},
 		},
 		"assistantMessageEvent": map[string]any{
@@ -945,7 +942,6 @@ func TestNormalizePiRPCLogLinePreservesOriginalForInvalidPiUpdateShape(t *testin
 						"cacheWrite": 0,
 						"total":      0,
 					},
-					"timestamp": float64(1700000000000),
 				},
 			}
 			assistantEvent := map[string]any{
@@ -1292,7 +1288,6 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 						"cacheWrite": 0,
 						"total":      0,
 					},
-					"timestamp": 1700000000000,
 				},
 			}
 			event := map[string]any{
@@ -1309,7 +1304,7 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 			data, _ := json.Marshal(event)
 			fmt.Println(string(data))
 		}
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"api":"openai-completions","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":100,"output":50,"cacheRead":0,"cacheWrite":0,"totalTokens":150,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0},"timestamp":1700000000000},"stopReason":"stop","timestamp":1700000000000}}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"api":"openai-completions","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":100,"output":50,"cacheRead":0,"cacheWrite":0,"totalTokens":150,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1700000000000}}`)
 		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 	case "prompt-failure":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":false,"error":"No API key found for opencode-go"}`)

@@ -855,7 +855,7 @@ func validPiRPCUsage(value json.RawMessage) bool {
 	if !ok {
 		return false
 	}
-	for _, key := range []string{"input", "output", "cacheRead", "cacheWrite", "totalTokens", "timestamp"} {
+	for _, key := range []string{"input", "output", "cacheRead", "cacheWrite", "totalTokens"} {
 		if !piRPCJSONNumber(usage[key]) {
 			return false
 		}
@@ -873,9 +873,6 @@ func validPiRPCUsage(value json.RawMessage) bool {
 		if value, ok := usage[key]; ok && !piRPCJSONNumber(value) {
 			return false
 		}
-	}
-	if value, ok := usage["rawStopReason"]; ok && !piRPCJSONString(value) {
-		return false
 	}
 	return true
 }
