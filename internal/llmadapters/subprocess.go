@@ -42,6 +42,10 @@ type SubprocessOptions struct {
 	AllowBestEffortNoTools bool
 	FastModeModels         []string
 	commandArgsPrefix      []string
+	// sessionIDGrace overrides how long a completed job is given to publish
+	// a session id. Unexported beside commandArgsPrefix: the seam exists for
+	// tests, which would otherwise wait out the real window.
+	sessionIDGrace time.Duration
 }
 
 // defaultLLMTaskTimeout bounds a single LLM task when the caller does not set
@@ -102,8 +106,7 @@ type SubprocessAdapter struct {
 	allowBestEffortNoTools bool
 	fastModeModels         []string
 	// sessionIDGrace is how long a completed job is given to publish a
-	// session id. A field rather than the constant so a test can exercise
-	// the paths behind it without waiting out the real grace window.
+	// session id, already resolved to the value in effect.
 	sessionIDGrace time.Duration
 }
 
@@ -133,6 +136,10 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 	if timeout == 0 {
 		timeout = defaultLLMTaskTimeout
 	}
+	sessionIDGrace := opts.sessionIDGrace
+	if sessionIDGrace <= 0 {
+		sessionIDGrace = claudeBGSessionIDGrace
+	}
 	return &SubprocessAdapter{
 		kind:                   kind,
 		command:                command,
@@ -142,6 +149,7 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 		scratchDirFactory:      factory,
 		allowBestEffortNoTools: opts.AllowBestEffortNoTools,
 		fastModeModels:         append([]string(nil), opts.FastModeModels...),
+		sessionIDGrace:         sessionIDGrace,
 	}
 }
 
@@ -1513,11 +1521,7 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 
 func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID string, lastState map[string]any) (string, map[string]any) {
 	statePath := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "state.json")
-	grace := a.sessionIDGrace
-	if grace <= 0 {
-		grace = claudeBGSessionIDGrace
-	}
-	deadline := time.NewTimer(grace)
+	deadline := time.NewTimer(a.sessionIDGrace)
 	defer deadline.Stop()
 	ticker := time.NewTicker(claudeBGPollInterval)
 	defer ticker.Stop()

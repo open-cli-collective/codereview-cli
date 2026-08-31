@@ -1557,6 +1557,16 @@ func newClaudeHelperAdapter(mode string, recordPath string, configDir string, ti
 	return newClaudeHelperAdapterWithEnv(mode, recordPath, configDir, timeout)
 }
 
+func newClaudeHelperAdapterWithGrace(mode string, recordPath string, configDir string, timeout time.Duration, grace time.Duration) *SubprocessAdapter {
+	return NewClaudeCLIAdapter(SubprocessOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: helperPrefix(),
+		Env:               helperClaudeEnv(mode, recordPath, configDir),
+		Timeout:           timeout,
+		sessionIDGrace:    grace,
+	})
+}
+
 func newClaudeHelperAdapterWithEnv(mode string, recordPath string, configDir string, timeout time.Duration, extraEnv ...string) *SubprocessAdapter {
 	return NewClaudeCLIAdapter(SubprocessOptions{
 		Command:           os.Args[0],
@@ -2404,10 +2414,10 @@ func TestSubprocessClaudeBackgroundNothingLeftBehindIsRetried(t *testing.T) {
 	tempDir := t.TempDir()
 	recordPath := filepath.Join(tempDir, "records.jsonl")
 	configDir := filepath.Join(tempDir, "claude")
-	adapter := newClaudeHelperAdapter("bg-nothing-left-behind", recordPath, configDir, 5*time.Second)
 	// The job is already done, so waiting out the real grace window would
 	// only make the test slow.
-	adapter.sessionIDGrace = 20 * time.Millisecond
+	adapter := newClaudeHelperAdapterWithGrace(
+		"bg-nothing-left-behind", recordPath, configDir, 5*time.Second, 20*time.Millisecond)
 
 	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
 	if err != nil {
