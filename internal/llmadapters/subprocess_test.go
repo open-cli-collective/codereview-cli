@@ -353,14 +353,19 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		wantStop      bool
 		timeout       time.Duration
 		wantRawResult bool
+		// wantRetry marks the states startClaude treats as transport
+		// failures. Asserting the launch count is what keeps this table
+		// honest: without it a retry that stopped happening, or one that
+		// started happening for a model failure, would both still pass.
+		wantRetry bool
 	}{
 		{name: "idle result", mode: "bg-idle-result", wantOutput: `{"idle":true}`, wantSession: "session-idle"},
 		{name: "invalid json is returned raw", mode: "bg-invalid-json", wantOutput: `not-json`, wantSession: "session-invalid", wantRawResult: true},
-		{name: "blocked", mode: "bg-blocked", wantErr: "blocked: permission needed", wantStop: true},
-		{name: "failed", mode: "bg-failed", wantErr: "failed: model failed", wantStop: true},
-		{name: "waiting", mode: "bg-waiting", wantErr: "waiting: waiting for input", wantStop: true},
-		{name: "stopped", mode: "bg-stopped", wantErr: "stopped: stopped by user", wantStop: true},
-		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true},
+		{name: "blocked", mode: "bg-blocked", wantErr: "blocked: permission needed", wantStop: true, wantRetry: true},
+		{name: "failed", mode: "bg-failed", wantErr: "failed: model failed", wantStop: true, wantRetry: true},
+		{name: "waiting", mode: "bg-waiting", wantErr: "waiting: waiting for input", wantStop: true, wantRetry: true},
+		{name: "stopped", mode: "bg-stopped", wantErr: "stopped: stopped by user", wantStop: true, wantRetry: true},
+		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true, wantRetry: true},
 		{name: "missing result", mode: "bg-missing-result", wantErr: "completed without writing result file", wantSession: "session-missing", wantStop: true},
 		{name: "empty result", mode: "bg-empty-result", wantErr: "empty result file", wantSession: "session-empty", wantStop: true},
 		{name: "timeout", mode: "bg-running", wantErrIs: context.DeadlineExceeded, wantStop: true, timeout: 50 * time.Millisecond},
@@ -391,7 +396,9 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 				if tt.wantSession != "" && stream.SessionID() != tt.wantSession {
 					t.Fatalf("SessionID = %q, want %q", stream.SessionID(), tt.wantSession)
 				}
-				assertClaudeCleanup(t, readHelperRecords(t, recordPath), "job-1", tt.wantStop, configDir)
+				records := readHelperRecords(t, recordPath)
+				assertClaudeCleanup(t, records, "job-1", tt.wantStop, configDir)
+				assertClaudeLaunchCount(t, records, tt.wantRetry)
 				return
 			}
 			if err != nil {
@@ -1638,6 +1645,9 @@ func runClaudeBGHelper(mode string, args []string) {
 	case "bg-blocked-foreground-recovers":
 		state = map[string]any{"state": "blocked", "detail": "prompt file no longer exists"}
 		writeResult = false
+	case "bg-result-without-session":
+		state = map[string]any{"state": "done"}
+		result = `{"done":true}`
 	case "bg-failed":
 		state = map[string]any{"state": "failed", "error": "model failed"}
 		writeResult = false
@@ -1726,6 +1736,28 @@ func readHelperRecord(t *testing.T, path string) helperRecord {
 		t.Fatalf("no helper records in %s", path)
 	}
 	return records[0]
+}
+
+// assertClaudeLaunchCount checks how many task launches the helper saw: one
+// for the background job, plus one more when the failure was transport-shaped
+// and the task was retried in foreground. Control calls (stop, rm, agents) are
+// not launches and are excluded.
+func assertClaudeLaunchCount(t *testing.T, records []helperRecord, wantRetry bool) {
+	t.Helper()
+	launches := 0
+	for _, record := range records {
+		if containsFlag(record.AdapterArgs, "--bg") ||
+			(containsFlag(record.AdapterArgs, "-p") && flagValue(record.AdapterArgs, "--output-format") == "json") {
+			launches++
+		}
+	}
+	want := 1
+	if wantRetry {
+		want = 2
+	}
+	if launches != want {
+		t.Fatalf("task launches = %d, want %d (retry expected: %v)", launches, want, wantRetry)
+	}
 }
 
 func readHelperRecords(t *testing.T, path string) []helperRecord {
@@ -2217,5 +2249,66 @@ func TestSubprocessClaudeBackgroundModelFailureIsNotRetried(t *testing.T) {
 	if _, err := stream.Wait(context.Background()); err == nil ||
 		!strings.Contains(err.Error(), "empty result file") {
 		t.Fatalf("Wait error = %v, want the original empty-result failure", err)
+	}
+}
+
+// A job that ran to completion and wrote its result is finished, whatever its
+// state file says about session ids. Re-running it would spend a second model
+// run on output already on disk.
+func TestSubprocessClaudeBackgroundResultWithoutSessionIsNotRetried(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-result-without-session", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"done":true}` {
+		t.Fatalf("StructuredOutput = %s, want the background result", response.StructuredOutput)
+	}
+	if stream.SessionID() != "" {
+		t.Fatalf("SessionID = %q, want empty rather than invented", stream.SessionID())
+	}
+	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), false)
+}
+
+// The retry must not erase the record of the failure it is retrying: task
+// logs are opened with os.Create, so a shared path would truncate the one
+// artifact that explains why a retry happened.
+func TestSubprocessClaudeFallbackKeepsBothTransportLogs(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	logPath := filepath.Join(tempDir, "events.log")
+	adapter := newClaudeHelperAdapter("bg-blocked-foreground-recovers", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt", LogPath: logPath})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	primary, err := os.ReadFile(logPath) // #nosec G304 -- t.TempDir path
+	if err != nil {
+		t.Fatalf("read primary log: %v", err)
+	}
+	if !strings.Contains(string(primary), "backgrounded") {
+		t.Fatalf("primary log lost the background attempt:\n%s", primary)
+	}
+	retryPath := filepath.Join(tempDir, "events.foreground.log")
+	retry, err := os.ReadFile(retryPath) // #nosec G304 -- t.TempDir path
+	if err != nil {
+		t.Fatalf("read retry log: %v", err)
+	}
+	if !strings.Contains(string(retry), "fg-recovered") {
+		t.Fatalf("retry log missing the foreground attempt:\n%s", retry)
 	}
 }
