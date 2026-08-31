@@ -365,18 +365,11 @@ func (a *SubprocessAdapter) startClaude(ctx context.Context, req Request, resume
 	}
 	bg, err := a.startClaudeBG(ctx, req, resumeSessionID)
 	if err != nil {
-		// A launch that failed on configuration would fail the same way in
-		// foreground, and reporting it as a foreground problem hides where it
-		// came from. Only a transport-shaped launch failure is retried, the
-		// same rule Wait applies.
-		if !errors.Is(err, ErrClaudeBGTransport) {
-			return nil, err
-		}
-		fallback, fallbackErr := a.startClaudeForeground(ctx, req, resumeSessionID)
-		if fallbackErr != nil {
-			return nil, errors.Join(err, fallbackErr)
-		}
-		return fallback, nil
+		// Not retried: a launch fails on configuration, a missing binary, or
+		// a scratch dir that could not be made, and foreground would fail on
+		// the same thing. The retry is for a job service that accepted the
+		// task and then did not run it, which is a failure of the wait.
+		return nil, err
 	}
 	return &claudeFallbackStream{
 		adapter: a,
@@ -419,10 +412,9 @@ type claudeFallbackStream struct {
 	deadline time.Time
 
 	mu sync.Mutex
-	// fallback is the retry once started; winner is the stream whose response
-	// Wait returned. Until then the primary is the only one that has run.
-	fallback Stream
-	winner   Stream
+	// winner is the stream whose response Wait returned. Until then the
+	// primary is the only one that has run.
+	winner Stream
 }
 
 // SessionID reports the session of the stream that produced the response, and
@@ -459,9 +451,6 @@ func (s *claudeFallbackStream) Wait(ctx context.Context) (Response, error) {
 		// starting is a second symptom, not the cause.
 		return response, err
 	}
-	s.mu.Lock()
-	s.fallback = fallback
-	s.mu.Unlock()
 	fallbackResponse, fallbackErr := fallback.Wait(retryCtx)
 	if fallbackErr != nil {
 		// Report what actually went wrong first. The retry failing too says
@@ -1468,9 +1457,11 @@ func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID str
 	if err == nil {
 		return Response{StructuredOutput: output, Usage: claudeBGTranscriptUsage(state)}, sessionID, nil
 	}
-	if sessionID == "" {
+	if sessionID == "" && errors.Is(err, errClaudeBGMissingResult) {
 		// Neither a result nor a session: the job left nothing behind, which
-		// is the transport failing rather than the model.
+		// is the transport failing rather than the model. An empty result
+		// file is the other case, and falls through as the model failure it
+		// is: the job ran, and running it again would only repeat it.
 		return Response{}, "", fmt.Errorf("%w: job completed without session id: %s", ErrClaudeBGTransport, claudeBGStateDetail(state))
 	}
 	return Response{}, sessionID, err
@@ -1595,6 +1586,15 @@ func anyNonEmptyFile(paths []string) bool {
 	return false
 }
 
+// errClaudeBGEmptyResult and errClaudeBGMissingResult separate "the job wrote
+// nothing usable" from "the job wrote nothing at all". Only the second can
+// mean the transport never ran the task; the first is a job that did run, and
+// callers must not branch on the message text to tell them apart.
+var (
+	errClaudeBGEmptyResult   = errors.New("llm subprocess: Claude background job wrote an empty result file")
+	errClaudeBGMissingResult = errors.New("llm subprocess: Claude background job completed without writing result file")
+)
+
 func readFirstNonEmptyFile(paths []string) ([]byte, error) {
 	for _, path := range paths {
 		// #nosec G304 -- result paths are adapter-owned scratch/job tmp paths.
@@ -1603,11 +1603,11 @@ func readFirstNonEmptyFile(paths []string) ([]byte, error) {
 			continue
 		}
 		if len(strings.TrimSpace(string(data))) == 0 {
-			return nil, errors.New("llm subprocess: Claude background job wrote an empty result file")
+			return nil, errClaudeBGEmptyResult
 		}
 		return data, nil
 	}
-	return nil, errors.New("llm subprocess: Claude background job completed without writing result file")
+	return nil, errClaudeBGMissingResult
 }
 
 func claudeBGStateDetail(state map[string]any) string {

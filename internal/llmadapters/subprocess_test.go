@@ -2312,3 +2312,84 @@ func TestSubprocessClaudeFallbackKeepsBothTransportLogs(t *testing.T) {
 		t.Fatalf("retry log missing the foreground attempt:\n%s", retry)
 	}
 }
+
+// One budget for the task: whichever bound runs out first is the one a retry
+// inherits, and no bound at all stays unbounded.
+func TestTaskDeadline(t *testing.T) {
+	now := time.Now()
+	ctxSoon, cancelSoon := context.WithDeadline(context.Background(), now.Add(time.Minute))
+	defer cancelSoon()
+	ctxLate, cancelLate := context.WithDeadline(context.Background(), now.Add(time.Hour))
+	defer cancelLate()
+
+	for _, tt := range []struct {
+		name    string
+		ctx     context.Context
+		timeout time.Duration
+		want    time.Duration // 0 means "no deadline"
+	}{
+		{name: "no bound at all", ctx: context.Background(), want: 0},
+		{name: "timeout only", ctx: context.Background(), timeout: 30 * time.Minute, want: 30 * time.Minute},
+		{name: "context only", ctx: ctxSoon, want: time.Minute},
+		{name: "context is earlier", ctx: ctxSoon, timeout: time.Hour, want: time.Minute},
+		{name: "timeout is earlier", ctx: ctxLate, timeout: time.Minute, want: time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := taskDeadline(tt.ctx, tt.timeout)
+			if tt.want == 0 {
+				if !got.IsZero() {
+					t.Fatalf("deadline = %v, want none", got)
+				}
+				return
+			}
+			if got.IsZero() {
+				t.Fatalf("deadline = none, want about %v out", tt.want)
+			}
+			// The clock moves between the call and the assertion, so compare
+			// the remaining window rather than an exact instant.
+			if diff := time.Until(got) - tt.want; diff > time.Second || diff < -time.Second {
+				t.Fatalf("deadline is %v out, want about %v", time.Until(got), tt.want)
+			}
+		})
+	}
+}
+
+// The retry runs under what is left of the task's window, not a fresh one. A
+// task whose budget is already spent must not start a second attempt at all.
+func TestSubprocessClaudeFallbackInheritsTheTaskBudget(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-blocked-foreground-recovers", recordPath, configDir, 5*time.Second)
+
+	primaryErr := fmt.Errorf("%w: job blocked: prompt file no longer exists", ErrClaudeBGTransport)
+	stream := &claudeFallbackStream{
+		adapter: adapter,
+		req:     Request{Prompt: "prompt"},
+		primary: stubStream{sessionID: "bg-session", err: primaryErr},
+		// Spent: with a fresh window the retry would run and succeed, and the
+		// helper would record a launch.
+		deadline: time.Now().Add(-time.Second),
+	}
+
+	if _, err := stream.Wait(context.Background()); !errors.Is(err, ErrClaudeBGTransport) {
+		t.Fatalf("Wait error = %v, want the primary transport failure", err)
+	}
+	if stream.SessionID() != "bg-session" {
+		t.Fatalf("SessionID = %q, want the primary's", stream.SessionID())
+	}
+	if _, err := os.Stat(recordPath); err == nil {
+		t.Fatalf("a spent budget must not launch a retry: %v", readHelperRecords(t, recordPath))
+	}
+}
+
+// stubStream stands in for a transport that has already run.
+type stubStream struct {
+	sessionID string
+	response  Response
+	err       error
+}
+
+func (s stubStream) SessionID() string { return s.sessionID }
+
+func (s stubStream) Wait(context.Context) (Response, error) { return s.response, s.err }
