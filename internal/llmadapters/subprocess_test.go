@@ -353,16 +353,21 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		wantStop      bool
 		timeout       time.Duration
 		wantRawResult bool
+		// wantRetry marks the states startClaude treats as transport
+		// failures. Asserting the launch count is what keeps this table
+		// honest: without it a retry that stopped happening, or one that
+		// started happening for a model failure, would both still pass.
+		wantRetry bool
 	}{
 		{name: "idle result", mode: "bg-idle-result", wantOutput: `{"idle":true}`, wantSession: "session-idle"},
 		{name: "invalid json is returned raw", mode: "bg-invalid-json", wantOutput: `not-json`, wantSession: "session-invalid", wantRawResult: true},
-		{name: "blocked", mode: "bg-blocked", wantErr: "blocked: permission needed", wantStop: true},
-		{name: "failed", mode: "bg-failed", wantErr: "failed: model failed", wantStop: true},
-		{name: "waiting", mode: "bg-waiting", wantErr: "waiting: waiting for input", wantStop: true},
-		{name: "stopped", mode: "bg-stopped", wantErr: "stopped: stopped by user", wantStop: true},
-		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true},
-		{name: "missing result", mode: "bg-missing-result", wantErr: "completed without writing result file", wantSession: "session-missing", wantStop: true},
-		{name: "empty result", mode: "bg-empty-result", wantErr: "empty result file", wantSession: "session-empty", wantStop: true},
+		{name: "blocked", mode: "bg-blocked", wantErr: "blocked: permission needed", wantStop: true, wantRetry: true},
+		{name: "failed", mode: "bg-failed", wantErr: "failed: model failed", wantStop: true, wantRetry: true},
+		{name: "waiting", mode: "bg-waiting", wantErr: "waiting: waiting for input", wantStop: true, wantRetry: true},
+		{name: "stopped", mode: "bg-stopped", wantErr: "stopped: stopped by user", wantStop: true, wantRetry: true},
+		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true, wantRetry: true},
+		{name: "missing result", mode: "bg-missing-result", wantErr: "background job: no result file", wantSession: "session-missing", wantStop: true},
+		{name: "empty result", mode: "bg-empty-result", wantErr: "background job: result file is empty", wantSession: "session-empty", wantStop: true},
 		{name: "timeout", mode: "bg-running", wantErrIs: context.DeadlineExceeded, wantStop: true, timeout: 50 * time.Millisecond},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -391,7 +396,9 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 				if tt.wantSession != "" && stream.SessionID() != tt.wantSession {
 					t.Fatalf("SessionID = %q, want %q", stream.SessionID(), tt.wantSession)
 				}
-				assertClaudeCleanup(t, readHelperRecords(t, recordPath), "job-1", tt.wantStop, configDir)
+				records := readHelperRecords(t, recordPath)
+				assertClaudeCleanup(t, records, "job-1", tt.wantStop, configDir)
+				assertClaudeLaunchCount(t, records, tt.wantRetry)
 				return
 			}
 			if err != nil {
@@ -1550,6 +1557,16 @@ func newClaudeHelperAdapter(mode string, recordPath string, configDir string, ti
 	return newClaudeHelperAdapterWithEnv(mode, recordPath, configDir, timeout)
 }
 
+func newClaudeHelperAdapterWithGrace(mode string, recordPath string, configDir string, timeout time.Duration, grace time.Duration) *SubprocessAdapter {
+	return NewClaudeCLIAdapter(SubprocessOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: helperPrefix(),
+		Env:               helperClaudeEnv(mode, recordPath, configDir),
+		Timeout:           timeout,
+		sessionIDGrace:    grace,
+	})
+}
+
 func newClaudeHelperAdapterWithEnv(mode string, recordPath string, configDir string, timeout time.Duration, extraEnv ...string) *SubprocessAdapter {
 	return NewClaudeCLIAdapter(SubprocessOptions{
 		Command:           os.Args[0],
@@ -1634,6 +1651,15 @@ func runClaudeBGHelper(mode string, args []string) {
 		result = `not-json`
 	case "bg-blocked":
 		state = map[string]any{"state": "blocked", "detail": "permission needed"}
+		writeResult = false
+	case "bg-blocked-foreground-recovers":
+		state = map[string]any{"state": "blocked", "detail": "prompt file no longer exists"}
+		writeResult = false
+	case "bg-result-without-session":
+		state = map[string]any{"state": "done"}
+		result = `{"done":true}`
+	case "bg-nothing-left-behind":
+		state = map[string]any{"state": "done"}
 		writeResult = false
 	case "bg-failed":
 		state = map[string]any{"state": "failed", "error": "model failed"}
@@ -1723,6 +1749,28 @@ func readHelperRecord(t *testing.T, path string) helperRecord {
 		t.Fatalf("no helper records in %s", path)
 	}
 	return records[0]
+}
+
+// assertClaudeLaunchCount checks how many task launches the helper saw: one
+// for the background job, plus one more when the failure was transport-shaped
+// and the task was retried in foreground. Control calls (stop, rm, agents) are
+// not launches and are excluded.
+func assertClaudeLaunchCount(t *testing.T, records []helperRecord, wantRetry bool) {
+	t.Helper()
+	launches := 0
+	for _, record := range records {
+		if containsFlag(record.AdapterArgs, "--bg") ||
+			(containsFlag(record.AdapterArgs, "-p") && flagValue(record.AdapterArgs, "--output-format") == "json") {
+			launches++
+		}
+	}
+	want := 1
+	if wantRetry {
+		want = 2
+	}
+	if launches != want {
+		t.Fatalf("task launches = %d, want %d (retry expected: %v)", launches, want, wantRetry)
+	}
 }
 
 func readHelperRecords(t *testing.T, path string) []helperRecord {
@@ -1969,6 +2017,11 @@ func runClaudeForegroundHelper(mode string, args []string) {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"speed":"standard"}}`)
+	case "bg-blocked-foreground-recovers":
+		if scratch != "" {
+			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"recovered":true}`), 0o600)
+		}
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"recovered","session_id":"fg-recovered"}`)
 	case "foreground-no-result":
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"forgot the file","session_id":"fg-session-2"}`)
 	case "foreground-fail":
@@ -2157,4 +2210,228 @@ func TestClaudeTransportXORValidation(t *testing.T) {
 			t.Fatalf("%s: err = %v, want nil", tc.name, err)
 		}
 	}
+}
+
+// A job service that refuses the task must not cost the whole reviewer: the
+// review it would have produced is still available on the other transport,
+// and a caller gating on coverage cannot tell "reviewer found nothing" from
+// "reviewer never ran".
+func TestSubprocessClaudeBackgroundFailureFallsBackToForeground(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-blocked-foreground-recovers", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:   "claude-sonnet-5",
+		Prompt:  "prompt",
+		LogPath: filepath.Join(tempDir, "events.log"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"recovered":true}` {
+		t.Fatalf("StructuredOutput = %s, want the foreground result", response.StructuredOutput)
+	}
+	if stream.SessionID() != "fg-recovered" {
+		t.Fatalf("SessionID = %q, want the foreground session", stream.SessionID())
+	}
+}
+
+// The fallback is for the transport, not for the model: a job that ran and
+// wrote nothing usable would only repeat itself, and the original failure is
+// what the caller has to see.
+func TestSubprocessClaudeBackgroundModelFailureIsNotRetried(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-empty-result", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:   "claude-sonnet-5",
+		Prompt:  "prompt",
+		LogPath: filepath.Join(tempDir, "events.log"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "result file is empty") {
+		t.Fatalf("Wait error = %v, want the original empty-result failure", err)
+	}
+}
+
+// A job that ran to completion and wrote its result is finished, whatever its
+// state file says about session ids. Re-running it would spend a second model
+// run on output already on disk.
+func TestSubprocessClaudeBackgroundResultWithoutSessionIsNotRetried(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-result-without-session", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"done":true}` {
+		t.Fatalf("StructuredOutput = %s, want the background result", response.StructuredOutput)
+	}
+	if stream.SessionID() != "" {
+		t.Fatalf("SessionID = %q, want empty rather than invented", stream.SessionID())
+	}
+	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), false)
+}
+
+// The retry must not erase the record of the failure it is retrying: task
+// logs are opened with os.Create, so a shared path would truncate the one
+// artifact that explains why a retry happened.
+func TestSubprocessClaudeFallbackKeepsBothTransportLogs(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	logPath := filepath.Join(tempDir, "events.log")
+	adapter := newClaudeHelperAdapter("bg-blocked-foreground-recovers", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt", LogPath: logPath})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	primary, err := os.ReadFile(logPath) // #nosec G304 -- t.TempDir path
+	if err != nil {
+		t.Fatalf("read primary log: %v", err)
+	}
+	if !strings.Contains(string(primary), "backgrounded") {
+		t.Fatalf("primary log lost the background attempt:\n%s", primary)
+	}
+	retryPath := filepath.Join(tempDir, "events.foreground.log")
+	retry, err := os.ReadFile(retryPath) // #nosec G304 -- t.TempDir path
+	if err != nil {
+		t.Fatalf("read retry log: %v", err)
+	}
+	if !strings.Contains(string(retry), "fg-recovered") {
+		t.Fatalf("retry log missing the foreground attempt:\n%s", retry)
+	}
+}
+
+// One budget for the task: whichever bound runs out first is the one a retry
+// inherits, and no bound at all stays unbounded.
+func TestTaskDeadline(t *testing.T) {
+	now := time.Now()
+	ctxSoon, cancelSoon := context.WithDeadline(context.Background(), now.Add(time.Minute))
+	defer cancelSoon()
+	ctxLate, cancelLate := context.WithDeadline(context.Background(), now.Add(time.Hour))
+	defer cancelLate()
+
+	for _, tt := range []struct {
+		name    string
+		ctx     context.Context
+		timeout time.Duration
+		want    time.Duration // 0 means "no deadline"
+	}{
+		{name: "no bound at all", ctx: context.Background(), want: 0},
+		{name: "timeout only", ctx: context.Background(), timeout: 30 * time.Minute, want: 30 * time.Minute},
+		{name: "context only", ctx: ctxSoon, want: time.Minute},
+		{name: "context is earlier", ctx: ctxSoon, timeout: time.Hour, want: time.Minute},
+		{name: "timeout is earlier", ctx: ctxLate, timeout: time.Minute, want: time.Minute},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := taskDeadline(tt.ctx, tt.timeout)
+			if tt.want == 0 {
+				if !got.IsZero() {
+					t.Fatalf("deadline = %v, want none", got)
+				}
+				return
+			}
+			if got.IsZero() {
+				t.Fatalf("deadline = none, want about %v out", tt.want)
+			}
+			// The clock moves between the call and the assertion, so compare
+			// the remaining window rather than an exact instant.
+			if diff := time.Until(got) - tt.want; diff > time.Second || diff < -time.Second {
+				t.Fatalf("deadline is %v out, want about %v", time.Until(got), tt.want)
+			}
+		})
+	}
+}
+
+// The retry runs under what is left of the task's window, not a fresh one. A
+// task whose budget is already spent must not start a second attempt at all.
+func TestSubprocessClaudeFallbackInheritsTheTaskBudget(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-blocked-foreground-recovers", recordPath, configDir, 5*time.Second)
+
+	primaryErr := fmt.Errorf("%w: job blocked: prompt file no longer exists", ErrClaudeBGTransport)
+	stream := &claudeFallbackStream{
+		adapter: adapter,
+		req:     Request{Prompt: "prompt"},
+		primary: stubStream{sessionID: "bg-session", err: primaryErr},
+		// Spent: with a fresh window the retry would run and succeed, and the
+		// helper would record a launch.
+		deadline: time.Now().Add(-time.Second),
+	}
+
+	if _, err := stream.Wait(context.Background()); !errors.Is(err, ErrClaudeBGTransport) {
+		t.Fatalf("Wait error = %v, want the primary transport failure", err)
+	}
+	if stream.SessionID() != "bg-session" {
+		t.Fatalf("SessionID = %q, want the primary's", stream.SessionID())
+	}
+	if _, err := os.Stat(recordPath); err == nil {
+		t.Fatalf("a spent budget must not launch a retry: %v", readHelperRecords(t, recordPath))
+	}
+}
+
+// stubStream stands in for a transport that has already run.
+type stubStream struct {
+	sessionID string
+	response  Response
+	err       error
+}
+
+func (s stubStream) SessionID() string { return s.sessionID }
+
+func (s stubStream) Wait(context.Context) (Response, error) { return s.response, s.err }
+
+// The one shape that can mean the job service accepted the task and never ran
+// it: a job that finished with neither a session id nor a result. It is the
+// case the transport marking exists for, so it has to be retried.
+func TestSubprocessClaudeBackgroundNothingLeftBehindIsRetried(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	// The job is already done, so waiting out the real grace window would
+	// only make the test slow.
+	adapter := newClaudeHelperAdapterWithGrace(
+		"bg-nothing-left-behind", recordPath, configDir, 5*time.Second, 20*time.Millisecond)
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, err = stream.Wait(context.Background())
+	if err == nil {
+		t.Fatal("Wait: want a failure, the job produced nothing")
+	}
+	if !errors.Is(err, ErrClaudeBGTransport) {
+		t.Fatalf("Wait error = %v, want ErrClaudeBGTransport", err)
+	}
+	// The foreground helper has no case for this mode, so the retry fails
+	// too and the primary error is what surfaces — but it must have been
+	// attempted.
+	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), true)
 }
