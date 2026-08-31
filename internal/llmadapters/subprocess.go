@@ -1457,14 +1457,15 @@ func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID str
 	if err == nil {
 		return Response{StructuredOutput: output, Usage: claudeBGTranscriptUsage(state)}, sessionID, nil
 	}
-	if sessionID == "" && errors.Is(err, errClaudeBGMissingResult) {
+	if sessionID == "" && errors.Is(err, errClaudeMissingResultFile) {
 		// Neither a result nor a session: the job left nothing behind, which
-		// is the transport failing rather than the model. An empty result
-		// file is the other case, and falls through as the model failure it
-		// is: the job ran, and running it again would only repeat it.
+		// is the only shape here that can mean the transport never ran the
+		// task. An empty result file is the other case, and falls through as
+		// the model failure it is: the job ran, and running it again would
+		// only repeat it.
 		return Response{}, "", fmt.Errorf("%w: job completed without session id: %s", ErrClaudeBGTransport, claudeBGStateDetail(state))
 	}
-	return Response{}, sessionID, err
+	return Response{}, sessionID, fmt.Errorf("llm subprocess: Claude background job: %w", err)
 }
 
 func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID string, resultPaths []string) (map[string]any, error) {
@@ -1586,13 +1587,14 @@ func anyNonEmptyFile(paths []string) bool {
 	return false
 }
 
-// errClaudeBGEmptyResult and errClaudeBGMissingResult separate "the job wrote
-// nothing usable" from "the job wrote nothing at all". Only the second can
-// mean the transport never ran the task; the first is a job that did run, and
-// callers must not branch on the message text to tell them apart.
+// errClaudeEmptyResultFile and errClaudeMissingResultFile separate "the run
+// wrote nothing usable" from "the run wrote nothing at all". Both transports
+// read result files through this helper and each supplies its own prefix, so
+// these describe the file and not who was reading it. Callers tell the two
+// apart with errors.Is rather than by message text.
 var (
-	errClaudeBGEmptyResult   = errors.New("llm subprocess: Claude background job wrote an empty result file")
-	errClaudeBGMissingResult = errors.New("llm subprocess: Claude background job completed without writing result file")
+	errClaudeEmptyResultFile   = errors.New("result file is empty")
+	errClaudeMissingResultFile = errors.New("no result file")
 )
 
 func readFirstNonEmptyFile(paths []string) ([]byte, error) {
@@ -1603,11 +1605,11 @@ func readFirstNonEmptyFile(paths []string) ([]byte, error) {
 			continue
 		}
 		if len(strings.TrimSpace(string(data))) == 0 {
-			return nil, errClaudeBGEmptyResult
+			return nil, errClaudeEmptyResultFile
 		}
 		return data, nil
 	}
-	return nil, errClaudeBGMissingResult
+	return nil, errClaudeMissingResultFile
 }
 
 func claudeBGStateDetail(state map[string]any) string {

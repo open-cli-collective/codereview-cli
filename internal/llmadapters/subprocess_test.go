@@ -366,8 +366,8 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		{name: "waiting", mode: "bg-waiting", wantErr: "waiting: waiting for input", wantStop: true, wantRetry: true},
 		{name: "stopped", mode: "bg-stopped", wantErr: "stopped: stopped by user", wantStop: true, wantRetry: true},
 		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true, wantRetry: true},
-		{name: "missing result", mode: "bg-missing-result", wantErr: "completed without writing result file", wantSession: "session-missing", wantStop: true},
-		{name: "empty result", mode: "bg-empty-result", wantErr: "empty result file", wantSession: "session-empty", wantStop: true},
+		{name: "missing result", mode: "bg-missing-result", wantErr: "background job: no result file", wantSession: "session-missing", wantStop: true},
+		{name: "empty result", mode: "bg-empty-result", wantErr: "background job: result file is empty", wantSession: "session-empty", wantStop: true},
 		{name: "timeout", mode: "bg-running", wantErrIs: context.DeadlineExceeded, wantStop: true, timeout: 50 * time.Millisecond},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2247,7 +2247,7 @@ func TestSubprocessClaudeBackgroundModelFailureIsNotRetried(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	if _, err := stream.Wait(context.Background()); err == nil ||
-		!strings.Contains(err.Error(), "empty result file") {
+		!strings.Contains(err.Error(), "result file is empty") {
 		t.Fatalf("Wait error = %v, want the original empty-result failure", err)
 	}
 }
