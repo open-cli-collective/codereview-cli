@@ -2352,18 +2352,26 @@ type planRunInputs struct {
 // existingFindingThreads reduces the PR's threads to the ones this identity
 // opened to report a finding, which are the only ones a repeat could duplicate.
 // A human quoting the same code is not this review repeating itself.
+//
+// The opening comment is tested directly rather than through
+// Status.CRAuthoredFinding, which is also set when this identity merely replied
+// to a thread someone else opened. That would carry the other author's text in
+// as a finding of ours and let it suppress a real one.
 func existingFindingThreads(threads []threadcontext.Thread) []reviewplan.ExistingThread {
 	var out []reviewplan.ExistingThread
 	for _, thread := range threads {
-		if !thread.Status.CRAuthoredFinding || len(thread.Comments) == 0 {
+		if len(thread.Comments) == 0 {
 			continue
 		}
 		// The opening comment is the finding; later comments are the
 		// conversation about it.
+		opening := thread.Comments[0]
+		if !opening.AuthoredByPostingIdentity || !opening.HasFindingMarker {
+			continue
+		}
 		out = append(out, reviewplan.ExistingThread{
-			Path:     thread.Anchor.Path,
-			Body:     thread.Comments[0].Body,
-			Resolved: thread.Resolved,
+			Path: thread.Anchor.Path,
+			Body: opening.Body,
 		})
 	}
 	return out

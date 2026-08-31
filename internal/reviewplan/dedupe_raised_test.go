@@ -39,7 +39,7 @@ func TestBuildDoesNotRepeatAFindingAlreadyRaised(t *testing.T) {
 	body := postedBody(t, first)
 
 	second := baseRequest()
-	second.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body, Resolved: true}}
+	second.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body}}
 
 	if got := inlineCount(t, second); got != 0 {
 		t.Fatalf("posted %d inline comments for a finding already raised, want 0", got)
@@ -51,7 +51,7 @@ func TestBuildDoesNotRepeatAFindingAlreadyRaised(t *testing.T) {
 func TestBuildKeepsARepeatedFindingInTheRollup(t *testing.T) {
 	req := baseRequest()
 	body := postedBody(t, baseRequest())
-	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body, Resolved: true}}
+	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body}}
 
 	plan, err := Build(req)
 	if err != nil {
@@ -66,18 +66,6 @@ func TestBuildKeepsARepeatedFindingInTheRollup(t *testing.T) {
 	}
 }
 
-// An open thread means the finding has been said too, and it is still there to
-// be read.
-func TestBuildDoesNotRepeatAFindingOnAnUnresolvedThread(t *testing.T) {
-	req := baseRequest()
-	body := postedBody(t, baseRequest())
-	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body, Resolved: false}}
-
-	if got := inlineCount(t, req); got != 0 {
-		t.Fatalf("posted %d inline comments duplicating an open thread, want 0", got)
-	}
-}
-
 // The repeats worth suppressing are the ones a fix moved, so the line cannot be
 // part of what identifies a finding.
 func TestBuildSuppressesARepeatWhoseLineMoved(t *testing.T) {
@@ -85,7 +73,7 @@ func TestBuildSuppressesARepeatWhoseLineMoved(t *testing.T) {
 	body := postedBody(t, baseRequest())
 	req.Findings = []review.Finding{finding("f-1", "main.go",
 		review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 14})}
-	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body, Resolved: true}}
+	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body}}
 
 	if got := inlineCount(t, req); got != 0 {
 		t.Fatalf("posted %d inline comments for a finding that only moved, want 0", got)
@@ -101,7 +89,7 @@ func TestBuildSuppressesARepeatDespiteADifferentRunMarker(t *testing.T) {
 	stale := "<!-- codereview:skip --> <!-- codereview:run-id=" +
 		"11111111-2222-3333-4444-555555555555:action=inline_comment-001 -->\n\n" +
 		postedBody(t, baseRequest())
-	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: stale, Resolved: true}}
+	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: stale}}
 
 	if got := inlineCount(t, req); got != 0 {
 		t.Fatalf("posted %d inline comments; a differing run marker defeated the match", got)
@@ -113,7 +101,7 @@ func TestBuildSuppressesARepeatDespiteADifferentRunMarker(t *testing.T) {
 func TestBuildStillPostsADifferentFindingOnTheSameFile(t *testing.T) {
 	req := baseRequest()
 	other := "<!-- codereview:skip -->\n\nsomething else entirely\n\n" + inlineFooter
-	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: other, Resolved: true}}
+	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: other}}
 
 	if got := inlineCount(t, req); got != 1 {
 		t.Fatalf("posted %d inline comments, want 1: a different finding must still be raised", got)
@@ -124,7 +112,7 @@ func TestBuildStillPostsADifferentFindingOnTheSameFile(t *testing.T) {
 func TestBuildStillPostsTheSameTextAboutAnotherFile(t *testing.T) {
 	req := baseRequest()
 	body := postedBody(t, baseRequest())
-	req.ExistingThreads = []ExistingThread{{Path: "other.go", Body: body, Resolved: true}}
+	req.ExistingThreads = []ExistingThread{{Path: "other.go", Body: body}}
 
 	if got := inlineCount(t, req); got != 1 {
 		t.Fatalf("posted %d inline comments, want 1: another file is another claim", got)
@@ -135,20 +123,12 @@ func TestBuildStillPostsTheSameTextAboutAnotherFile(t *testing.T) {
 func TestBuildIgnoresAnEmptyExistingThread(t *testing.T) {
 	req := baseRequest()
 	req.ExistingThreads = []ExistingThread{
-		{Path: "main.go", Body: "  \n\n", Resolved: true},
-		{Path: "main.go", Body: "<!-- codereview:skip -->", Resolved: true},
+		{Path: "main.go", Body: "  \n\n"},
+		{Path: "main.go", Body: "<!-- codereview:skip -->"},
 	}
 
 	if got := inlineCount(t, req); got != 1 {
 		t.Fatalf("posted %d inline comments, want 1: an empty thread suppressed a finding", got)
-	}
-}
-
-// An unterminated comment must not leak marker text into the comparison, and
-// must not panic.
-func TestNormalizeFindingTextHandlesAnUnterminatedComment(t *testing.T) {
-	if got := normalizeFindingText("before <!-- never closed"); got != "before" {
-		t.Fatalf("normalized = %q, want %q", got, "before")
 	}
 }
 
@@ -158,5 +138,68 @@ func TestNormalizeFindingTextFoldsFormatting(t *testing.T) {
 	b := normalizeFindingText("finding body here")
 	if a != b {
 		t.Fatalf("normalized %q and %q differently", a, b)
+	}
+}
+
+// On a host without native file-level comments every file-anchored finding
+// takes the fallback path, and such a finding re-anchors to the first hunk on
+// each run, so it is the class most in need of suppression. The rendered header
+// interpolates the file path, so stripping only the literal prefix would leave
+// the path in the text and nothing would ever match.
+func TestBuildSuppressesARepeatedFileLevelFinding(t *testing.T) {
+	fallback := func() Request {
+		req := baseRequest()
+		req.ProviderCaps.NativeFileLevelComments = false
+		req.Findings = []review.Finding{finding("f-1", "main.go",
+			review.Anchor{Kind: review.AnchorKindFile})}
+		return req
+	}
+
+	body := postedBody(t, fallback())
+	if !strings.Contains(body, fileLevelFallbackPrefix+"main.go") {
+		t.Fatalf("this test is not exercising the fallback path: %q", body)
+	}
+
+	req := fallback()
+	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: body}}
+	if got := inlineCount(t, req); got != 0 {
+		t.Fatalf("posted %d inline comments for a repeated file-level finding, want 0", got)
+	}
+}
+
+// A finding may quote an HTML, XML, or JSX comment out of the diff. Dropping it
+// would take real text out of the comparison while leaving it in the posted
+// body, so two findings differing only inside a quoted comment would collapse.
+func TestBuildKeepsTextQuotedInsideANonMarkerComment(t *testing.T) {
+	quoting := func(quoted string) Request {
+		req := baseRequest()
+		f := finding("f-1", "main.go",
+			review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 12})
+		f.Body = "this line is wrong: <!-- " + quoted + " -->"
+		req.Findings = []review.Finding{f}
+		return req
+	}
+
+	req := quoting("beta")
+	req.ExistingThreads = []ExistingThread{{Path: "main.go", Body: postedBody(t, quoting("alpha"))}}
+
+	if got := inlineCount(t, req); got != 1 {
+		t.Fatalf("posted %d inline comments, want 1: two findings differing only "+
+			"inside a quoted comment were treated as the same", got)
+	}
+}
+
+// The marker's run id differs on every run, so it must not reach the key even
+// when the span is unterminated.
+func TestNormalizeFindingTextDropsAnUnterminatedMarker(t *testing.T) {
+	if got := normalizeFindingText("before " + markerPrefix + "run-id=abc"); got != "before" {
+		t.Fatalf("normalized = %q, want %q", got, "before")
+	}
+}
+
+// An unterminated comment that is not a marker is ordinary quoted text.
+func TestNormalizeFindingTextKeepsAnUnterminatedNonMarkerComment(t *testing.T) {
+	if got := normalizeFindingText("before <!-- never closed"); !strings.Contains(got, "never closed") {
+		t.Fatalf("normalized = %q, want the quoted text kept", got)
 	}
 }

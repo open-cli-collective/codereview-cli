@@ -17,6 +17,7 @@ const (
 	inlineFooter             = "*Reply inline to this comment.*"
 	fileLevelFallbackPrefix  = "_File-level note:_ "
 	markerPrefix             = "<!-- codereview:"
+	htmlCommentClose         = "-->"
 	escapedMarkerPrefix      = "&lt;!-- codereview:"
 )
 
@@ -107,8 +108,6 @@ type ExistingThread struct {
 	// Body is the thread's opening comment, as it was posted, including the
 	// decorations Build added to it.
 	Body string
-	// Resolved reports whether the thread has been marked resolved.
-	Resolved bool
 }
 
 // Request is the pure input to Build.
@@ -652,38 +651,63 @@ func findingKey(path, body string) (string, bool) {
 	return strings.TrimSpace(path) + "\x00" + text, true
 }
 
-// normalizeFindingText strips the decorations this package puts on a posted
-// comment, along with any HTML comments the host carries, and folds whitespace
-// so that formatting alone cannot make the same text look new.
+// normalizeFindingText strips everything a posted comment carries that is not
+// the finding, and folds whitespace so that formatting alone cannot make the
+// same text look new.
 func normalizeFindingText(body string) string {
-	text := stripHTMLComments(body)
+	text := stripMarkerComments(body)
+	text = stripFileLevelPrefix(text)
 	text = strings.ReplaceAll(text, inlineFooter, " ")
-	text = strings.ReplaceAll(text, fileLevelFallbackPrefix, " ")
 	return strings.ToLower(strings.Join(strings.Fields(text), " "))
 }
 
-// stripHTMLComments removes `<!-- ... -->` spans. Markers are written that way,
-// and they carry a run id that differs on every run, so leaving them in would
-// make every comparison fail.
-func stripHTMLComments(text string) string {
+// stripMarkerComments removes this tool's own `<!-- codereview:... -->` spans,
+// which carry a run id that differs on every run and would otherwise make every
+// comparison fail.
+//
+// Only those spans. A finding may legitimately quote an HTML, XML, or JSX
+// comment out of the diff, and dropping that would take real text out of the
+// comparison while leaving it in the posted body, so two findings differing
+// only inside a quoted comment would collapse to one key.
+func stripMarkerComments(text string) string {
 	var out strings.Builder
 	for {
-		start := strings.Index(text, "<!--")
+		start := strings.Index(text, markerPrefix)
 		if start < 0 {
 			out.WriteString(text)
 			return out.String()
 		}
 		out.WriteString(text[:start])
 		out.WriteString(" ")
-		rest := text[start+len("<!--"):]
-		end := strings.Index(rest, "-->")
+		rest := text[start+len(markerPrefix):]
+		end := strings.Index(rest, htmlCommentClose)
 		if end < 0 {
-			// An unterminated comment: nothing after it is markup worth
-			// keeping, and dropping it beats emitting the marker text.
+			// An unterminated marker. Emitting its text would put a run id into
+			// the key, so everything from here is dropped.
 			return out.String()
 		}
-		text = rest[end+len("-->"):]
+		text = rest[end+len(htmlCommentClose):]
 	}
+}
+
+// stripFileLevelPrefix removes the file-level fallback header, which is the
+// prefix followed by the interpolated file path on the same line.
+//
+// Dropping only the literal prefix would leave the path in the text, so a
+// stored file-level comment would never match the finding it came from. On a
+// host without native file-level comments that is every file-anchored finding,
+// which is the class most in need of this: such a finding re-anchors to the
+// first hunk on every run.
+func stripFileLevelPrefix(text string) string {
+	start := strings.Index(text, fileLevelFallbackPrefix)
+	if start < 0 {
+		return text
+	}
+	rest := text[start+len(fileLevelFallbackPrefix):]
+	if end := strings.IndexByte(rest, '\n'); end >= 0 {
+		return text[:start] + " " + rest[end+1:]
+	}
+	return text[:start] + " "
 }
 
 func (b *builder) anchorFinding(finding review.Finding) AnchoredFinding {

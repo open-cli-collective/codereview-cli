@@ -7,49 +7,63 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
-func thread(path string, crAuthored, resolved bool, bodies ...string) threadcontext.Thread {
-	comments := make([]threadcontext.Comment, 0, len(bodies))
-	for _, body := range bodies {
-		comments = append(comments, threadcontext.Comment{Body: body})
+// comment builds one normalized thread comment with the two flags the filter
+// reads.
+func comment(body string, ours, findingMarker bool) threadcontext.Comment {
+	return threadcontext.Comment{
+		Body:                      body,
+		AuthoredByPostingIdentity: ours,
+		HasFindingMarker:          findingMarker,
 	}
+}
+
+func thread(path string, comments ...threadcontext.Comment) threadcontext.Thread {
 	return threadcontext.Thread{
 		ID:       gitprovider.ThreadID("t"),
-		Resolved: resolved,
 		Anchor:   threadcontext.Anchor{Path: path},
 		Comments: comments,
-		Status:   threadcontext.Status{CRAuthoredFinding: crAuthored},
 	}
 }
 
-// A human quoting the same code is not this review repeating itself, so only
-// threads this identity opened to report a finding can suppress one.
-func TestExistingFindingThreadsKeepsOnlyOurFindingThreads(t *testing.T) {
+// Only a thread this identity opened to report a finding can be one it repeats.
+func TestExistingFindingThreadsKeepsOnlyOurOwnFindingThreads(t *testing.T) {
 	got := existingFindingThreads([]threadcontext.Thread{
-		thread("a.go", true, true, "ours, resolved"),
-		thread("b.go", true, false, "ours, open"),
-		thread("c.go", false, true, "someone else's"),
+		thread("a.go", comment("ours", true, true)),
+		thread("b.go", comment("someone else's", false, true)),
+		thread("c.go", comment("ours, but not a finding", true, false)),
 	})
 
-	if len(got) != 2 {
-		t.Fatalf("kept %d threads, want 2: %+v", len(got), got)
+	if len(got) != 1 {
+		t.Fatalf("kept %d threads, want 1: %+v", len(got), got)
 	}
-	for _, e := range got {
-		if e.Path == "c.go" {
-			t.Fatalf("a thread this identity did not author was kept: %+v", e)
-		}
-	}
-	// Resolution is carried through rather than filtered on: an open thread
-	// means the finding has been said too.
-	if !got[0].Resolved || got[1].Resolved {
-		t.Fatalf("resolution was not carried through: %+v", got)
+	if got[0].Path != "a.go" {
+		t.Fatalf("kept the wrong thread: %+v", got[0])
 	}
 }
 
-// The opening comment is the finding; the rest is the conversation about it,
-// and matching against a reply would compare against the wrong text.
+// A thread a human opened and this identity only replied to carries the human's
+// text. Treating it as ours would let it suppress a real finding.
+func TestExistingFindingThreadsSkipsAThreadWeOnlyRepliedTo(t *testing.T) {
+	got := existingFindingThreads([]threadcontext.Thread{
+		thread("a.go",
+			comment("a human's finding", false, false),
+			comment("our reply", true, true),
+		),
+	})
+
+	if len(got) != 0 {
+		t.Fatalf("kept %d threads, want 0: a thread we only replied to was treated as ours: %+v", len(got), got)
+	}
+}
+
+// The opening comment is the finding; matching against a reply would compare
+// against the wrong text.
 func TestExistingFindingThreadsCarriesTheOpeningComment(t *testing.T) {
 	got := existingFindingThreads([]threadcontext.Thread{
-		thread("a.go", true, true, "the finding", "fixed in abc123", "thanks"),
+		thread("a.go",
+			comment("the finding", true, true),
+			comment("fixed in abc123", false, false),
+		),
 	})
 
 	if len(got) != 1 {
@@ -62,7 +76,7 @@ func TestExistingFindingThreadsCarriesTheOpeningComment(t *testing.T) {
 
 // A thread with no comments carries no finding to compare against.
 func TestExistingFindingThreadsSkipsAThreadWithNoComments(t *testing.T) {
-	if got := existingFindingThreads([]threadcontext.Thread{thread("a.go", true, true)}); len(got) != 0 {
+	if got := existingFindingThreads([]threadcontext.Thread{thread("a.go")}); len(got) != 0 {
 		t.Fatalf("kept %d threads, want 0: %+v", len(got), got)
 	}
 }
