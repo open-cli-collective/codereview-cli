@@ -2,6 +2,7 @@ package llmadapters
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -694,7 +695,7 @@ func assertPiRPCFinalEventsPreserved(t *testing.T, logged []byte) {
 				t.Fatalf("message_end.message = %#v, want final structured content", message)
 			}
 			usage, ok := message["usage"].(map[string]any)
-			if !ok || usage["tokensIn"] != float64(100) || usage["tokensOut"] != float64(50) {
+			if !ok || usage["input"] != float64(100) || usage["output"] != float64(50) {
 				t.Fatalf("message_end.message = %#v, want final usage", message)
 			}
 			messageEndFound = true
@@ -757,8 +758,23 @@ func TestNormalizePiRPCLogLinePreservesRootMessageForInvalidAssistantEvent(t *te
 				"model":      "deepseek-v4-pro",
 				"api":        "openai-completions",
 				"stopReason": "stop",
+				"timestamp":  1700000000000,
 				"content":    []map[string]any{{"type": "thinking", "thinking": "cumulative"}},
-				"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+				"usage": map[string]any{
+					"input":       100,
+					"output":      50,
+					"cacheRead":   0,
+					"cacheWrite":  0,
+					"totalTokens": 150,
+					"cost": map[string]any{
+						"input":      0,
+						"output":     0,
+						"cacheRead":  0,
+						"cacheWrite": 0,
+						"total":      0,
+					},
+					"timestamp": 1700000000000,
+				},
 			}
 			event := map[string]any{
 				"type":    "message_update",
@@ -793,8 +809,23 @@ func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
 		"model":      "deepseek-v4-pro",
 		"api":        "openai-completions",
 		"stopReason": "stop",
+		"timestamp":  1700000000000,
 		"content":    []map[string]any{{"type": "thinking", "thinking": "partial"}},
-		"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+		"usage": map[string]any{
+			"input":       100,
+			"output":      50,
+			"cacheRead":   0,
+			"cacheWrite":  0,
+			"totalTokens": 150,
+			"cost": map[string]any{
+				"input":      0,
+				"output":     0,
+				"cacheRead":  0,
+				"cacheWrite": 0,
+				"total":      0,
+			},
+			"timestamp": 1700000000000,
+		},
 	}
 	event := map[string]any{
 		"type": "message_update",
@@ -804,8 +835,23 @@ func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
 			"model":      "deepseek-v4-pro",
 			"api":        "openai-completions",
 			"stopReason": "stop",
+			"timestamp":  1700000000000,
 			"content":    []map[string]any{{"type": "thinking", "thinking": "root"}},
-			"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+			"usage": map[string]any{
+				"input":       100,
+				"output":      50,
+				"cacheRead":   0,
+				"cacheWrite":  0,
+				"totalTokens": 150,
+				"cost": map[string]any{
+					"input":      0,
+					"output":     0,
+					"cacheRead":  0,
+					"cacheWrite": 0,
+					"total":      0,
+				},
+				"timestamp": 1700000000000,
+			},
 		},
 		"assistantMessageEvent": map[string]any{
 			"type":         "thinking_delta",
@@ -834,6 +880,96 @@ func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
 	contentBlock, ok := content[0].(map[string]any)
 	if !ok || contentBlock["thinking"] != "root" {
 		t.Fatalf("root message = %#v, want root snapshot preserved", message)
+	}
+	want := append(append([]byte(nil), line...), '\n')
+	if !bytes.Equal(normalized, want) {
+		t.Fatalf("normalized = %s, want original line preserved", normalized)
+	}
+}
+
+func TestNormalizePiRPCLogLinePreservesOriginalForInvalidPiUpdateShape(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(partial, assistantEvent map[string]any)
+	}{
+		{
+			name: "missing assistant timestamp",
+			mutate: func(partial, _ map[string]any) {
+				delete(partial, "timestamp")
+			},
+		},
+		{
+			name: "missing assistant usage",
+			mutate: func(partial, _ map[string]any) {
+				delete(partial, "usage")
+			},
+		},
+		{
+			name: "missing event content index",
+			mutate: func(_, assistantEvent map[string]any) {
+				delete(assistantEvent, "contentIndex")
+			},
+		},
+		{
+			name: "wrong event delta type",
+			mutate: func(_, assistantEvent map[string]any) {
+				assistantEvent["delta"] = 1
+			},
+		},
+		{
+			name: "unknown content block",
+			mutate: func(partial, _ map[string]any) {
+				partial["content"] = []map[string]any{{"type": "unknown", "value": "unrecognized"}}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			partial := map[string]any{
+				"role":       "assistant",
+				"provider":   "opencode-go",
+				"model":      "deepseek-v4-pro",
+				"api":        "openai-completions",
+				"stopReason": "stop",
+				"timestamp":  float64(1700000000000),
+				"content":    []map[string]any{{"type": "thinking", "thinking": "cumulative"}},
+				"usage": map[string]any{
+					"input":       100,
+					"output":      50,
+					"cacheRead":   0,
+					"cacheWrite":  0,
+					"totalTokens": 150,
+					"cost": map[string]any{
+						"input":      0,
+						"output":     0,
+						"cacheRead":  0,
+						"cacheWrite": 0,
+						"total":      0,
+					},
+					"timestamp": float64(1700000000000),
+				},
+			}
+			assistantEvent := map[string]any{
+				"type":         "thinking_delta",
+				"contentIndex": 0,
+				"delta":        "x",
+				"partial":      partial,
+			}
+			event := map[string]any{
+				"type":                  "message_update",
+				"message":               partial,
+				"assistantMessageEvent": assistantEvent,
+			}
+			tt.mutate(partial, assistantEvent)
+			line, err := json.Marshal(event)
+			if err != nil {
+				t.Fatalf("Marshal(event): %v", err)
+			}
+			normalized := normalizePiRPCLogLine(line)
+			want := append(append([]byte(nil), line...), '\n')
+			if !bytes.Equal(normalized, want) {
+				t.Fatalf("normalized = %s, want original line preserved", normalized)
+			}
+		})
 	}
 }
 
@@ -1141,8 +1277,23 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 				"model":      "deepseek-v4-pro",
 				"api":        "openai-completions",
 				"stopReason": "stop",
+				"timestamp":  1700000000000,
 				"content":    []map[string]any{{"type": "thinking", "thinking": thinking}},
-				"usage":      map[string]any{"tokensIn": 100, "tokensOut": 50, "totalTokens": 150},
+				"usage": map[string]any{
+					"input":       100,
+					"output":      50,
+					"cacheRead":   0,
+					"cacheWrite":  0,
+					"totalTokens": 150,
+					"cost": map[string]any{
+						"input":      0,
+						"output":     0,
+						"cacheRead":  0,
+						"cacheWrite": 0,
+						"total":      0,
+					},
+					"timestamp": 1700000000000,
+				},
 			}
 			event := map[string]any{
 				"type":      "message_update",
@@ -1158,7 +1309,7 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 			data, _ := json.Marshal(event)
 			fmt.Println(string(data))
 		}
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":100,"tokensOut":50}}}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"api":"openai-completions","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":100,"output":50,"cacheRead":0,"cacheWrite":0,"totalTokens":150,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0},"timestamp":1700000000000},"stopReason":"stop","timestamp":1700000000000}}`)
 		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
 	case "prompt-failure":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":false,"error":"No API key found for opencode-go"}`)
