@@ -744,25 +744,20 @@ func normalizePiRPCLogLine(line []byte) []byte {
 	if !ok {
 		return append(logLine, '\n')
 	}
-	compactPartial := compactPiRPCPartialForLog(partialRaw)
-	rootMessageRedundant := false
-	if len(compactPartial) > 0 {
-		if !piRPCMessageUpdateRootIsRedundant(event, assistantEvent, partialRaw) {
-			return append(logLine, '\n')
-		}
-		assistantEvent["partial"] = compactPartial
-		rootMessageRedundant = true
-	} else {
-		delete(assistantEvent, "partial")
+	if !piRPCMessageUpdateRootIsRedundant(event, assistantEvent, partialRaw) {
+		return append(logLine, '\n')
 	}
+	compactPartial := compactPiRPCPartialForLog(partialRaw)
+	if len(compactPartial) == 0 {
+		return append(logLine, '\n')
+	}
+	assistantEvent["partial"] = compactPartial
 	normalizedAssistantEvent, err := json.Marshal(assistantEvent)
 	if err != nil {
 		return append(logLine, '\n')
 	}
 	event["assistantMessageEvent"] = normalizedAssistantEvent
-	if rootMessageRedundant {
-		delete(event, "message")
-	}
+	delete(event, "message")
 	normalized, err := json.Marshal(event)
 	if err != nil {
 		return append(logLine, '\n')
@@ -771,24 +766,26 @@ func normalizePiRPCLogLine(line []byte) []byte {
 }
 
 func piRPCMessageUpdateRootIsRedundant(event, assistantEvent map[string]json.RawMessage, partialRaw json.RawMessage) bool {
-	eventType := rawString(assistantEvent, "type")
-	if !isKnownPiRPCAssistantMessageEventType(eventType) {
-		return false
-	}
-	if !validPiRPCAssistantMessageUpdate(assistantEvent, partialRaw, eventType) {
+	if !validPiRPCProjection(assistantEvent, partialRaw) {
 		return false
 	}
 	rootRaw, ok := event["message"]
 	return ok && bytes.Equal(rootRaw, partialRaw)
 }
 
-func validPiRPCAssistantMessageUpdate(assistantEvent map[string]json.RawMessage, partialRaw json.RawMessage, eventType string) bool {
-	partial, ok := piRPCJSONObject(partialRaw)
-	if !ok || rawString(partial, "role") != "assistant" || !validPiRPCAssistantMessage(partial) {
+func validPiRPCProjection(assistantEvent map[string]json.RawMessage, partialRaw json.RawMessage) bool {
+	eventType := rawString(assistantEvent, "type")
+	if !isKnownPiRPCAssistantMessageEventType(eventType) || !piRPCJSONNumber(assistantEvent["contentIndex"]) {
 		return false
 	}
-	if !piRPCJSONNumber(assistantEvent["contentIndex"]) {
+	partial, ok := piRPCJSONObject(partialRaw)
+	if !ok || rawString(partial, "role") != "assistant" {
 		return false
+	}
+	for _, key := range []string{"role", "provider", "model", "api", "stopReason"} {
+		if !piRPCJSONString(partial[key]) {
+			return false
+		}
 	}
 	switch eventType {
 	case "text_delta", "thinking_delta", "toolcall_delta":
@@ -800,81 +797,6 @@ func validPiRPCAssistantMessageUpdate(assistantEvent map[string]json.RawMessage,
 	default:
 		return true
 	}
-}
-
-func validPiRPCAssistantMessage(partial map[string]json.RawMessage) bool {
-	for _, key := range []string{"api", "provider", "model"} {
-		if !piRPCNonEmptyJSONString(partial[key]) {
-			return false
-		}
-	}
-	if rawString(partial, "stopReason") == "" || !isKnownPiRPCStopReason(rawString(partial, "stopReason")) {
-		return false
-	}
-	if !piRPCJSONNumber(partial["timestamp"]) || !validPiRPCContent(partial["content"]) {
-		return false
-	}
-	return validPiRPCUsage(partial["usage"])
-}
-
-func validPiRPCContent(value json.RawMessage) bool {
-	blocks, ok := piRPCJSONArray(value)
-	if !ok {
-		return false
-	}
-	for _, rawBlock := range blocks {
-		block, ok := piRPCJSONObject(rawBlock)
-		if !ok {
-			return false
-		}
-		switch rawString(block, "type") {
-		case "text":
-			if !piRPCJSONString(block["text"]) {
-				return false
-			}
-		case "thinking":
-			if !piRPCJSONString(block["thinking"]) {
-				return false
-			}
-		case "toolCall":
-			if !piRPCJSONString(block["id"]) || !piRPCJSONString(block["name"]) {
-				return false
-			}
-			if _, ok := piRPCJSONObject(block["arguments"]); !ok {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func validPiRPCUsage(value json.RawMessage) bool {
-	usage, ok := piRPCJSONObject(value)
-	if !ok {
-		return false
-	}
-	for _, key := range []string{"input", "output", "cacheRead", "cacheWrite", "totalTokens"} {
-		if !piRPCJSONNumber(usage[key]) {
-			return false
-		}
-	}
-	cost, ok := piRPCJSONObject(usage["cost"])
-	if !ok {
-		return false
-	}
-	for _, key := range []string{"input", "output", "cacheRead", "cacheWrite", "total"} {
-		if !piRPCJSONNumber(cost[key]) {
-			return false
-		}
-	}
-	for _, key := range []string{"cacheWrite1h", "reasoning"} {
-		if value, ok := usage[key]; ok && !piRPCJSONNumber(value) {
-			return false
-		}
-	}
-	return true
 }
 
 func validPiRPCToolCall(value json.RawMessage) bool {
@@ -889,15 +811,6 @@ func validPiRPCToolCall(value json.RawMessage) bool {
 	return ok
 }
 
-func isKnownPiRPCStopReason(value string) bool {
-	switch value {
-	case "pending", "stop", "length", "toolUse", "error", "aborted":
-		return true
-	default:
-		return false
-	}
-}
-
 func piRPCJSONObject(value json.RawMessage) (map[string]json.RawMessage, bool) {
 	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 		return nil, false
@@ -909,34 +822,12 @@ func piRPCJSONObject(value json.RawMessage) (map[string]json.RawMessage, bool) {
 	return object, true
 }
 
-func piRPCJSONArray(value json.RawMessage) ([]json.RawMessage, bool) {
-	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-		return nil, false
-	}
-	var array []json.RawMessage
-	if err := json.Unmarshal(value, &array); err != nil || array == nil {
-		return nil, false
-	}
-	return array, true
-}
-
 func piRPCJSONString(value json.RawMessage) bool {
 	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 		return false
 	}
 	var text string
 	return json.Unmarshal(value, &text) == nil
-}
-
-func piRPCNonEmptyJSONString(value json.RawMessage) bool {
-	if !piRPCJSONString(value) {
-		return false
-	}
-	var text string
-	if err := json.Unmarshal(value, &text); err != nil {
-		return false
-	}
-	return text != ""
 }
 
 func piRPCJSONNumber(value json.RawMessage) bool {

@@ -718,90 +718,238 @@ func assertPiRPCFinalEventsPreserved(t *testing.T, logged []byte) {
 	}
 }
 
-func TestNormalizePiRPCLogLinePreservesRootMessageForUnrecognizedPartial(t *testing.T) {
-	line := []byte(`{"type":"message_update","message":{"role":"assistant","content":[{"type":"thinking","thinking":"cumulative"}]},"assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"x","partial":{"content":[{"type":"unknown","value":"unrecognized"}],"usage":{"tokensIn":100,"tokensOut":50}}}}`)
-
-	normalized := normalizePiRPCLogLine(line)
-	var event map[string]any
-	if err := json.Unmarshal(normalized, &event); err != nil {
-		t.Fatalf("Unmarshal(normalized): %v", err)
-	}
-	message, ok := event["message"].(map[string]any)
-	if !ok {
-		t.Fatalf("normalized message_update = %#v, want root message preserved", event)
-	}
-	if message["role"] != "assistant" {
-		t.Fatalf("root message = %#v, want assistant message preserved", message)
-	}
-	assistantEvent, ok := event["assistantMessageEvent"].(map[string]any)
-	if !ok {
-		t.Fatalf("normalized message_update = %#v, want assistantMessageEvent", event)
-	}
-	if _, ok := assistantEvent["partial"]; ok {
-		t.Fatalf("assistantMessageEvent = %#v, want unrecognized partial removed", assistantEvent)
-	}
-}
-
-func TestNormalizePiRPCLogLinePreservesRootMessageForInvalidAssistantEvent(t *testing.T) {
-	for _, tt := range []struct {
+func TestNormalizePiRPCLogLineCompactsAllKnownPiAssistantEvents(t *testing.T) {
+	tests := []struct {
 		name      string
 		eventType string
-		role      string
+		fields    map[string]any
 	}{
-		{name: "unknown event type", eventType: "future_or_bad_event", role: "assistant"},
-		{name: "invalid partial role", eventType: "thinking_delta", role: "user"},
-	} {
+		{name: "text start", eventType: "text_start"},
+		{name: "text delta", eventType: "text_delta", fields: map[string]any{"delta": "text chunk"}},
+		{name: "text end", eventType: "text_end", fields: map[string]any{"content": "complete text"}},
+		{name: "thinking start", eventType: "thinking_start"},
+		{name: "thinking delta", eventType: "thinking_delta", fields: map[string]any{"delta": "thinking chunk"}},
+		{name: "thinking end", eventType: "thinking_end", fields: map[string]any{"content": "complete thinking"}},
+		{name: "tool call start", eventType: "toolcall_start"},
+		{name: "tool call delta", eventType: "toolcall_delta", fields: map[string]any{"delta": "{\"path\":\"x\"}"}},
+		{
+			name:      "tool call end",
+			eventType: "toolcall_end",
+			fields: map[string]any{"toolCall": map[string]any{
+				"type": "toolCall", "id": "call-1", "name": "Read", "arguments": map[string]any{"path": "x"},
+			}},
+		},
+	}
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			partial := map[string]any{
-				"role":       tt.role,
-				"provider":   "opencode-go",
-				"model":      "deepseek-v4-pro",
-				"api":        "openai-completions",
-				"stopReason": "stop",
-				"timestamp":  1700000000000,
-				"content":    []map[string]any{{"type": "thinking", "thinking": "cumulative"}},
-				"usage": map[string]any{
-					"input":       100,
-					"output":      50,
-					"cacheRead":   0,
-					"cacheWrite":  0,
-					"totalTokens": 150,
-					"cost": map[string]any{
-						"input":      0,
-						"output":     0,
-						"cacheRead":  0,
-						"cacheWrite": 0,
-						"total":      0,
-					},
-				},
-			}
-			event := map[string]any{
-				"type":    "message_update",
-				"message": partial,
-				"assistantMessageEvent": map[string]any{
-					"type":         tt.eventType,
-					"contentIndex": 0,
-					"delta":        "x",
-					"partial":      partial,
-				},
+			event, _, assistantEvent := piRPCProjectionEventFixture(tt.eventType)
+			for key, value := range tt.fields {
+				assistantEvent[key] = value
 			}
 			line, err := json.Marshal(event)
 			if err != nil {
 				t.Fatalf("Marshal(event): %v", err)
 			}
 			normalized := normalizePiRPCLogLine(line)
-			var decoded map[string]any
-			if err := json.Unmarshal(normalized, &decoded); err != nil {
-				t.Fatalf("Unmarshal(normalized): %v", err)
-			}
-			if _, ok := decoded["message"]; !ok {
-				t.Fatalf("normalized message_update = %#v, want root message preserved", decoded)
+			gotAssistantEvent := assertPiRPCProjectionCompacted(t, normalized, tt.eventType, piRPCProjectionPartialFixture())
+			for key, want := range tt.fields {
+				if !reflect.DeepEqual(gotAssistantEvent[key], want) {
+					t.Fatalf("assistantMessageEvent[%q] = %#v, want %#v", key, gotAssistantEvent[key], want)
+				}
 			}
 		})
 	}
 }
 
-func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
+func TestNormalizePiRPCLogLinePreservesOriginalForProjectionFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(event, partial, assistantEvent map[string]any)
+	}{
+		{name: "missing role", mutate: piRPCDeleteProjectionField("role")},
+		{name: "missing provider", mutate: piRPCDeleteProjectionField("provider")},
+		{name: "missing model", mutate: piRPCDeleteProjectionField("model")},
+		{name: "missing api", mutate: piRPCDeleteProjectionField("api")},
+		{name: "missing stop reason", mutate: piRPCDeleteProjectionField("stopReason")},
+		{name: "non-string role", mutate: piRPCSetProjectionField("role", 1)},
+		{name: "non-string provider", mutate: piRPCSetProjectionField("provider", 1)},
+		{name: "non-string model", mutate: piRPCSetProjectionField("model", 1)},
+		{name: "non-string api", mutate: piRPCSetProjectionField("api", 1)},
+		{name: "non-string stop reason", mutate: piRPCSetProjectionField("stopReason", 1)},
+		{
+			name:   "invalid role",
+			mutate: func(_, partial, _ map[string]any) { partial["role"] = "user" },
+		},
+		{
+			name:   "unknown event type",
+			mutate: func(_, _, assistantEvent map[string]any) { assistantEvent["type"] = "future_event" },
+		},
+		{
+			name:   "missing content index",
+			mutate: func(_, _, assistantEvent map[string]any) { delete(assistantEvent, "contentIndex") },
+		},
+		{
+			name:   "non-numeric content index",
+			mutate: func(_, _, assistantEvent map[string]any) { assistantEvent["contentIndex"] = "0" },
+		},
+		{
+			name: "missing delta",
+			mutate: func(_, _, assistantEvent map[string]any) {
+				assistantEvent["type"] = "text_delta"
+				delete(assistantEvent, "delta")
+			},
+		},
+		{
+			name: "non-string delta",
+			mutate: func(_, _, assistantEvent map[string]any) {
+				assistantEvent["type"] = "text_delta"
+				assistantEvent["delta"] = 1
+			},
+		},
+		{
+			name: "missing end content",
+			mutate: func(_, _, assistantEvent map[string]any) {
+				assistantEvent["type"] = "text_end"
+				delete(assistantEvent, "content")
+			},
+		},
+		{
+			name: "non-string end content",
+			mutate: func(_, _, assistantEvent map[string]any) {
+				assistantEvent["type"] = "thinking_end"
+				assistantEvent["content"] = 1
+			},
+		},
+		{
+			name: "missing tool call",
+			mutate: func(_, _, assistantEvent map[string]any) {
+				assistantEvent["type"] = "toolcall_end"
+				delete(assistantEvent, "toolCall")
+			},
+		},
+		{
+			name: "invalid tool call",
+			mutate: func(_, _, assistantEvent map[string]any) {
+				assistantEvent["type"] = "toolcall_end"
+				assistantEvent["toolCall"] = map[string]any{"type": "toolCall", "id": "call-1"}
+			},
+		},
+		{
+			name:   "missing partial",
+			mutate: func(_, _, assistantEvent map[string]any) { delete(assistantEvent, "partial") },
+		},
+		{
+			name:   "non-object partial",
+			mutate: func(_, _, assistantEvent map[string]any) { assistantEvent["partial"] = []any{} },
+		},
+		{
+			name: "partial without projection keys",
+			mutate: func(_, partial, _ map[string]any) {
+				for _, key := range []string{"role", "provider", "model", "api", "stopReason"} {
+					delete(partial, key)
+				}
+			},
+		},
+		{
+			name:   "missing root message",
+			mutate: func(event, _, _ map[string]any) { delete(event, "message") },
+		},
+		{
+			name: "nonidentical root message",
+			mutate: func(event, partial, _ map[string]any) {
+				root := make(map[string]any, len(partial))
+				for key, value := range partial {
+					root[key] = value
+				}
+				root["stopReason"] = "different"
+				event["message"] = root
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event, partial, assistantEvent := piRPCProjectionEventFixture("thinking_delta")
+			tt.mutate(event, partial, assistantEvent)
+			line, err := json.Marshal(event)
+			if err != nil {
+				t.Fatalf("Marshal(event): %v", err)
+			}
+			normalized := normalizePiRPCLogLine(line)
+			want := append(append([]byte(nil), line...), '\n')
+			if !bytes.Equal(normalized, want) {
+				t.Fatalf("normalized = %s, want original line preserved", normalized)
+			}
+		})
+	}
+}
+
+func TestNormalizePiRPCLogLineCompactsProjectionWithMalformedCumulativeFields(t *testing.T) {
+	event, partial, _ := piRPCProjectionEventFixture("thinking_delta")
+	partial["content"] = map[string]any{"unexpected": true}
+	partial["usage"] = []any{"unexpected"}
+	partial["timestamp"] = "not-a-number"
+	line, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal(event): %v", err)
+	}
+	assertPiRPCProjectionCompacted(t, normalizePiRPCLogLine(line), "thinking_delta", piRPCProjectionPartialFixture())
+}
+
+func TestNormalizePiRPCLogLineCompactsStringProjectionFieldsWithoutPolicyChecks(t *testing.T) {
+	event, partial, _ := piRPCProjectionEventFixture("thinking_delta")
+	partial["provider"] = ""
+	partial["model"] = ""
+	partial["api"] = ""
+	partial["stopReason"] = "future-stop-reason"
+	line, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("Marshal(event): %v", err)
+	}
+	assertPiRPCProjectionCompacted(t, normalizePiRPCLogLine(line), "thinking_delta", map[string]any{
+		"role": "assistant", "provider": "", "model": "", "api": "", "stopReason": "future-stop-reason",
+	})
+}
+
+func assertPiRPCProjectionCompacted(t *testing.T, normalized []byte, eventType string, wantPartial map[string]any) map[string]any {
+	t.Helper()
+	var event map[string]any
+	if err := json.Unmarshal(normalized, &event); err != nil {
+		t.Fatalf("Unmarshal(normalized): %v", err)
+	}
+	if _, ok := event["message"]; ok {
+		t.Fatalf("normalized message_update = %#v, want redundant root message stripped", event)
+	}
+	if event["sessionId"] != "session-1" || event["preservedSibling"] != "keep" {
+		t.Fatalf("normalized event siblings = %#v, want session and sibling preserved", event)
+	}
+	assistantEvent, ok := event["assistantMessageEvent"].(map[string]any)
+	if !ok {
+		t.Fatalf("normalized message_update = %#v, want assistantMessageEvent", event)
+	}
+	if assistantEvent["type"] != eventType || assistantEvent["contentIndex"] != float64(0) || assistantEvent["preservedSibling"] != "keep" {
+		t.Fatalf("assistantMessageEvent = %#v, want retained event fields", assistantEvent)
+	}
+	partial, ok := assistantEvent["partial"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistantMessageEvent = %#v, want compact partial", assistantEvent)
+	}
+	if !reflect.DeepEqual(partial, wantPartial) {
+		t.Fatalf("partial = %#v, want exact compact projection %#v", partial, wantPartial)
+	}
+	return assistantEvent
+}
+
+func piRPCProjectionPartialFixture() map[string]any {
+	return map[string]any{
+		"role":       "assistant",
+		"provider":   "opencode-go",
+		"model":      "deepseek-v4-pro",
+		"api":        "openai-completions",
+		"stopReason": "stop",
+	}
+}
+
+func piRPCProjectionEventFixture(eventType string) (map[string]any, map[string]any, map[string]any) {
 	partial := map[string]any{
 		"role":       "assistant",
 		"provider":   "opencode-go",
@@ -809,7 +957,7 @@ func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
 		"api":        "openai-completions",
 		"stopReason": "stop",
 		"timestamp":  1700000000000,
-		"content":    []map[string]any{{"type": "thinking", "thinking": "partial"}},
+		"content":    []map[string]any{{"type": "thinking", "thinking": "cumulative"}},
 		"usage": map[string]any{
 			"input":       100,
 			"output":      50,
@@ -825,148 +973,38 @@ func TestNormalizePiRPCLogLinePreservesNonidenticalRootMessage(t *testing.T) {
 			},
 		},
 	}
+	assistantEvent := map[string]any{
+		"type":             eventType,
+		"contentIndex":     0,
+		"partial":          partial,
+		"preservedSibling": "keep",
+	}
+	switch eventType {
+	case "text_delta", "thinking_delta", "toolcall_delta":
+		assistantEvent["delta"] = "x"
+	case "text_end", "thinking_end":
+		assistantEvent["content"] = "complete"
+	case "toolcall_end":
+		assistantEvent["toolCall"] = map[string]any{
+			"type": "toolCall", "id": "call-1", "name": "Read", "arguments": map[string]any{"path": "x"},
+		}
+	}
 	event := map[string]any{
-		"type": "message_update",
-		"message": map[string]any{
-			"role":       "assistant",
-			"provider":   "opencode-go",
-			"model":      "deepseek-v4-pro",
-			"api":        "openai-completions",
-			"stopReason": "stop",
-			"timestamp":  1700000000000,
-			"content":    []map[string]any{{"type": "thinking", "thinking": "root"}},
-			"usage": map[string]any{
-				"input":       100,
-				"output":      50,
-				"cacheRead":   0,
-				"cacheWrite":  0,
-				"totalTokens": 150,
-				"cost": map[string]any{
-					"input":      0,
-					"output":     0,
-					"cacheRead":  0,
-					"cacheWrite": 0,
-					"total":      0,
-				},
-			},
-		},
-		"assistantMessageEvent": map[string]any{
-			"type":         "thinking_delta",
-			"contentIndex": 0,
-			"delta":        "x",
-			"partial":      partial,
-		},
+		"type":                  "message_update",
+		"message":               partial,
+		"sessionId":             "session-1",
+		"preservedSibling":      "keep",
+		"assistantMessageEvent": assistantEvent,
 	}
-	line, err := json.Marshal(event)
-	if err != nil {
-		t.Fatalf("Marshal(event): %v", err)
-	}
-	normalized := normalizePiRPCLogLine(line)
-	var decoded map[string]any
-	if err := json.Unmarshal(normalized, &decoded); err != nil {
-		t.Fatalf("Unmarshal(normalized): %v", err)
-	}
-	message, ok := decoded["message"].(map[string]any)
-	if !ok {
-		t.Fatalf("normalized message_update = %#v, want nonidentical root message preserved", decoded)
-	}
-	content, ok := message["content"].([]any)
-	if !ok || len(content) == 0 {
-		t.Fatalf("root message = %#v, want root content preserved", message)
-	}
-	contentBlock, ok := content[0].(map[string]any)
-	if !ok || contentBlock["thinking"] != "root" {
-		t.Fatalf("root message = %#v, want root snapshot preserved", message)
-	}
-	want := append(append([]byte(nil), line...), '\n')
-	if !bytes.Equal(normalized, want) {
-		t.Fatalf("normalized = %s, want original line preserved", normalized)
-	}
+	return event, partial, assistantEvent
 }
 
-func TestNormalizePiRPCLogLinePreservesOriginalForInvalidPiUpdateShape(t *testing.T) {
-	for _, tt := range []struct {
-		name   string
-		mutate func(partial, assistantEvent map[string]any)
-	}{
-		{
-			name: "missing assistant timestamp",
-			mutate: func(partial, _ map[string]any) {
-				delete(partial, "timestamp")
-			},
-		},
-		{
-			name: "missing assistant usage",
-			mutate: func(partial, _ map[string]any) {
-				delete(partial, "usage")
-			},
-		},
-		{
-			name: "missing event content index",
-			mutate: func(_, assistantEvent map[string]any) {
-				delete(assistantEvent, "contentIndex")
-			},
-		},
-		{
-			name: "wrong event delta type",
-			mutate: func(_, assistantEvent map[string]any) {
-				assistantEvent["delta"] = 1
-			},
-		},
-		{
-			name: "unknown content block",
-			mutate: func(partial, _ map[string]any) {
-				partial["content"] = []map[string]any{{"type": "unknown", "value": "unrecognized"}}
-			},
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			partial := map[string]any{
-				"role":       "assistant",
-				"provider":   "opencode-go",
-				"model":      "deepseek-v4-pro",
-				"api":        "openai-completions",
-				"stopReason": "stop",
-				"timestamp":  float64(1700000000000),
-				"content":    []map[string]any{{"type": "thinking", "thinking": "cumulative"}},
-				"usage": map[string]any{
-					"input":       100,
-					"output":      50,
-					"cacheRead":   0,
-					"cacheWrite":  0,
-					"totalTokens": 150,
-					"cost": map[string]any{
-						"input":      0,
-						"output":     0,
-						"cacheRead":  0,
-						"cacheWrite": 0,
-						"total":      0,
-					},
-				},
-			}
-			assistantEvent := map[string]any{
-				"type":         "thinking_delta",
-				"contentIndex": 0,
-				"delta":        "x",
-				"partial":      partial,
-			}
-			event := map[string]any{
-				"type":                  "message_update",
-				"message":               partial,
-				"assistantMessageEvent": assistantEvent,
-			}
-			tt.mutate(partial, assistantEvent)
-			line, err := json.Marshal(event)
-			if err != nil {
-				t.Fatalf("Marshal(event): %v", err)
-			}
-			normalized := normalizePiRPCLogLine(line)
-			want := append(append([]byte(nil), line...), '\n')
-			if !bytes.Equal(normalized, want) {
-				t.Fatalf("normalized = %s, want original line preserved", normalized)
-			}
-		})
-	}
+func piRPCDeleteProjectionField(key string) func(event, partial, assistantEvent map[string]any) {
+	return func(_, partial, _ map[string]any) { delete(partial, key) }
+}
+
+func piRPCSetProjectionField(key string, value any) func(event, partial, assistantEvent map[string]any) {
+	return func(_, partial, _ map[string]any) { partial[key] = value }
 }
 
 func TestPiRPCProtocolFailures(t *testing.T) {
