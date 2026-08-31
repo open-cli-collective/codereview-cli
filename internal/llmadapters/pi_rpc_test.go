@@ -694,6 +694,23 @@ func assertPiRPCFinalEventsPreserved(t *testing.T, logged []byte) {
 	}
 }
 
+func TestNormalizePiRPCLogLinePreservesRootMessageForUnrecognizedPartial(t *testing.T) {
+	line := []byte(`{"type":"message_update","message":{"role":"assistant","content":[{"type":"thinking","thinking":"cumulative"}]},"assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"x","partial":{"content":[{"type":"unknown","value":"unrecognized"}],"usage":{"tokensIn":100,"tokensOut":50}}}}`)
+
+	normalized := normalizePiRPCLogLine(line)
+	var event map[string]any
+	if err := json.Unmarshal(normalized, &event); err != nil {
+		t.Fatalf("Unmarshal(normalized): %v", err)
+	}
+	message, ok := event["message"].(map[string]any)
+	if !ok {
+		t.Fatalf("normalized message_update = %#v, want root message preserved", event)
+	}
+	if message["role"] != "assistant" {
+		t.Fatalf("root message = %#v, want assistant message preserved", message)
+	}
+}
+
 func TestPiRPCProtocolFailures(t *testing.T) {
 	t.Run("prompt response failure", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")

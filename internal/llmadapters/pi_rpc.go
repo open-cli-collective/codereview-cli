@@ -743,7 +743,8 @@ func normalizePiRPCLogLine(line []byte) []byte {
 	if !ok {
 		return append(logLine, '\n')
 	}
-	if compactPartial := compactPiRPCPartialForLog(partialRaw); len(compactPartial) > 0 {
+	compactPartial := compactPiRPCPartialForLog(partialRaw)
+	if len(compactPartial) > 0 {
 		assistantEvent["partial"] = compactPartial
 	} else {
 		delete(assistantEvent, "partial")
@@ -753,7 +754,9 @@ func normalizePiRPCLogLine(line []byte) []byte {
 		return append(logLine, '\n')
 	}
 	event["assistantMessageEvent"] = normalizedAssistantEvent
-	delete(event, "message")
+	if len(compactPartial) > 0 {
+		delete(event, "message")
+	}
 	normalized, err := json.Marshal(event)
 	if err != nil {
 		return append(logLine, '\n')
