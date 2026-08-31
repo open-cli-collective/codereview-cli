@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -67,6 +68,14 @@ const (
 	// Shorter windows risk racing manually resumed or slow-to-settle background sessions.
 	claudeBGStaleJobAge = 24 * time.Hour
 )
+
+// ErrClaudeBGTransport marks a failure of the Claude job-service transport
+// itself: the job never ran the task to completion because it was blocked,
+// stopped, failed to register, or lost the scratch it was told to read. It
+// says nothing about the review, so the same request can be retried on
+// another transport. A job that DID complete and wrote nothing usable is a
+// model failure and is not marked, since retrying would only repeat it.
+var ErrClaudeBGTransport = errors.New("llm subprocess: Claude background transport failed")
 
 var (
 	claudeBGJobIDDirectRE = regexp.MustCompile(`backgrounded\s+.\s+([A-Za-z0-9_-]+)`)
@@ -169,10 +178,7 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 		return nil, err
 	}
 	if a.kind == subprocessClaude {
-		if claudeForegroundEnabled(a.env) {
-			return a.startClaudeForeground(ctx, req, "")
-		}
-		return a.startClaudeBG(ctx, req, "")
+		return a.startClaude(ctx, req, "")
 	}
 	if a.kind == subprocessCodex && !a.allowBestEffortNoTools {
 		return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
@@ -342,6 +348,76 @@ func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID stri
 		args = append(args, "--settings", `{"fastMode":true}`)
 	}
 	return append(args, "--", claudeBGPositionalPrompt(scratch))
+}
+
+// startClaude picks the transport for a Claude task. Background mode is the
+// default and foreground is the documented-sturdier fallback, so a background
+// job that fails without producing a result is retried once in foreground
+// rather than failing the task.
+//
+// Without that retry, one flaky job service costs a whole reviewer: a review
+// that reports no findings because a reviewer never ran is not the same as a
+// review that found nothing, and callers that gate on coverage cannot tell
+// them apart from the outside.
+func (a *SubprocessAdapter) startClaude(ctx context.Context, req Request, resumeSessionID string) (Stream, error) {
+	if claudeForegroundEnabled(a.env) {
+		return a.startClaudeForeground(ctx, req, resumeSessionID)
+	}
+	bg, err := a.startClaudeBG(ctx, req, resumeSessionID)
+	if err != nil {
+		// The launch itself failed, so there is no job to wait on and the
+		// fallback is immediate.
+		return a.startClaudeForeground(ctx, req, resumeSessionID)
+	}
+	return &claudeFallbackStream{adapter: a, req: req, resume: resumeSessionID, primary: bg}, nil
+}
+
+// claudeFallbackStream waits on the background job and, when the job service
+// fails it, runs the same request again in foreground.
+type claudeFallbackStream struct {
+	adapter *SubprocessAdapter
+	req     Request
+	resume  string
+	primary Stream
+
+	mu       sync.Mutex
+	fallback Stream
+}
+
+func (s *claudeFallbackStream) SessionID() string {
+	s.mu.Lock()
+	fallback := s.fallback
+	s.mu.Unlock()
+	if fallback != nil {
+		if id := fallback.SessionID(); id != "" {
+			return id
+		}
+	}
+	return s.primary.SessionID()
+}
+
+func (s *claudeFallbackStream) Wait(ctx context.Context) (Response, error) {
+	response, err := s.primary.Wait(ctx)
+	if err == nil || ctx.Err() != nil || !errors.Is(err, ErrClaudeBGTransport) {
+		return response, err
+	}
+	fallback, startErr := s.adapter.startClaudeForeground(ctx, s.req, s.resume)
+	if startErr != nil {
+		// The original failure is the one worth reporting: the fallback not
+		// starting is a second symptom, not the cause.
+		return response, err
+	}
+	s.mu.Lock()
+	s.fallback = fallback
+	s.mu.Unlock()
+	fallbackResponse, fallbackErr := fallback.Wait(ctx)
+	if fallbackErr != nil {
+		// Report what actually went wrong first. The retry failing too says
+		// nothing new, and burying the transport failure under it is how a
+		// job-service problem gets read as a reviewer problem.
+		return response, err
+	}
+	return fallbackResponse, nil
 }
 
 // startClaudeForeground runs a Claude task as a plain foreground child in
@@ -587,10 +663,7 @@ func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Re
 			// through optional resume state without special-casing the first run.
 			return a.Start(ctx, req)
 		}
-		if claudeForegroundEnabled(a.env) {
-			return a.startClaudeForeground(ctx, req, sessionID)
-		}
-		return a.startClaudeBG(ctx, req, sessionID)
+		return a.startClaude(ctx, req, sessionID)
 	case subprocessCodex:
 		if !a.allowBestEffortNoTools {
 			return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
@@ -950,7 +1023,7 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 	} else {
 		jobID = extractClaudeBGJobID(string(launchStdout))
 		if jobID == "" {
-			result.err = errors.New("llm subprocess: could not parse Claude background job id")
+			result.err = fmt.Errorf("%w: could not parse Claude background job id", ErrClaudeBGTransport)
 		}
 	}
 
@@ -1317,7 +1390,7 @@ func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID str
 		sessionID, state = a.waitForClaudeBGSessionID(ctx, jobID, state)
 	}
 	if sessionID == "" {
-		return Response{}, "", fmt.Errorf("llm subprocess: Claude background job completed without session id: %s", claudeBGStateDetail(state))
+		return Response{}, "", fmt.Errorf("%w: job completed without session id: %s", ErrClaudeBGTransport, claudeBGStateDetail(state))
 	}
 	output, err := readFirstNonEmptyFile(resultPaths)
 	if err != nil {
@@ -1348,7 +1421,7 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 					return state, nil
 				}
 				detail := claudeBGStateDetail(state)
-				jobErr := fmt.Errorf("llm subprocess: Claude background job %s: %s", stateName, detail)
+				jobErr := fmt.Errorf("%w: job %s: %s", ErrClaudeBGTransport, stateName, detail)
 				return state, classifyCLIDetail(jobErr, detail)
 			}
 		}

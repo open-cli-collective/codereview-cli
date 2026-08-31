@@ -1635,6 +1635,9 @@ func runClaudeBGHelper(mode string, args []string) {
 	case "bg-blocked":
 		state = map[string]any{"state": "blocked", "detail": "permission needed"}
 		writeResult = false
+	case "bg-blocked-foreground-recovers":
+		state = map[string]any{"state": "blocked", "detail": "prompt file no longer exists"}
+		writeResult = false
 	case "bg-failed":
 		state = map[string]any{"state": "failed", "error": "model failed"}
 		writeResult = false
@@ -1969,6 +1972,11 @@ func runClaudeForegroundHelper(mode string, args []string) {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"speed":"standard"}}`)
+	case "bg-blocked-foreground-recovers":
+		if scratch != "" {
+			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"recovered":true}`), 0o600)
+		}
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"recovered","session_id":"fg-recovered"}`)
 	case "foreground-no-result":
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"forgot the file","session_id":"fg-session-2"}`)
 	case "foreground-fail":
@@ -2156,5 +2164,58 @@ func TestClaudeTransportXORValidation(t *testing.T) {
 		if !tc.wantErr && err != nil {
 			t.Fatalf("%s: err = %v, want nil", tc.name, err)
 		}
+	}
+}
+
+// A job service that refuses the task must not cost the whole reviewer: the
+// review it would have produced is still available on the other transport,
+// and a caller gating on coverage cannot tell "reviewer found nothing" from
+// "reviewer never ran".
+func TestSubprocessClaudeBackgroundFailureFallsBackToForeground(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-blocked-foreground-recovers", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:   "claude-sonnet-5",
+		Prompt:  "prompt",
+		LogPath: filepath.Join(tempDir, "events.log"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"recovered":true}` {
+		t.Fatalf("StructuredOutput = %s, want the foreground result", response.StructuredOutput)
+	}
+	if stream.SessionID() != "fg-recovered" {
+		t.Fatalf("SessionID = %q, want the foreground session", stream.SessionID())
+	}
+}
+
+// The fallback is for the transport, not for the model: a job that ran and
+// wrote nothing usable would only repeat itself, and the original failure is
+// what the caller has to see.
+func TestSubprocessClaudeBackgroundModelFailureIsNotRetried(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-empty-result", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{
+		Model:   "claude-sonnet-5",
+		Prompt:  "prompt",
+		LogPath: filepath.Join(tempDir, "events.log"),
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := stream.Wait(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "empty result file") {
+		t.Fatalf("Wait error = %v, want the original empty-result failure", err)
 	}
 }
