@@ -2,6 +2,7 @@ package llmadapters
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -743,21 +744,107 @@ func normalizePiRPCLogLine(line []byte) []byte {
 	if !ok {
 		return append(logLine, '\n')
 	}
-	if compactPartial := compactPiRPCPartialForLog(partialRaw); len(compactPartial) > 0 {
-		assistantEvent["partial"] = compactPartial
-	} else {
-		delete(assistantEvent, "partial")
+	if !piRPCMessageUpdateRootIsRedundant(event, assistantEvent, partialRaw) {
+		return append(logLine, '\n')
 	}
+	compactPartial := compactPiRPCPartialForLog(partialRaw)
+	if len(compactPartial) == 0 {
+		return append(logLine, '\n')
+	}
+	assistantEvent["partial"] = compactPartial
 	normalizedAssistantEvent, err := json.Marshal(assistantEvent)
 	if err != nil {
 		return append(logLine, '\n')
 	}
 	event["assistantMessageEvent"] = normalizedAssistantEvent
+	delete(event, "message")
 	normalized, err := json.Marshal(event)
 	if err != nil {
 		return append(logLine, '\n')
 	}
 	return append(normalized, '\n')
+}
+
+func piRPCMessageUpdateRootIsRedundant(event, assistantEvent map[string]json.RawMessage, partialRaw json.RawMessage) bool {
+	if !validPiRPCProjection(assistantEvent, partialRaw) {
+		return false
+	}
+	rootRaw, ok := event["message"]
+	return ok && bytes.Equal(rootRaw, partialRaw)
+}
+
+func validPiRPCProjection(assistantEvent map[string]json.RawMessage, partialRaw json.RawMessage) bool {
+	eventType := rawString(assistantEvent, "type")
+	if !isKnownPiRPCAssistantMessageEventType(eventType) || !piRPCJSONNumber(assistantEvent["contentIndex"]) {
+		return false
+	}
+	partial, ok := piRPCJSONObject(partialRaw)
+	if !ok || rawString(partial, "role") != "assistant" {
+		return false
+	}
+	for _, key := range []string{"role", "provider", "model", "api", "stopReason"} {
+		if !piRPCJSONString(partial[key]) {
+			return false
+		}
+	}
+	switch eventType {
+	case "text_delta", "thinking_delta", "toolcall_delta":
+		return piRPCJSONString(assistantEvent["delta"])
+	case "text_end", "thinking_end":
+		return piRPCJSONString(assistantEvent["content"])
+	case "toolcall_end":
+		return validPiRPCToolCall(assistantEvent["toolCall"])
+	default:
+		return true
+	}
+}
+
+func validPiRPCToolCall(value json.RawMessage) bool {
+	toolCall, ok := piRPCJSONObject(value)
+	if !ok || rawString(toolCall, "type") != "toolCall" {
+		return false
+	}
+	if !piRPCJSONString(toolCall["id"]) || !piRPCJSONString(toolCall["name"]) {
+		return false
+	}
+	_, ok = piRPCJSONObject(toolCall["arguments"])
+	return ok
+}
+
+func piRPCJSONObject(value json.RawMessage) (map[string]json.RawMessage, bool) {
+	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return nil, false
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(value, &object); err != nil || object == nil {
+		return nil, false
+	}
+	return object, true
+}
+
+func piRPCJSONString(value json.RawMessage) bool {
+	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return false
+	}
+	var text string
+	return json.Unmarshal(value, &text) == nil
+}
+
+func piRPCJSONNumber(value json.RawMessage) bool {
+	if len(value) == 0 || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return false
+	}
+	var number float64
+	return json.Unmarshal(value, &number) == nil
+}
+
+func isKnownPiRPCAssistantMessageEventType(eventType string) bool {
+	switch eventType {
+	case "text_start", "text_delta", "text_end", "thinking_start", "thinking_delta", "thinking_end", "toolcall_start", "toolcall_delta", "toolcall_end":
+		return true
+	default:
+		return false
+	}
 }
 
 func compactPiRPCPartialForLog(partialRaw json.RawMessage) json.RawMessage {
