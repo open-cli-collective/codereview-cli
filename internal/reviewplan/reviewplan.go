@@ -97,6 +97,20 @@ type EventOptions struct {
 // ActionIDGenerator allocates a deterministic action id for an action kind.
 type ActionIDGenerator func(ActionKind) (string, error)
 
+// ExistingThread is a review thread this identity already opened on the PR.
+//
+// Only threads this identity authored are carried: a human quoting the same
+// code is not this review repeating itself, and must not suppress a finding.
+type ExistingThread struct {
+	// Path is the file the thread is anchored to.
+	Path string
+	// Body is the thread's opening comment, as it was posted, including the
+	// decorations Build added to it.
+	Body string
+	// Resolved reports whether the thread has been marked resolved.
+	Resolved bool
+}
+
 // Request is the pure input to Build.
 type Request struct {
 	PostMode PostMode
@@ -110,6 +124,10 @@ type Request struct {
 	// ThreadResponses are lifecycle-domain replies/resolutions for existing
 	// inline discussion threads.
 	ThreadResponses []review.ThreadResponseAction
+	// ExistingThreads are the review threads already on the PR that this
+	// identity authored. A finding repeating one of them is demoted to the
+	// rollup rather than posted again.
+	ExistingThreads []ExistingThread
 	EventOptions    EventOptions
 
 	NoDiff                        bool
@@ -455,6 +473,7 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 
 	b.populateAnchoredFindings()
+	b.demoteFindingsAlreadyRaised()
 
 	var actions []Action
 	threadReplies, resolves, err := b.threadActions()
@@ -566,6 +585,104 @@ func (b *builder) populateAnchoredFindings() {
 	for _, finding := range b.req.Findings {
 		anchored := b.anchorFinding(finding)
 		b.anchoredByID[finding.ID] = anchored
+	}
+}
+
+// demoteFindingsAlreadyRaised keeps a finding out of a second inline thread
+// when this identity has already opened one saying the same thing about the
+// same file.
+//
+// Nothing else prevents this. A finding fixed by a later commit still sits in
+// the cumulative diff, so it anchors again; posting is idempotent on run and
+// action id, which a later run never matches. The result is the same finding
+// posted repeatedly, most visibly against text that no longer exists at head,
+// which teaches a reader to skim rather than read.
+//
+// Demotion, not deletion: the finding stays in the rollup, so a reviewer that
+// still believes it is on record. A resolved thread is treated the same as an
+// open one; both mean it has been said, and the open thread is still there to
+// be read.
+func (b *builder) demoteFindingsAlreadyRaised() {
+	if len(b.req.ExistingThreads) == 0 {
+		return
+	}
+	raised := make(map[string]struct{}, len(b.req.ExistingThreads))
+	for _, thread := range b.req.ExistingThreads {
+		if key, ok := findingKey(thread.Path, thread.Body); ok {
+			raised[key] = struct{}{}
+		}
+	}
+	if len(raised) == 0 {
+		return
+	}
+	for id, anchored := range b.anchoredByID {
+		if anchored.Anchoring == review.AnchoringRollupOnly {
+			continue
+		}
+		key, ok := findingKey(anchored.FilePath, anchored.Body)
+		if !ok {
+			continue
+		}
+		if _, already := raised[key]; !already {
+			continue
+		}
+		anchored.Anchoring = review.AnchoringRollupOnly
+		anchored.Side = nil
+		anchored.Line = nil
+		anchored.DiffPosition = nil
+		b.anchoredByID[id] = anchored
+	}
+}
+
+// findingKey identifies a finding by its file and its text, with everything
+// Build adds to a posted comment stripped back off, so a body read from the
+// host compares equal to the body about to be posted.
+//
+// The line is deliberately not part of the key. A fix shifts the lines around
+// it, and the repeats worth suppressing are the ones that moved.
+//
+// Equality is exact after normalization rather than fuzzy. A near-match is a
+// different claim often enough that suppressing it would lose real findings,
+// and the repeats this exists for are identical.
+func findingKey(path, body string) (string, bool) {
+	text := normalizeFindingText(body)
+	if text == "" {
+		return "", false
+	}
+	return strings.TrimSpace(path) + "\x00" + text, true
+}
+
+// normalizeFindingText strips the decorations this package puts on a posted
+// comment, along with any HTML comments the host carries, and folds whitespace
+// so that formatting alone cannot make the same text look new.
+func normalizeFindingText(body string) string {
+	text := stripHTMLComments(body)
+	text = strings.ReplaceAll(text, inlineFooter, " ")
+	text = strings.ReplaceAll(text, fileLevelFallbackPrefix, " ")
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
+}
+
+// stripHTMLComments removes `<!-- ... -->` spans. Markers are written that way,
+// and they carry a run id that differs on every run, so leaving them in would
+// make every comparison fail.
+func stripHTMLComments(text string) string {
+	var out strings.Builder
+	for {
+		start := strings.Index(text, "<!--")
+		if start < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		out.WriteString(text[:start])
+		out.WriteString(" ")
+		rest := text[start+len("<!--"):]
+		end := strings.Index(rest, "-->")
+		if end < 0 {
+			// An unterminated comment: nothing after it is markup worth
+			// keeping, and dropping it beats emitting the marker text.
+			return out.String()
+		}
+		text = rest[end+len("-->"):]
 	}
 }
 

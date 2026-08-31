@@ -928,6 +928,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		findingSessions:  findingSessions,
 		reviewerFailures: reviewerFailures,
 		reviewerCoverage: reviewerCoverage,
+		threadContext:    prepared.threadContext,
 		startedAt:        now,
 	})
 	if err != nil {
@@ -2341,7 +2342,31 @@ type planRunInputs struct {
 	findingSessions  map[review.FindingID]string
 	reviewerFailures []ReviewerFailure
 	reviewerCoverage []reviewplan.ReviewerCoverageSummary
-	startedAt        time.Time
+	// threadContext is every normalized thread already on the PR. The planner
+	// reads it to avoid opening a second thread for a finding it has already
+	// raised.
+	threadContext []threadcontext.Thread
+	startedAt     time.Time
+}
+
+// existingFindingThreads reduces the PR's threads to the ones this identity
+// opened to report a finding, which are the only ones a repeat could duplicate.
+// A human quoting the same code is not this review repeating itself.
+func existingFindingThreads(threads []threadcontext.Thread) []reviewplan.ExistingThread {
+	var out []reviewplan.ExistingThread
+	for _, thread := range threads {
+		if !thread.Status.CRAuthoredFinding || len(thread.Comments) == 0 {
+			continue
+		}
+		// The opening comment is the finding; later comments are the
+		// conversation about it.
+		out = append(out, reviewplan.ExistingThread{
+			Path:     thread.Anchor.Path,
+			Body:     thread.Comments[0].Body,
+			Resolved: thread.Resolved,
+		})
+	}
+	return out
 }
 
 func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewplan.RunSummary, map[review.FindingID]string) {
@@ -2756,6 +2781,7 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 		Rollup:                        rollup,
 		ThreadActions:                 threadActions,
 		ThreadResponses:               append([]review.ThreadResponseAction(nil), runInputs.threadResponses...),
+		ExistingThreads:               existingFindingThreads(runInputs.threadContext),
 		RepoGuidanceUnavailable:       dossier.RepoGuidanceUnavailableReason(runInputs.repoSources) != "",
 		RepoGuidanceUnavailableReason: dossier.RepoGuidanceUnavailableReason(runInputs.repoSources),
 		EventOptions: reviewplan.EventOptions{
