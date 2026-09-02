@@ -137,6 +137,17 @@ func TestEstimateUsageUSDRejectsUnknownCacheCreateTTL(t *testing.T) {
 	}
 }
 
+func TestEstimateUsageUSDRejectsMismatchedCacheCreateTotal(t *testing.T) {
+	usage := Usage{
+		CacheCreateTotal: p(10),
+		CacheCreate5m:    p(4),
+		CacheCreate1h:    p(5),
+	}
+	if _, ok := EstimateUsageUSD("claude-sonnet-5", usage); ok {
+		t.Fatal("expected mismatched cache-create total and TTL buckets to leave cost unavailable")
+	}
+}
+
 func TestEstimateUsageUSDAllowsZeroUnknownCacheCreate(t *testing.T) {
 	usage := Usage{
 		TokensIn:         p(1_000_000),
