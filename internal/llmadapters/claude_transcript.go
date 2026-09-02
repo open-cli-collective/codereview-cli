@@ -32,6 +32,10 @@ type claudeTranscriptUsagePayload struct {
 	CacheReadTokens     int    `json:"cache_read_input_tokens"`
 	CacheCreationTokens int    `json:"cache_creation_input_tokens"`
 	Speed               string `json:"speed"`
+	CacheCreation       struct {
+		Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 type claudeTranscriptEvent struct {
@@ -80,28 +84,59 @@ func claudeTranscriptUsage(path string, since time.Time) Usage {
 		return Usage{}
 	}
 
-	var tokensIn, tokensOut, cacheRead, cacheCreate int
-	speed := "fast"
+	var tokensIn, tokensOut, cacheRead, cacheCreate, cacheCreate5m, cacheCreate1h int
+	cacheCreateSplitKnown := true
+	var sawFast, sawStandard, sawUnknownSpeed bool
 	for _, usage := range perMessage {
 		tokensIn += usage.InputTokens
 		tokensOut += usage.OutputTokens
 		cacheRead += usage.CacheReadTokens
 		cacheCreate += usage.CacheCreationTokens
+		write5m := intValue(usage.CacheCreation.Ephemeral5mInputTokens)
+		write1h := intValue(usage.CacheCreation.Ephemeral1hInputTokens)
+		if usage.CacheCreationTokens != 0 &&
+			(usage.CacheCreation.Ephemeral5mInputTokens == nil && usage.CacheCreation.Ephemeral1hInputTokens == nil ||
+				write5m+write1h != usage.CacheCreationTokens) {
+			cacheCreateSplitKnown = false
+		}
+		cacheCreate5m += write5m
+		cacheCreate1h += write1h
 		switch usage.Speed {
 		case "standard":
-			speed = "standard"
+			sawStandard = true
 		case "fast":
+			sawFast = true
 		default:
-			if speed != "standard" {
-				speed = "unknown"
-			}
+			sawUnknownSpeed = true
 		}
 	}
-	return Usage{
+	speed := "unknown"
+	switch {
+	case sawUnknownSpeed:
+	case sawFast && sawStandard:
+		speed = "mixed"
+	case sawFast:
+		speed = "fast"
+	case sawStandard:
+		speed = "standard"
+	}
+	result := Usage{
 		TokensIn:    &tokensIn,
 		TokensOut:   &tokensOut,
 		CacheRead:   &cacheRead,
 		CacheCreate: &cacheCreate,
 		Speed:       speed,
 	}
+	if cacheCreateSplitKnown {
+		result.CacheCreate5m = &cacheCreate5m
+		result.CacheCreate1h = &cacheCreate1h
+	}
+	return result
+}
+
+func intValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }

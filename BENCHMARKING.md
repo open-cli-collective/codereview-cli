@@ -444,7 +444,7 @@ missing telemetry.
 | Thinking/reasoning tokens | Only present when a provider exposes a separate count. |
 | Cache read | Provider or adapter reported cache-read tokens, when present in child review agent logs. |
 | Cache create | Provider or adapter reported cache-write/create tokens, when present in child review agent logs. |
-| Cost | Provider or adapter reported cost only. Do not use baked-in benchmark price tables for v1. |
+| Cost | Provider- or adapter-reported cost when available. Review artifacts may also carry a clearly marked API-equivalent estimate and its dated pricing basis; this is not subscription spend or provider billing. |
 | Pinned diff evidence | CR-owned `codereview-pi-tool-evidence tool=cr_diff` records only. `succeeded`, `failed`, `not_invoked`, and `incomplete` are counts per run; failed, not-invoked, or incomplete evidence is degraded tool execution and does not redefine the general benchmark quality grade. A missing `pi_diff` object means no qualifying evidence was observed, not zero successful calls. |
 | Selected agents | Selector-only benchmarks record selected reviewer IDs and files directly in suite summaries, JSONL, and comparison artifacts. Full-review benchmarks still rely on review artifacts and logs for downstream selection analysis. |
 | Observed SHAs | Record when available from review artifacts or downstream analysis. Expected SHAs in cases are comparison metadata. |

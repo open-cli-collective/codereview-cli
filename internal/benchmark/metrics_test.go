@@ -16,7 +16,7 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	writeLog(t, filepath.Join(logDir, "orchestrator-selection.jsonl"), `{"type":"agent_start"}
 {"type":"turn_start"}
 {"type":"message_end","message":{"role":"assistant","api":"openai-completions","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"totalTokens":18,"cost":{"input":0.1,"output":0.2,"cacheRead":0.01,"cacheWrite":0.03,"total":0.34}},"stopReason":"stop"}}
-{"type":"message_end","message":{"role":"assistant","usage":{"tokens_in":7,"tokens_out":3,"cache_create":2,"cost_usd":0.25}}}
+{"type":"message_end","message":{"role":"assistant","usage":{"tokens_in":7,"tokens_out":3,"cache_creation_input_tokens":2,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1},"cost_usd":0.25}}}
 `)
 	writeLog(t, filepath.Join(logDir, "frontend%3Afrontend-code-reviewer.jsonl"), `{"type":"turn_start"}
 {"type":"message_update","assistantMessageEvent":{"partial":{"role":"assistant","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":1000,"output":500,"cacheRead":200,"cacheWrite":0,"totalTokens":1700,"cost":{"input":10,"output":20,"cacheRead":1,"cacheWrite":0,"total":31}},"stopReason":"stop"}}}
@@ -35,6 +35,9 @@ func TestExtractRunMetricsAggregatesAgentLogs(t *testing.T) {
 	}
 	if metrics.Tokens.Input != 21 || metrics.Tokens.Output != 10 || metrics.Tokens.CacheRead != 2 || metrics.Tokens.CacheWrite != 4 || metrics.Tokens.TotalTokens != 37 {
 		t.Fatalf("tokens = %#v", metrics.Tokens)
+	}
+	if metrics.Tokens.CacheWrite5m != 1 || metrics.Tokens.CacheWrite1h != 1 {
+		t.Fatalf("cache write TTL buckets = %#v", metrics.Tokens)
 	}
 	if !metrics.Tokens.Available || !metrics.Cost.Available {
 		t.Fatalf("usage availability = tokens %v, cost %v; want both true", metrics.Tokens.Available, metrics.Cost.Available)

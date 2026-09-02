@@ -8,40 +8,75 @@
 // degrading gracefully is the point — extend the table to price more models.
 package pricing
 
-// rate is USD list price per 1,000,000 tokens for input and output. Cache
-// pricing is derived from the input rate following Anthropic prompt-caching:
-// cache reads cost 0.1x input, cache writes cost 1.25x input.
+// TableVersion identifies the public list-price snapshot used by estimates.
+const TableVersion = "anthropic-public-2026-09-02"
+
+// rate is the USD list price per 1,000,000 tokens for each billable category.
 type rate struct {
-	in  float64
-	out float64
+	in          float64
+	out         float64
+	cacheRead   float64
+	cacheWrite5 float64
+	cacheWrite1 float64
 }
 
 // rates maps a concrete model id to its list price. Add entries to price more
 // models; absent models simply return no estimate.
 var rates = map[string]rate{
-	"claude-opus-5":     {in: 5, out: 25},
-	"claude-opus-4-8":   {in: 5, out: 25},
-	"claude-sonnet-5":   {in: 3, out: 15},
-	"claude-sonnet-4-6": {in: 3, out: 15},
-	"claude-haiku-4-5":  {in: 1, out: 5},
+	"claude-fable-5-1":          {in: 10, out: 50, cacheRead: 0.25, cacheWrite5: 12.5, cacheWrite1: 20},
+	"claude-opus-5":             {in: 5, out: 25, cacheRead: 0.5, cacheWrite5: 6.25, cacheWrite1: 10},
+	"claude-opus-4-8":           {in: 5, out: 25, cacheRead: 0.5, cacheWrite5: 6.25, cacheWrite1: 10},
+	"claude-sonnet-5":           {in: 2, out: 10, cacheRead: 0.2, cacheWrite5: 2.5, cacheWrite1: 4},
+	"claude-sonnet-4-6":         {in: 3, out: 15, cacheRead: 0.3, cacheWrite5: 3.75, cacheWrite1: 6},
+	"claude-haiku-4-5":          {in: 1, out: 5, cacheRead: 0.1, cacheWrite5: 1.25, cacheWrite1: 2},
+	"claude-haiku-4-5-20251001": {in: 1, out: 5, cacheRead: 0.1, cacheWrite5: 1.25, cacheWrite1: 2},
 }
 
-const cacheReadFactor = 0.10
-const cacheWriteFactor = 1.25
+var fastRates = map[string]rate{
+	"claude-opus-5":   {in: 10, out: 50, cacheRead: 1, cacheWrite5: 12.5, cacheWrite1: 20},
+	"claude-opus-4-8": {in: 10, out: 50, cacheRead: 1, cacheWrite5: 12.5, cacheWrite1: 20},
+}
+
 const perMillion = 1_000_000.0
 
-// EstimateUSD returns an approximate cost for the given token counts at the
-// model's public list price. ok is false when the model is not priced, so the
-// caller can leave cost unavailable. nil token pointers are treated as zero.
-func EstimateUSD(model string, tokensIn, tokensOut, cacheRead, cacheCreate *int) (cost float64, ok bool) {
+// Usage contains the token categories and observed execution speed needed to
+// estimate a workstream at public list prices.
+type Usage struct {
+	TokensIn         *int
+	TokensOut        *int
+	CacheRead        *int
+	CacheCreate5m    *int
+	CacheCreate1h    *int
+	CacheCreateTotal *int
+	Speed            string
+}
+
+// EstimateUsageUSD estimates cost for usage whose billable token categories
+// are known. A nonzero cache write with unknown TTL cannot be priced exactly.
+func EstimateUsageUSD(model string, usage Usage) (cost float64, ok bool) {
 	r, known := rates[model]
 	if !known {
 		return 0, false
 	}
-	cost = float64(deref(tokensIn))*r.in/perMillion +
-		float64(deref(tokensOut))*r.out/perMillion +
-		float64(deref(cacheRead))*(r.in*cacheReadFactor)/perMillion +
-		float64(deref(cacheCreate))*(r.in*cacheWriteFactor)/perMillion
+	switch usage.Speed {
+	case "standard":
+	case "fast":
+		var fastKnown bool
+		r, fastKnown = fastRates[model]
+		if !fastKnown {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	if usage.CacheCreateTotal != nil && deref(usage.CacheCreateTotal) != deref(usage.CacheCreate5m)+deref(usage.CacheCreate1h) {
+		return 0, false
+	}
+	cost = float64(deref(usage.TokensIn))*r.in/perMillion +
+		float64(deref(usage.TokensOut))*r.out/perMillion +
+		float64(deref(usage.CacheRead))*r.cacheRead/perMillion +
+		float64(deref(usage.CacheCreate5m))*r.cacheWrite5/perMillion +
+		float64(deref(usage.CacheCreate1h))*r.cacheWrite1/perMillion
 	return cost, true
 }
 

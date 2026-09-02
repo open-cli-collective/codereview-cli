@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -41,6 +42,10 @@ type SubprocessOptions struct {
 	AllowBestEffortNoTools bool
 	FastModeModels         []string
 	commandArgsPrefix      []string
+	// sessionIDGrace overrides how long a completed job is given to publish
+	// a session id. Unexported beside commandArgsPrefix: the seam exists for
+	// tests, which would otherwise wait out the real window.
+	sessionIDGrace time.Duration
 }
 
 // defaultLLMTaskTimeout bounds a single LLM task when the caller does not set
@@ -68,6 +73,14 @@ const (
 	claudeBGStaleJobAge = 24 * time.Hour
 )
 
+// ErrClaudeBGTransport marks a failure of the Claude job-service transport
+// itself: the job never ran the task to completion because it was blocked,
+// stopped, failed to register, or lost the scratch it was told to read. It
+// says nothing about the review, so the same request can be retried on
+// another transport. A job that DID complete and wrote nothing usable is a
+// model failure and is not marked, since retrying would only repeat it.
+var ErrClaudeBGTransport = errors.New("llm subprocess: Claude background transport failed")
+
 var (
 	claudeBGJobIDDirectRE = regexp.MustCompile(`backgrounded\s+.\s+([A-Za-z0-9_-]+)`)
 	claudeBGJobIDAttachRE = regexp.MustCompile(`\bclaude\s+attach\s+([A-Za-z0-9_-]+)\b`)
@@ -92,6 +105,9 @@ type SubprocessAdapter struct {
 	scratchDirFactory      ScratchDirFactory
 	allowBestEffortNoTools bool
 	fastModeModels         []string
+	// sessionIDGrace is how long a completed job is given to publish a
+	// session id, already resolved to the value in effect.
+	sessionIDGrace time.Duration
 }
 
 // Claude CLI and Codex CLI share this concrete implementation.
@@ -120,6 +136,10 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 	if timeout == 0 {
 		timeout = defaultLLMTaskTimeout
 	}
+	sessionIDGrace := opts.sessionIDGrace
+	if sessionIDGrace <= 0 {
+		sessionIDGrace = claudeBGSessionIDGrace
+	}
 	return &SubprocessAdapter{
 		kind:                   kind,
 		command:                command,
@@ -129,6 +149,7 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 		scratchDirFactory:      factory,
 		allowBestEffortNoTools: opts.AllowBestEffortNoTools,
 		fastModeModels:         append([]string(nil), opts.FastModeModels...),
+		sessionIDGrace:         sessionIDGrace,
 	}
 }
 
@@ -169,10 +190,7 @@ func (a *SubprocessAdapter) Start(ctx context.Context, req Request) (Stream, err
 		return nil, err
 	}
 	if a.kind == subprocessClaude {
-		if claudeForegroundEnabled(a.env) {
-			return a.startClaudeForeground(ctx, req, "")
-		}
-		return a.startClaudeBG(ctx, req, "")
+		return a.startClaude(ctx, req, "")
 	}
 	if a.kind == subprocessCodex && !a.allowBestEffortNoTools {
 		return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
@@ -344,6 +362,134 @@ func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID stri
 	return append(args, "--", claudeBGPositionalPrompt(scratch))
 }
 
+// startClaude picks the transport for a Claude task. Background mode is the
+// default and foreground is the documented-sturdier fallback, so a background
+// job that fails without producing a result is retried once in foreground
+// rather than failing the task.
+//
+// Without that retry, one flaky job service costs a whole reviewer: a review
+// that reports no findings because a reviewer never ran is not the same as a
+// review that found nothing, and callers that gate on coverage cannot tell
+// them apart from the outside.
+func (a *SubprocessAdapter) startClaude(ctx context.Context, req Request, resumeSessionID string) (Stream, error) {
+	if claudeForegroundEnabled(a.env) {
+		return a.startClaudeForeground(ctx, req, resumeSessionID)
+	}
+	bg, err := a.startClaudeBG(ctx, req, resumeSessionID)
+	if err != nil {
+		// Not retried: a launch fails on configuration, a missing binary, or
+		// a scratch dir that could not be made, and foreground would fail on
+		// the same thing. The retry is for a job service that accepted the
+		// task and then did not run it, which is a failure of the wait.
+		return nil, err
+	}
+	return &claudeFallbackStream{
+		adapter: a,
+		req:     req,
+		resume:  resumeSessionID,
+		primary: bg,
+		// One budget for the task, not one per attempt: the Timeout contract
+		// bounds a task, and a retry that started its own full window would
+		// make a Claude task take twice as long as callers size for.
+		deadline: taskDeadline(ctx, a.timeout),
+	}, nil
+}
+
+// taskDeadline is when this task's whole budget runs out, so a retry gets
+// what is left rather than a fresh window. Zero means unbounded.
+func taskDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	deadlines := make([]time.Time, 0, 2)
+	if timeout > 0 {
+		deadlines = append(deadlines, time.Now().Add(timeout))
+	}
+	if ctxDeadline, ok := ctx.Deadline(); ok {
+		deadlines = append(deadlines, ctxDeadline)
+	}
+	earliest := time.Time{}
+	for _, d := range deadlines {
+		if earliest.IsZero() || d.Before(earliest) {
+			earliest = d
+		}
+	}
+	return earliest
+}
+
+// claudeFallbackStream waits on the background job and, when the job service
+// fails it, runs the same request again in foreground.
+type claudeFallbackStream struct {
+	adapter  *SubprocessAdapter
+	req      Request
+	resume   string
+	primary  Stream
+	deadline time.Time
+
+	mu sync.Mutex
+	// winner is the stream whose response Wait returned. Until then the
+	// primary is the only one that has run.
+	winner Stream
+}
+
+// SessionID reports the session of the stream that produced the response, and
+// nothing else. Reporting the background job's session alongside a foreground
+// response would pair a live result with a session that is gone, and a resume
+// against it spends an attempt discovering that.
+func (s *claudeFallbackStream) SessionID() string {
+	s.mu.Lock()
+	winner := s.winner
+	s.mu.Unlock()
+	if winner != nil {
+		return winner.SessionID()
+	}
+	return s.primary.SessionID()
+}
+
+func (s *claudeFallbackStream) Wait(ctx context.Context) (Response, error) {
+	response, err := s.primary.Wait(ctx)
+	if err == nil || ctx.Err() != nil || !errors.Is(err, ErrClaudeBGTransport) {
+		return response, err
+	}
+
+	retryCtx := ctx
+	if !s.deadline.IsZero() {
+		var cancel context.CancelFunc
+		retryCtx, cancel = context.WithDeadline(ctx, s.deadline)
+		defer cancel()
+	}
+	req := s.req
+	req.LogPath = foregroundRetryLogPath(s.req.LogPath)
+	fallback, startErr := s.adapter.startClaudeForeground(retryCtx, req, s.resume)
+	if startErr != nil {
+		// The original failure is the one worth reporting: the fallback not
+		// starting is a second symptom, not the cause.
+		return response, err
+	}
+	fallbackResponse, fallbackErr := fallback.Wait(retryCtx)
+	if fallbackErr != nil {
+		// Report what actually went wrong first. The retry failing too says
+		// nothing new, and burying the transport failure under it is how a
+		// job-service problem gets read as a reviewer problem. The primary's
+		// log still describes the error being returned.
+		return response, err
+	}
+	s.mu.Lock()
+	s.winner = fallback
+	s.mu.Unlock()
+	return fallbackResponse, nil
+}
+
+// foregroundRetryLogPath is where the retry writes. Task logs are opened with
+// os.Create, so reusing the primary's path would truncate the record of the
+// failure being retried — the one artifact that explains why a retry happened
+// at all, and the only account of the error this stream still reports when the
+// retry fails too. An empty path stays empty: no log was wanted.
+func foregroundRetryLogPath(primary string) string {
+	if strings.TrimSpace(primary) == "" {
+		return primary
+	}
+	ext := filepath.Ext(primary)
+	return strings.TrimSuffix(primary, ext) + ".foreground" + ext
+}
+
 // startClaudeForeground runs a Claude task as a plain foreground child in
 // headless print mode. Same scratch, prompt-file, env, and result-file
 // contract as background mode — only the transport differs.
@@ -411,6 +557,10 @@ type claudeForegroundUsagePayload struct {
 	CacheReadTokens     *int   `json:"cache_read_input_tokens"`
 	CacheCreationTokens *int   `json:"cache_creation_input_tokens"`
 	Speed               string `json:"speed"`
+	CacheCreation       struct {
+		Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 // usage projects the print-mode result envelope onto the adapter Usage type.
@@ -425,6 +575,8 @@ func (o claudeForegroundOutput) usage() Usage {
 		u.TokensOut = o.Usage.OutputTokens
 		u.CacheRead = o.Usage.CacheReadTokens
 		u.CacheCreate = o.Usage.CacheCreationTokens
+		u.CacheCreate5m = o.Usage.CacheCreation.Ephemeral5mInputTokens
+		u.CacheCreate1h = o.Usage.CacheCreation.Ephemeral1hInputTokens
 		u.Speed = o.Usage.Speed
 	}
 	return u
@@ -587,10 +739,7 @@ func (a *SubprocessAdapter) Resume(ctx context.Context, sessionID string, req Re
 			// through optional resume state without special-casing the first run.
 			return a.Start(ctx, req)
 		}
-		if claudeForegroundEnabled(a.env) {
-			return a.startClaudeForeground(ctx, req, sessionID)
-		}
-		return a.startClaudeBG(ctx, req, sessionID)
+		return a.startClaude(ctx, req, sessionID)
 	case subprocessCodex:
 		if !a.allowBestEffortNoTools {
 			return nil, fmt.Errorf("%w: codex_cli requires AllowBestEffortNoTools until Codex exposes an all-tools-disabled flag", ErrUnsafeSubprocessConfig)
@@ -950,7 +1099,7 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 	} else {
 		jobID = extractClaudeBGJobID(string(launchStdout))
 		if jobID == "" {
-			result.err = errors.New("llm subprocess: could not parse Claude background job id")
+			result.err = fmt.Errorf("%w: could not parse Claude background job id", ErrClaudeBGTransport)
 		}
 	}
 
@@ -1292,6 +1441,12 @@ func mergeUsage(current Usage, next Usage) Usage {
 	if next.CacheCreate != nil {
 		current.CacheCreate = next.CacheCreate
 	}
+	if next.CacheCreate5m != nil {
+		current.CacheCreate5m = next.CacheCreate5m
+	}
+	if next.CacheCreate1h != nil {
+		current.CacheCreate1h = next.CacheCreate1h
+	}
 	if next.CostUSD != nil {
 		current.CostUSD = next.CostUSD
 	}
@@ -1316,14 +1471,25 @@ func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID str
 	if sessionID == "" {
 		sessionID, state = a.waitForClaudeBGSessionID(ctx, jobID, state)
 	}
-	if sessionID == "" {
-		return Response{}, "", fmt.Errorf("llm subprocess: Claude background job completed without session id: %s", claudeBGStateDetail(state))
-	}
+	// The result first, and the session id second. A job that ran to
+	// completion and wrote its result is done, and re-running the whole task
+	// because its state file never carried a session id would spend a second
+	// model run on output already sitting on disk. An empty session id costs
+	// a later resume, which callers already handle, and the foreground
+	// transport takes the same position on the same condition.
 	output, err := readFirstNonEmptyFile(resultPaths)
-	if err != nil {
-		return Response{}, sessionID, err
+	if err == nil {
+		return Response{StructuredOutput: output, Usage: claudeBGTranscriptUsage(state)}, sessionID, nil
 	}
-	return Response{StructuredOutput: output, Usage: claudeBGTranscriptUsage(state)}, sessionID, nil
+	if sessionID == "" && errors.Is(err, errClaudeMissingResultFile) {
+		// Neither a result nor a session: the job left nothing behind, which
+		// is the only shape here that can mean the transport never ran the
+		// task. An empty result file is the other case, and falls through as
+		// the model failure it is: the job ran, and running it again would
+		// only repeat it.
+		return Response{}, "", fmt.Errorf("%w: job completed without session id: %s", ErrClaudeBGTransport, claudeBGStateDetail(state))
+	}
+	return Response{}, sessionID, fmt.Errorf("llm subprocess: Claude background job: %w", err)
 }
 
 func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID string, resultPaths []string) (map[string]any, error) {
@@ -1348,7 +1514,7 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 					return state, nil
 				}
 				detail := claudeBGStateDetail(state)
-				jobErr := fmt.Errorf("llm subprocess: Claude background job %s: %s", stateName, detail)
+				jobErr := fmt.Errorf("%w: job %s: %s", ErrClaudeBGTransport, stateName, detail)
 				return state, classifyCLIDetail(jobErr, detail)
 			}
 		}
@@ -1367,7 +1533,7 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 
 func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID string, lastState map[string]any) (string, map[string]any) {
 	statePath := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "state.json")
-	deadline := time.NewTimer(claudeBGSessionIDGrace)
+	deadline := time.NewTimer(a.sessionIDGrace)
 	defer deadline.Stop()
 	ticker := time.NewTicker(claudeBGPollInterval)
 	defer ticker.Stop()
@@ -1445,6 +1611,16 @@ func anyNonEmptyFile(paths []string) bool {
 	return false
 }
 
+// errClaudeEmptyResultFile and errClaudeMissingResultFile separate "the run
+// wrote nothing usable" from "the run wrote nothing at all". Both transports
+// read result files through this helper and each supplies its own prefix, so
+// these describe the file and not who was reading it. Callers tell the two
+// apart with errors.Is rather than by message text.
+var (
+	errClaudeEmptyResultFile   = errors.New("result file is empty")
+	errClaudeMissingResultFile = errors.New("no result file")
+)
+
 func readFirstNonEmptyFile(paths []string) ([]byte, error) {
 	for _, path := range paths {
 		// #nosec G304 -- result paths are adapter-owned scratch/job tmp paths.
@@ -1453,11 +1629,11 @@ func readFirstNonEmptyFile(paths []string) ([]byte, error) {
 			continue
 		}
 		if len(strings.TrimSpace(string(data))) == 0 {
-			return nil, errors.New("llm subprocess: Claude background job wrote an empty result file")
+			return nil, errClaudeEmptyResultFile
 		}
 		return data, nil
 	}
-	return nil, errors.New("llm subprocess: Claude background job completed without writing result file")
+	return nil, errClaudeMissingResultFile
 }
 
 func claudeBGStateDetail(state map[string]any) string {

@@ -25,7 +25,7 @@ import (
 
 const (
 	// SchemaVersion is the current ledger schema version.
-	SchemaVersion = 4
+	SchemaVersion = 5
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
 	writeQueueSize     = 64
@@ -296,6 +296,8 @@ type Session struct {
 	TokensOut         *int64
 	CacheRead         *int64
 	CacheCreate       *int64
+	CacheCreate5m     *int64
+	CacheCreate1h     *int64
 	CostUSD           *float64
 }
 
@@ -542,6 +544,21 @@ func migrations() []dbmig.Migration {
 			Name:    "reviewer cohorts",
 			Up: func(ctx context.Context, tx *sql.Tx) error {
 				for _, statement := range reviewerCohortSchemaStatements {
+					if _, err := tx.ExecContext(ctx, statement); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version: 5,
+			Name:    "cache creation TTL buckets",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				for _, statement := range []string{
+					`ALTER TABLE sessions ADD COLUMN cache_create_5m INTEGER`,
+					`ALTER TABLE sessions ADD COLUMN cache_create_1h INTEGER`,
+				} {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
 						return err
 					}
@@ -799,11 +816,13 @@ func (s *Store) InsertSession(ctx context.Context, session Session) error {
 		_, err := db.ExecContext(ctx, `
 INSERT INTO sessions (
 	session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
-	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create,
+	cache_create_5m, cache_create_1h, cost_usd
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			session.SessionRowID, session.RunID, session.ProviderSessionID, session.Role.String(), session.AgentID,
 			session.Adapter, session.Model, session.Effort, encodeTime(session.StartedAt), encodeOptionalTime(session.CompletedAt),
-			session.DurationMS, session.TokensIn, session.TokensOut, session.CacheRead, session.CacheCreate, session.CostUSD,
+			session.DurationMS, session.TokensIn, session.TokensOut, session.CacheRead, session.CacheCreate,
+			session.CacheCreate5m, session.CacheCreate1h, session.CostUSD,
 		)
 		if err != nil {
 			return fmt.Errorf("ledger: insert session: %w", err)
@@ -822,7 +841,8 @@ func (s *Store) GetSession(ctx context.Context, sessionRowID string) (Session, e
 	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
-	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
+	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create,
+	cache_create_5m, cache_create_1h, cost_usd
 FROM sessions WHERE session_row_id = ?`, sessionRowID)
 	session, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -844,7 +864,8 @@ func (s *Store) ListSessionsForRun(ctx context.Context, runID string) ([]Session
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
-	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
+	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create,
+	cache_create_5m, cache_create_1h, cost_usd
 FROM sessions WHERE run_id = ? ORDER BY session_row_id`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: list sessions for run: %w", err)
@@ -1718,23 +1739,25 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 
 func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var (
-		session     Session
-		role        string
-		agentID     sql.Null[string]
-		effort      sql.Null[string]
-		startedAt   string
-		completedAt sql.Null[string]
-		durationMS  sql.Null[int64]
-		tokensIn    sql.Null[int64]
-		tokensOut   sql.Null[int64]
-		cacheRead   sql.Null[int64]
-		cacheCreate sql.Null[int64]
-		costUSD     sql.Null[float64]
+		session       Session
+		role          string
+		agentID       sql.Null[string]
+		effort        sql.Null[string]
+		startedAt     string
+		completedAt   sql.Null[string]
+		durationMS    sql.Null[int64]
+		tokensIn      sql.Null[int64]
+		tokensOut     sql.Null[int64]
+		cacheRead     sql.Null[int64]
+		cacheCreate   sql.Null[int64]
+		cacheCreate5m sql.Null[int64]
+		cacheCreate1h sql.Null[int64]
+		costUSD       sql.Null[float64]
 	)
 	if err := row.Scan(
 		&session.SessionRowID, &session.RunID, &session.ProviderSessionID, &role, &agentID, &session.Adapter,
 		&session.Model, &effort, &startedAt, &completedAt, &durationMS, &tokensIn, &tokensOut,
-		&cacheRead, &cacheCreate, &costUSD,
+		&cacheRead, &cacheCreate, &cacheCreate5m, &cacheCreate1h, &costUSD,
 	); err != nil {
 		return Session{}, err
 	}
@@ -1758,6 +1781,8 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	session.TokensOut = ptrFromNull(tokensOut)
 	session.CacheRead = ptrFromNull(cacheRead)
 	session.CacheCreate = ptrFromNull(cacheCreate)
+	session.CacheCreate5m = ptrFromNull(cacheCreate5m)
+	session.CacheCreate1h = ptrFromNull(cacheCreate1h)
 	session.CostUSD = ptrFromNull(costUSD)
 	return session, nil
 }
