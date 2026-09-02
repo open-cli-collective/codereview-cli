@@ -154,6 +154,7 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 				CacheRead:   intPtr(55),
 				CacheCreate: intPtr(34),
 				CostUSD:     floatPtr(1.44),
+				Speed:       "fast",
 			},
 		},
 	})
@@ -198,6 +199,9 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 	}
 	if cached.Session.RunID != runID || cached.Session.ProviderSessionID != "provider-session-1" {
 		t.Fatalf("cached session = %#v, want reloaded ledger session", cached.Session)
+	}
+	if cached.Draft.Response.Usage.Speed != "fast" {
+		t.Fatalf("cached speed = %q, want fast after ledger reload", cached.Draft.Response.Usage.Speed)
 	}
 	if len(progress.loads) != 1 {
 		t.Fatalf("cached progress loads = %#v, want one cached progress result", progress.loads)
