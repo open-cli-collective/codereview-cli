@@ -143,6 +143,16 @@ func TestParseAnthropicResponseSpeed(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicResponseCacheCreationTTL(t *testing.T) {
+	_, response, err := parseAnthropicResponse([]byte(`{"id":"msg_1","content":[{"type":"text","text":"{}"}],"usage":{"cache_creation_input_tokens":35,"cache_creation":{"ephemeral_5m_input_tokens":8,"ephemeral_1h_input_tokens":27}}}`))
+	if err != nil {
+		t.Fatalf("parseAnthropicResponse: %v", err)
+	}
+	assertIntPtr(t, "CacheCreate", response.Usage.CacheCreate, 35)
+	assertIntPtr(t, "CacheCreate5m", response.Usage.CacheCreate5m, 8)
+	assertIntPtr(t, "CacheCreate1h", response.Usage.CacheCreate1h, 27)
+}
+
 func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {

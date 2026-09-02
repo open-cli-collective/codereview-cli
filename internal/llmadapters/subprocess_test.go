@@ -2016,7 +2016,7 @@ func runClaudeForegroundHelper(mode string, args []string) {
 		if scratch != "" {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
-		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"speed":"standard"}}`)
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":39},"speed":"standard"}}`)
 	case "bg-blocked-foreground-recovers":
 		if scratch != "" {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"recovered":true}`), 0o600)
@@ -2069,6 +2069,8 @@ func TestSubprocessClaudeForegroundMode(t *testing.T) {
 	assertIntPtr(t, "Usage.TokensOut", response.Usage.TokensOut, 22)
 	assertIntPtr(t, "Usage.CacheRead", response.Usage.CacheRead, 33)
 	assertIntPtr(t, "Usage.CacheCreate", response.Usage.CacheCreate, 44)
+	assertIntPtr(t, "Usage.CacheCreate5m", response.Usage.CacheCreate5m, 5)
+	assertIntPtr(t, "Usage.CacheCreate1h", response.Usage.CacheCreate1h, 39)
 	if response.Usage.CostUSD == nil || *response.Usage.CostUSD != 0.1234 {
 		t.Fatalf("Usage.CostUSD = %v, want 0.1234", response.Usage.CostUSD)
 	}

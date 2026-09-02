@@ -81,17 +81,20 @@ type ReviewerFailureSummary struct {
 // WorkstreamUsage is adapter-reported usage for one workstream: the reserved
 // orchestrator stage names or a reviewer agent ID.
 type WorkstreamUsage struct {
-	Name        string
-	Model       string
-	TokensIn    *int
-	TokensOut   *int
-	CacheRead   *int
-	CacheCreate *int
-	CostUSD     *float64
+	Name          string
+	Model         string
+	TokensIn      *int
+	TokensOut     *int
+	CacheRead     *int
+	CacheCreate   *int
+	CacheCreate5m *int
+	CacheCreate1h *int
+	CostUSD       *float64
 	// CostEstimated is true when CostUSD was derived from token prices because
 	// the adapter did not report a real cost.
-	CostEstimated bool
-	DurationMS    *int64
+	CostEstimated     bool
+	CostEstimateBasis string
+	DurationMS        *int64
 }
 
 // AggregateUsage holds run-wide totals. Each field is non-nil only when every
@@ -102,8 +105,11 @@ type AggregateUsage struct {
 	TokensOut         *int
 	CacheRead         *int
 	CacheCreate       *int
+	CacheCreate5m     *int
+	CacheCreate1h     *int
 	CostUSD           *float64
 	CostEstimated     bool
+	CostEstimateBasis string
 	ComputeDurationMS *int64
 }
 
@@ -186,10 +192,30 @@ func aggregateUsage(workstreams []WorkstreamUsage) AggregateUsage {
 		TokensOut:         sumInts(workstreams, func(w WorkstreamUsage) *int { return w.TokensOut }),
 		CacheRead:         sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheRead }),
 		CacheCreate:       sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheCreate }),
+		CacheCreate5m:     sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheCreate5m }),
+		CacheCreate1h:     sumInts(workstreams, func(w WorkstreamUsage) *int { return w.CacheCreate1h }),
 		CostUSD:           sumFloats(workstreams, func(w WorkstreamUsage) *float64 { return w.CostUSD }),
 		CostEstimated:     allCostEstimated(workstreams),
+		CostEstimateBasis: sharedCostEstimateBasis(workstreams),
 		ComputeDurationMS: sumDurations(workstreams, func(w WorkstreamUsage) *int64 { return w.DurationMS }),
 	}
+}
+
+func sharedCostEstimateBasis(workstreams []WorkstreamUsage) string {
+	basis := ""
+	for _, workstream := range workstreams {
+		if !workstream.CostEstimated || workstream.CostEstimateBasis == "" {
+			return ""
+		}
+		if basis == "" {
+			basis = workstream.CostEstimateBasis
+			continue
+		}
+		if workstream.CostEstimateBasis != basis {
+			return ""
+		}
+	}
+	return basis
 }
 
 // allCostEstimated reports whether every workstream's cost was estimated, so the
@@ -614,6 +640,9 @@ func writeRunFooter(out *strings.Builder, run RunSummary, totals AggregateUsage)
 	}
 	writeFooterRow(out, "Duration", duration)
 	writeFooterRow(out, "Cost", formatUSDEst(totals.CostUSD, totals.CostEstimated))
+	if totals.CostEstimated && totals.CostEstimateBasis != "" {
+		writeFooterRow(out, "Pricing basis", totals.CostEstimateBasis)
+	}
 	tokens := unavailableValue
 	if totals.TokensIn != nil || totals.TokensOut != nil {
 		tokens = formatTokens(totals.TokensIn) + " in / " + formatTokens(totals.TokensOut) + " out"

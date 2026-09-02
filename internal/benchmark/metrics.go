@@ -53,12 +53,14 @@ func (m *PiDiffMetrics) addStatus(status string) {
 
 // TokenMetrics records provider token usage.
 type TokenMetrics struct {
-	Available   bool  `json:"available"`
-	Input       int64 `json:"input"`
-	Output      int64 `json:"output"`
-	CacheRead   int64 `json:"cache_read"`
-	CacheWrite  int64 `json:"cache_write"`
-	TotalTokens int64 `json:"total_tokens"`
+	Available    bool  `json:"available"`
+	Input        int64 `json:"input"`
+	Output       int64 `json:"output"`
+	CacheRead    int64 `json:"cache_read"`
+	CacheWrite   int64 `json:"cache_write"`
+	CacheWrite5m int64 `json:"cache_write_5m"`
+	CacheWrite1h int64 `json:"cache_write_1h"`
+	TotalTokens  int64 `json:"total_tokens"`
 }
 
 // CostMetrics records provider-reported cost estimates.
@@ -372,14 +374,22 @@ func messageKey(event map[string]any, message map[string]any) string {
 }
 
 func tokenMetricsFromUsage(usage map[string]any) TokenMetrics {
-	tokenKeys := []string{"input", "inputTokens", "input_tokens", "tokensIn", "tokens_in", "promptTokens", "prompt_tokens", "output", "outputTokens", "output_tokens", "tokensOut", "tokens_out", "completionTokens", "completion_tokens", "cacheRead", "cache_read", "cacheWrite", "cache_write", "cacheCreate", "cache_create", "totalTokens", "total_tokens", "tokens", "total"}
+	tokenKeys := []string{"input", "inputTokens", "input_tokens", "tokensIn", "tokens_in", "promptTokens", "prompt_tokens", "output", "outputTokens", "output_tokens", "tokensOut", "tokens_out", "completionTokens", "completion_tokens", "cacheRead", "cache_read", "cacheWrite", "cache_write", "cacheCreate", "cache_create", "cache_creation_input_tokens", "cacheWrite5m", "cache_write_5m", "cacheCreate5m", "cache_create_5m", "cacheWrite1h", "cache_write_1h", "cacheCreate1h", "cache_create_1h", "cache_creation", "totalTokens", "total_tokens", "tokens", "total"}
+	cacheWrite5m := int64ValueFromKeys(usage, "cacheWrite5m", "cache_write_5m", "cacheCreate5m", "cache_create_5m")
+	cacheWrite1h := int64ValueFromKeys(usage, "cacheWrite1h", "cache_write_1h", "cacheCreate1h", "cache_create_1h")
+	if cacheCreation, ok := usage["cache_creation"].(map[string]any); ok {
+		cacheWrite5m = int64ValueFromKeys(cacheCreation, "ephemeral_5m_input_tokens")
+		cacheWrite1h = int64ValueFromKeys(cacheCreation, "ephemeral_1h_input_tokens")
+	}
 	return TokenMetrics{
-		Available:   hasAnyKey(usage, tokenKeys...),
-		Input:       int64ValueFromKeys(usage, "input", "inputTokens", "input_tokens", "tokensIn", "tokens_in", "promptTokens", "prompt_tokens"),
-		Output:      int64ValueFromKeys(usage, "output", "outputTokens", "output_tokens", "tokensOut", "tokens_out", "completionTokens", "completion_tokens"),
-		CacheRead:   int64ValueFromKeys(usage, "cacheRead", "cache_read"),
-		CacheWrite:  int64ValueFromKeys(usage, "cacheWrite", "cache_write", "cacheCreate", "cache_create"),
-		TotalTokens: int64ValueFromKeys(usage, "totalTokens", "total_tokens", "tokens", "total"),
+		Available:    hasAnyKey(usage, tokenKeys...),
+		Input:        int64ValueFromKeys(usage, "input", "inputTokens", "input_tokens", "tokensIn", "tokens_in", "promptTokens", "prompt_tokens"),
+		Output:       int64ValueFromKeys(usage, "output", "outputTokens", "output_tokens", "tokensOut", "tokens_out", "completionTokens", "completion_tokens"),
+		CacheRead:    int64ValueFromKeys(usage, "cacheRead", "cache_read"),
+		CacheWrite:   int64ValueFromKeys(usage, "cacheWrite", "cache_write", "cacheCreate", "cache_create", "cache_creation_input_tokens"),
+		CacheWrite5m: cacheWrite5m,
+		CacheWrite1h: cacheWrite1h,
+		TotalTokens:  int64ValueFromKeys(usage, "totalTokens", "total_tokens", "tokens", "total"),
 	}
 }
 
@@ -416,6 +426,8 @@ func (m *TokenMetrics) add(other TokenMetrics) {
 	m.Output += other.Output
 	m.CacheRead += other.CacheRead
 	m.CacheWrite += other.CacheWrite
+	m.CacheWrite5m += other.CacheWrite5m
+	m.CacheWrite1h += other.CacheWrite1h
 	m.TotalTokens += other.TotalTokens
 }
 

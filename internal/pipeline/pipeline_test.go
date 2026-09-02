@@ -4650,10 +4650,12 @@ func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
 		CacheRead: intPtr(19712),
 	}))
 	adapter.Queue(newClaudeTranscriptScriptAdapter(t, "reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Finding"), llm.Usage{
-		TokensIn:    intPtr(13),
-		TokensOut:   intPtr(4069),
-		CacheRead:   intPtr(861774),
-		CacheCreate: intPtr(180377),
+		TokensIn:      intPtr(13),
+		TokensOut:     intPtr(4069),
+		CacheRead:     intPtr(861774),
+		CacheCreate:   intPtr(180377),
+		CacheCreate5m: intPtr(377),
+		CacheCreate1h: intPtr(180000),
 	}))
 	adapter.Queue(newCodexUsageScriptAdapter(t, "rollup-session", rollupJSON("comment", []string{"finding-1"}), llm.Usage{
 		TokensIn:  intPtr(11324),
@@ -4690,7 +4692,9 @@ func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
 	if reviewer.TokensIn == nil || *reviewer.TokensIn != 13 ||
 		reviewer.TokensOut == nil || *reviewer.TokensOut != 4069 ||
 		reviewer.CacheRead == nil || *reviewer.CacheRead != 861774 ||
-		reviewer.CacheCreate == nil || *reviewer.CacheCreate != 180377 {
+		reviewer.CacheCreate == nil || *reviewer.CacheCreate != 180377 ||
+		reviewer.CacheCreate5m == nil || *reviewer.CacheCreate5m != 377 ||
+		reviewer.CacheCreate1h == nil || *reviewer.CacheCreate1h != 180000 {
 		t.Fatalf("reviewer workstream = %#v, want Claude-style cache values", reviewer)
 	}
 	assertRollupUsageRow(t, result.Artifacts.RollupMarkdown, orchestratorSelectionStage, false)
@@ -4712,7 +4716,9 @@ func TestDryRunUsagePopulatesRollupAndLedgerSessions(t *testing.T) {
 	if got := sessionByProviderID["reviewer-session"]; got.TokensIn == nil || *got.TokensIn != 13 ||
 		got.TokensOut == nil || *got.TokensOut != 4069 ||
 		got.CacheRead == nil || *got.CacheRead != 861774 ||
-		got.CacheCreate == nil || *got.CacheCreate != 180377 {
+		got.CacheCreate == nil || *got.CacheCreate != 180377 ||
+		got.CacheCreate5m == nil || *got.CacheCreate5m != 377 ||
+		got.CacheCreate1h == nil || *got.CacheCreate1h != 180000 {
 		t.Fatalf("persisted reviewer session = %#v, want transcript-derived Claude usage", got)
 	}
 	if got := sessionByProviderID["rollup-session"]; got.TokensIn == nil || *got.TokensIn != 11324 ||
@@ -4776,8 +4782,31 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 	if w.CostUSD == nil || !w.CostEstimated {
 		t.Fatalf("expected estimated cost; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
 	}
-	if want := 18.0; *w.CostUSD < want-1e-6 || *w.CostUSD > want+1e-6 { // 1M*$3 + 1M*$15
+	if want := 12.0; *w.CostUSD < want-1e-6 || *w.CostUSD > want+1e-6 {
 		t.Fatalf("cost = %v, want %v", *w.CostUSD, want)
+	}
+
+	// An aggregate cache-write count without TTL buckets is not precise enough
+	// to price. Once the split is known, each bucket uses its own multiplier.
+	draft.Response.Usage.CacheCreate = intPtr(2_000_000)
+	w = workstreamUsage("policies:conventions", draft)
+	if w.CostUSD != nil || w.CostEstimated {
+		t.Fatalf("unsplit cache writes should leave cost unavailable; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
+	}
+	draft.Response.Usage.CacheCreate5m = intPtr(1_000_000)
+	draft.Response.Usage.CacheCreate1h = intPtr(1_000_000)
+	w = workstreamUsage("policies:conventions", draft)
+	if w.CostUSD == nil || !w.CostEstimated {
+		t.Fatalf("split cache writes should be estimated; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
+	}
+	if want := 18.5; *w.CostUSD < want-1e-6 || *w.CostUSD > want+1e-6 {
+		t.Fatalf("cost = %v, want %v", *w.CostUSD, want)
+	}
+
+	draft.Response.Usage.Speed = "mixed"
+	w = workstreamUsage("policies:conventions", draft)
+	if w.CostUSD != nil || w.CostEstimated {
+		t.Fatalf("mixed-speed usage should leave cost unavailable; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
 	}
 
 	// Unknown model (any agent's model) → no estimate, cost stays unavailable.
@@ -6919,6 +6948,13 @@ printf 'backgrounded * %%s\n  claude attach %%s\n' "$job_id" "$job_id"
 func writeClaudeUsageTranscript(t *testing.T, usage llm.Usage) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "claude-transcript.jsonl")
+	cacheCreation := map[string]any{}
+	if usage.CacheCreate5m != nil {
+		cacheCreation["ephemeral_5m_input_tokens"] = *usage.CacheCreate5m
+	}
+	if usage.CacheCreate1h != nil {
+		cacheCreation["ephemeral_1h_input_tokens"] = *usage.CacheCreate1h
+	}
 	line := map[string]any{
 		"type":      "assistant",
 		"timestamp": "2026-06-09T20:00:02Z",
@@ -6929,6 +6965,7 @@ func writeClaudeUsageTranscript(t *testing.T, usage llm.Usage) string {
 				"output_tokens":               mustInt(t, usage.TokensOut, "TokensOut"),
 				"cache_read_input_tokens":     mustInt(t, usage.CacheRead, "CacheRead"),
 				"cache_creation_input_tokens": mustInt(t, usage.CacheCreate, "CacheCreate"),
+				"cache_creation":              cacheCreation,
 			},
 		},
 	}

@@ -375,6 +375,10 @@ type anthropicUsage struct {
 	CacheReadInputTokens     *int   `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens *int   `json:"cache_creation_input_tokens"`
 	Speed                    string `json:"speed"`
+	CacheCreation            struct {
+		Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 func parseAnthropicResponse(body []byte) (string, Response, error) {
@@ -394,11 +398,13 @@ func parseAnthropicResponse(body []byte) (string, Response, error) {
 	return payload.ID, Response{
 		StructuredOutput: []byte(text.String()),
 		Usage: Usage{
-			TokensIn:    payload.Usage.InputTokens,
-			TokensOut:   payload.Usage.OutputTokens,
-			CacheRead:   payload.Usage.CacheReadInputTokens,
-			CacheCreate: payload.Usage.CacheCreationInputTokens,
-			Speed:       payload.Usage.Speed,
+			TokensIn:      payload.Usage.InputTokens,
+			TokensOut:     payload.Usage.OutputTokens,
+			CacheRead:     payload.Usage.CacheReadInputTokens,
+			CacheCreate:   payload.Usage.CacheCreationInputTokens,
+			CacheCreate5m: payload.Usage.CacheCreation.Ephemeral5mInputTokens,
+			CacheCreate1h: payload.Usage.CacheCreation.Ephemeral1hInputTokens,
+			Speed:         payload.Usage.Speed,
 		},
 	}, nil
 }

@@ -64,10 +64,19 @@ Load-bearing metadata fields are:
 Telemetry metadata fields are optional and non-load-bearing. They do not affect
 resume eligibility, and older artifacts without them remain valid:
 
-- `tokens_in`, `tokens_out`, `cache_read`, `cache_create`, and `cost_usd`:
-  provider-reported usage copied into run summaries when available.
-  `tokens_in`, `tokens_out`, `cache_read`, and `cache_create` are also copied
-  into durable progress breadcrumbs when available.
+- `tokens_in`, `tokens_out`, `cache_read`, `cache_create`,
+  `cache_create_5m`, `cache_create_1h`, and `cost_usd`: provider-reported usage
+  copied into run summaries when available. The cache-duration fields preserve
+  Anthropic's billable write buckets; `cache_create` remains their
+  compatibility aggregate.
+
+When an adapter reports token usage but no billed cost, `cr` may show an
+API-equivalent estimate for a model in its dated public-price table. Estimated
+costs are marked `(est.)` and include the pricing-basis identifier used. They
+do not represent subscription consumption or an invoice. Provider-reported
+cost remains authoritative. A nonzero cache-create aggregate without its
+duration split is left unpriced because the five-minute and one-hour rates
+differ.
 
 ## Status Semantics
 
