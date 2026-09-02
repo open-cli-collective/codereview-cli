@@ -59,7 +59,7 @@ func EstimateUsageUSD(model string, usage Usage) (cost float64, ok bool) {
 		return 0, false
 	}
 	switch usage.Speed {
-	case "", "standard":
+	case "standard":
 	case "fast":
 		var fastKnown bool
 		r, fastKnown = fastRates[model]

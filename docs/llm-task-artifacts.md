@@ -69,8 +69,8 @@ resume eligibility, and older artifacts without them remain valid:
   provider-reported usage copied into run summaries when available. The
   cache-duration fields preserve Anthropic's billable write buckets;
   `cache_create` remains their compatibility aggregate. `speed` records the
-  delivered execution tier. Mixed or unsupported speed tiers remain unpriced
-  when the provider does not report cost.
+  delivered execution tier. Missing, mixed, or unsupported speed tiers remain
+  unpriced when the provider does not report cost.
 
 When an adapter reports token usage but no billed cost, `cr` may show an
 API-equivalent estimate for a model in its dated public-price table. Estimated

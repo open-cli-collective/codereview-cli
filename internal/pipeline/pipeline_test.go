@@ -4776,7 +4776,7 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 	// Known model, adapter reported no cost → estimate is filled and marked.
 	draft := sessionDraft{
 		Model:    "claude-sonnet-5",
-		Response: llm.Response{Usage: llm.Usage{TokensIn: &in, TokensOut: &out}},
+		Response: llm.Response{Usage: llm.Usage{TokensIn: &in, TokensOut: &out, Speed: "standard"}},
 	}
 	w := workstreamUsage("policies:conventions", draft)
 	if w.CostUSD == nil || !w.CostEstimated {
@@ -4801,6 +4801,12 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 	}
 	if want := 18.5; *w.CostUSD < want-1e-6 || *w.CostUSD > want+1e-6 {
 		t.Fatalf("cost = %v, want %v", *w.CostUSD, want)
+	}
+
+	draft.Response.Usage.Speed = ""
+	w = workstreamUsage("policies:conventions", draft)
+	if w.CostUSD != nil || w.CostEstimated {
+		t.Fatalf("missing-speed usage should leave cost unavailable; got CostUSD=%v estimated=%v", w.CostUSD, w.CostEstimated)
 	}
 
 	draft.Response.Usage.Speed = "mixed"
