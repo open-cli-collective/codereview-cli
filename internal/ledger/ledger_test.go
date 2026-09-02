@@ -46,6 +46,11 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	if !columnExists(t, store.db, "planned_actions", "failure_class") {
 		t.Fatal("planned_actions.failure_class column does not exist")
 	}
+	for _, column := range []string{"cache_create", "cache_create_5m", "cache_create_1h"} {
+		if !columnExists(t, store.db, "sessions", column) {
+			t.Fatalf("sessions.%s column does not exist", column)
+		}
+	}
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
@@ -181,6 +186,13 @@ func TestOpenMigratesVersion1LedgerAndPreservesPlannedActions(t *testing.T) {
 	}
 	if !columnExists(t, store.db, "planned_actions", "failure_class") {
 		t.Fatal("planned_actions.failure_class column does not exist")
+	}
+	sessions, err := store.ListSessionsForRun(context.Background(), "run-1")
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("ListSessionsForRun after migration = %#v, err = %v, want one session", sessions, err)
+	}
+	if sessions[0].CacheCreate == nil || *sessions[0].CacheCreate != 17 || sessions[0].CacheCreate5m != nil || sessions[0].CacheCreate1h != nil {
+		t.Fatalf("migrated cache creation = %#v, want aggregate 17 with nullable TTL buckets", sessions[0])
 	}
 
 	actions, err := store.ListPlannedActions(context.Background(), "run-1")
@@ -1504,6 +1516,12 @@ run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode, st
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		"run-1", "pr-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		1, "default", "reviewer@example.com", PostModeLive.String(), encodeTime(time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC)), "/tmp/run-1",
+	)
+	execSQL(t, db, `INSERT INTO sessions (
+session_row_id, run_id, provider_session_id, role, adapter, model, started_at, cache_create
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"session-1", "run-1", "provider-session-1", SessionRoleReviewer.String(), "claude_cli", "claude-sonnet-4-6",
+		encodeTime(time.Date(2026, 5, 30, 12, 1, 30, 0, time.UTC)), 17,
 	)
 	execSQL(t, db, `INSERT INTO planned_actions (
 action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,

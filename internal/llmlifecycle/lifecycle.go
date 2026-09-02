@@ -190,6 +190,8 @@ func (d SessionDraft) ToLedger(runID string) ledger.Session {
 		TokensOut:         intPtrToInt64(d.Response.Usage.TokensOut),
 		CacheRead:         intPtrToInt64(d.Response.Usage.CacheRead),
 		CacheCreate:       intPtrToInt64(d.Response.Usage.CacheCreate),
+		CacheCreate5m:     intPtrToInt64(d.Response.Usage.CacheCreate5m),
+		CacheCreate1h:     intPtrToInt64(d.Response.Usage.CacheCreate1h),
 		CostUSD:           d.Response.Usage.CostUSD,
 	}
 	if effort != "" {
@@ -219,6 +221,8 @@ type Metadata struct {
 	TokensOut            *int                      `json:"tokens_out,omitempty"`
 	CacheRead            *int                      `json:"cache_read,omitempty"`
 	CacheCreate          *int                      `json:"cache_create,omitempty"`
+	CacheCreate5m        *int                      `json:"cache_create_5m,omitempty"`
+	CacheCreate1h        *int                      `json:"cache_create_1h,omitempty"`
 	CostUSD              *float64                  `json:"cost_usd,omitempty"`
 	Speed                string                    `json:"speed,omitempty"`
 	ReviewerToolEvidence *llm.ReviewerToolEvidence `json:"reviewer_tool_evidence,omitempty"`
@@ -693,6 +697,8 @@ func BaseMetadata(req Request, draft SessionDraft) Metadata {
 		TokensOut:            draft.Response.Usage.TokensOut,
 		CacheRead:            draft.Response.Usage.CacheRead,
 		CacheCreate:          draft.Response.Usage.CacheCreate,
+		CacheCreate5m:        draft.Response.Usage.CacheCreate5m,
+		CacheCreate1h:        draft.Response.Usage.CacheCreate1h,
 		CostUSD:              draft.Response.Usage.CostUSD,
 		Speed:                draft.Response.Usage.Speed,
 		ReviewerToolEvidence: draft.Response.ReviewerToolEvidence,
@@ -795,11 +801,13 @@ func SessionDraftFromLedger(session ledger.Session) SessionDraft {
 		CompletedAt:               completedAt,
 		Response: llm.Response{
 			Usage: llm.Usage{
-				TokensIn:    int64PtrToInt(session.TokensIn),
-				TokensOut:   int64PtrToInt(session.TokensOut),
-				CacheRead:   int64PtrToInt(session.CacheRead),
-				CacheCreate: int64PtrToInt(session.CacheCreate),
-				CostUSD:     session.CostUSD,
+				TokensIn:      int64PtrToInt(session.TokensIn),
+				TokensOut:     int64PtrToInt(session.TokensOut),
+				CacheRead:     int64PtrToInt(session.CacheRead),
+				CacheCreate:   int64PtrToInt(session.CacheCreate),
+				CacheCreate5m: int64PtrToInt(session.CacheCreate5m),
+				CacheCreate1h: int64PtrToInt(session.CacheCreate1h),
+				CostUSD:       session.CostUSD,
 			},
 		},
 	}
@@ -825,12 +833,14 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 		Response: llm.Response{
 			ReviewerToolEvidence: meta.ReviewerToolEvidence,
 			Usage: llm.Usage{
-				TokensIn:    meta.TokensIn,
-				TokensOut:   meta.TokensOut,
-				CacheRead:   meta.CacheRead,
-				CacheCreate: meta.CacheCreate,
-				CostUSD:     meta.CostUSD,
-				Speed:       meta.Speed,
+				TokensIn:      meta.TokensIn,
+				TokensOut:     meta.TokensOut,
+				CacheRead:     meta.CacheRead,
+				CacheCreate:   meta.CacheCreate,
+				CacheCreate5m: meta.CacheCreate5m,
+				CacheCreate1h: meta.CacheCreate1h,
+				CostUSD:       meta.CostUSD,
+				Speed:         meta.Speed,
 			},
 		},
 	}

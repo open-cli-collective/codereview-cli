@@ -2713,23 +2713,28 @@ func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewer
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
 	usage := draft.Response.Usage
 	workstream := reviewplan.WorkstreamUsage{
-		Name:        name,
-		Model:       draft.Model,
-		TokensIn:    usage.TokensIn,
-		TokensOut:   usage.TokensOut,
-		CacheRead:   usage.CacheRead,
-		CacheCreate: usage.CacheCreate,
-		CostUSD:     usage.CostUSD,
+		Name:          name,
+		Model:         draft.Model,
+		TokensIn:      usage.TokensIn,
+		TokensOut:     usage.TokensOut,
+		CacheRead:     usage.CacheRead,
+		CacheCreate:   usage.CacheCreate,
+		CacheCreate5m: usage.CacheCreate5m,
+		CacheCreate1h: usage.CacheCreate1h,
+		CostUSD:       usage.CostUSD,
 	}
 	// When the adapter reports no cost (e.g. subscription auth), estimate it from
 	// tokens at public list prices — only for models the price table knows, so an
 	// agent's unpriced model leaves cost unavailable rather than wrong.
 	if workstream.CostUSD == nil {
-		if est, ok := pricing.EstimateUSD(
-			draft.Model, usage.TokensIn, usage.TokensOut, usage.CacheRead, usage.CacheCreate,
-		); ok {
+		if est, ok := pricing.EstimateUsageUSD(draft.Model, pricing.Usage{
+			TokensIn: usage.TokensIn, TokensOut: usage.TokensOut, CacheRead: usage.CacheRead,
+			CacheCreate5m: usage.CacheCreate5m, CacheCreate1h: usage.CacheCreate1h,
+			CacheCreateTotal: usage.CacheCreate, Speed: usage.Speed,
+		}); ok {
 			workstream.CostUSD = &est
 			workstream.CostEstimated = true
+			workstream.CostEstimateBasis = pricing.TableVersion
 		}
 	}
 	// Zero means the adapter never reported a duration; fall back to the

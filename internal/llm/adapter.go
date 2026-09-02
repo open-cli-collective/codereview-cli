@@ -156,12 +156,14 @@ type ReviewerToolEvidence struct {
 
 // Usage records nullable usage metrics.
 type Usage struct {
-	TokensIn    *int
-	TokensOut   *int
-	CacheRead   *int
-	CacheCreate *int
-	CostUSD     *float64
-	Speed       string
+	TokensIn      *int
+	TokensOut     *int
+	CacheRead     *int
+	CacheCreate   *int
+	CacheCreate5m *int
+	CacheCreate1h *int
+	CostUSD       *float64
+	Speed         string
 }
 
 // Quota records adapter quota state. A value of -1 means unknown.

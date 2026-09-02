@@ -66,9 +66,11 @@ func TestRenderReviewDryRunJSONSummaryPreservesNulls(t *testing.T) {
 			PostingIdentity:   "review-bot",
 			SelectedReviewers: []string{"go:tests"},
 			Workstreams: []ReviewWorkstream{{
-				Name:     "go:tests",
-				Model:    "sonnet",
-				TokensIn: &tokensIn,
+				Name:              "go:tests",
+				Model:             "sonnet",
+				TokensIn:          &tokensIn,
+				CostEstimated:     true,
+				CostEstimateBasis: "anthropic-public-2026-09-02",
 			}},
 		},
 	}
@@ -95,6 +97,9 @@ func TestRenderReviewDryRunJSONSummaryPreservesNulls(t *testing.T) {
 	workstream := decoded.Summary.Run.Workstreams[0]
 	if string(workstream["tokens_in"]) != "1200" {
 		t.Fatalf("tokens_in = %s, want 1200", workstream["tokens_in"])
+	}
+	if string(workstream["cost_estimated"]) != "true" || string(workstream["cost_estimate_basis"]) != `"anthropic-public-2026-09-02"` {
+		t.Fatalf("estimated cost provenance = %s/%s", workstream["cost_estimated"], workstream["cost_estimate_basis"])
 	}
 	for _, field := range []string{"tokens_out", "cost_usd", "duration_ms"} {
 		if string(workstream[field]) != "null" {

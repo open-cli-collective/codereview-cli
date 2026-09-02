@@ -557,6 +557,10 @@ type claudeForegroundUsagePayload struct {
 	CacheReadTokens     *int   `json:"cache_read_input_tokens"`
 	CacheCreationTokens *int   `json:"cache_creation_input_tokens"`
 	Speed               string `json:"speed"`
+	CacheCreation       struct {
+		Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 // usage projects the print-mode result envelope onto the adapter Usage type.
@@ -571,6 +575,8 @@ func (o claudeForegroundOutput) usage() Usage {
 		u.TokensOut = o.Usage.OutputTokens
 		u.CacheRead = o.Usage.CacheReadTokens
 		u.CacheCreate = o.Usage.CacheCreationTokens
+		u.CacheCreate5m = o.Usage.CacheCreation.Ephemeral5mInputTokens
+		u.CacheCreate1h = o.Usage.CacheCreation.Ephemeral1hInputTokens
 		u.Speed = o.Usage.Speed
 	}
 	return u
@@ -1434,6 +1440,12 @@ func mergeUsage(current Usage, next Usage) Usage {
 	}
 	if next.CacheCreate != nil {
 		current.CacheCreate = next.CacheCreate
+	}
+	if next.CacheCreate5m != nil {
+		current.CacheCreate5m = next.CacheCreate5m
+	}
+	if next.CacheCreate1h != nil {
+		current.CacheCreate1h = next.CacheCreate1h
 	}
 	if next.CostUSD != nil {
 		current.CostUSD = next.CostUSD
