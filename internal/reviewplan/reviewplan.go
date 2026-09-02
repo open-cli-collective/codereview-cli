@@ -17,6 +17,7 @@ const (
 	inlineFooter             = "*Reply inline to this comment.*"
 	fileLevelFallbackPrefix  = "_File-level note:_ "
 	markerPrefix             = "<!-- codereview:"
+	htmlCommentClose         = "-->"
 	escapedMarkerPrefix      = "&lt;!-- codereview:"
 )
 
@@ -97,6 +98,18 @@ type EventOptions struct {
 // ActionIDGenerator allocates a deterministic action id for an action kind.
 type ActionIDGenerator func(ActionKind) (string, error)
 
+// ExistingThread is a review thread this identity already opened on the PR.
+//
+// Only threads this identity authored are carried: a human quoting the same
+// code is not this review repeating itself, and must not suppress a finding.
+type ExistingThread struct {
+	// Path is the file the thread is anchored to.
+	Path string
+	// Body is the thread's opening comment, as it was posted, including the
+	// decorations Build added to it.
+	Body string
+}
+
 // Request is the pure input to Build.
 type Request struct {
 	PostMode PostMode
@@ -110,6 +123,10 @@ type Request struct {
 	// ThreadResponses are lifecycle-domain replies/resolutions for existing
 	// inline discussion threads.
 	ThreadResponses []review.ThreadResponseAction
+	// ExistingThreads are the review threads already on the PR that this
+	// identity authored. A finding repeating one of them is demoted to the
+	// rollup rather than posted again.
+	ExistingThreads []ExistingThread
 	EventOptions    EventOptions
 
 	NoDiff                        bool
@@ -455,6 +472,7 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 
 	b.populateAnchoredFindings()
+	b.demoteFindingsAlreadyRaised()
 
 	var actions []Action
 	threadReplies, resolves, err := b.threadActions()
@@ -567,6 +585,129 @@ func (b *builder) populateAnchoredFindings() {
 		anchored := b.anchorFinding(finding)
 		b.anchoredByID[finding.ID] = anchored
 	}
+}
+
+// demoteFindingsAlreadyRaised keeps a finding out of a second inline thread
+// when this identity has already opened one saying the same thing about the
+// same file.
+//
+// Nothing else prevents this. A finding fixed by a later commit still sits in
+// the cumulative diff, so it anchors again; posting is idempotent on run and
+// action id, which a later run never matches. The result is the same finding
+// posted repeatedly, most visibly against text that no longer exists at head,
+// which teaches a reader to skim rather than read.
+//
+// Demotion, not deletion: the finding stays in the rollup, so a reviewer that
+// still believes it is on record. A resolved thread is treated the same as an
+// open one; both mean it has been said, and the open thread is still there to
+// be read.
+func (b *builder) demoteFindingsAlreadyRaised() {
+	if len(b.req.ExistingThreads) == 0 {
+		return
+	}
+	raised := make(map[string]struct{}, len(b.req.ExistingThreads))
+	for _, thread := range b.req.ExistingThreads {
+		if key, ok := findingKey(thread.Path, thread.Body); ok {
+			raised[key] = struct{}{}
+		}
+	}
+	if len(raised) == 0 {
+		return
+	}
+	for id, anchored := range b.anchoredByID {
+		if anchored.Anchoring == review.AnchoringRollupOnly {
+			continue
+		}
+		key, ok := findingKey(anchored.FilePath, anchored.Body)
+		if !ok {
+			continue
+		}
+		if _, already := raised[key]; !already {
+			continue
+		}
+		anchored.Anchoring = review.AnchoringRollupOnly
+		anchored.Side = nil
+		anchored.Line = nil
+		anchored.DiffPosition = nil
+		b.anchoredByID[id] = anchored
+	}
+}
+
+// findingKey identifies a finding by its file and its text, with everything
+// Build adds to a posted comment stripped back off, so a body read from the
+// host compares equal to the body about to be posted.
+//
+// The line is deliberately not part of the key. A fix shifts the lines around
+// it, and the repeats worth suppressing are the ones that moved.
+//
+// Equality is exact after normalization rather than fuzzy. A near-match is a
+// different claim often enough that suppressing it would lose real findings,
+// and the repeats this exists for are identical.
+func findingKey(path, body string) (string, bool) {
+	text := normalizeFindingText(body)
+	if text == "" {
+		return "", false
+	}
+	return strings.TrimSpace(path) + "\x00" + text, true
+}
+
+// normalizeFindingText strips everything a posted comment carries that is not
+// the finding, and folds whitespace so that formatting alone cannot make the
+// same text look new.
+func normalizeFindingText(body string) string {
+	text := stripMarkerComments(body)
+	text = stripFileLevelPrefix(text)
+	text = strings.ReplaceAll(text, inlineFooter, " ")
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
+}
+
+// stripMarkerComments removes this tool's own `<!-- codereview:... -->` spans,
+// which carry a run id that differs on every run and would otherwise make every
+// comparison fail.
+//
+// Only those spans. A finding may legitimately quote an HTML, XML, or JSX
+// comment out of the diff, and dropping that would take real text out of the
+// comparison while leaving it in the posted body, so two findings differing
+// only inside a quoted comment would collapse to one key.
+func stripMarkerComments(text string) string {
+	var out strings.Builder
+	for {
+		start := strings.Index(text, markerPrefix)
+		if start < 0 {
+			out.WriteString(text)
+			return out.String()
+		}
+		out.WriteString(text[:start])
+		out.WriteString(" ")
+		rest := text[start+len(markerPrefix):]
+		end := strings.Index(rest, htmlCommentClose)
+		if end < 0 {
+			// An unterminated marker. Emitting its text would put a run id into
+			// the key, so everything from here is dropped.
+			return out.String()
+		}
+		text = rest[end+len(htmlCommentClose):]
+	}
+}
+
+// stripFileLevelPrefix removes the file-level fallback header, which is the
+// prefix followed by the interpolated file path on the same line.
+//
+// Dropping only the literal prefix would leave the path in the text, so a
+// stored file-level comment would never match the finding it came from. On a
+// host without native file-level comments that is every file-anchored finding,
+// which is the class most in need of this: such a finding re-anchors to the
+// first hunk on every run.
+func stripFileLevelPrefix(text string) string {
+	start := strings.Index(text, fileLevelFallbackPrefix)
+	if start < 0 {
+		return text
+	}
+	rest := text[start+len(fileLevelFallbackPrefix):]
+	if end := strings.IndexByte(rest, '\n'); end >= 0 {
+		return text[:start] + " " + rest[end+1:]
+	}
+	return text[:start] + " "
 }
 
 func (b *builder) anchorFinding(finding review.Finding) AnchoredFinding {
