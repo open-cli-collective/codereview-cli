@@ -300,6 +300,30 @@ func TestRequiredOnMatchFilesMatchesRootAndNestedGoFilesOnly(t *testing.T) {
 	}
 }
 
+func TestRequiredOnMatchFilesExcludesNegatedGlobs(t *testing.T) {
+	agent := agents.Agent{
+		RequiredOnMatch: true,
+		FileGlobs: []string{
+			"**/*.tsx",
+			"!**/*.test.*",
+			"!**/*.spec.*",
+			"!**/*.stories.*",
+		},
+	}
+
+	got := requiredOnMatchFiles(agent, []string{
+		"Button.tsx",
+		"components/Card.tsx",
+		"Button.test.tsx",
+		"components/Card.spec.tsx",
+		"components/Card.stories.tsx",
+	})
+	want := []string{"Button.tsx", "components/Card.tsx"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("required files = %#v, want negated test, spec, and story globs excluded: %#v", got, want)
+	}
+}
+
 func TestSelectionPromptMarksMatchingProfileAgentRequired(t *testing.T) {
 	catalog := agents.Catalog{Agents: []agents.Agent{{
 		ID:              "shared:go",

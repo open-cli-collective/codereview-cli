@@ -1560,6 +1560,7 @@ func ensureRequiredOnMatchAgents(selection llm.Selection, catalog agents.Catalog
 // Files/AllowedFiles) need no widening, and AllowedFiles is only extended
 // when it is what defines the agent's scope.
 func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog, changedFiles []string) llm.Selection {
+	selection = reconcileSelectedGlobScopes(selection, catalog, changedFiles)
 	if len(selection.SelectedAgents) == 0 {
 		return selection
 	}
@@ -1601,6 +1602,68 @@ func ensureSelectedGlobCoverage(selection llm.Selection, catalog agents.Catalog,
 	return selection
 }
 
+// reconcileSelectedGlobScopes enforces exclusions on assignments proposed by
+// the selector or restored from a saved cohort. Agents without exclusions keep
+// the existing broad-assignment behavior. A broad assignment with exclusions
+// is materialized so excluded files cannot re-enter through implicit scope.
+func reconcileSelectedGlobScopes(selection llm.Selection, catalog agents.Catalog, changedFiles []string) llm.Selection {
+	changed := stringSet(changedFiles)
+	reconciled := selection
+	reconciled.SelectedAgents = nil
+	for _, selected := range selection.SelectedAgents {
+		agent, ok := catalog.Find(selected.AgentID)
+		if !ok || !hasExclusionGlob(agent.FileGlobs) {
+			reconciled.SelectedAgents = append(reconciled.SelectedAgents, selected)
+			continue
+		}
+
+		if len(selected.Files) == 0 && len(selected.AllowedFiles) == 0 {
+			matched := matchingChangedFiles(agent.FileGlobs, changedFiles)
+			if len(matched) == 0 {
+				continue
+			}
+			selected.Files = append([]string(nil), matched...)
+			selected.AllowedFiles = append([]string(nil), matched...)
+		} else {
+			selected.Files = matchingAssignedFiles(agent.FileGlobs, selected.Files, changed)
+			selected.AllowedFiles = matchingAssignedFiles(agent.FileGlobs, selected.AllowedFiles, changed)
+			if len(selected.Files) > 0 && len(selected.AllowedFiles) == 0 {
+				selected.AllowedFiles = append([]string(nil), selected.Files...)
+			}
+			if len(selected.Files) == 0 && len(selected.AllowedFiles) == 0 {
+				continue
+			}
+		}
+		reconciled.SelectedAgents = append(reconciled.SelectedAgents, selected)
+	}
+	return reconciled
+}
+
+func hasExclusionGlob(patterns []string) bool {
+	set, err := agents.CompileFileGlobs(patterns)
+	return err == nil && set.HasExclusions()
+}
+
+func matchingChangedFiles(patterns, changedFiles []string) []string {
+	var matched []string
+	for _, file := range changedFiles {
+		if globsMatchFile(patterns, file) && !slices.Contains(matched, file) {
+			matched = append(matched, file)
+		}
+	}
+	return matched
+}
+
+func matchingAssignedFiles(patterns, files []string, changed map[string]bool) []string {
+	var matched []string
+	for _, file := range files {
+		if changed[file] && globsMatchFile(patterns, file) && !slices.Contains(matched, file) {
+			matched = append(matched, file)
+		}
+	}
+	return matched
+}
+
 func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.ReviewerCohort, changedFiles []string, maxAgents int, adapter string) (llm.Selection, map[string]string, error) {
 	freshError := func(format string, args ...any) (llm.Selection, map[string]string, error) {
 		return llm.Selection{}, nil, fmt.Errorf("pipeline: "+format+"; pass --fresh-session to select a new reviewer cohort", args...)
@@ -1615,6 +1678,7 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 	type candidate struct {
 		member ledger.ReviewerCohortMember
 		agent  agents.Agent
+		globs  agents.FileGlobSet
 		files  []string
 	}
 	candidates := make([]candidate, 0, len(cohort.Members))
@@ -1632,7 +1696,11 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 		if runtimeConfig.model != member.Model || runtimeConfig.effort != member.Effort || req.ReviewerFast != member.Fast {
 			return freshError("saved reviewer %q runtime is incompatible with the current runtime", member.AgentID)
 		}
-		current := candidate{member: member, agent: agent}
+		fileGlobs, err := agents.CompileFileGlobs(agent.FileGlobs)
+		if err != nil {
+			return llm.Selection{}, nil, err
+		}
+		current := candidate{member: member, agent: agent, globs: fileGlobs}
 		persistedFiles := member.Files
 		if member.AssignmentMode == ledger.ReviewerAssignmentScoped {
 			if len(member.AllowedFiles) > 0 {
@@ -1640,6 +1708,9 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 			}
 		}
 		for _, file := range persistedFiles {
+			if fileGlobs.HasExclusions() && !fileGlobs.Matches(file) {
+				continue
+			}
 			if changed[file] && !slices.Contains(current.files, file) {
 				current.files = append(current.files, file)
 				covered[file] = true
@@ -1653,7 +1724,8 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 		}
 		assigned := false
 		for i := range candidates {
-			if candidates[i].member.AssignmentMode != ledger.ReviewerAssignmentBroad && !globsMatchFile(candidates[i].agent.FileGlobs, file) {
+			broadWithoutExclusions := candidates[i].member.AssignmentMode == ledger.ReviewerAssignmentBroad && !candidates[i].globs.HasExclusions()
+			if !broadWithoutExclusions && !candidates[i].globs.Matches(file) {
 				continue
 			}
 			candidates[i].files = append(candidates[i].files, file)
@@ -1678,12 +1750,22 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 		}
 		selected := llm.SelectedAgent{AgentID: candidate.member.AgentID, Rationale: "reused reviewer cohort"}
 		selected.Files = append([]string(nil), candidate.files...)
-		if candidate.member.AssignmentMode == ledger.ReviewerAssignmentScoped {
+		if candidate.member.AssignmentMode == ledger.ReviewerAssignmentScoped || hasExclusionGlob(candidate.agent.FileGlobs) {
 			selected.AllowedFiles = append([]string(nil), candidate.files...)
 		}
 		selection.SelectedAgents = append(selection.SelectedAgents, selected)
 		if sessionID := strings.TrimSpace(candidate.member.ProviderSessionID); sessionID != "" {
 			resumes[candidate.member.AgentID] = sessionID
+		}
+	}
+	selection = ensureSelectedGlobCoverage(selection, catalog, changedFiles)
+	selectedIDs := map[string]bool{}
+	for _, selected := range selection.SelectedAgents {
+		selectedIDs[selected.AgentID] = true
+	}
+	for agentID := range resumes {
+		if !selectedIDs[agentID] {
+			delete(resumes, agentID)
 		}
 	}
 	return selection, resumes, nil

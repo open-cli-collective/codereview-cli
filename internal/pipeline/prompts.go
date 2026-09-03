@@ -10,8 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/gobwas/glob"
-
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/dossier"
@@ -177,25 +175,13 @@ func requiredOnMatchFiles(agent agents.Agent, changedFiles []string) []string {
 	return matched
 }
 
-// globsMatchFile reports whether any of the agent file glob patterns match
-// the file. A "**/"-prefixed pattern also matches at the repository root,
-// mirroring gitignore-style expectations.
+// globsMatchFile reports whether any include pattern matches the file unless
+// an exclusion pattern, prefixed with "!", also matches it. A "**/"-prefixed
+// pattern also matches at the repository root, mirroring gitignore-style
+// expectations.
 func globsMatchFile(patterns []string, file string) bool {
-	for _, pattern := range patterns {
-		matcher, err := glob.Compile(pattern, '/')
-		if err != nil {
-			continue
-		}
-		if matcher.Match(file) {
-			return true
-		}
-		if strings.HasPrefix(pattern, "**/") {
-			if rootMatcher, err := glob.Compile(strings.TrimPrefix(pattern, "**/"), '/'); err == nil && rootMatcher.Match(file) {
-				return true
-			}
-		}
-	}
-	return false
+	set, err := agents.CompileFileGlobs(patterns)
+	return err == nil && set.Matches(file)
 }
 
 type reviewerAgentPrompt struct {
