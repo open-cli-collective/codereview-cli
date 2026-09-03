@@ -435,11 +435,18 @@ model_tier: medium
 effort: medium
 file_globs:
   - "**/*.go"
+  - "!**/*_test.go"
 applies_when:
   - Go files changed
 required_on_match: true
 needs_full_file_content: false
 ```
+
+Prefix a `file_globs` entry with `!` to exclude matching paths from that
+agent's scope. Exclusions apply after all includes, regardless of declaration
+order, and every nonempty `file_globs` list must contain at least one include.
+For example, `**/*.tsx` plus `!**/*.test.*` matches rendered TypeScript files
+without assigning their tests to the reviewer.
 
 Use `model_tier: small|medium|large` for portable shared catalogs. It means the
 minimum acceptable reviewer tier for that agent, not a direct model pick. Use

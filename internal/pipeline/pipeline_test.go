@@ -1613,6 +1613,92 @@ func TestEnsureSelectedGlobCoverageAssignsUncoveredMatchingFiles(t *testing.T) {
 	}
 }
 
+func TestEnsureSelectedGlobCoverageDoesNotAssignExcludedFiles(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID: "frontend:accessibility",
+		FileGlobs: []string{
+			"**/*.tsx",
+			"!**/*.test.*",
+			"!**/*.spec.*",
+			"!**/*.stories.*",
+		},
+	}}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{
+		AgentID: "frontend:accessibility",
+		Files:   []string{"components/Button.tsx"},
+	}}}
+	changed := []string{
+		"components/Button.tsx",
+		"components/Button.test.tsx",
+		"components/Button.spec.tsx",
+		"components/Button.stories.tsx",
+	}
+
+	got := ensureSelectedGlobCoverage(selection, catalog, changed)
+	want := []string{"components/Button.tsx"}
+	if !reflect.DeepEqual(got.SelectedAgents[0].Files, want) {
+		t.Fatalf("assigned files = %#v, want excluded test, spec, and story files left unassigned: %#v", got.SelectedAgents[0].Files, want)
+	}
+}
+
+func TestEnsureSelectedGlobCoverageRemovesExcludedDirectAssignments(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID:        "frontend:accessibility",
+		FileGlobs: []string{"**/*.tsx", "!**/*.test.*"},
+	}}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{
+		AgentID:      "frontend:accessibility",
+		Files:        []string{"components/Button.tsx", "components/Button.test.tsx"},
+		AllowedFiles: []string{"components/Button.tsx", "components/Button.test.tsx"},
+	}}}
+	changed := []string{"components/Button.tsx", "components/Button.test.tsx"}
+
+	got := ensureSelectedGlobCoverage(selection, catalog, changed)
+	want := []string{"components/Button.tsx"}
+	if len(got.SelectedAgents) != 1 ||
+		!reflect.DeepEqual(got.SelectedAgents[0].Files, want) ||
+		!reflect.DeepEqual(got.SelectedAgents[0].AllowedFiles, want) {
+		t.Fatalf("selection = %#v, want excluded direct assignment removed from files and allowed files", got.SelectedAgents)
+	}
+}
+
+func TestEnsureSelectedGlobCoverageBoundsFilesOnlyAssignmentWithExclusions(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID:        "frontend:accessibility",
+		FileGlobs: []string{"**/*.tsx", "!**/*.test.*"},
+	}}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{
+		AgentID: "frontend:accessibility",
+		Files:   []string{"components/Button.tsx", "components/Button.test.tsx"},
+	}}}
+	changed := []string{"components/Button.tsx", "components/Button.test.tsx"}
+
+	got := ensureSelectedGlobCoverage(selection, catalog, changed)
+	want := []string{"components/Button.tsx"}
+	if len(got.SelectedAgents) != 1 ||
+		!reflect.DeepEqual(got.SelectedAgents[0].Files, want) ||
+		!reflect.DeepEqual(got.SelectedAgents[0].AllowedFiles, want) {
+		t.Fatalf("selection = %#v, want files-only exclusion scope bounded as %#v", got.SelectedAgents, want)
+	}
+}
+
+func TestEnsureSelectedGlobCoverageMaterializesBroadAssignmentWithExclusions(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID:        "frontend:accessibility",
+		FileGlobs: []string{"**/*.tsx", "!**/*.test.*"},
+	}}}
+	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{AgentID: "frontend:accessibility"}}}
+	changed := []string{"components/Button.tsx", "components/Button.test.tsx"}
+
+	got := ensureSelectedGlobCoverage(selection, catalog, changed)
+	want := []string{"components/Button.tsx"}
+	if len(got.SelectedAgents) != 1 ||
+		!reflect.DeepEqual(got.SelectedAgents[0].Files, want) ||
+		!reflect.DeepEqual(got.SelectedAgents[0].AllowedFiles, want) {
+		t.Fatalf("selection = %#v, want broad exclusion scope materialized as %#v", got.SelectedAgents, want)
+	}
+}
+
 func TestEnsureSelectedGlobCoverageLeavesFullScopeAgentsAlone(t *testing.T) {
 	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:all", FileGlobs: []string{"**"}}}}
 	selection := llm.Selection{SelectedAgents: []llm.SelectedAgent{{AgentID: "shared:all"}}}
@@ -5345,6 +5431,123 @@ func TestRebaseReviewerCohortKeepsOrderAndDropsEmptyScopeCalls(t *testing.T) {
 	}
 	if !reflect.DeepEqual(resumes, map[string]string{"repo:go": "go-session"}) {
 		t.Fatalf("reviewer resumes = %#v, want exact saved session", resumes)
+	}
+}
+
+func TestRebaseReviewerCohortRemovesPersistedExcludedFiles(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID:        "frontend:accessibility",
+		ModelTier: "medium",
+		Effort:    "medium",
+		FileGlobs: []string{"**/*.tsx", "!**/*.test.*"},
+	}}}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID:           "frontend:accessibility",
+		AssignmentMode:    ledger.ReviewerAssignmentScoped,
+		Files:             []string{"components/Button.tsx", "components/Button.test.tsx"},
+		AllowedFiles:      []string{"components/Button.tsx", "components/Button.test.tsx"},
+		Model:             "claude-sonnet-5",
+		Effort:            "medium",
+		ProviderSessionID: "accessibility-session",
+	}}}
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	changed := []string{"components/Button.tsx", "components/Button.test.tsx"}
+
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, changed, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []string{"components/Button.tsx"}
+	if len(selection.SelectedAgents) != 1 ||
+		!reflect.DeepEqual(selection.SelectedAgents[0].Files, want) ||
+		!reflect.DeepEqual(selection.SelectedAgents[0].AllowedFiles, want) {
+		t.Fatalf("selection = %#v, want persisted excluded file removed", selection.SelectedAgents)
+	}
+	if !reflect.DeepEqual(resumes, map[string]string{"frontend:accessibility": "accessibility-session"}) {
+		t.Fatalf("resumes = %#v, want retained session for remaining assignment", resumes)
+	}
+}
+
+func TestRebaseReviewerCohortMaterializesBroadScopeWithExclusions(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{{
+		ID:        "frontend:accessibility",
+		ModelTier: "medium",
+		Effort:    "medium",
+		FileGlobs: []string{"**/*.tsx", "!**/*.test.*"},
+	}}}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID:        "frontend:accessibility",
+		AssignmentMode: ledger.ReviewerAssignmentBroad,
+		Model:          "claude-sonnet-5",
+		Effort:         "medium",
+	}}}
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	changed := []string{"components/Button.tsx", "components/Button.test.tsx"}
+
+	selection, _, err := rebaseReviewerCohort(req, catalog, cohort, changed, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []string{"components/Button.tsx"}
+	if len(selection.SelectedAgents) != 1 ||
+		!reflect.DeepEqual(selection.SelectedAgents[0].Files, want) ||
+		!reflect.DeepEqual(selection.SelectedAgents[0].AllowedFiles, want) {
+		t.Fatalf("selection = %#v, want saved broad exclusion scope materialized as %#v", selection.SelectedAgents, want)
+	}
+}
+
+func TestRebaseReviewerCohortRoutesBroadExclusionsToScopedReviewer(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{
+			ID:        "frontend:accessibility",
+			ModelTier: "medium",
+			Effort:    "medium",
+			FileGlobs: []string{"**/*.tsx", "!**/*.test.*"},
+		},
+		{
+			ID:        "frontend:tests",
+			ModelTier: "medium",
+			Effort:    "medium",
+			FileGlobs: []string{"**/*.test.*"},
+		},
+	}}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{
+		{
+			AgentID:        "frontend:accessibility",
+			AssignmentMode: ledger.ReviewerAssignmentBroad,
+			Model:          "claude-sonnet-5",
+			Effort:         "medium",
+		},
+		{
+			AgentID:        "frontend:tests",
+			AssignmentMode: ledger.ReviewerAssignmentScoped,
+			Model:          "claude-sonnet-5",
+			Effort:         "medium",
+		},
+	}}
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	changed := []string{"components/Button.tsx", "components/Button.test.tsx"}
+
+	selection, _, err := rebaseReviewerCohort(req, catalog, cohort, changed, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	want := []llm.SelectedAgent{
+		{
+			AgentID:      "frontend:accessibility",
+			Rationale:    "reused reviewer cohort",
+			Files:        []string{"components/Button.tsx"},
+			AllowedFiles: []string{"components/Button.tsx"},
+		},
+		{
+			AgentID:      "frontend:tests",
+			Rationale:    "reused reviewer cohort",
+			Files:        []string{"components/Button.test.tsx"},
+			AllowedFiles: []string{"components/Button.test.tsx"},
+		},
+	}
+	if !reflect.DeepEqual(selection.SelectedAgents, want) {
+		t.Fatalf("selected agents = %#v, want %#v", selection.SelectedAgents, want)
 	}
 }
 
