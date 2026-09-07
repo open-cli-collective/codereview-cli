@@ -57,6 +57,9 @@ Load-bearing metadata fields are:
 - `adapter`, `model`, `effort`, and `log_path`: execution context.
 - `validated_output_path`: structured output to decode when reusing a succeeded
   task.
+- `reviewer_tool_evidence`: optional adapter-provided reviewer tool state; see
+  [Reviewer Tool Evidence](#reviewer-tool-evidence). It affects coverage and
+  approval, unlike usage telemetry.
 - `error`: sanitized diagnostic for failed tasks.
 - `attempts`: failed validation attempts with attempt label, provider session
   ID, raw output path when present, and decode error.
@@ -107,6 +110,48 @@ task and downstream work after an interruption or durable blocking failure.
 Provider start/wait failures may have empty `attempts` because no structured
 output existed. When a provider session ID is known, retry should seed the next
 task call with that session if the adapter supports resume.
+
+## Reviewer Tool Evidence
+
+`reviewer_tool_evidence` records the adapter-provided state of the required
+reviewer diff tool, `cr_diff`. Its `diff_status` is one of:
+
+- `not_invoked`: the reviewer never invoked `cr_diff`.
+- `incomplete`: the reviewer started but did not complete `cr_diff`.
+- `succeeded`: the reviewer completed `cr_diff` without failure.
+- `failed`: the reviewer observed a `cr_diff` failure.
+
+`diff_diagnostic` is an optional diagnostic string. For example, this
+`metadata.json` fragment describes a successful task with failed tool evidence:
+
+```json
+{
+  "status": "succeeded",
+  "reviewer_tool_evidence": {
+    "diff_status": "failed",
+    "diff_diagnostic": "fixed diff unavailable"
+  }
+}
+```
+
+Task success means validated structured output, not complete review coverage.
+For a reviewer with a recorded result, explicit evidence with any status other
+than `succeeded` makes coverage `incomplete_tool`, even if the result reports
+all assigned files as inspected. Incomplete coverage clamps an otherwise
+approving review to `comment`. Successful tool evidence does not itself prove
+complete coverage; the normal assigned-file coverage checks also apply.
+
+The lifecycle persists this evidence in metadata and restores it when loading
+a cached task, so reusing successful output preserves the tool state used to
+assess coverage and approval.
+
+In schema version `1`, an absent `reviewer_tool_evidence` field means no
+adapter-provided evidence is available. It is distinct from explicit
+`not_invoked` evidence: absence does not trigger the tool-evidence coverage
+check, but the normal coverage checks for skipped, missing, and unassigned
+files still apply. The schema, fingerprint, and payload requirements for
+resume remain unchanged; absence alone does not establish that an artifact
+is safe to reuse.
 
 ## Resume Rules
 
