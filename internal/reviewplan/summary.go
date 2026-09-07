@@ -375,7 +375,7 @@ func ReviewersProducedResults(coverage []ReviewerCoverageSummary) map[string]boo
 
 func coverageResultProduced(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "complete_broad", "complete_constrained", "incomplete_skipped":
+	case "complete_broad", "complete_constrained", "incomplete_skipped", "incomplete_tool":
 		return true
 	default:
 		return false

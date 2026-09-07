@@ -456,6 +456,32 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
+	t.Run("incomplete tool preserves produced results", func(t *testing.T) {
+		req := summaryRequest()
+		req.RunSummary.ReviewerCoverage = []ReviewerCoverageSummary{
+			{AgentID: "go:implementation-tests", Status: "incomplete_tool", Scope: []string{"main.go"}, InspectedFiles: []string{"main.go"}},
+			{AgentID: "policies:conventions", Status: "incomplete_tool", Scope: []string{"main.go"}, InspectedFiles: []string{"main.go"}},
+			{AgentID: "failed", Status: "incomplete_failed", Scope: []string{"main.go"}},
+		}
+		req.RunSummary.SelectedReviewers = append(req.RunSummary.SelectedReviewers, "failed")
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		for _, want := range []string{
+			"| go:implementation-tests | 2 |",
+			"| policies:conventions | 0 |",
+			"| failed | ⚠️ did not run |",
+			"- `go:implementation-tests` — ⚠️ incomplete (tool failure); skipped: none; constraints: none\n",
+			"- `policies:conventions` — ⚠️ incomplete (tool failure); skipped: none; constraints: none\n",
+			"- `failed` — ⚠️ failed\n",
+		} {
+			if !strings.Contains(plan.RollupMarkdown, want) {
+				t.Errorf("rollup missing %q:\n%s", want, plan.RollupMarkdown)
+			}
+		}
+	})
+
 	t.Run("incomplete tool reviewer coverage force comment", func(t *testing.T) {
 		req := baseRequest()
 		req.Findings = nil
