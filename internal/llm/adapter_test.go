@@ -14,6 +14,39 @@ import (
 )
 
 func TestFakeAdapterAndRunStructured(t *testing.T) {
+	t.Run("duplicate coverage does not spend a retry or discard findings", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go","main.go"],"findings":[{"severity":"major","file_path":"main.go","anchor":{"kind":"file"},"body":"Keep this finding."}]}`)}})
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
+			return DecodeFindings(data, FindingsOptions{KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: map[string]bool{"main.go": true}, NewFindingID: newIDQueue("f-1").next})
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if len(adapter.Requests()) != 1 || len(result.ValidationAttempts) != 0 || len(result.Value.InspectedFiles) != 1 || len(result.Value.Findings) != 1 || result.Value.Findings[0].Body != "Keep this finding." {
+			t.Fatalf("duplicate coverage lost evidence or spent a retry: %#v", result)
+		}
+	})
+
+	t.Run("scope repair retains exact positions through the retry boundary", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go","unassigned.go"],"findings":[]}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go"],"findings":[]}`)}})
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func(data []byte) (Findings, error) {
+			return DecodeFindings(data, FindingsOptions{KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: map[string]bool{"main.go": true}, NewFindingID: newIDQueue("unused").next})
+		})
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		requests := adapter.Requests()
+		if len(requests) != 2 || !strings.Contains(requests[1].Prompt, "inspected_files[1]") || !strings.Contains(requests[1].Prompt, "allowed reviewer assignment") || strings.Contains(requests[1].Prompt, "unassigned.go") {
+			t.Fatalf("retry did not carry safe actionable scope correction: %#v", requests)
+		}
+		if len(result.ValidationAttempts) != 1 || len(result.Value.InspectedFiles) != 1 || result.Value.InspectedFiles[0] != "main.go" {
+			t.Fatalf("corrected coverage = %#v", result)
+		}
+	})
+
 	t.Run("captures requests and retries validation failure once", func(t *testing.T) {
 		adapter := &FakeAdapter{}
 		adapter.Queue(FakeResult{SessionID: "s1", Response: Response{

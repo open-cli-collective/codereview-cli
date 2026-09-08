@@ -135,6 +135,11 @@ reviewer diff tool, `cr_diff`. Its `diff_status` is one of:
 ```
 
 Task success means validated structured output, not complete review coverage.
+Repeated paths within `inspected_files` or `skipped_files` are treated as one
+claim; they do not add coverage or trigger another review attempt. Paths outside
+the reviewer's allowed assignment and paths claimed as both inspected and skipped
+remain invalid. Scope-repair diagnostics identify zero-based array positions
+without echoing the rejected path into the retry prompt.
 For a reviewer with a recorded result, explicit evidence with any status other
 than `succeeded` makes coverage `incomplete_tool`, even if the result reports
 all assigned files as inspected. Incomplete coverage clamps an otherwise

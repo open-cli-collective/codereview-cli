@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -260,12 +261,9 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 
 	seenIDs := map[review.FindingID]bool{}
 	severityCounts := map[review.Severity]int{}
-	inspected, err := decodeCoverageFiles("inspected_files", wire.InspectedFiles, opts.ChangedFiles)
-	if err != nil {
-		return Findings{}, err
-	}
-	skipped, err := decodeCoverageFiles("skipped_files", wire.SkippedFiles, opts.ChangedFiles)
-	if err != nil {
+	inspected, inspectedErr := decodeCoverageFiles("inspected_files", wire.InspectedFiles, opts.ChangedFiles)
+	skipped, skippedErr := decodeCoverageFiles("skipped_files", wire.SkippedFiles, opts.ChangedFiles)
+	if err := errors.Join(inspectedErr, skippedErr); err != nil {
 		return Findings{}, err
 	}
 	if len(inspected) == 0 && len(skipped) == 0 {
@@ -337,16 +335,22 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 func decodeCoverageFiles(name string, files []string, changedFiles map[string]bool) ([]string, error) {
 	out := make([]string, 0, len(files))
 	seen := map[string]bool{}
-	for _, file := range files {
+	var invalid []error
+	for index, file := range files {
 		file = strings.TrimSpace(file)
 		if file == "" || !changedFiles[file] {
-			return nil, fmt.Errorf("llm: %s entry %q is not in changed files", name, file)
+			// Positions survive retry-prompt redaction without echoing model-controlled paths.
+			invalid = append(invalid, fmt.Errorf("llm: %s entry at %s[%d] is outside the allowed reviewer assignment (zero-based index)", name, name, index))
+			continue
 		}
 		if seen[file] {
-			return nil, fmt.Errorf("llm: duplicate %s entry %q", name, file)
+			continue
 		}
 		seen[file] = true
 		out = append(out, file)
+	}
+	if err := errors.Join(invalid...); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
