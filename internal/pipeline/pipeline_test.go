@@ -5350,9 +5350,17 @@ func TestReviewerToolDiagnosticMarksDiffNotInvokedIncomplete(t *testing.T) {
 }
 
 func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
+	result, err := llm.DecodeFindings([]byte(`{"schema_version":1,"agent_id":"harness:reviewer","inspected_files":["main.go","main.go"],"findings":[]}`), llm.FindingsOptions{
+		KnownAgents:  map[string]bool{"harness:reviewer": true},
+		ChangedFiles: map[string]bool{"main.go": true, "other.go": true},
+		NewFindingID: findingSequence("unused"),
+	})
+	if err != nil {
+		t.Fatalf("DecodeFindings: %v", err)
+	}
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", AllowedFiles: []string{"main.go", "other.go"}}},
-		[]llm.Findings{{AgentID: "harness:reviewer", InspectedFiles: []string{"main.go"}}},
+		[]llm.Findings{result},
 		nil,
 		[]string{"main.go", "other.go"},
 		nil,
