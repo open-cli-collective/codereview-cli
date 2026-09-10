@@ -2670,10 +2670,13 @@ func filterSelectedReviewerAssignment(selected llm.SelectedAgent, changedFiles [
 
 // filterSelectedReviewerAssignments removes deleted paths from explicit
 // assignments and drops a selected reviewer whose only assignment was
-// deleted. Broad selections remain broad over changed, reviewable paths.
+// deleted. Broad selections remain broad when reviewable paths exist.
 func filterSelectedReviewerAssignments(selection llm.Selection, changedFiles []string) llm.Selection {
 	filtered := selection
 	filtered.SelectedAgents = nil
+	if len(changedFiles) == 0 {
+		return filtered
+	}
 	for _, selected := range selection.SelectedAgents {
 		hadExplicitAssignment := len(selected.Files) > 0 || len(selected.AllowedFiles) > 0
 		selected = filterSelectedReviewerAssignment(selected, changedFiles)

@@ -5350,6 +5350,92 @@ func TestReviewablePatchPathsKeepDeletedFilesOutOfAssignments(t *testing.T) {
 	}
 }
 
+func TestFilterSelectedReviewerAssignmentsDropsAllReviewersWhenNoFilesAreReviewable(t *testing.T) {
+	threadActions := []review.ThreadAction{{
+		ThreadID: "thread-1",
+		Decision: review.ThreadDecisionSummarizeOnly,
+		Summary:  "Keep the existing thread action.",
+	}}
+	selection := llm.Selection{
+		SelectedAgents: []llm.SelectedAgent{
+			{AgentID: "explicit", Files: []string{"removed.go"}, AllowedFiles: []string{"removed.go"}},
+			{AgentID: "broad"},
+		},
+		ThreadActions: threadActions,
+		Reasoning:     "the diff only deletes files",
+	}
+
+	filtered := filterSelectedReviewerAssignments(selection, nil)
+	if len(filtered.SelectedAgents) != 0 {
+		t.Fatalf("selected agents = %#v, want none without reviewable files", filtered.SelectedAgents)
+	}
+	if !reflect.DeepEqual(filtered.ThreadActions, threadActions) {
+		t.Fatalf("thread actions = %#v, want %#v", filtered.ThreadActions, threadActions)
+	}
+	if filtered.Reasoning != selection.Reasoning {
+		t.Fatalf("reasoning = %q, want %q", filtered.Reasoning, selection.Reasoning)
+	}
+}
+
+func TestDryRunDeletionOnlyDiffDoesNotRunSelectedReviewer(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "rm", "main.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "delete main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = deletionDiff("main.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [{
+			"agent_id": "harness:reviewer",
+			"rationale": "review the whole change",
+			"files": []
+		}],
+		"thread_actions": [],
+		"reasoning": "the diff only deletes files"
+	}`, 10, 2))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 10, 2))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-deletion-only" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Selection.SelectedAgents) != 0 {
+		t.Fatalf("selected agents = %#v, want none for deletion-only diff", result.Selection.SelectedAgents)
+	}
+	if result.Selection.Reasoning != "the diff only deletes files" {
+		t.Fatalf("selection reasoning = %q, want preserved reasoning", result.Selection.Reasoning)
+	}
+	if len(result.ReviewerFailures) != 0 || len(result.ReviewerCoverage) != 0 {
+		t.Fatalf("reviewer state = failures %#v coverage %#v, want no reviewer work", result.ReviewerFailures, result.ReviewerCoverage)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("adapter requests = %d, want selection/rollup only", len(requests))
+	}
+	for _, request := range requests {
+		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+			t.Fatalf("unexpected reviewer request for deletion-only diff:\n%s", request.Prompt)
+		}
+	}
+}
+
 func TestRebaseReviewerCohortWithReviewablePathsExcludesDeletedFiles(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
@@ -7482,6 +7568,21 @@ func smallDiff(path string) string {
 		" package main",
 		"-var changed = false",
 		"+var changed = true",
+		"",
+	}, "\n")
+}
+
+func deletionDiff(path string) string {
+	return strings.Join([]string{
+		"diff --git a/" + path + " b/" + path,
+		"deleted file mode 100644",
+		"index 1111111..0000000",
+		"--- a/" + path,
+		"+++ /dev/null",
+		"@@ -1,3 +0,0 @@",
+		"-package main",
+		"-",
+		"-var changed = false",
 		"",
 	}, "\n")
 }
