@@ -981,9 +981,9 @@ func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	adapter.Queue(fakeLLMResult("dossier-summary-session", discussionSummaryJSON(nil, nil), 1, 1))
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 	adapter.Queue(fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", nil, []string{"main.go"}, "could not inspect assigned file"), 1, 1))
+	adapter.Queue(fakeLLMResult("coverage-repair-session", coverageOnlyJSON("harness:reviewer", nil, []string{"main.go"}, "still could not inspect assigned file"), 1, 1))
 	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 1, 1))
 
 	result, err := dryRunForTest(ctx, Options{
@@ -1013,6 +1013,287 @@ func TestDryRunIncompleteReviewerCoverageForcesCommentOutcome(t *testing.T) {
 	}
 	if !strings.Contains(result.Plan.RollupMarkdown, "### Reviewer Coverage") {
 		t.Fatalf("rollup markdown missing reviewer coverage:\n%s", result.Plan.RollupMarkdown)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 4 || !strings.Contains(requests[2].Prompt, `"coverage_repair"`) {
+		t.Fatalf("adapter requests = %#v, want one focused coverage repair before rollup", requests)
+	}
+}
+
+func TestDryRunRepairsReadableSkippedFileAndPreservesPrimaryFinding(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	if err := os.WriteFile(filepath.Join(provider.fixtureRepoDir, "bun.lock"), []byte("lockfileVersion = 1\n"), 0o600); err != nil {
+		t.Fatalf("write bun.lock: %v", err)
+	}
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "add", "bun.lock")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "add bun lock")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = smallDiff("main.go") + addedDiff("bun.lock", "lockfileVersion = 1")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "bun.lock"), 1, 1))
+	primary := fakeLLMResult("reviewer-session", findingsWithCoverageJSON(
+		"harness:reviewer",
+		[]string{"main.go"},
+		[]string{"bun.lock"},
+		[]string{"primary constraint"},
+		[]findingJSONInput{{File: "main.go", Severity: "major", Line: 2, Body: "Keep this primary finding"}},
+	), 2, 2)
+	primary.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(primary)
+	repair := fakeLLMResult("coverage-repair-session", findingsWithCoverageJSON(
+		"harness:reviewer",
+		[]string{"bun.lock"},
+		nil,
+		[]string{"inspected relevant workspace declarations"},
+		[]findingJSONInput{{File: "bun.lock", Severity: "minor", Line: 1, Body: "Keep this repair finding"}},
+	), 3, 3)
+	repair.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(repair)
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1", "finding-2"}), 4, 4))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-readable-skip-repair" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 2 || result.Findings[0].Body != "Keep this primary finding" || result.Findings[1].Body != "Keep this repair finding" {
+		t.Fatalf("findings = %#v, want preserved primary and repair findings", result.Findings)
+	}
+	if len(result.Sessions) != 4 {
+		t.Fatalf("sessions = %#v, want selection/primary/repair/rollup provenance", result.Sessions)
+	}
+	coverage := result.Plan.Summary.Run.ReviewerCoverage
+	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageCompleteBroad ||
+		!reflect.DeepEqual(coverage[0].InspectedFiles, []string{"bun.lock", "main.go"}) || len(coverage[0].SkippedFiles) != 0 {
+		t.Fatalf("coverage = %#v, want complete explicit inspection of bun.lock and main.go", coverage)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("adapter requests = %d, want selection/primary/repair/rollup", len(requests))
+	}
+	var repairPrompt struct {
+		CoverageRepair struct {
+			Files []string `json:"files"`
+		} `json:"coverage_repair"`
+	}
+	if err := json.Unmarshal([]byte(requests[2].Prompt), &repairPrompt); err != nil {
+		t.Fatalf("decode coverage repair prompt: %v", err)
+	}
+	if !reflect.DeepEqual(repairPrompt.CoverageRepair.Files, []string{"bun.lock"}) {
+		t.Fatalf("coverage repair files = %#v, want bun.lock only", repairPrompt.CoverageRepair.Files)
+	}
+	repairTaskID := reviewerTaskID("harness:reviewer") + "-coverage-repair"
+	repairMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), repairTaskID)
+	if err != nil || !ok || repairMeta.Status != llmTaskStatusSucceeded ||
+		!reflect.DeepEqual(repairMeta.DependencyTaskIDs, []string{reviewerTaskID("harness:reviewer")}) {
+		t.Fatalf("coverage repair metadata = %#v ok=%t err=%v", repairMeta, ok, err)
+	}
+	storedFindings, err := store.ListFindings(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if len(storedFindings) != 2 {
+		t.Fatalf("stored findings = %#v, want primary and repair findings", storedFindings)
+	}
+	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	sessionByProviderID := map[string]ledger.Session{}
+	for _, session := range sessions {
+		sessionByProviderID[session.ProviderSessionID] = session
+	}
+	wantSessionByFile := map[string]string{
+		"main.go":  sessionByProviderID["reviewer-session"].SessionRowID,
+		"bun.lock": sessionByProviderID["coverage-repair-session"].SessionRowID,
+	}
+	for _, finding := range storedFindings {
+		if got, want := finding.SessionRowID, wantSessionByFile[finding.FilePath]; got != want {
+			t.Fatalf("finding %s session = %q, want %q", finding.FilePath, got, want)
+		}
+	}
+	var reviewerUsage reviewplan.WorkstreamUsage
+	for _, workstream := range result.Plan.Summary.Run.Workstreams {
+		if workstream.Name == "harness:reviewer" {
+			reviewerUsage = workstream
+		}
+	}
+	if reviewerUsage.TokensIn == nil || *reviewerUsage.TokensIn != 5 || reviewerUsage.TokensOut == nil || *reviewerUsage.TokensOut != 5 ||
+		reviewerUsage.DurationMS == nil || *reviewerUsage.DurationMS != 246 {
+		t.Fatalf("reviewer workstream usage = %#v, want primary plus repair telemetry", reviewerUsage)
+	}
+}
+
+func TestDryRunCoverageRepairResumesPrimaryReviewerSessionAndUpdatesCohort(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	adapter.Queue(fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", nil, []string{"main.go"}, "primary skipped file"), 2, 2))
+	adapter.Queue(fakeLLMResult("coverage-repair-session", coverageOnlyJSON("harness:reviewer", []string{"main.go"}, nil), 3, 3))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 4, 4))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-coverage-repair-resume" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	resumes := adapter.Resumes()
+	var repairResume *llm.ResumeRequest
+	for i := range resumes {
+		resume := &resumes[i]
+		if strings.Contains(resume.Request.Prompt, `"coverage_repair"`) {
+			repairResume = resume
+			break
+		}
+	}
+	if repairResume == nil || repairResume.SessionID != "reviewer-session" {
+		t.Fatalf("coverage repair resume = %#v, want primary reviewer session", repairResume)
+	}
+	cohort, err := store.GetReviewerCohort(ctx, ledger.ReviewerCohortScope{
+		PRKey:           result.Run.PRKey,
+		Profile:         req.ProfileName,
+		PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity),
+	})
+	if err != nil {
+		t.Fatalf("GetReviewerCohort: %v", err)
+	}
+	if len(cohort.Members) != 1 || cohort.Members[0].ProviderSessionID != "coverage-repair-session" {
+		t.Fatalf("cohort = %#v, want latest focused repair session", cohort)
+	}
+}
+
+func TestDryRunCoverageRepairFailurePreservesPrimaryFindingAndBlocksApproval(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "other.go"), 1, 1))
+	primary := fakeLLMResult("reviewer-session", findingsWithCoverageJSON(
+		"harness:reviewer",
+		[]string{"main.go"},
+		[]string{"other.go"},
+		nil,
+		[]findingJSONInput{{File: "main.go", Severity: "major", Line: 2, Body: "Preserve this finding after repair failure"}},
+	), 2, 2)
+	primary.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(primary)
+	adapter.Queue(llm.FakeResult{
+		SessionID: "coverage-repair-session",
+		Response:  llm.Response{ReviewerToolEvidence: &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusFailed, DiffDiagnostic: "repair diff failed"}},
+		WaitErr:   errors.New("coverage repair provider failed"),
+	})
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 4, 4))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-coverage-repair-failure" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Body != "Preserve this finding after repair failure" {
+		t.Fatalf("findings = %#v, want primary finding retained", result.Findings)
+	}
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].TaskID != reviewerTaskID("harness:reviewer")+"-coverage-repair" {
+		t.Fatalf("reviewer failures = %#v, want isolated coverage repair failure", result.ReviewerFailures)
+	}
+	coverage := result.Plan.Summary.Run.ReviewerCoverage
+	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteFailed {
+		t.Fatalf("coverage = %#v, want fail-closed incomplete reviewer", coverage)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeComment {
+		t.Fatalf("outcome = %q, want comment after repair failure", result.Plan.Outcome)
+	}
+	storedFindings, err := store.ListFindings(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListFindings: %v", err)
+	}
+	if len(storedFindings) != 1 {
+		t.Fatalf("stored findings = %#v, want preserved primary finding", storedFindings)
+	}
+	sessions, err := store.ListSessionsForRun(ctx, result.Run.RunID)
+	if err != nil {
+		t.Fatalf("ListSessionsForRun: %v", err)
+	}
+	var primarySessionRow string
+	for _, session := range sessions {
+		if session.ProviderSessionID == "reviewer-session" {
+			primarySessionRow = session.SessionRowID
+		}
+	}
+	if storedFindings[0].SessionRowID != primarySessionRow || primarySessionRow == "" {
+		t.Fatalf("primary finding session = %q, want primary reviewer session %q", storedFindings[0].SessionRowID, primarySessionRow)
+	}
+}
+
+func TestReviewerToolEvidenceByAgentKeepsFailureAcrossCoverageRepair(t *testing.T) {
+	agentID := "harness:reviewer"
+	got := reviewerToolEvidenceByAgent([]sessionDraft{
+		{AgentID: &agentID, Response: llm.Response{ReviewerToolEvidence: &llm.ReviewerToolEvidence{
+			DiffStatus: llm.DiffToolStatusFailed, DiffDiagnostic: "primary diff failed",
+		}}},
+		{AgentID: &agentID, Response: llm.Response{ReviewerToolEvidence: &llm.ReviewerToolEvidence{
+			DiffStatus: llm.DiffToolStatusSucceeded,
+		}}},
+	})
+	if evidence := got[agentID]; evidence == nil || evidence.DiffStatus != llm.DiffToolStatusFailed || evidence.DiffDiagnostic != "primary diff failed" {
+		t.Fatalf("tool evidence = %#v, want primary failure preserved", evidence)
+	}
+}
+
+func TestReviewerCoverageRepairFilesIncludesReadableLockfilesOnly(t *testing.T) {
+	got := reviewerCoverageRepairFiles(
+		[]string{"removed.go", "image.png", "Cargo.lock", "bun.lock", "main.go"},
+		[]FilePatch{
+			{Path: "removed.go", Deleted: true},
+			{Path: "image.png", Binary: true},
+			{Path: "Cargo.lock"},
+			{Path: "bun.lock"},
+			{Path: "main.go"},
+		},
+	)
+	want := []string{"Cargo.lock", "bun.lock", "main.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("repair files = %#v, want readable assigned files %#v", got, want)
 	}
 }
 
@@ -7586,6 +7867,24 @@ func selectionJSON(agentID, file string) string {
 	}`, agentID, file)
 }
 
+func selectionJSONForFiles(agentID string, files ...string) string {
+	payload := map[string]any{
+		"schema_version": 1,
+		"selected_agents": []map[string]any{{
+			"agent_id":  agentID,
+			"rationale": "review changed files",
+			"files":     files,
+		}},
+		"thread_actions": []any{},
+		"reasoning":      "select reviewer",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
 func selectionJSONForAgents(file string, agentIDs ...string) string {
 	selected := make([]map[string]any, 0, len(agentIDs))
 	for _, agentID := range agentIDs {
@@ -7641,6 +7940,42 @@ func coverageOnlyJSON(agentID string, inspected, skipped []string, constraints .
 		"skipped_files":   skipped,
 		"constraints":     constraints,
 		"findings":        []map[string]any{},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+type findingJSONInput struct {
+	File     string
+	Severity string
+	Line     int
+	Body     string
+}
+
+func findingsWithCoverageJSON(agentID string, inspected, skipped, constraints []string, findings []findingJSONInput) string {
+	findingPayload := make([]map[string]any, 0, len(findings))
+	for _, finding := range findings {
+		findingPayload = append(findingPayload, map[string]any{
+			"severity":  finding.Severity,
+			"file_path": finding.File,
+			"anchor": map[string]any{
+				"kind": "line",
+				"side": "RIGHT",
+				"line": finding.Line,
+			},
+			"body": finding.Body,
+		})
+	}
+	payload := map[string]any{
+		"schema_version":  1,
+		"agent_id":        agentID,
+		"inspected_files": inspected,
+		"skipped_files":   skipped,
+		"constraints":     constraints,
+		"findings":        findingPayload,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -7768,6 +8103,19 @@ func smallDiff(path string) string {
 		" package main",
 		"-var changed = false",
 		"+var changed = true",
+		"",
+	}, "\n")
+}
+
+func addedDiff(path, line string) string {
+	return strings.Join([]string{
+		"diff --git a/" + path + " b/" + path,
+		"new file mode 100644",
+		"index 0000000..2222222",
+		"--- /dev/null",
+		"+++ b/" + path,
+		"@@ -0,0 +1 @@",
+		"+" + line,
 		"",
 	}, "\n")
 }
