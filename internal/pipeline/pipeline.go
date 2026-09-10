@@ -3269,19 +3269,6 @@ func knownAgents(catalog agents.Catalog) map[string]bool {
 	return setBy(catalog.Agents, func(agent agents.Agent) string { return agent.ID })
 }
 
-func changedFiles(patches []FilePatch) map[string]bool {
-	paths := make([]string, 0, len(patches)*2)
-	for _, patch := range patches {
-		if patch.Path != "" {
-			paths = append(paths, patch.Path)
-		}
-		if patch.OldPath != "" {
-			paths = append(paths, patch.OldPath)
-		}
-	}
-	return stringSet(paths)
-}
-
 func knownThreads(threads []gitprovider.InlineThread) map[string]bool {
 	return threadIDSet(threads, func(thread gitprovider.InlineThread) gitprovider.ThreadID { return thread.ID })
 }
