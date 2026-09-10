@@ -44,7 +44,7 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 `schema_version` is currently `1`. Adding a new task that reuses the existing
 metadata shape does not require a schema bump, so the schema version stays at
-`1` for the dossier-phase addition in this slice.
+`1` for the dossier summary and reviewer coverage-repair tasks.
 
 Bump it when changing any load-bearing field, status value, fingerprint input,
 task identity, or resume rule in a way that could make an in-flight run unsafe
@@ -53,11 +53,12 @@ to resume.
 Load-bearing metadata fields are:
 
 - `task_id`: stable task identity. Current values are `orchestrator-selection`,
-  `reviewer-<encoded-agent-id>`, `orchestrator-rollup`,
+  `reviewer-<encoded-agent-id>`, `reviewer-<encoded-agent-id>-coverage-repair`,
+  `orchestrator-rollup`,
   `dossier-discussion-summary`, `thread-analysis-<thread-id>`, and
   `approval-override`.
-- `phase`: task phase, such as `selection`, `reviewer`, `rollup`, or
-  `dossier`.
+- `phase`: task phase, such as `selection`, `reviewer`,
+  `reviewer_coverage_repair`, `rollup`, or `dossier`.
 - `dependency_task_ids`: task IDs whose completed state was included in this
   task input.
 - `input_fingerprint`: hash of the task schema version, adapter, task identity,
@@ -171,6 +172,40 @@ check, but the normal coverage checks for skipped, missing, and unassigned
 files still apply. The schema, fingerprint, and payload requirements for
 resume remain unchanged; absence alone does not establish that an artifact
 is safe to reuse.
+
+## Reviewer Coverage Repair Tasks
+
+After a successful primary reviewer task reports assigned readable files as
+skipped, the pipeline may run one focused coverage-repair task for that reviewer.
+Deleted, binary, and generated dependency-lock files are outside the repair set;
+they remain covered by the normal exemption or fail-closed rules. A repair task
+uses the same pinned PR revision and reviewer identity as its primary task, but
+has its own durable task artifacts and ledger session.
+
+- `task_id`: `reviewer-<encoded-agent-id>-coverage-repair`, derived from the
+  primary reviewer task ID.
+- `phase`: `reviewer_coverage_repair`.
+- `dependency_task_ids`: exactly the primary `reviewer-<encoded-agent-id>` task
+  ID. The repair input fingerprint also includes its focused readable-file list
+  and prompt dependencies.
+- `validated-output.json` and `metadata.json` are written under the repair task
+  directory. The repair has its own session row and usage telemetry; when the
+  provider supports resume, the primary provider session ID seeds the repair
+  request without making the two task identities interchangeable.
+
+Resume applies the normal task rules: matching succeeded repair output is loaded
+without another provider call, while a changed fingerprint or dependency fails
+closed with rerun guidance. An isolated repair failure is retained as a reviewer
+failure so rollup can preserve the primary result while keeping coverage
+incomplete.
+
+The primary findings are retained and repair findings are appended. Inspected
+files are unioned, and a primary skipped file is cleared only when the repair
+explicitly reports it in `inspected_files`; skipped files that remain skipped
+continue to make coverage incomplete. The reviewer task dependency list passed
+to rollup includes both the primary and repair task IDs, so their outputs,
+sessions, tool evidence, and coverage status are merged before approval is
+decided.
 
 ## Resume Rules
 

@@ -2285,7 +2285,7 @@ func reviewerCoverageRepairFiles(skipped []string, patches []FilePatch) []string
 			files = append(files, file)
 		}
 	}
-	return copySortedStrings(files)
+	return copySortedStrings(filterReviewableFiles(files))
 }
 
 func mergeReviewerFindings(primary, repair llm.Findings) llm.Findings {

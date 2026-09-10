@@ -1028,17 +1028,20 @@ func TestDryRunRepairsReadableSkippedFileAndPreservesPrimaryFinding(t *testing.T
 	if err := os.WriteFile(filepath.Join(provider.fixtureRepoDir, "bun.lock"), []byte("lockfileVersion = 1\n"), 0o600); err != nil {
 		t.Fatalf("write bun.lock: %v", err)
 	}
-	gitCommandMustSucceed(t, provider.fixtureRepoDir, "add", "bun.lock")
+	if err := os.WriteFile(filepath.Join(provider.fixtureRepoDir, "Cargo.lock"), []byte("version = 3\n"), 0o600); err != nil {
+		t.Fatalf("write Cargo.lock: %v", err)
+	}
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "add", "bun.lock", "Cargo.lock")
 	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "add bun lock")
 	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
-	provider.diff.Raw = smallDiff("main.go") + addedDiff("bun.lock", "lockfileVersion = 1")
+	provider.diff.Raw = smallDiff("main.go") + addedDiff("bun.lock", "lockfileVersion = 1") + addedDiff("Cargo.lock", "version = 3")
 
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
-	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "bun.lock"), 1, 1))
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "bun.lock", "Cargo.lock"), 1, 1))
 	primary := fakeLLMResult("reviewer-session", findingsWithCoverageJSON(
 		"harness:reviewer",
 		[]string{"main.go"},
-		[]string{"bun.lock"},
+		[]string{"bun.lock", "Cargo.lock"},
 		[]string{"primary constraint"},
 		[]findingJSONInput{{File: "main.go", Severity: "major", Line: 2, Body: "Keep this primary finding"}},
 	), 2, 2)
@@ -1280,7 +1283,7 @@ func TestReviewerToolEvidenceByAgentKeepsFailureAcrossCoverageRepair(t *testing.
 	}
 }
 
-func TestReviewerCoverageRepairFilesIncludesReadableLockfilesOnly(t *testing.T) {
+func TestReviewerCoverageRepairFilesPreservesGeneratedLockfileExemptions(t *testing.T) {
 	got := reviewerCoverageRepairFiles(
 		[]string{"removed.go", "image.png", "Cargo.lock", "bun.lock", "main.go"},
 		[]FilePatch{
@@ -1291,9 +1294,9 @@ func TestReviewerCoverageRepairFilesIncludesReadableLockfilesOnly(t *testing.T) 
 			{Path: "main.go"},
 		},
 	)
-	want := []string{"Cargo.lock", "bun.lock", "main.go"}
+	want := []string{"bun.lock", "main.go"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("repair files = %#v, want readable assigned files %#v", got, want)
+		t.Fatalf("repair files = %#v, want non-exempt readable assigned files %#v", got, want)
 	}
 }
 
