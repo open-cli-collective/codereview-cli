@@ -179,9 +179,22 @@ func reconstructUnifiedDiff(files []pullFileResponse) string {
 		}
 		if f.Patch == "" {
 			// A pure rename has no patch and is already fully described above.
-			// Anything else without a patch is a binary or oversized file; mark
-			// it so the change stays visible even though there are no hunks.
-			if f.Status != "renamed" {
+			// A removed file also has no patch when it is binary or individually
+			// oversized. Preserve its deletion metadata instead of falling through
+			// to the generic binary marker; otherwise the diff parser classifies
+			// the removal as a modified file and reviewer coverage includes the
+			// deleted path.
+			switch f.Status {
+			case "removed":
+				fmt.Fprintf(&b, "deleted file mode 100644\n")
+				fmt.Fprintf(&b, "--- a/%s\n", oldPath)
+				b.WriteString("+++ /dev/null\n")
+			case "renamed":
+				// The rename metadata above fully describes a pure rename.
+			default:
+				// Anything else without a patch is a binary or oversized file;
+				// mark it so the change stays visible even though there are no
+				// hunks.
 				fmt.Fprintf(&b, "Binary files a/%s and b/%s differ\n", oldPath, newPath)
 			}
 			continue

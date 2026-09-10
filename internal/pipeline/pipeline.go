@@ -780,7 +780,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 
 	cohortScope := ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
-	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, prepared.changedFiles, maxAgents)
+	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, reviewablePatchPaths(prepared.parsed.Patches), maxAgents)
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
@@ -1254,6 +1254,12 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
+	// Deleted files remain in the dossier so the change is visible to the
+	// orchestrator, but they are not reviewer obligations: there is no file at
+	// the head for a reviewer to inspect. Keep them out of the assignment
+	// contract and the post-selection backstops, matching buildReviewerCoverage.
+	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
+	promptInput.ChangedFiles = append([]string(nil), reviewerFiles...)
 	dependencyTaskIDs := []string{dossier.SummaryTaskID}
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	selectionPrompt, err := buildSelectionPrompt(req.Catalog, promptInput, req.MaxAgents, req.SelectionPromptInstructions)
@@ -1270,7 +1276,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	decode := func(data []byte) (llm.Selection, error) {
 		return llm.DecodeSelection(data, llm.SelectionOptions{
 			KnownAgents:  knownAgents(req.Catalog),
-			ChangedFiles: changedFiles(req.ParsedDiff.Patches),
+			ChangedFiles: stringSet(reviewerFiles),
 			KnownThreads: knownThreadIDs,
 		})
 	}
@@ -1303,7 +1309,8 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, selectionSession, ledgerSession, err
 	}
-	changed := patchPaths(req.ParsedDiff.Patches)
+	changed := reviewerFiles
+	selection = filterSelectedReviewerAssignments(selection, changed)
 	selection = ensureRequiredOnMatchAgents(selection, req.Catalog, changed)
 	selection, err = opts.capSelectionAgents(selection, req.Catalog, changed, req.MaxAgents)
 	if err != nil {
@@ -2056,7 +2063,8 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
-	changedFilePaths := patchPaths(parsed.Patches)
+	changedFilePaths := reviewablePatchPaths(parsed.Patches)
+	selected = filterSelectedReviewerAssignment(selected, changedFilePaths)
 	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
 	if err != nil {
@@ -2622,6 +2630,13 @@ func deletedPatchPaths(patches []FilePatch) map[string]bool {
 	return deleted
 }
 
+// reviewablePatchPaths returns changed paths that a reviewer can inspect at
+// the head. Deleted paths remain in ParsedDiff and the dossier, but are not a
+// reviewer assignment or coverage obligation.
+func reviewablePatchPaths(patches []FilePatch) []string {
+	return excludeFiles(patchPaths(patches), deletedPatchPaths(patches))
+}
+
 // excludeFiles returns values with any member of exclude removed, preserving order.
 func excludeFiles(values []string, exclude map[string]bool) []string {
 	if len(exclude) == 0 {
@@ -2634,6 +2649,40 @@ func excludeFiles(values []string, exclude map[string]bool) []string {
 		}
 	}
 	return out
+}
+
+func filterAssignmentFiles(files, changedFiles []string) []string {
+	changed := stringSet(changedFiles)
+	var filtered []string
+	for _, file := range files {
+		if changed[file] && !slices.Contains(filtered, file) {
+			filtered = append(filtered, file)
+		}
+	}
+	return copySortedStrings(filtered)
+}
+
+func filterSelectedReviewerAssignment(selected llm.SelectedAgent, changedFiles []string) llm.SelectedAgent {
+	selected.Files = filterAssignmentFiles(selected.Files, changedFiles)
+	selected.AllowedFiles = filterAssignmentFiles(selected.AllowedFiles, changedFiles)
+	return selected
+}
+
+// filterSelectedReviewerAssignments removes deleted paths from explicit
+// assignments and drops a selected reviewer whose only assignment was
+// deleted. Broad selections remain broad over changed, reviewable paths.
+func filterSelectedReviewerAssignments(selection llm.Selection, changedFiles []string) llm.Selection {
+	filtered := selection
+	filtered.SelectedAgents = nil
+	for _, selected := range selection.SelectedAgents {
+		hadExplicitAssignment := len(selected.Files) > 0 || len(selected.AllowedFiles) > 0
+		selected = filterSelectedReviewerAssignment(selected, changedFiles)
+		if hadExplicitAssignment && len(selected.Files) == 0 && len(selected.AllowedFiles) == 0 {
+			continue
+		}
+		filtered.SelectedAgents = append(filtered.SelectedAgents, selected)
+	}
+	return filtered
 }
 
 func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, deleted map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {

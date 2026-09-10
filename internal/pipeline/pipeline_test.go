@@ -5315,6 +5315,62 @@ func TestEnsureSelectedGlobCoverageSkipsLockfiles(t *testing.T) {
 	}
 }
 
+func TestReviewablePatchPathsKeepDeletedFilesOutOfAssignments(t *testing.T) {
+	patches := []FilePatch{
+		{Path: "main.go"},
+		{OldPath: "removed.go", Path: "removed.go", Deleted: true},
+	}
+	reviewable := reviewablePatchPaths(patches)
+	if !reflect.DeepEqual(reviewable, []string{"main.go"}) {
+		t.Fatalf("reviewable paths = %#v, want only retained file", reviewable)
+	}
+
+	filtered := filterSelectedReviewerAssignments(llm.Selection{SelectedAgents: []llm.SelectedAgent{
+		{AgentID: "deleted-only", Files: []string{"removed.go"}, AllowedFiles: []string{"removed.go"}},
+		{AgentID: "mixed", Files: []string{"main.go", "removed.go"}, AllowedFiles: []string{"main.go", "removed.go"}},
+		{AgentID: "broad"},
+	}}, reviewable)
+	if len(filtered.SelectedAgents) != 2 {
+		t.Fatalf("filtered selection = %#v, want deleted-only reviewer removed", filtered.SelectedAgents)
+	}
+	if !reflect.DeepEqual(filtered.SelectedAgents[0].Files, []string{"main.go"}) ||
+		!reflect.DeepEqual(filtered.SelectedAgents[0].AllowedFiles, []string{"main.go"}) {
+		t.Fatalf("mixed assignment = %#v, want only retained file", filtered.SelectedAgents[0])
+	}
+	if len(filtered.SelectedAgents[1].Files) != 0 || len(filtered.SelectedAgents[1].AllowedFiles) != 0 {
+		t.Fatalf("broad assignment = %#v, want broad reviewer unchanged", filtered.SelectedAgents[1])
+	}
+
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "mixed", FileGlobs: []string{"**/*.go"}}}}
+	selection := ensureSelectedGlobCoverage(llm.Selection{SelectedAgents: []llm.SelectedAgent{
+		{AgentID: "mixed", Files: []string{"main.go"}},
+	}}, catalog, reviewable)
+	if !reflect.DeepEqual(selection.SelectedAgents[0].Files, []string{"main.go"}) {
+		t.Fatalf("glob assignment = %#v, want deleted path excluded", selection.SelectedAgents[0].Files)
+	}
+}
+
+func TestRebaseReviewerCohortWithReviewablePathsExcludesDeletedFiles(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad,
+		Model: "claude-sonnet-5", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:general", ModelTier: "medium", Effort: "medium"}}}
+	changed := reviewablePatchPaths([]FilePatch{
+		{Path: "main.go"},
+		{OldPath: "removed.go", Path: "removed.go", Deleted: true},
+	})
+
+	selection, _, err := rebaseReviewerCohort(req, catalog, cohort, changed, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	if len(selection.SelectedAgents) != 1 || !reflect.DeepEqual(selection.SelectedAgents[0].Files, []string{"main.go"}) {
+		t.Fatalf("rebased selection = %#v, want only retained file", selection.SelectedAgents)
+	}
+}
+
 func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},

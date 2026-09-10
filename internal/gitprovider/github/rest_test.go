@@ -459,6 +459,8 @@ func TestReconstructUnifiedDiff(t *testing.T) {
 		{Filename: "mod.go", Status: "modified", Patch: "@@ -1,2 +1,2 @@\n line\n-old\n+new"},
 		{Filename: "rn.go", PreviousFilename: "ro.go", Status: "renamed"}, // pure rename: no patch
 		{Filename: "bin.dat", Status: "added"},                            // added, no patch: binary
+		{Filename: "removed.txt", Status: "removed"},                      // removed, no patch: oversized text
+		{Filename: "removed.bin", Status: "removed"},                      // removed, no patch: binary
 	})
 	cases := []struct {
 		substr string
@@ -468,6 +470,9 @@ func TestReconstructUnifiedDiff(t *testing.T) {
 		{"diff --git a/ro.go b/rn.go\nrename from ro.go\nrename to rn.go\n", true},
 		{"Binary files a/ro.go", false}, // a pure rename must not be marked binary
 		{"diff --git a/bin.dat b/bin.dat\nBinary files a/bin.dat and b/bin.dat differ\n", true},
+		{"diff --git a/removed.txt b/removed.txt\ndeleted file mode 100644\n--- a/removed.txt\n+++ /dev/null\n", true},
+		{"diff --git a/removed.bin b/removed.bin\nBinary files a/removed.bin and b/removed.bin differ\n", false},
+		{"diff --git a/removed.bin b/removed.bin\ndeleted file mode 100644\n--- a/removed.bin\n+++ /dev/null\n", true},
 		{"+y", false}, // the empty-filename entry must be dropped entirely
 	}
 	for _, c := range cases {

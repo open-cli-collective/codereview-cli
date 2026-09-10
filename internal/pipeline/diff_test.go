@@ -156,3 +156,30 @@ func TestParseUnifiedDiffRejectsBadHunkHeader(t *testing.T) {
 		t.Fatal("parseUnifiedDiff error = nil, want bad hunk failure")
 	}
 }
+
+func TestParseUnifiedDiffPreservesPatchlessRemovedStatus(t *testing.T) {
+	raw := strings.Join([]string{
+		"diff --git a/removed.txt b/removed.txt",
+		"deleted file mode 100644",
+		"--- a/removed.txt",
+		"+++ /dev/null",
+		"diff --git a/removed.bin b/removed.bin",
+		"deleted file mode 100644",
+		"--- a/removed.bin",
+		"+++ /dev/null",
+		"",
+	}, "\n")
+
+	parsed, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	if len(parsed.Patches) != 2 {
+		t.Fatalf("patches = %#v, want two patchless deletions", parsed.Patches)
+	}
+	for _, patch := range parsed.Patches {
+		if !patch.Deleted || patch.Binary || patch.Path == "" || patch.OldPath != patch.Path || len(patch.Hunks) != 0 {
+			t.Fatalf("patchless deletion = %#v, want Deleted with no Binary flag or hunks", patch)
+		}
+	}
+}
