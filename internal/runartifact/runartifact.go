@@ -107,7 +107,7 @@ func (p Paths) LLMTaskDir(taskID string) (string, error) {
 	if strings.TrimSpace(taskID) == "" {
 		return "", fmt.Errorf("runartifact: LLM task ID is required")
 	}
-	return filepath.Join(p.LLMTasksDir, statepaths.Encode(taskID)), nil
+	return filepath.Join(p.LLMTasksDir, statepaths.EncodeUnique(taskID)), nil
 }
 
 // LLMTaskMetadata returns the metadata artifact path for one durable LLM task.

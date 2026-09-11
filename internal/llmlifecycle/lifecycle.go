@@ -51,7 +51,7 @@ func (p Paths) TaskDir(taskID string) (string, error) {
 	if strings.TrimSpace(p.LLMTasksDir) == "" {
 		return "", fmt.Errorf("llmlifecycle: task directory is required")
 	}
-	return filepath.Join(p.LLMTasksDir, encodePathComponent(taskID)), nil
+	return filepath.Join(p.LLMTasksDir, statepaths.EncodeUnique(taskID)), nil
 }
 
 // Metadata returns the metadata path for a task.

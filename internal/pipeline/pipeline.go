@@ -1333,7 +1333,7 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 		ResumeSessionID: resumeSessionID,
 		OnSessionID:     onSessionID,
 	}, eligible, func(thread threadcontext.Thread) (string, error) {
-		return artifacts.AgentLog("thread-analysis-" + string(thread.ID))
+		return artifacts.AgentLog(statepaths.EncodeUnique("thread-analysis-" + string(thread.ID)))
 	})
 	if err != nil {
 		return nil, pipelineTaskError(err)

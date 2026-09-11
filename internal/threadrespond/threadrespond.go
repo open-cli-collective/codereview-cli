@@ -695,7 +695,7 @@ func threadLogPath(artifacts runartifact.Paths, threadID gitprovider.ThreadID) s
 	if strings.TrimSpace(artifacts.AgentLogsDir) == "" {
 		return ""
 	}
-	return filepath.Join(artifacts.AgentLogsDir, "thread-analysis", statepaths.Encode(string(threadID))+".jsonl")
+	return filepath.Join(artifacts.AgentLogsDir, "thread-analysis", statepaths.EncodeUnique(string(threadID))+".jsonl")
 }
 
 func postMode(req Request) ledger.PostMode {

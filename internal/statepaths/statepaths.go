@@ -337,6 +337,15 @@ func Encode(value string) string {
 	return percent.Encode(value, disallowedRunes(value))
 }
 
+// EncodeUnique encodes value as a path segment that stays distinct from other
+// values on case-insensitive filesystems. Case-sensitive external identifiers
+// such as provider node IDs need it: the encoded value keeps the segment
+// readable, and the hash suffix keeps IDs differing only by letter case apart.
+func EncodeUnique(value string) string {
+	hash := sha256.Sum256([]byte(value))
+	return Encode(value) + "-" + hex.EncodeToString(hash[:])[:12]
+}
+
 func encodePRKeySegment(value string) string {
 	return encodeDelimiterSegment(value)
 }
