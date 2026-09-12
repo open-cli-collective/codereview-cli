@@ -3915,8 +3915,8 @@ func TestReviewerFastDeliveryDegradesConservatively(t *testing.T) {
 		{name: "all fast", requested: true, sessions: []sessionDraft{session("fast"), session("fast")}, want: "fast"},
 		{name: "standard wins", requested: true, sessions: []sessionDraft{session("fast"), session("standard")}, want: "standard"},
 		{name: "absent speed does not degrade", requested: true, sessions: []sessionDraft{session("fast"), session("")}, want: "fast"},
-		{name: "unrecognised speed degrades fast", requested: true, sessions: []sessionDraft{session("fast"), session("mixed")}, want: "unknown"},
-		{name: "standard still wins after unrecognised", requested: true, sessions: []sessionDraft{session("mixed"), session("standard")}, want: "standard"},
+		{name: "unrecognized speed degrades fast", requested: true, sessions: []sessionDraft{session("fast"), session("mixed")}, want: "unknown"},
+		{name: "standard still wins after unrecognized", requested: true, sessions: []sessionDraft{session("mixed"), session("standard")}, want: "standard"},
 		{name: "only absent speeds", requested: true, sessions: []sessionDraft{session(""), session("")}, want: "unknown"},
 		{name: "no sessions", requested: true, want: "unknown"},
 	} {
