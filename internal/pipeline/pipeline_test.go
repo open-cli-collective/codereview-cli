@@ -825,8 +825,12 @@ func TestLiveResumeRecoversPostedThreadSummaryForReviewerPrompt(t *testing.T) {
 		t.Fatalf("second adapter requests = %d, want reviewer and rollup only", len(requests))
 	}
 	threadAnalysisLogsDir := ArtifactPathsFromDir(run.ArtifactPath).ThreadAnalysisLogsDir()
+	agentLogsDir := ArtifactPathsFromDir(run.ArtifactPath).AgentLogsDir
 	var reviewerPrompt string
 	for _, request := range requests {
+		if !strings.HasPrefix(request.LogPath, agentLogsDir+string(filepath.Separator)) {
+			t.Fatalf("request log path %q outside agent log dir", request.LogPath)
+		}
 		if strings.HasPrefix(request.LogPath, threadAnalysisLogsDir+string(filepath.Separator)) {
 			t.Fatalf("resumed pipeline repeated thread analysis:\n%s", request.LogPath)
 		}

@@ -268,15 +268,12 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
-// resolveOutputSchemaVersion maps absent to current and rejects explicit zero.
-func resolveOutputSchemaVersion(raw *int) (int, error) {
+// resolveOutputSchemaVersion maps an absent schema_version to the current version.
+func resolveOutputSchemaVersion(raw *int) int {
 	if raw == nil {
-		return outputSchemaVersion, nil
+		return outputSchemaVersion
 	}
-	if *raw == 0 {
-		return 0, fmt.Errorf("threadanalysis: schema_version = %d, want %d", *raw, outputSchemaVersion)
-	}
-	return *raw, nil
+	return *raw
 }
 
 func decodeResultForThread(threadID string) llm.Decoder[Result] {
@@ -291,10 +288,7 @@ func decodeResultForThread(threadID string) llm.Decoder[Result] {
 		if err := decoder.Decode(&extra); err != io.EOF {
 			return Result{}, fmt.Errorf("threadanalysis: decode result: trailing data is not allowed")
 		}
-		version, err := resolveOutputSchemaVersion(raw.SchemaVersion)
-		if err != nil {
-			return Result{}, err
-		}
+		version := resolveOutputSchemaVersion(raw.SchemaVersion)
 		if version != outputSchemaVersion {
 			return Result{}, fmt.Errorf("threadanalysis: schema_version = %d, want %d", version, outputSchemaVersion)
 		}
