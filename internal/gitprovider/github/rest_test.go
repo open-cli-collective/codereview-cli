@@ -470,10 +470,11 @@ func TestReconstructUnifiedDiff(t *testing.T) {
 		{"diff --git a/ro.go b/rn.go\nrename from ro.go\nrename to rn.go\n", true},
 		{"Binary files a/ro.go", false}, // a pure rename must not be marked binary
 		{"diff --git a/bin.dat b/bin.dat\nBinary files a/bin.dat and b/bin.dat differ\n", true},
-		{"diff --git a/removed.txt b/removed.txt\ndeleted file mode 100644\n--- a/removed.txt\n+++ /dev/null\n", true},
+		{"diff --git a/removed.txt b/removed.txt\n--- a/removed.txt\n+++ /dev/null\n", true},
 		{"diff --git a/removed.bin b/removed.bin\nBinary files a/removed.bin and b/removed.bin differ\n", false},
-		{"diff --git a/removed.bin b/removed.bin\ndeleted file mode 100644\n--- a/removed.bin\n+++ /dev/null\n", true},
-		{"+y", false}, // the empty-filename entry must be dropped entirely
+		{"diff --git a/removed.bin b/removed.bin\n--- a/removed.bin\n+++ /dev/null\n", true},
+		{"deleted file mode", false}, // no provider mode data: never fabricate one
+		{"+y", false},                // the empty-filename entry must be dropped entirely
 	}
 	for _, c := range cases {
 		if strings.Contains(got, c.substr) != c.want {

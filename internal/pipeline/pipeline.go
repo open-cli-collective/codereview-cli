@@ -1259,6 +1259,9 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	// the head for a reviewer to inspect. Keep them out of the assignment
 	// contract and the post-selection backstops, matching buildReviewerCoverage.
 	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
+	// Decoding accepts more than it assigns: a rename's old path is visible in
+	// the diff, so citing it must not fail the whole selection.
+	selectableFiles := append(append([]string(nil), reviewerFiles...), renamedPatchOldPaths(req.ParsedDiff.Patches)...)
 	promptInput.ChangedFiles = append([]string(nil), reviewerFiles...)
 	dependencyTaskIDs := []string{dossier.SummaryTaskID}
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
@@ -1276,7 +1279,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	decode := func(data []byte) (llm.Selection, error) {
 		return llm.DecodeSelection(data, llm.SelectionOptions{
 			KnownAgents:  knownAgents(req.Catalog),
-			ChangedFiles: stringSet(reviewerFiles),
+			ChangedFiles: stringSet(selectableFiles),
 			KnownThreads: knownThreadIDs,
 		})
 	}
@@ -2065,7 +2068,6 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := reviewablePatchPaths(parsed.Patches)
 	selected = filterSelectedReviewerAssignment(selected, changedFilePaths)
-	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
@@ -2115,8 +2117,10 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(assignmentScope),
+			KnownAgents: map[string]bool{agent.ID: true},
+			// Permitted subject matter is a superset of assigned work: a
+			// reviewer may report on a deleted path it was not assigned.
+			ChangedFiles: stringSet(patchPaths(parsed.Patches)),
 			NewFindingID: opts.newFindingID,
 		})
 	})
@@ -2628,6 +2632,21 @@ func deletedPatchPaths(patches []FilePatch) map[string]bool {
 		}
 	}
 	return deleted
+}
+
+// renamedPatchOldPaths returns the pre-rename paths still present in the diff.
+// They are not reviewer obligations, but an orchestrator may cite one because
+// the "rename from" header is visible in the dossier diff.
+func renamedPatchOldPaths(patches []FilePatch) []string {
+	paths := make([]string, 0, len(patches))
+	for _, patch := range patches {
+		if patch.Deleted || patch.OldPath == "" || patch.OldPath == patch.Path {
+			continue
+		}
+		paths = append(paths, patch.OldPath)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 // reviewablePatchPaths returns changed paths that a reviewer can inspect at

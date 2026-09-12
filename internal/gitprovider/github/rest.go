@@ -186,7 +186,6 @@ func reconstructUnifiedDiff(files []pullFileResponse) string {
 			// deleted path.
 			switch f.Status {
 			case "removed":
-				fmt.Fprintf(&b, "deleted file mode 100644\n")
 				fmt.Fprintf(&b, "--- a/%s\n", oldPath)
 				b.WriteString("+++ /dev/null\n")
 			case "renamed":

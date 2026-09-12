@@ -5436,6 +5436,103 @@ func TestDryRunDeletionOnlyDiffDoesNotRunSelectedReviewer(t *testing.T) {
 	}
 }
 
+func TestSelectionOnlyAcceptsRenameSourcePath(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "mv", "main.go", "renamed.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "rename main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = renameDiff("main.go", "renamed.go") + smallDiff("other.go")
+
+	selectionPayload := `{
+		"schema_version": 1,
+		"selected_agents": [{
+			"agent_id": "harness:reviewer",
+			"rationale": "the rename source is visible in the diff",
+			"files": ["main.go", "other.go"]
+		}],
+		"thread_actions": [],
+		"reasoning": "cite the rename source path"
+	}`
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionPayload, 10, 2))
+	// A validation retry would consume this; the request count asserts it is unused.
+	adapter.Queue(fakeLLMResult("selection-session-retry", selectionPayload, 10, 2))
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("adapter requests = %d, want one selection request with no validation retry", len(adapter.Requests()))
+	}
+	if len(result.Selection.SelectedAgents) != 1 {
+		t.Fatalf("selected agents = %#v, want harness:reviewer", result.Selection.SelectedAgents)
+	}
+	// The rename source is not a reviewer obligation, so the assignment filter
+	// drops it and glob coverage backfills the head path.
+	if !reflect.DeepEqual(result.Selection.SelectedAgents[0].Files, []string{"other.go", "renamed.go"}) {
+		t.Fatalf("assigned files = %#v, want reviewable head paths", result.Selection.SelectedAgents[0].Files)
+	}
+}
+
+func TestDryRunReviewerFindingOnDeletedPathIsDecoded(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "rm", "main.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "delete main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = deletionDiff("main.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "other.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", `{
+		"schema_version": 1,
+		"agent_id": "harness:reviewer",
+		"inspected_files": ["other.go"],
+		"skipped_files": ["main.go"],
+		"constraints": [],
+		"findings": [{
+			"severity": "major",
+			"file_path": "main.go",
+			"anchor": {"kind": "file"},
+			"body": "deleting main.go breaks other.go"
+		}]
+	}`, 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-deleted-finding" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.ReviewerFailures) != 0 {
+		t.Fatalf("reviewer failures = %#v, want a decoded finding on the deleted path", result.ReviewerFailures)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].FilePath != "main.go" {
+		t.Fatalf("findings = %#v, want one finding on the deleted main.go", result.Findings)
+	}
+}
+
 func TestRebaseReviewerCohortWithReviewablePathsExcludesDeletedFiles(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
@@ -7583,6 +7680,16 @@ func deletionDiff(path string) string {
 		"-package main",
 		"-",
 		"-var changed = false",
+		"",
+	}, "\n")
+}
+
+func renameDiff(oldPath, newPath string) string {
+	return strings.Join([]string{
+		"diff --git a/" + oldPath + " b/" + newPath,
+		"similarity index 100%",
+		"rename from " + oldPath,
+		"rename to " + newPath,
 		"",
 	}, "\n")
 }

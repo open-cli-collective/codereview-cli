@@ -160,11 +160,9 @@ func TestParseUnifiedDiffRejectsBadHunkHeader(t *testing.T) {
 func TestParseUnifiedDiffPreservesPatchlessRemovedStatus(t *testing.T) {
 	raw := strings.Join([]string{
 		"diff --git a/removed.txt b/removed.txt",
-		"deleted file mode 100644",
 		"--- a/removed.txt",
 		"+++ /dev/null",
 		"diff --git a/removed.bin b/removed.bin",
-		"deleted file mode 100644",
 		"--- a/removed.bin",
 		"+++ /dev/null",
 		"",
