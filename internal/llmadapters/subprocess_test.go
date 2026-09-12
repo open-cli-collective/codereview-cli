@@ -2090,6 +2090,59 @@ func TestSubprocessClaudeForegroundMode(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
 }
 
+func TestSubprocessCodexStreamRecordsDuration(t *testing.T) {
+	recordPath := filepath.Join(t.TempDir(), "records.jsonl")
+	adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.5", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if response.DurationMS <= 0 {
+		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
+	}
+}
+
+func TestSubprocessClaudeBackgroundStreamRecordsDuration(t *testing.T) {
+	tempDir := t.TempDir()
+	adapter := newClaudeHelperAdapter("success", filepath.Join(tempDir, "records.jsonl"), filepath.Join(tempDir, "claude"), 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{Model: "claude-sonnet-4-6", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if response.DurationMS <= 0 {
+		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
+	}
+}
+
+func TestSubprocessClaudeForegroundStreamRecordsDuration(t *testing.T) {
+	tempDir := t.TempDir()
+	adapter := newClaudeHelperAdapterWithEnv(
+		"foreground-success", filepath.Join(tempDir, "records.jsonl"),
+		filepath.Join(tempDir, "claude"), 5*time.Second, "CR_CLAUDE_FOREGROUND=1")
+
+	stream, err := adapter.Start(context.Background(), Request{Model: "claude-sonnet-5", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if response.DurationMS <= 0 {
+		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
+	}
+}
+
 func TestSubprocessClaudeForegroundNoResultFileErrors(t *testing.T) {
 	tempDir := t.TempDir()
 	adapter := newClaudeHelperAdapterWithEnv(

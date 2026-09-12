@@ -100,6 +100,28 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	}
 }
 
+func TestPiRPCStreamRecordsDuration(t *testing.T) {
+	recordPath := filepath.Join(t.TempDir(), "record.json")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("success", recordPath),
+		Timeout:           5 * time.Second,
+	})
+
+	stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "review this diff"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if response.DurationMS <= 0 {
+		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
+	}
+}
+
 func TestPiRPCReviewerWorkspaceModeIsPermissionBounded(t *testing.T) {
 	adapter := NewPiRPCAdapter(PiRPCOptions{})
 	if got := AdapterReviewerWorkspaceMode(adapter); got != ReviewerWorkspacePermissionBounded {

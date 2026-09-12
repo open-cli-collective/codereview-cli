@@ -602,6 +602,7 @@ func parseClaudeForegroundOutput(out []byte) (claudeForegroundOutput, bool) {
 }
 
 func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader, scratch string) {
+	start := time.Now()
 	stderrDone := make(chan bytes.Buffer, 1)
 	go func() {
 		var stderrBuf bytes.Buffer
@@ -664,6 +665,9 @@ func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cm
 		}
 	}
 
+	if result.err == nil {
+		result.response.DurationMS = time.Since(start).Milliseconds()
+	}
 	s.Cancel()
 	s.CloseLog()
 	s.runCleanup()
@@ -1028,6 +1032,7 @@ type subprocessStream struct {
 }
 
 func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
+	start := time.Now()
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
@@ -1053,6 +1058,9 @@ func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Rea
 	case len(scanResult.response.StructuredOutput) == 0:
 		result.err = errors.New("llm subprocess: no structured output")
 	}
+	if result.err == nil {
+		result.response.DurationMS = time.Since(start).Milliseconds()
+	}
 	s.Cancel()
 	s.CloseProcessGroup()
 	s.CloseLog()
@@ -1061,6 +1069,7 @@ func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Rea
 }
 
 func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessAdapter, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader, scratch string, workDir string) {
+	start := time.Now()
 	stderrDone := make(chan bytes.Buffer, 1)
 	go func() {
 		var stderrBuf bytes.Buffer
@@ -1119,6 +1128,9 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		}
 	}
 
+	if result.err == nil {
+		result.response.DurationMS = time.Since(start).Milliseconds()
+	}
 	s.Cancel()
 	s.CloseLog()
 	s.runCleanup()
