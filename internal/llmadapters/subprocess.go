@@ -665,9 +665,7 @@ func (s *subprocessStream) runClaudeForeground(ctx context.Context, cmd *exec.Cm
 		}
 	}
 
-	if result.err == nil {
-		result.response.DurationMS = time.Since(start).Milliseconds()
-	}
+	recordRequestDuration(&result.response, start, result.err)
 	s.Cancel()
 	s.CloseLog()
 	s.runCleanup()
@@ -1058,9 +1056,7 @@ func (s *subprocessStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Rea
 	case len(scanResult.response.StructuredOutput) == 0:
 		result.err = errors.New("llm subprocess: no structured output")
 	}
-	if result.err == nil {
-		result.response.DurationMS = time.Since(start).Milliseconds()
-	}
+	recordRequestDuration(&result.response, start, result.err)
 	s.Cancel()
 	s.CloseProcessGroup()
 	s.CloseLog()
@@ -1120,6 +1116,7 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		if sessionID != "" {
 			s.SetSessionID(sessionID)
 		}
+		recordRequestDuration(&result.response, start, result.err)
 	}
 	s.runCleanup()
 	if jobID != "" {
@@ -1128,9 +1125,6 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		}
 	}
 
-	if result.err == nil {
-		result.response.DurationMS = time.Since(start).Milliseconds()
-	}
 	s.Cancel()
 	s.CloseLog()
 	s.runCleanup()

@@ -69,3 +69,11 @@ func SupportsReviewerWorkspace(adapter llm.Adapter) bool {
 func launchProcess(ctx context.Context, command string, args []string, dir string, env []string, timeout time.Duration, logPath string, cleanup func() error, withStdin bool) (*launchedProcess, error) {
 	return llm.LaunchProcess(ctx, command, args, dir, env, timeout, logPath, cleanup, withStdin)
 }
+
+// recordRequestDuration stamps the request window on a successful response.
+func recordRequestDuration(res *Response, start time.Time, err error) {
+	if err != nil {
+		return
+	}
+	res.DurationMS = time.Since(start).Milliseconds()
+}

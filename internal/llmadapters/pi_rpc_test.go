@@ -105,7 +105,7 @@ func TestPiRPCStreamRecordsDuration(t *testing.T) {
 	adapter := NewPiRPCAdapter(PiRPCOptions{
 		Command:           os.Args[0],
 		commandArgsPrefix: piRPCHelperPrefix(),
-		Env:               piRPCHelperEnv("success", recordPath),
+		Env:               piRPCHelperEnv("slow-success", recordPath),
 		Timeout:           5 * time.Second,
 	})
 
@@ -117,8 +117,28 @@ func TestPiRPCStreamRecordsDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if response.DurationMS <= 0 {
-		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
+	assertSlowSuccessDuration(t, response)
+}
+
+func TestPiRPCFailureLeavesDurationZero(t *testing.T) {
+	recordPath := filepath.Join(t.TempDir(), "record.json")
+	adapter := NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               piRPCHelperEnv("prompt-failure", recordPath),
+		Timeout:           5 * time.Second,
+	})
+
+	stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "review this diff"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err == nil {
+		t.Fatal("Wait error = nil, want failure")
+	}
+	if response.DurationMS != 0 {
+		t.Fatalf("DurationMS = %d, want 0 on failure", response.DurationMS)
 	}
 }
 
@@ -1344,7 +1364,10 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 	}
 
 	switch os.Getenv("LLM_HELPER_MODE") {
-	case "success":
+	case "success", "slow-success":
+		if os.Getenv("LLM_HELPER_MODE") == "slow-success" {
+			time.Sleep(slowSuccessSleep)
+		}
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"agent_start","sessionId":"session-1"}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"user","content":"review this diff"}}`)

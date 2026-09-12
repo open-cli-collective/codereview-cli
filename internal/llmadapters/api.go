@@ -223,9 +223,7 @@ func (s *apiStream) run(ctx context.Context, adapter *APIAdapter, req Request) {
 	defer s.Cancel()
 	start := time.Now()
 	sessionID, response, err := adapter.execute(ctx, req)
-	if err == nil {
-		response.DurationMS = time.Since(start).Milliseconds()
-	}
+	recordRequestDuration(&response, start, err)
 	s.SetSessionID(sessionID)
 	s.Finish(response, err)
 }

@@ -540,9 +540,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	case !scanResult.agentEnd:
 		result.err = errors.New("llm pi rpc: missing agent_end")
 	}
-	if result.err == nil {
-		result.response.DurationMS = time.Since(start).Milliseconds()
-	}
+	recordRequestDuration(&result.response, start, result.err)
 	s.Cancel()
 	s.CloseProcessGroup()
 	s.CloseLog()

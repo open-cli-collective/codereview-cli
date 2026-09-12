@@ -1443,6 +1443,9 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 			}
 			os.Exit(0)
 		case "rm":
+			if os.Getenv("LLM_HELPER_MODE") == "slow-success" {
+				time.Sleep(slowCleanupSleep)
+			}
 			if helperControlShouldFail("LLM_HELPER_CLAUDE_FAIL_RM_IDS", args) {
 				fmt.Fprintln(os.Stderr, "rm refused")
 				os.Exit(45)
@@ -1454,6 +1457,9 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 			}
 			os.Exit(0)
 		case "agents":
+			if os.Getenv("LLM_HELPER_MODE") == "slow-success" {
+				time.Sleep(slowCleanupSleep)
+			}
 			if os.Getenv("LLM_HELPER_CLAUDE_AGENTS_FAIL") == "1" {
 				fmt.Fprintln(os.Stderr, "agents refused")
 				os.Exit(46)
@@ -1475,7 +1481,10 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		os.Exit(0)
 	}
 	switch os.Getenv("LLM_HELPER_MODE") {
-	case "success":
+	case "success", "slow-success":
+		if os.Getenv("LLM_HELPER_MODE") == "slow-success" {
+			time.Sleep(slowSuccessSleep)
+		}
 		fmt.Println(`{"type":"thread.started","thread_id":"session-1"}`)
 		fmt.Println(`{"type":"unknown.event","ignored":true}`)
 		fmt.Println(`{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"ok\":true}"}}`)
@@ -1638,6 +1647,8 @@ func runClaudeBGHelper(mode string, args []string) {
 	result := `{"ok":true}`
 	writeResult := true
 	switch mode {
+	case "slow-success":
+		time.Sleep(slowSuccessSleep)
 	case "bg-idle-result":
 		state = map[string]any{
 			"state":     "working",
@@ -2012,7 +2023,10 @@ func assertIntPtr(t *testing.T, name string, got *int, want int) {
 func runClaudeForegroundHelper(mode string, args []string) {
 	scratch := flagValue(args, "--add-dir")
 	switch mode {
-	case "foreground-success":
+	case "foreground-success", "slow-success":
+		if mode == "slow-success" {
+			time.Sleep(slowSuccessSleep)
+		}
 		if scratch != "" {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
@@ -2090,9 +2104,35 @@ func TestSubprocessClaudeForegroundMode(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
 }
 
+// slowSuccessSleep is the helper delay that pins DurationMS to the wait window
+// instead of merely proving the field was assigned.
+const slowSuccessSleep = 150 * time.Millisecond
+
+// slowCleanupSleep delays the helper's post-result control verbs (rm, agents),
+// so a duration stamped after cleanup is separated from one stamped at the
+// response boundary.
+const slowCleanupSleep = 400 * time.Millisecond
+
+func assertSlowSuccessDuration(t *testing.T, response Response) {
+	t.Helper()
+	if min := slowSuccessSleep.Milliseconds(); response.DurationMS < min {
+		t.Fatalf("DurationMS = %d, want >= %d", response.DurationMS, min)
+	}
+}
+
+// assertClaudeBackgroundDuration pins both ends of the claude-bg window: it
+// covers the wait, and ends before the slow cleanup round-trips.
+func assertClaudeBackgroundDuration(t *testing.T, response Response) {
+	t.Helper()
+	assertSlowSuccessDuration(t, response)
+	if max := (slowSuccessSleep + slowCleanupSleep/2).Milliseconds(); response.DurationMS >= max {
+		t.Fatalf("DurationMS = %d, want < %d: window extends past the response", response.DurationMS, max)
+	}
+}
+
 func TestSubprocessCodexStreamRecordsDuration(t *testing.T) {
 	recordPath := filepath.Join(t.TempDir(), "records.jsonl")
-	adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+	adapter := newCodexHelperAdapter("slow-success", recordPath, 5*time.Second)
 
 	stream, err := adapter.Start(context.Background(), Request{Model: "gpt-5.5", Prompt: "prompt"})
 	if err != nil {
@@ -2102,14 +2142,12 @@ func TestSubprocessCodexStreamRecordsDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if response.DurationMS <= 0 {
-		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
-	}
+	assertSlowSuccessDuration(t, response)
 }
 
 func TestSubprocessClaudeBackgroundStreamRecordsDuration(t *testing.T) {
 	tempDir := t.TempDir()
-	adapter := newClaudeHelperAdapter("success", filepath.Join(tempDir, "records.jsonl"), filepath.Join(tempDir, "claude"), 5*time.Second)
+	adapter := newClaudeHelperAdapter("slow-success", filepath.Join(tempDir, "records.jsonl"), filepath.Join(tempDir, "claude"), 5*time.Second)
 
 	stream, err := adapter.Start(context.Background(), Request{Model: "claude-sonnet-4-6", Prompt: "prompt"})
 	if err != nil {
@@ -2119,15 +2157,13 @@ func TestSubprocessClaudeBackgroundStreamRecordsDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if response.DurationMS <= 0 {
-		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
-	}
+	assertClaudeBackgroundDuration(t, response)
 }
 
 func TestSubprocessClaudeForegroundStreamRecordsDuration(t *testing.T) {
 	tempDir := t.TempDir()
 	adapter := newClaudeHelperAdapterWithEnv(
-		"foreground-success", filepath.Join(tempDir, "records.jsonl"),
+		"slow-success", filepath.Join(tempDir, "records.jsonl"),
 		filepath.Join(tempDir, "claude"), 5*time.Second, "CR_CLAUDE_FOREGROUND=1")
 
 	stream, err := adapter.Start(context.Background(), Request{Model: "claude-sonnet-5", Prompt: "prompt"})
@@ -2138,8 +2174,34 @@ func TestSubprocessClaudeForegroundStreamRecordsDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if response.DurationMS <= 0 {
-		t.Fatalf("DurationMS = %d, want > 0", response.DurationMS)
+	assertSlowSuccessDuration(t, response)
+}
+
+func TestSubprocessFailureLeavesDurationZero(t *testing.T) {
+	tempDir := t.TempDir()
+	cases := []struct {
+		name    string
+		adapter *SubprocessAdapter
+		model   string
+	}{
+		{name: "codex", adapter: newCodexHelperAdapter("malformed", filepath.Join(tempDir, "codex.jsonl"), 5*time.Second), model: "gpt-5.5"},
+		{name: "claude-bg", adapter: newClaudeHelperAdapter("bg-failed", filepath.Join(tempDir, "bg.jsonl"), filepath.Join(tempDir, "claude-bg"), 5*time.Second), model: "claude-sonnet-4-6"},
+		{name: "claude-fg", adapter: newClaudeHelperAdapterWithEnv("foreground-fail", filepath.Join(tempDir, "fg.jsonl"), filepath.Join(tempDir, "claude-fg"), 5*time.Second, "CR_CLAUDE_FOREGROUND=1"), model: "claude-sonnet-5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := tc.adapter.Start(context.Background(), Request{Model: tc.model, Prompt: "prompt"})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			response, err := stream.Wait(context.Background())
+			if err == nil {
+				t.Fatal("Wait error = nil, want failure")
+			}
+			if response.DurationMS != 0 {
+				t.Fatalf("DurationMS = %d, want 0 on failure", response.DurationMS)
+			}
+		})
 	}
 }
 
