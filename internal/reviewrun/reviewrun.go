@@ -337,6 +337,8 @@ func removeWorkbenchAfterPost(opts Options, postResult outbox.Result, run ledger
 	// Allowlist: a future outcome must opt in to deletion rather than inherit it.
 	switch postResult.Outcome {
 	case ledger.OutcomeApproved, ledger.OutcomeRequestChanges, ledger.OutcomeComment, ledger.OutcomeNothingToReview:
+	case ledger.OutcomeIncomplete, ledger.OutcomeDryRun, ledger.OutcomeAborted, ledger.OutcomeFailed:
+		return
 	default:
 		return
 	}
