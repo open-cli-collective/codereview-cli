@@ -874,6 +874,7 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 		name           string
 		maxAgeDays     int
 		enforcement    config.RetentionEnforcement
+		keepWorkbench  bool
 		wantLiveMaxAge time.Duration
 		wantForever    bool
 		wantManualOnly bool
@@ -891,6 +892,12 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 			wantLiveMaxAge: 30 * 24 * time.Hour,
 			wantManualOnly: false,
 		},
+		{
+			name:           "workbench retention opt-out",
+			maxAgeDays:     90,
+			keepWorkbench:  true,
+			wantLiveMaxAge: 90 * 24 * time.Hour,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -899,6 +906,7 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 				MaxAgeDays:  &tt.maxAgeDays,
 				Enforcement: tt.enforcement,
 			}
+			cfg.Data.KeepWorkbench = tt.keepWorkbench
 			runner := &fakeRunner{result: testPipelineResult(false)}
 			var got app.OpenRequest
 			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, opts app.OpenRequest) (app.Runtime, error) {
@@ -911,6 +919,41 @@ func TestReviewPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 			}
 			if got.Retention.LiveForever != tt.wantForever || got.Retention.LiveMaxAge != tt.wantLiveMaxAge || got.RetentionManualOnly != tt.wantManualOnly {
 				t.Fatalf("runtime retention = %#v manual %v, want forever=%v max_age=%s manual=%v", got.Retention, got.RetentionManualOnly, tt.wantForever, tt.wantLiveMaxAge, tt.wantManualOnly)
+			}
+			if got.KeepWorkbench != tt.keepWorkbench {
+				t.Fatalf("runtime KeepWorkbench = %v, want %v", got.KeepWorkbench, tt.keepWorkbench)
+			}
+		})
+	}
+}
+
+func TestReviewKeepWorkbenchFlagOverridesConfig(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		configValue bool
+		flags       []string
+		want        bool
+	}{
+		{name: "config true without flag", configValue: true, want: true},
+		{name: "config false without flag", want: false},
+		{name: "flag overrides config false", flags: []string{"--keep-workbench"}, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Data.KeepWorkbench = tt.configValue
+			runner := &fakeRunner{result: testPipelineResult(false)}
+			var got app.OpenRequest
+			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, opts app.OpenRequest) (app.Runtime, error) {
+				got = opts
+				return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+			})
+			args := []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"}
+			args = append(args, tt.flags...)
+			if err := root.Execute(cmd, args); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if got.KeepWorkbench != tt.want {
+				t.Fatalf("runtime KeepWorkbench = %v, want %v", got.KeepWorkbench, tt.want)
 			}
 		})
 	}

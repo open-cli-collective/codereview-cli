@@ -174,6 +174,7 @@ type Options struct {
 
 	Retention           datalifecycle.RetentionPolicy
 	RetentionManualOnly bool
+	KeepWorkbench       bool
 
 	GitCommand      func(context.Context, string, ...string) ([]byte, error)
 	ResolveRepoRoot func(context.Context) (string, error)
@@ -732,6 +733,11 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 	}
 	completed = true
+	if !mode.live {
+		// Live runs post through the outbox after this returns; their teardown
+		// is keyed to the terminal post outcome instead.
+		opts.removeWorkbench(prepared.artifacts)
+	}
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
 }
@@ -3338,6 +3344,24 @@ func (opts Options) emitWarning(warning string) {
 		return
 	}
 	_, _ = fmt.Fprintln(opts.Warnings, warning)
+}
+
+// removeWorkbench deletes the run workbench only after a successful run, and
+// never fails the run: a removal error is surfaced as a warning.
+func (opts Options) removeWorkbench(artifacts ArtifactPaths) {
+	if err := RemoveWorkbench(artifacts.Dir, opts.KeepWorkbench); err != nil {
+		opts.emitWarning(fmt.Sprintf("failed to remove workbench at %s: %v", artifacts.WorkbenchDir, err))
+	}
+}
+
+// RemoveWorkbench deletes the workbench tree owned by a run artifact directory.
+// Callers invoke it only after a successful terminal outcome, and it is a no-op
+// for an empty artifact directory; keepWorkbench opts the run out of removal.
+func RemoveWorkbench(artifactDir string, keepWorkbench bool) error {
+	if keepWorkbench || strings.TrimSpace(artifactDir) == "" {
+		return nil
+	}
+	return os.RemoveAll(ArtifactPathsFromDir(artifactDir).WorkbenchDir)
 }
 
 // tryPruneRetention runs automatic retention through the guarded entry

@@ -158,6 +158,7 @@ func (e inProcessExecutor) Execute(ctx context.Context, req reviewExecutionReque
 		MaxConcurrency:      req.Candidate.MaxConcurrency,
 		Retention:           appruntime.RetentionPolicyFromConfig(e.cfg.Data.Retention),
 		RetentionManualOnly: e.cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
+		KeepWorkbench:       e.cfg.Data.KeepWorkbench,
 	})
 	if err != nil {
 		return inProcessReviewFailure(cmdruntime.MapRunError(err), &stderr)

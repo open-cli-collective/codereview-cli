@@ -646,6 +646,7 @@ Supported values:
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. Review-time pruning runs only when no other cr instance is mid-run (it requires the data-root active-runs lock exclusively) and is skipped, not queued, on contention. |
+| `data.keep_workbench` | `true` retains the run checkout under `workbench/` after a successful run. Failed and errored runs always retain it. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
 logged-in CLI or local runtime. `api_key` LLM auth requires `llm.credential`
@@ -1240,6 +1241,7 @@ Policy and output flags:
 | `--allow-self-review` | Allow reviewer credentials that resolve to the PR author. |
 | `--allow-self-approve` | Allow approval when the posting identity is the PR author. |
 | `--no-resolve-threads` | Do not plan thread-resolution actions. Also implied by profile `resolve_threads: never`. |
+| `--keep-workbench` | Retain the run checkout (`workbench/`) after a successful review, overriding `data.keep_workbench`. Pass `--keep-workbench=false` to force deletion even when the config sets it true. Failed and errored runs always retain their workbench. |
 | `--json` | Emit JSON. |
 
 Fast mode defaults off; set `fast: true` on a profile to enable it by default.
@@ -1577,6 +1579,12 @@ both live and dry-run invocations. The explicit `cr data prune --dry-run`
 command remains the safe preview path for manual maintenance, and no-selector
 `cr data prune` uses its built-in live 90-day and dry-run 7-day windows
 independent from profile config.
+
+Successful runs delete their run checkout (`workbench/`) once the run reaches a
+successful terminal state. Failed and errored runs retain it for inspection, and
+`data.keep_workbench: true` retains it for successful runs too. `cr review
+--keep-workbench` overrides the config for one invocation; an explicit
+`--keep-workbench=false` forces deletion even when `data.keep_workbench: true`.
 
 ## Development
 

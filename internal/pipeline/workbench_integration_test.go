@@ -87,6 +87,7 @@ func TestDryRunPreparesWorkbenchInAllocatedRunArtifacts(t *testing.T) {
 		ResolveRepoRoot: func(context.Context) (string, error) {
 			return invocationDir, nil
 		},
+		KeepWorkbench:   true,
 		NewRunID:        func() string { return "run-workbench" },
 		NewSessionRowID: sequence("session"),
 		NewFindingID:    findingSequence("finding"),

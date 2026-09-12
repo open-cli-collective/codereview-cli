@@ -422,7 +422,8 @@ type ReviewPolicy struct {
 
 // DataConfig carries non-secret durable data policy.
 type DataConfig struct {
-	Retention RetentionConfig `yaml:"retention,omitempty" json:"retention"`
+	Retention     RetentionConfig `yaml:"retention,omitempty" json:"retention"`
+	KeepWorkbench bool            `yaml:"keep_workbench,omitempty" json:"keep_workbench,omitempty"`
 }
 
 // RetentionConfig controls run-data lifecycle behavior.
@@ -972,7 +973,8 @@ func fileHasNoExplicitContent(cfg File) bool {
 		cfg.RepositoryProfiles == nil &&
 		cfg.Profiles == nil &&
 		cfg.Data.Retention.MaxAgeDays == nil &&
-		cfg.Data.Retention.Enforcement == ""
+		cfg.Data.Retention.Enforcement == "" &&
+		!cfg.Data.KeepWorkbench
 }
 
 func yamlDocumentHasMappingPath(body []byte, path ...string) bool {

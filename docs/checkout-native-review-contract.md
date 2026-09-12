@@ -107,8 +107,17 @@ Notes:
 The workbench is run-owned, not cache-owned. Shared clone or fetch caches are a
 possible future optimization but are not part of the correctness contract.
 
-`workbench/metadata.json` is a versioned durable artifact. Schema version `2`
-records:
+A successful run removes its `workbench/` tree when it reaches a successful
+terminal state, after rollup and plan build, so retention no longer pins a full
+checkout per run. A live run reaches that state when its outbox post succeeds;
+failed, aborted, and incomplete runs retain the workbench for inspection, and
+`data.keep_workbench: true` opts a run back into retention on success. The
+benchmark caller-owned selection path (`cr benchmark select`) reclaims its
+checkout on success under the same opt-out.
+
+`workbench/metadata.json` is a versioned artifact for retained workbenches:
+failed or errored runs, and successful runs with `data.keep_workbench: true`.
+Schema version `2` records:
 
 - `schema_version`
 - `checkout_mode`

@@ -6188,6 +6188,7 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 			},
 		}},
 		Profiles: map[string]config.Profile{"work": existing},
+		Data:     config.DataConfig{KeepWorkbench: true},
 	})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -6320,6 +6321,9 @@ func TestInitInteractivePromptBuildsPlanAndPreservesOutOfScopeFields(t *testing.
 	}
 	if route := cfg.RepositoryProfiles[0]; route.Profile != "office" {
 		t.Fatalf("repository route profile = %q, want office", route.Profile)
+	}
+	if !cfg.Data.KeepWorkbench {
+		t.Fatal("data.keep_workbench = false after interactive init, want preserved")
 	}
 }
 

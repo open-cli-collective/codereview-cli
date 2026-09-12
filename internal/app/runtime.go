@@ -76,6 +76,7 @@ type OpenRequest struct {
 	MaxConcurrency                    int
 	Retention                         datalifecycle.RetentionPolicy
 	RetentionManualOnly               bool
+	KeepWorkbench                     bool
 	Dependencies                      Dependencies
 }
 
@@ -410,6 +411,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 		MaxConcurrency:      req.MaxConcurrency,
 		Retention:           req.Retention,
 		RetentionManualOnly: req.RetentionManualOnly,
+		KeepWorkbench:       req.KeepWorkbench,
 		ResolveRepoRoot:     resolveRepoRoot,
 		GitCommand:          gitCommand,
 		ThreadCheckpoint: func(ctx context.Context, run ledger.Run, pipelineReq pipeline.Request) error {
@@ -442,6 +444,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			ApprovalOverride:        withProgressApprovalOverrideClassifier(logger, buildApprovalOverrideClassifier(profile, adapter, warnings)),
 			Retention:               req.Retention,
 			RetentionManualOnly:     req.RetentionManualOnly,
+			KeepWorkbench:           req.KeepWorkbench,
 			ResolveRepoRoot:         resolveRepoRoot,
 		},
 		respond: threadrespond.Options{
