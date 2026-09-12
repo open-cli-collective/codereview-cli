@@ -66,7 +66,7 @@ func TestOpenAppliesPerConnectionPragmasFromDSN(t *testing.T) {
 		t.Fatalf("sqliteDataSourceName: %v", err)
 	}
 
-	// A connection dialled from the DSN alone must already carry the
+	// A connection dialed from the DSN alone must already carry the
 	// per-connection pragmas. This is what protects connections that
 	// database/sql dials after discarding one, which never run
 	// configureSQLite.
