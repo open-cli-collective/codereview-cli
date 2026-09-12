@@ -174,6 +174,7 @@ type Options struct {
 
 	Retention           datalifecycle.RetentionPolicy
 	RetentionManualOnly bool
+	KeepWorkbench       bool
 
 	GitCommand      func(context.Context, string, ...string) ([]byte, error)
 	ResolveRepoRoot func(context.Context) (string, error)
@@ -732,6 +733,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 	}
 	completed = true
+	opts.removeWorkbench(prepared.artifacts)
 	result.FailOnTriggered = failOnTriggered(result.Findings, req.FailOn)
 	return result, nil
 }
@@ -3338,6 +3340,17 @@ func (opts Options) emitWarning(warning string) {
 		return
 	}
 	_, _ = fmt.Fprintln(opts.Warnings, warning)
+}
+
+// removeWorkbench deletes the run workbench only after a successful run, and
+// never fails the run: a removal error is surfaced as a warning.
+func (opts Options) removeWorkbench(artifacts ArtifactPaths) {
+	if opts.KeepWorkbench || strings.TrimSpace(artifacts.WorkbenchDir) == "" {
+		return
+	}
+	if err := os.RemoveAll(artifacts.WorkbenchDir); err != nil {
+		opts.emitWarning(fmt.Sprintf("failed to remove workbench at %s: %v", artifacts.WorkbenchDir, err))
+	}
 }
 
 // tryPruneRetention runs automatic retention through the guarded entry

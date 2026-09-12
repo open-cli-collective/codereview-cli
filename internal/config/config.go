@@ -422,7 +422,8 @@ type ReviewPolicy struct {
 
 // DataConfig carries non-secret durable data policy.
 type DataConfig struct {
-	Retention RetentionConfig `yaml:"retention,omitempty" json:"retention"`
+	Retention     RetentionConfig `yaml:"retention,omitempty" json:"retention"`
+	KeepWorkbench bool            `yaml:"keep_workbench,omitempty" json:"keep_workbench,omitempty"`
 }
 
 // RetentionConfig controls run-data lifecycle behavior.
