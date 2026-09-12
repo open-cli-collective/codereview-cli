@@ -210,13 +210,16 @@ incomplete.
 The primary findings are retained and repair findings are appended. Inspected
 files are unioned, and a primary skipped file is cleared only when the repair
 explicitly reports it in `inspected_files` and the repair's own
-`reviewer_tool_evidence` reports `succeeded`; a repair with any other status
-contributes no inspected files, so the skip stands. Skipped files that remain
-skipped continue to make coverage incomplete. The reviewer task dependency list
-passed to rollup includes both the primary and repair task IDs, so their outputs,
-sessions, and coverage status are merged before approval is decided. Tool
-evidence is not merged across the two passes: coverage reads only the primary
-session's evidence, so a repair can neither improve nor worsen it.
+`reviewer_tool_evidence`, when present, reports `succeeded`; explicit repair
+evidence with any other status contributes no inspected files, so the skip
+stands. As with the primary session, absence does not trigger the
+tool-evidence check, so a repair reporting no evidence keeps its inspected
+files. Skipped files that remain skipped continue to make coverage incomplete.
+The reviewer task dependency list passed to rollup includes both the primary
+and repair task IDs, so their outputs, sessions, and coverage status are
+merged before approval is decided. Tool evidence is not merged across the two
+passes: coverage reads only the primary session's evidence, so a repair can
+neither improve nor worsen it.
 
 ## Resume Rules
 

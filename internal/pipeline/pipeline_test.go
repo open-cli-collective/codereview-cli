@@ -1281,6 +1281,59 @@ func TestDryRunCoverageRepairFailurePreservesPrimaryFindingAndBlocksApproval(t *
 	}
 }
 
+func TestDryRunCoverageRepairFailureKeepsPrimaryFastDelivery(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+	req.ReviewerModelOverride = "claude-opus-4-8"
+	req.ReviewerFast = true
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "other.go"), 1, 1))
+	primary := fakeLLMResult("reviewer-session", findingsWithCoverageJSON(
+		"harness:reviewer",
+		[]string{"main.go"},
+		[]string{"other.go"},
+		nil,
+		[]findingJSONInput{{File: "main.go", Severity: "major", Line: 2, Body: "Keep the primary delivery mode"}},
+	), 2, 2)
+	primary.Response.Usage.Speed = "fast"
+	primary.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(primary)
+	// The isolated repair failure leaves a draft with no usage, so it reports no speed.
+	adapter.Queue(llm.FakeResult{SessionID: "coverage-repair-session", WaitErr: errors.New("coverage repair provider failed")})
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 4, 4))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-coverage-repair-fast" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].TaskID != reviewerCoverageRepairTaskID("harness:reviewer") {
+		t.Fatalf("reviewer failures = %#v, want isolated coverage repair failure", result.ReviewerFailures)
+	}
+	assertReviewerRuntimeArtifact(t, result.Artifacts.AgentSourcesJSON, "harness:reviewer", reviewerRuntimeResolution{
+		Mode:           "override",
+		ResolvedModel:  "claude-opus-4-8",
+		ResolvedEffort: "medium",
+		Fast:           true,
+		FastIgnored:    false,
+		FastDelivered:  "fast",
+	})
+}
+
 func TestDryRunCoverageRepairInspectsOneOfTwoReadableSkippedFiles(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -3861,7 +3914,10 @@ func TestReviewerFastDeliveryDegradesConservatively(t *testing.T) {
 		{name: "not requested", sessions: []sessionDraft{session("fast")}, want: ""},
 		{name: "all fast", requested: true, sessions: []sessionDraft{session("fast"), session("fast")}, want: "fast"},
 		{name: "standard wins", requested: true, sessions: []sessionDraft{session("fast"), session("standard")}, want: "standard"},
-		{name: "unknown degrades fast", requested: true, sessions: []sessionDraft{session("fast"), session("")}, want: "unknown"},
+		{name: "absent speed does not degrade", requested: true, sessions: []sessionDraft{session("fast"), session("")}, want: "fast"},
+		{name: "unrecognised speed degrades fast", requested: true, sessions: []sessionDraft{session("fast"), session("mixed")}, want: "unknown"},
+		{name: "standard still wins after unrecognised", requested: true, sessions: []sessionDraft{session("mixed"), session("standard")}, want: "standard"},
+		{name: "only absent speeds", requested: true, sessions: []sessionDraft{session(""), session("")}, want: "unknown"},
 		{name: "no sessions", requested: true, want: "unknown"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -169,18 +169,23 @@ func reviewerFastDelivery(requested bool, sessions []sessionDraft) string {
 	if !requested {
 		return ""
 	}
-	delivered := "fast"
-	if len(sessions) == 0 {
-		return "unknown"
-	}
+	delivered := ""
 	for _, session := range sessions {
 		switch session.Response.Usage.Speed {
+		case "":
+			// A draft that reports no speed does not contradict one that does.
 		case "standard":
 			return "standard"
 		case "fast":
+			if delivered == "" {
+				delivered = "fast"
+			}
 		default:
 			delivered = "unknown"
 		}
+	}
+	if delivered == "" {
+		return "unknown"
 	}
 	return delivered
 }
