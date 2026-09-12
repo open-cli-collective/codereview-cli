@@ -42,10 +42,10 @@ check: tidy fmt lint test build
 
 install:
 	go install ./cmd/cr
-	@if [ -n "$(CODESIGN_IDENTITY)" ] && [ "$$(uname -s)" = Darwin ]; then \
+	@if [ -n "$(CODESIGN_IDENTITY)" ] && [ "$$(uname -s)" = Darwin ] && [ "$$(go env GOOS)" = darwin ]; then \
 		bin="$$(go env GOBIN)"; bin="$${bin:-$$(go env GOPATH)/bin}"; \
-		codesign --force --timestamp=none --sign "$(CODESIGN_IDENTITY)" --identifier "org.open-cli-collective.cr" "$$bin/cr"; \
-		codesign --verify --strict "$$bin/cr"; \
+		codesign --force --timestamp=none --sign "$(CODESIGN_IDENTITY)" --identifier "org.open-cli-collective.cr" "$$bin/cr" && \
+		codesign --verify --strict -R '=identifier "org.open-cli-collective.cr"' "$$bin/cr"; \
 	fi
 
 # goreleaser wrappers. `snapshot` builds locally without publishing (the same
