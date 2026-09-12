@@ -4515,6 +4515,11 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	if meta.Status != llmTaskStatusSucceeded || meta.Phase != string(stagemodel.StageThreadAnalysis) {
 		t.Fatalf("thread analysis metadata = %#v, want succeeded thread_analysis", meta)
 	}
+	// Same layout as threadrespond writes for the same thread ID.
+	wantLog := filepath.Join(result.Artifacts.AgentLogsDir, "thread-analysis", statepaths.EncodeUnique("thread-1")+".jsonl")
+	if meta.LogPath != wantLog {
+		t.Fatalf("thread analysis log path = %q, want %q", meta.LogPath, wantLog)
+	}
 	var sawReply, sawResolve bool
 	for _, action := range result.Plan.Actions {
 		switch action.Kind {

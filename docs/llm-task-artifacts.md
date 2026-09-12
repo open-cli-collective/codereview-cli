@@ -8,12 +8,19 @@ again.
 Task artifacts usually live under a run artifact directory:
 
 ```text
-llm-tasks/<encoded-task-id>/
+llm-tasks/<encoded-task-id>-<hash>/
   metadata.json
   validated-output.json
   initial.json
   retry.json
 ```
+
+`<hash>` is the first 12 hex characters of the SHA-256 of the raw task ID. It
+keeps task IDs that differ only by letter case apart on case-insensitive
+filesystems. A run resumed across the introduction of that suffix re-runs its
+LLM tasks once, because cached artifacts sit under the old names; the stale
+directories are inert because enumerators key on the task ID recorded in
+`metadata.json`.
 
 Raw failed-attempt files are named `<label>.json` in the task directory. The
 current structured adapter labels are `initial` and `retry`, which produce

@@ -332,7 +332,9 @@ func migrateLegacyRoot(root, legacyRoot, kind string) error {
 	return nil
 }
 
-// Encode percent-encodes every rune outside [A-Za-z0-9._-].
+// Encode percent-encodes every rune outside [A-Za-z0-9._-]. It preserves case,
+// so it is safe only for tool-generated values that never differ by letter case
+// alone. Use EncodeUnique for provider- or user-supplied identifiers.
 func Encode(value string) string {
 	return percent.Encode(value, disallowedRunes(value))
 }
@@ -341,6 +343,7 @@ func Encode(value string) string {
 // values on case-insensitive filesystems. Case-sensitive external identifiers
 // such as provider node IDs need it: the encoded value keeps the segment
 // readable, and the hash suffix keeps IDs differing only by letter case apart.
+// Unlike Encode, the result is deliberately not round-trippable through Decode.
 func EncodeUnique(value string) string {
 	hash := sha256.Sum256([]byte(value))
 	return Encode(value) + "-" + hex.EncodeToString(hash[:])[:12]

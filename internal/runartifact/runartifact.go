@@ -102,6 +102,20 @@ func (p Paths) AgentLog(agentID string) (string, error) {
 	return filepath.Join(p.AgentLogsDir, statepaths.Encode(agentID)+".jsonl"), nil
 }
 
+// ThreadAnalysisLogsDir returns the directory holding per-thread analysis logs.
+func (p Paths) ThreadAnalysisLogsDir() string {
+	return filepath.Join(p.AgentLogsDir, "thread-analysis")
+}
+
+// ThreadAnalysisLog returns the tailable LLM log path for one thread analysis.
+func (p Paths) ThreadAnalysisLog(threadID string) (string, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return "", fmt.Errorf("runartifact: thread ID is required")
+	}
+	// Thread IDs are provider-supplied, so they need the folding-safe encoder.
+	return filepath.Join(p.ThreadAnalysisLogsDir(), statepaths.EncodeUnique(threadID)+".jsonl"), nil
+}
+
 // LLMTaskDir returns the artifact directory for one durable LLM task.
 func (p Paths) LLMTaskDir(taskID string) (string, error) {
 	if strings.TrimSpace(taskID) == "" {

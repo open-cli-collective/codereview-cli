@@ -148,3 +148,27 @@ func TestReadMarkerRejectsMalformedMarker(t *testing.T) {
 		t.Fatalf("ReadMarker malformed JSON error = %v, want ErrMarkerInvalid", err)
 	}
 }
+
+func TestThreadAnalysisLogEncodesThreadIDOnce(t *testing.T) {
+	const threadID = "PRRT_kw/DO+Abc"
+	paths := FromDir(filepath.Join("run", "dir"))
+
+	got, err := paths.ThreadAnalysisLog(threadID)
+	if err != nil {
+		t.Fatalf("ThreadAnalysisLog: %v", err)
+	}
+	want := filepath.Join(paths.AgentLogsDir, "thread-analysis", statepaths.EncodeUnique(threadID)+".jsonl")
+	if got != want {
+		t.Fatalf("ThreadAnalysisLog = %q, want %q", got, want)
+	}
+	name := filepath.Base(got)
+	if !strings.HasPrefix(name, "PRRT_kw%2FDO%2BAbc-") {
+		t.Fatalf("log name = %q, want single-encoded thread ID prefix", name)
+	}
+	if strings.Contains(name, "%25") {
+		t.Fatalf("log name = %q, want no double encoding", name)
+	}
+	if _, err := paths.ThreadAnalysisLog("  "); err == nil {
+		t.Fatal("ThreadAnalysisLog blank thread ID error = nil, want error")
+	}
+}

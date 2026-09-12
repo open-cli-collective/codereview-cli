@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -367,7 +366,7 @@ func postAndRefresh(ctx context.Context, opts Options, req Request, result Resul
 func ensureArtifactDirs(artifacts runartifact.Paths) error {
 	for _, dir := range []string{
 		artifacts.AgentLogsDir,
-		filepath.Join(artifacts.AgentLogsDir, "thread-analysis"),
+		artifacts.ThreadAnalysisLogsDir(),
 		artifacts.LLMTasksDir,
 	} {
 		if strings.TrimSpace(dir) == "" {
@@ -695,7 +694,11 @@ func threadLogPath(artifacts runartifact.Paths, threadID gitprovider.ThreadID) s
 	if strings.TrimSpace(artifacts.AgentLogsDir) == "" {
 		return ""
 	}
-	return filepath.Join(artifacts.AgentLogsDir, "thread-analysis", statepaths.EncodeUnique(string(threadID))+".jsonl")
+	path, err := artifacts.ThreadAnalysisLog(string(threadID))
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 func postMode(req Request) ledger.PostMode {
