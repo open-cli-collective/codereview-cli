@@ -88,9 +88,11 @@ func TestInProcessExecutorOpensAndCleansRuntimePerCell(t *testing.T) {
 	var progressOutput bytes.Buffer
 	opts := &root.Options{Stderr: &progressOutput}
 	logger := root.NewProgressLogger(opts)
+	cfg := testConfig()
+	cfg.Data.KeepWorkbench = true
 	executor := inProcessExecutor{
 		opts:   opts,
-		cfg:    testConfig(),
+		cfg:    cfg,
 		logger: logger,
 		open: func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
 			if cleanupCount != openCount {
@@ -143,6 +145,9 @@ func TestInProcessExecutorOpensAndCleansRuntimePerCell(t *testing.T) {
 	for _, req := range openRequests {
 		if req.MaxAgents != 5 || req.MaxConcurrency != 3 || req.Command != "benchmark.run" || req.Progress != logger || req.Warnings == nil {
 			t.Fatalf("open request = %#v, want candidate limits and benchmark sinks", req)
+		}
+		if !req.KeepWorkbench {
+			t.Fatalf("open request KeepWorkbench = false, want true from benchmark config")
 		}
 	}
 	if pipelineRequests[1].ReviewBaseSHA != "1111111" || pipelineRequests[1].ReviewHeadSHA != "2222222" {

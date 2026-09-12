@@ -444,6 +444,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			ApprovalOverride:        withProgressApprovalOverrideClassifier(logger, buildApprovalOverrideClassifier(profile, adapter, warnings)),
 			Retention:               req.Retention,
 			RetentionManualOnly:     req.RetentionManualOnly,
+			KeepWorkbench:           req.KeepWorkbench,
 			ResolveRepoRoot:         resolveRepoRoot,
 		},
 		respond: threadrespond.Options{

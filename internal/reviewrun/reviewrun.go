@@ -66,6 +66,7 @@ type Options struct {
 	ApprovalOverride        approvaloverride.Classifier
 	Retention               datalifecycle.RetentionPolicy
 	RetentionManualOnly     bool
+	KeepWorkbench           bool
 	ResolveRepoRoot         func(context.Context) (string, error)
 }
 
@@ -323,10 +324,25 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 		return result, err
 	}
 	result.Run = run
+	removeWorkbenchAfterPost(opts, postResult, run)
 	if err := applyAdvisoryThreadResolutionWarning(ctx, opts, &result); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// removeWorkbenchAfterPost deletes the run workbench once the live post reaches
+// a successful terminal outcome; failed, aborted, and incomplete runs keep it.
+func removeWorkbenchAfterPost(opts Options, postResult outbox.Result, run ledger.Run) {
+	// Allowlist: a future outcome must opt in to deletion rather than inherit it.
+	switch postResult.Outcome {
+	case ledger.OutcomeApproved, ledger.OutcomeRequestChanges, ledger.OutcomeComment, ledger.OutcomeNothingToReview:
+	default:
+		return
+	}
+	if err := pipeline.RemoveWorkbench(run.ArtifactPath, opts.KeepWorkbench); err != nil && opts.Warnings != nil {
+		_, _ = fmt.Fprintf(opts.Warnings, "warning: failed to remove workbench at %s: %v\n", pipeline.ArtifactPathsFromDir(run.ArtifactPath).WorkbenchDir, err)
+	}
 }
 
 func planOrResume(ctx context.Context, opts Options, req Request, result Result) (ledger.Outcome, *pipeline.Result, error) {

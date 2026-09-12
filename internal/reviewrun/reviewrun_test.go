@@ -78,6 +78,59 @@ func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	}
 }
 
+func TestRunRemovesWorkbenchAfterSuccessfulPost(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, workbench: true}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.Run.ArtifactPath, "workbench")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workbench stat err = %v, want removed after successful post", err)
+	}
+}
+
+func TestRunRetainsWorkbenchAfterFailedPost(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.fake.SetError(gitprovider.OperationSubmitReview, errors.New("submit failed"))
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, workbench: true}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.Outbox.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("outbox outcome = %q, want failed", result.Outbox.Outcome)
+	}
+	if _, err := os.Stat(filepath.Join(result.Run.ArtifactPath, "workbench", "repo")); err != nil {
+		t.Fatalf("workbench missing after failed post: %v", err)
+	}
+}
+
+func TestRunRetainsWorkbenchAfterSuccessfulPostWhenConfigured(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, workbench: true}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+	opts.KeepWorkbench = true
+
+	result, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.Run.ArtifactPath, "workbench", "repo")); err != nil {
+		t.Fatalf("workbench missing with KeepWorkbench enabled: %v", err)
+	}
+}
+
 func TestRunRerunStartsFreshLocalRunAndPreservesProviderSessionChoice(t *testing.T) {
 	for _, freshSession := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fresh_session_%v", freshSession), func(t *testing.T) {
@@ -1260,6 +1313,7 @@ type fakePlanner struct {
 	err            error
 	namedCandidate *ledger.NamedSession
 	includeResolve bool
+	workbench      bool
 	calls          int
 	runs           []ledger.Run
 	requests       []pipeline.Request
@@ -1287,6 +1341,11 @@ func (p *fakePlanner) Live(_ context.Context, req pipeline.Request, run ledger.R
 	p.calls++
 	p.runs = append(p.runs, run)
 	p.requests = append(p.requests, req)
+	if p.workbench {
+		if err := os.MkdirAll(filepath.Join(run.ArtifactPath, "workbench", "repo"), 0o700); err != nil {
+			return pipeline.Result{}, err
+		}
+	}
 	if p.err != nil {
 		return pipeline.Result{}, p.err
 	}

@@ -3095,6 +3095,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 		Store:           store,
 		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
 		Now:             fixedNow,
+		KeepWorkbench:   true,
 		NewRunID:        func() string { return "run-reviewer-isolation" },
 		NewSessionRowID: sequence("session"),
 		NewFindingID:    findingSequence("finding"),

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -112,5 +113,54 @@ func TestDryRunRetainsWorkbenchWhenKeepWorkbenchEnabled(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(artifacts.WorkbenchDir, "repo")); err != nil {
 		t.Fatalf("workbench missing with KeepWorkbench enabled: %v", err)
+	}
+}
+
+// TestLiveRetainsWorkbenchUntilPostCompletes pins that a live run keeps its
+// checkout, because posting happens after Live returns to the review runner.
+func TestLiveRetainsWorkbenchUntilPostCompletes(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	prKey, err := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+	if err != nil {
+		t.Fatalf("PRKey: %v", err)
+	}
+	run, err := store.AllocateRun(ctx, ledger.AllocateRunParams{
+		PRKey:           prKey,
+		PRURL:           req.PRURL,
+		RunID:           "run-live-workbench",
+		SHA:             provider.pr.Head.SHA,
+		BaseSHA:         provider.pr.Base.SHA,
+		Profile:         req.ProfileName,
+		PostingIdentity: req.PostingIdentity.Login,
+		PostMode:        ledger.PostModeLive,
+		StartedAt:       fixedNow(),
+		ArtifactPath:    filepath.Join(t.TempDir(), "run-live-workbench"),
+	})
+	if err != nil {
+		t.Fatalf("AllocateRun: %v", err)
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	if _, err := liveForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run); err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(run.ArtifactPath, "workbench", "repo")); err != nil {
+		t.Fatalf("workbench removed before the live post: %v", err)
 	}
 }

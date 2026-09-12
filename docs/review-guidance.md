@@ -111,4 +111,7 @@ lifecycle commands clean them up automatically:
 - `cr data purge` removes the entire data root, including dossier and workbench
   artifacts
 
-No separate retention setting is required for dossier or workbench cleanup.
+A successful run also deletes its own `workbench/` directory once the run
+reaches a successful terminal state, so dossier data is the durable artifact that
+remains. Failed and errored runs always retain the workbench for inspection, and
+`data.keep_workbench: true` opts successful runs back into retention.
