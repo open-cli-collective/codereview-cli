@@ -5315,6 +5315,348 @@ func TestEnsureSelectedGlobCoverageSkipsLockfiles(t *testing.T) {
 	}
 }
 
+func TestReviewablePatchPathsKeepDeletedFilesOutOfAssignments(t *testing.T) {
+	patches := []FilePatch{
+		{Path: "main.go"},
+		{OldPath: "removed.go", Path: "removed.go", Deleted: true},
+	}
+	reviewable := reviewablePatchPaths(patches)
+	if !reflect.DeepEqual(reviewable, []string{"main.go"}) {
+		t.Fatalf("reviewable paths = %#v, want only retained file", reviewable)
+	}
+
+	filtered := filterSelectedReviewerAssignments(llm.Selection{SelectedAgents: []llm.SelectedAgent{
+		{AgentID: "deleted-only", Files: []string{"removed.go"}, AllowedFiles: []string{"removed.go"}},
+		{AgentID: "mixed", Files: []string{"main.go", "removed.go"}, AllowedFiles: []string{"main.go", "removed.go"}},
+		{AgentID: "broad"},
+	}}, reviewable)
+	if len(filtered.SelectedAgents) != 2 {
+		t.Fatalf("filtered selection = %#v, want deleted-only reviewer removed", filtered.SelectedAgents)
+	}
+	if !reflect.DeepEqual(filtered.SelectedAgents[0].Files, []string{"main.go"}) ||
+		!reflect.DeepEqual(filtered.SelectedAgents[0].AllowedFiles, []string{"main.go"}) {
+		t.Fatalf("mixed assignment = %#v, want only retained file", filtered.SelectedAgents[0])
+	}
+	if len(filtered.SelectedAgents[1].Files) != 0 || len(filtered.SelectedAgents[1].AllowedFiles) != 0 {
+		t.Fatalf("broad assignment = %#v, want broad reviewer unchanged", filtered.SelectedAgents[1])
+	}
+
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "mixed", FileGlobs: []string{"**/*.go"}}}}
+	selection := ensureSelectedGlobCoverage(llm.Selection{SelectedAgents: []llm.SelectedAgent{
+		{AgentID: "mixed", Files: []string{"main.go"}},
+	}}, catalog, reviewable)
+	if !reflect.DeepEqual(selection.SelectedAgents[0].Files, []string{"main.go"}) {
+		t.Fatalf("glob assignment = %#v, want deleted path excluded", selection.SelectedAgents[0].Files)
+	}
+}
+
+func TestFilterSelectedReviewerAssignmentsDropsAllReviewersWhenNoFilesAreReviewable(t *testing.T) {
+	threadActions := []review.ThreadAction{{
+		ThreadID: "thread-1",
+		Decision: review.ThreadDecisionSummarizeOnly,
+		Summary:  "Keep the existing thread action.",
+	}}
+	selection := llm.Selection{
+		SelectedAgents: []llm.SelectedAgent{
+			{AgentID: "explicit", Files: []string{"removed.go"}, AllowedFiles: []string{"removed.go"}},
+			{AgentID: "broad"},
+		},
+		ThreadActions: threadActions,
+		Reasoning:     "the diff only deletes files",
+	}
+
+	filtered := filterSelectedReviewerAssignments(selection, nil)
+	if len(filtered.SelectedAgents) != 0 {
+		t.Fatalf("selected agents = %#v, want none without reviewable files", filtered.SelectedAgents)
+	}
+	if !reflect.DeepEqual(filtered.ThreadActions, threadActions) {
+		t.Fatalf("thread actions = %#v, want %#v", filtered.ThreadActions, threadActions)
+	}
+	if filtered.Reasoning != selection.Reasoning {
+		t.Fatalf("reasoning = %q, want %q", filtered.Reasoning, selection.Reasoning)
+	}
+}
+
+func TestDryRunDeletionOnlyDiffDoesNotRunSelectedReviewer(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "rm", "main.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "delete main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = deletionDiff("main.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [{
+			"agent_id": "harness:reviewer",
+			"rationale": "review the whole change",
+			"files": []
+		}],
+		"thread_actions": [],
+		"reasoning": "the diff only deletes files"
+	}`, 10, 2))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 10, 2))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-deletion-only" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Selection.SelectedAgents) != 0 {
+		t.Fatalf("selected agents = %#v, want none for deletion-only diff", result.Selection.SelectedAgents)
+	}
+	if result.Selection.Reasoning != "the diff only deletes files" {
+		t.Fatalf("selection reasoning = %q, want preserved reasoning", result.Selection.Reasoning)
+	}
+	if len(result.ReviewerFailures) != 0 || len(result.ReviewerCoverage) != 0 {
+		t.Fatalf("reviewer state = failures %#v coverage %#v, want no reviewer work", result.ReviewerFailures, result.ReviewerCoverage)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("adapter requests = %d, want selection/rollup only", len(requests))
+	}
+	for _, request := range requests {
+		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+			t.Fatalf("unexpected reviewer request for deletion-only diff:\n%s", request.Prompt)
+		}
+	}
+}
+
+func TestSelectionOnlyAcceptsRenameSourcePath(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "mv", "main.go", "renamed.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "rename main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = renameDiff("main.go", "renamed.go") + smallDiff("other.go")
+
+	selectionPayload := `{
+		"schema_version": 1,
+		"selected_agents": [{
+			"agent_id": "harness:reviewer",
+			"rationale": "the rename source is visible in the diff",
+			"files": ["main.go", "other.go"]
+		}],
+		"thread_actions": [],
+		"reasoning": "cite the rename source path"
+	}`
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionPayload, 10, 2))
+	// A validation retry would consume this; the request count asserts it is unused.
+	adapter.Queue(fakeLLMResult("selection-session-retry", selectionPayload, 10, 2))
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("adapter requests = %d, want one selection request with no validation retry", len(adapter.Requests()))
+	}
+	if len(result.Selection.SelectedAgents) != 1 {
+		t.Fatalf("selected agents = %#v, want harness:reviewer", result.Selection.SelectedAgents)
+	}
+	// The rename source is not a reviewer obligation, so the assignment filter
+	// drops it and glob coverage backfills the head path.
+	if !reflect.DeepEqual(result.Selection.SelectedAgents[0].Files, []string{"other.go", "renamed.go"}) {
+		t.Fatalf("assigned files = %#v, want reviewable head paths", result.Selection.SelectedAgents[0].Files)
+	}
+}
+
+func TestDryRunReviewerFindingOnDeletedPathIsDecoded(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "rm", "main.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "delete main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = deletionDiff("main.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "other.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", `{
+		"schema_version": 1,
+		"agent_id": "harness:reviewer",
+		"inspected_files": ["other.go"],
+		"skipped_files": ["main.go"],
+		"constraints": [],
+		"findings": [{
+			"severity": "major",
+			"file_path": "main.go",
+			"anchor": {"kind": "file"},
+			"body": "deleting main.go breaks other.go"
+		}]
+	}`, 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-deleted-finding" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.ReviewerFailures) != 0 {
+		t.Fatalf("reviewer failures = %#v, want a decoded finding on the deleted path", result.ReviewerFailures)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].FilePath != "main.go" {
+		t.Fatalf("findings = %#v, want one finding on the deleted main.go", result.Findings)
+	}
+}
+
+func TestDryRunReviewerFindingOnRenameSourcePathIsDecoded(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "mv", "main.go", "renamed.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "rename main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = renameDiff("main.go", "renamed.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "renamed.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", `{
+		"schema_version": 1,
+		"agent_id": "harness:reviewer",
+		"inspected_files": ["renamed.go"],
+		"skipped_files": [],
+		"constraints": [],
+		"findings": [{
+			"severity": "major",
+			"file_path": "main.go",
+			"anchor": {"kind": "file"},
+			"body": "the rename drops a caller of main.go"
+		}]
+	}`, 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-rename-source-finding" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.ReviewerFailures) != 0 {
+		t.Fatalf("reviewer failures = %#v, want a decoded finding on the rename source", result.ReviewerFailures)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %#v, want one finding anchored from the rename source", result.Findings)
+	}
+}
+
+func TestDryRunReviewerFindingOutsideAssignmentIsRejected(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	// The reviewer's **/*.go globs keep schema.sql out of its assignment, so the
+	// file belongs to whichever reviewer owns SQL, never to this one.
+	provider.diff.Raw = smallDiff("other.go") + smallDiff("schema.sql")
+
+	reviewerPayload := `{
+		"schema_version": 1,
+		"agent_id": "harness:reviewer",
+		"inspected_files": ["other.go"],
+		"skipped_files": [],
+		"constraints": [],
+		"findings": [{
+			"severity": "major",
+			"file_path": "schema.sql",
+			"anchor": {"kind": "file"},
+			"body": "schema.sql belongs to another reviewer"
+		}]
+	}`
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "other.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", reviewerPayload, 20, 4))
+	// The decode gate rejects the payload, so the reviewer gets one retry.
+	adapter.Queue(fakeLLMResult("reviewer-session-retry", reviewerPayload, 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-unassigned-finding" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %#v, want none: schema.sql is outside the reviewer assignment", result.Findings)
+	}
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].AgentID != "harness:reviewer" {
+		t.Fatalf("reviewer failures = %#v, want the unassigned-path payload rejected", result.ReviewerFailures)
+	}
+}
+
+func TestRebaseReviewerCohortWithReviewablePathsExcludesDeletedFiles(t *testing.T) {
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
+		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad,
+		Model: "claude-sonnet-5", Effort: "medium",
+	}}}
+	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:general", ModelTier: "medium", Effort: "medium"}}}
+	changed := reviewablePatchPaths([]FilePatch{
+		{Path: "main.go"},
+		{OldPath: "removed.go", Path: "removed.go", Deleted: true},
+	})
+
+	selection, _, err := rebaseReviewerCohort(req, catalog, cohort, changed, 0, "fake-llm")
+	if err != nil {
+		t.Fatalf("rebaseReviewerCohort: %v", err)
+	}
+	if len(selection.SelectedAgents) != 1 || !reflect.DeepEqual(selection.SelectedAgents[0].Files, []string{"main.go"}) {
+		t.Fatalf("rebased selection = %#v, want only retained file", selection.SelectedAgents)
+	}
+}
+
 func TestBuildReviewerCoverageUsesTypedToolEvidenceInsteadOfModelConstraint(t *testing.T) {
 	got := buildReviewerCoverage(
 		[]llm.SelectedAgent{{AgentID: "harness:reviewer", Files: []string{"main.go"}}},
@@ -7426,6 +7768,31 @@ func smallDiff(path string) string {
 		" package main",
 		"-var changed = false",
 		"+var changed = true",
+		"",
+	}, "\n")
+}
+
+func deletionDiff(path string) string {
+	return strings.Join([]string{
+		"diff --git a/" + path + " b/" + path,
+		"deleted file mode 100644",
+		"index 1111111..0000000",
+		"--- a/" + path,
+		"+++ /dev/null",
+		"@@ -1,3 +0,0 @@",
+		"-package main",
+		"-",
+		"-var changed = false",
+		"",
+	}, "\n")
+}
+
+func renameDiff(oldPath, newPath string) string {
+	return strings.Join([]string{
+		"diff --git a/" + oldPath + " b/" + newPath,
+		"similarity index 100%",
+		"rename from " + oldPath,
+		"rename to " + newPath,
 		"",
 	}, "\n")
 }

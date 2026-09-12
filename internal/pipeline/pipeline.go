@@ -780,7 +780,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 
 	cohortScope := ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
-	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, prepared.changedFiles, maxAgents)
+	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, reviewablePatchPaths(prepared.parsed.Patches), maxAgents)
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
@@ -1254,6 +1254,14 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
+	// Deleted files remain in the dossier so the change is visible to the
+	// orchestrator, but they are not reviewer obligations: there is no file at
+	// the head for a reviewer to inspect. Keep them out of the assignment
+	// contract and the post-selection backstops, matching buildReviewerCoverage.
+	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
+	// Citing a removed or pre-rename path must not fail the whole selection.
+	selectableFiles := append(append([]string(nil), reviewerFiles...), mentionableExtraPaths(req.ParsedDiff.Patches)...)
+	promptInput.ChangedFiles = append([]string(nil), reviewerFiles...)
 	dependencyTaskIDs := []string{dossier.SummaryTaskID}
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	selectionPrompt, err := buildSelectionPrompt(req.Catalog, promptInput, req.MaxAgents, req.SelectionPromptInstructions)
@@ -1270,7 +1278,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	decode := func(data []byte) (llm.Selection, error) {
 		return llm.DecodeSelection(data, llm.SelectionOptions{
 			KnownAgents:  knownAgents(req.Catalog),
-			ChangedFiles: changedFiles(req.ParsedDiff.Patches),
+			ChangedFiles: stringSet(selectableFiles),
 			KnownThreads: knownThreadIDs,
 		})
 	}
@@ -1303,7 +1311,8 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, selectionSession, ledgerSession, err
 	}
-	changed := patchPaths(req.ParsedDiff.Patches)
+	changed := reviewerFiles
+	selection = filterSelectedReviewerAssignments(selection, changed)
 	selection = ensureRequiredOnMatchAgents(selection, req.Catalog, changed)
 	selection, err = opts.capSelectionAgents(selection, req.Catalog, changed, req.MaxAgents)
 	if err != nil {
@@ -2056,8 +2065,10 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
-	changedFilePaths := patchPaths(parsed.Patches)
-	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
+	changedFilePaths := reviewablePatchPaths(parsed.Patches)
+	selected = filterSelectedReviewerAssignment(selected, changedFilePaths)
+	// A reviewer may cite its own assignment plus unassignable paths, nothing else.
+	citableFiles := append(append([]string(nil), reviewerAssignmentScope(selected, changedFilePaths)...), mentionableExtraPaths(parsed.Patches)...)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
@@ -2108,7 +2119,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
 			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(assignmentScope),
+			ChangedFiles: stringSet(citableFiles),
 			NewFindingID: opts.newFindingID,
 		})
 	})
@@ -2622,6 +2633,49 @@ func deletedPatchPaths(patches []FilePatch) map[string]bool {
 	return deleted
 }
 
+// renamedPatchOldPaths returns the pre-rename paths still present in the diff.
+// They are not reviewer obligations, but an orchestrator may cite one because
+// the "rename from" header is visible in the dossier diff.
+func renamedPatchOldPaths(patches []FilePatch) []string {
+	paths := make([]string, 0, len(patches))
+	for _, patch := range patches {
+		if patch.Deleted || patch.OldPath == "" || patch.OldPath == patch.Path {
+			continue
+		}
+		paths = append(paths, patch.OldPath)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// mentionableExtraPaths returns paths a model may cite but is never assigned:
+// removed files and the pre-rename sources still visible in the diff.
+func mentionableExtraPaths(patches []FilePatch) []string {
+	deleted := deletedPatchPaths(patches)
+	seen := make(map[string]bool, len(deleted))
+	paths := make([]string, 0, len(patches))
+	for path := range deleted {
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	for _, path := range renamedPatchOldPaths(patches) {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// reviewablePatchPaths returns changed paths that a reviewer can inspect at
+// the head. Deleted paths remain in ParsedDiff and the dossier, but are not a
+// reviewer assignment or coverage obligation.
+func reviewablePatchPaths(patches []FilePatch) []string {
+	return excludeFiles(patchPaths(patches), deletedPatchPaths(patches))
+}
+
 // excludeFiles returns values with any member of exclude removed, preserving order.
 func excludeFiles(values []string, exclude map[string]bool) []string {
 	if len(exclude) == 0 {
@@ -2634,6 +2688,43 @@ func excludeFiles(values []string, exclude map[string]bool) []string {
 		}
 	}
 	return out
+}
+
+func filterAssignmentFiles(files, changedFiles []string) []string {
+	changed := stringSet(changedFiles)
+	var filtered []string
+	for _, file := range files {
+		if changed[file] && !slices.Contains(filtered, file) {
+			filtered = append(filtered, file)
+		}
+	}
+	return copySortedStrings(filtered)
+}
+
+func filterSelectedReviewerAssignment(selected llm.SelectedAgent, changedFiles []string) llm.SelectedAgent {
+	selected.Files = filterAssignmentFiles(selected.Files, changedFiles)
+	selected.AllowedFiles = filterAssignmentFiles(selected.AllowedFiles, changedFiles)
+	return selected
+}
+
+// filterSelectedReviewerAssignments removes deleted paths from explicit
+// assignments and drops a selected reviewer whose only assignment was
+// deleted. Broad selections remain broad when reviewable paths exist.
+func filterSelectedReviewerAssignments(selection llm.Selection, changedFiles []string) llm.Selection {
+	filtered := selection
+	filtered.SelectedAgents = nil
+	if len(changedFiles) == 0 {
+		return filtered
+	}
+	for _, selected := range selection.SelectedAgents {
+		hadExplicitAssignment := len(selected.Files) > 0 || len(selected.AllowedFiles) > 0
+		selected = filterSelectedReviewerAssignment(selected, changedFiles)
+		if hadExplicitAssignment && len(selected.Files) == 0 && len(selected.AllowedFiles) == 0 {
+			continue
+		}
+		filtered.SelectedAgents = append(filtered.SelectedAgents, selected)
+	}
+	return filtered
 }
 
 func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, deleted map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
@@ -3215,19 +3306,6 @@ func resolveInvocationRootForSafety(ctx context.Context, opts Options) (string, 
 
 func knownAgents(catalog agents.Catalog) map[string]bool {
 	return setBy(catalog.Agents, func(agent agents.Agent) string { return agent.ID })
-}
-
-func changedFiles(patches []FilePatch) map[string]bool {
-	paths := make([]string, 0, len(patches)*2)
-	for _, patch := range patches {
-		if patch.Path != "" {
-			paths = append(paths, patch.Path)
-		}
-		if patch.OldPath != "" {
-			paths = append(paths, patch.OldPath)
-		}
-	}
-	return stringSet(paths)
 }
 
 func knownThreads(threads []gitprovider.InlineThread) map[string]bool {
