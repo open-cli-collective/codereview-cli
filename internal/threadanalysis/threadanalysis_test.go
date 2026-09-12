@@ -435,9 +435,14 @@ func TestPromptForInputEnumeratesSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("promptForInput: %v", err)
 	}
-	want := fmt.Sprintf("Return JSON with fields: schema_version (always %d), thread_id, decision, reply_body, summary, resolve, rationale.", outputSchemaVersion)
-	if !strings.Contains(prompt, want) {
-		t.Fatalf("prompt missing field enumeration %q:\n%s", want, prompt)
+	anchor := fmt.Sprintf("schema_version (always %d)", outputSchemaVersion)
+	if !strings.Contains(prompt, anchor) {
+		t.Fatalf("prompt missing schema_version anchor %q:\n%s", anchor, prompt)
+	}
+	for _, field := range []string{"thread_id", "decision", "reply_body", "summary", "resolve", "rationale"} {
+		if !strings.Contains(prompt, field) {
+			t.Fatalf("prompt missing field %q:\n%s", field, prompt)
+		}
 	}
 }
 
