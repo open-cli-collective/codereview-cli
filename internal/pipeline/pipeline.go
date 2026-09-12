@@ -1259,9 +1259,8 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	// the head for a reviewer to inspect. Keep them out of the assignment
 	// contract and the post-selection backstops, matching buildReviewerCoverage.
 	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
-	// Decoding accepts more than it assigns: a rename's old path is visible in
-	// the diff, so citing it must not fail the whole selection.
-	selectableFiles := append(append([]string(nil), reviewerFiles...), renamedPatchOldPaths(req.ParsedDiff.Patches)...)
+	// Citing a removed or pre-rename path must not fail the whole selection.
+	selectableFiles := append(append([]string(nil), reviewerFiles...), mentionableExtraPaths(req.ParsedDiff.Patches)...)
 	promptInput.ChangedFiles = append([]string(nil), reviewerFiles...)
 	dependencyTaskIDs := []string{dossier.SummaryTaskID}
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
@@ -2068,6 +2067,8 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := reviewablePatchPaths(parsed.Patches)
 	selected = filterSelectedReviewerAssignment(selected, changedFilePaths)
+	// A reviewer may cite its own assignment plus unassignable paths, nothing else.
+	citableFiles := append(append([]string(nil), reviewerAssignmentScope(selected, changedFilePaths)...), mentionableExtraPaths(parsed.Patches)...)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
 	if err != nil {
 		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
@@ -2117,10 +2118,8 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
 		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents: map[string]bool{agent.ID: true},
-			// Permitted subject matter is a superset of assigned work: a
-			// reviewer may report on a deleted path it was not assigned.
-			ChangedFiles: stringSet(patchPaths(parsed.Patches)),
+			KnownAgents:  map[string]bool{agent.ID: true},
+			ChangedFiles: stringSet(citableFiles),
 			NewFindingID: opts.newFindingID,
 		})
 	})
@@ -2644,6 +2643,27 @@ func renamedPatchOldPaths(patches []FilePatch) []string {
 			continue
 		}
 		paths = append(paths, patch.OldPath)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+// mentionableExtraPaths returns paths a model may cite but is never assigned:
+// removed files and the pre-rename sources still visible in the diff.
+func mentionableExtraPaths(patches []FilePatch) []string {
+	deleted := deletedPatchPaths(patches)
+	seen := make(map[string]bool, len(deleted))
+	paths := make([]string, 0, len(patches))
+	for path := range deleted {
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	for _, path := range renamedPatchOldPaths(patches) {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
 	}
 	sort.Strings(paths)
 	return paths

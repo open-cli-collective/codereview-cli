@@ -5533,6 +5533,109 @@ func TestDryRunReviewerFindingOnDeletedPathIsDecoded(t *testing.T) {
 	}
 }
 
+func TestDryRunReviewerFindingOnRenameSourcePathIsDecoded(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "mv", "main.go", "renamed.go")
+	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "rename main")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = renameDiff("main.go", "renamed.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "renamed.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", `{
+		"schema_version": 1,
+		"agent_id": "harness:reviewer",
+		"inspected_files": ["renamed.go"],
+		"skipped_files": [],
+		"constraints": [],
+		"findings": [{
+			"severity": "major",
+			"file_path": "main.go",
+			"anchor": {"kind": "file"},
+			"body": "the rename drops a caller of main.go"
+		}]
+	}`, 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-rename-source-finding" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.ReviewerFailures) != 0 {
+		t.Fatalf("reviewer failures = %#v, want a decoded finding on the rename source", result.ReviewerFailures)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("findings = %#v, want one finding anchored from the rename source", result.Findings)
+	}
+}
+
+func TestDryRunReviewerFindingOutsideAssignmentIsRejected(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	// The reviewer's **/*.go globs keep schema.sql out of its assignment, so the
+	// file belongs to whichever reviewer owns SQL, never to this one.
+	provider.diff.Raw = smallDiff("other.go") + smallDiff("schema.sql")
+
+	reviewerPayload := `{
+		"schema_version": 1,
+		"agent_id": "harness:reviewer",
+		"inspected_files": ["other.go"],
+		"skipped_files": [],
+		"constraints": [],
+		"findings": [{
+			"severity": "major",
+			"file_path": "schema.sql",
+			"anchor": {"kind": "file"},
+			"body": "schema.sql belongs to another reviewer"
+		}]
+	}`
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "other.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", reviewerPayload, 20, 4))
+	// The decode gate rejects the payload, so the reviewer gets one retry.
+	adapter.Queue(fakeLLMResult("reviewer-session-retry", reviewerPayload, 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{}), 30, 6))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-unassigned-finding" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("findings = %#v, want none: schema.sql is outside the reviewer assignment", result.Findings)
+	}
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].AgentID != "harness:reviewer" {
+		t.Fatalf("reviewer failures = %#v, want the unassigned-path payload rejected", result.ReviewerFailures)
+	}
+}
+
 func TestRebaseReviewerCohortWithReviewablePathsExcludesDeletedFiles(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
