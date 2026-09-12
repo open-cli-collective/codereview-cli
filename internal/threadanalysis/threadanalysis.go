@@ -268,6 +268,17 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
+// resolveOutputSchemaVersion maps absent to current and rejects explicit zero.
+func resolveOutputSchemaVersion(raw *int) (int, error) {
+	if raw == nil {
+		return outputSchemaVersion, nil
+	}
+	if *raw == 0 {
+		return 0, fmt.Errorf("threadanalysis: schema_version = %d, want %d", *raw, outputSchemaVersion)
+	}
+	return *raw, nil
+}
+
 func decodeResultForThread(threadID string) llm.Decoder[Result] {
 	return func(data []byte) (Result, error) {
 		var raw resultOutput
@@ -280,9 +291,12 @@ func decodeResultForThread(threadID string) llm.Decoder[Result] {
 		if err := decoder.Decode(&extra); err != io.EOF {
 			return Result{}, fmt.Errorf("threadanalysis: decode result: trailing data is not allowed")
 		}
-		// Absent schema_version defaults to the current version.
-		if raw.SchemaVersion != 0 && raw.SchemaVersion != outputSchemaVersion {
-			return Result{}, fmt.Errorf("threadanalysis: schema_version = %d, want %d", raw.SchemaVersion, outputSchemaVersion)
+		version, err := resolveOutputSchemaVersion(raw.SchemaVersion)
+		if err != nil {
+			return Result{}, err
+		}
+		if version != outputSchemaVersion {
+			return Result{}, fmt.Errorf("threadanalysis: schema_version = %d, want %d", version, outputSchemaVersion)
 		}
 		result := Result{
 			ThreadID:  strings.TrimSpace(raw.ThreadID),
@@ -460,7 +474,7 @@ func formatTime(value time.Time) string {
 }
 
 type resultOutput struct {
-	SchemaVersion int      `json:"schema_version"`
+	SchemaVersion *int     `json:"schema_version"`
 	ThreadID      string   `json:"thread_id"`
 	Decision      Decision `json:"decision"`
 	ReplyBody     string   `json:"reply_body"`

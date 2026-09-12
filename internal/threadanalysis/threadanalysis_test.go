@@ -392,6 +392,11 @@ func TestDecodeResultSchemaVersion(t *testing.T) {
 			data: `{"thread_id":"thread-1","decision":"skip","resolve":false}`,
 		},
 		{
+			name:    "explicit zero schema_version is rejected",
+			data:    `{"schema_version":0,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+			wantErr: fmt.Sprintf("schema_version = 0, want %d", outputSchemaVersion),
+		},
+		{
 			name: "explicit current schema_version decodes",
 			data: `{"schema_version":1,"thread_id":"thread-1","decision":"skip","resolve":false}`,
 		},
