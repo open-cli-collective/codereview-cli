@@ -280,7 +280,8 @@ func decodeResultForThread(threadID string) llm.Decoder[Result] {
 		if err := decoder.Decode(&extra); err != io.EOF {
 			return Result{}, fmt.Errorf("threadanalysis: decode result: trailing data is not allowed")
 		}
-		if raw.SchemaVersion != outputSchemaVersion {
+		// Absent schema_version defaults to the current version.
+		if raw.SchemaVersion != 0 && raw.SchemaVersion != outputSchemaVersion {
 			return Result{}, fmt.Errorf("threadanalysis: schema_version = %d, want %d", raw.SchemaVersion, outputSchemaVersion)
 		}
 		result := Result{
@@ -402,7 +403,7 @@ func promptForInput(input analysisInput) (string, error) {
 	prompt := strings.Join([]string{
 		"Analyze this inline code-review discussion thread.",
 		"Return JSON only. Do not include markdown fences or prose outside JSON.",
-		"Use schema_version 1 and fields: thread_id, decision, reply_body, summary, resolve, rationale.",
+		"Return JSON with fields: schema_version (always 1), thread_id, decision, reply_body, summary, resolve, rationale.",
 		"Decisions: skip, reply_only, acknowledge, clarify, concede, summarize.",
 		"Output contract:",
 		"skip: reply_body and summary must be empty; resolve must be false.",

@@ -826,7 +826,7 @@ func TestLiveResumeRecoversPostedThreadSummaryForReviewerPrompt(t *testing.T) {
 	}
 	var reviewerPrompt string
 	for _, request := range requests {
-		if strings.Contains(request.Prompt, "Use schema_version 1 and fields: thread_id") {
+		if strings.Contains(request.Prompt, "Analyze this inline code-review discussion thread.") {
 			t.Fatalf("resumed pipeline repeated thread analysis:\n%s", request.Prompt)
 		}
 		if strings.Contains(request.Prompt, `"schema": "findings"`) {
