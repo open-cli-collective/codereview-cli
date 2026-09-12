@@ -31,6 +31,11 @@ const (
 	maxGitWorktreeSearchDepth = 40
 )
 
+// ReviewerCoverageRepairSuffix is appended to an agent ID to name that
+// reviewer's coverage repair pass. An agent whose own name ends in it would
+// share the repair pass's task ID, log, and disposable workspace.
+const ReviewerCoverageRepairSuffix = "-coverage-repair"
+
 var (
 	// ErrInvalid identifies malformed agent definitions or unsafe agent names.
 	ErrInvalid = errors.New("agents: invalid")
@@ -880,6 +885,9 @@ func validateName(kind, value string) error {
 	}
 	if strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, "..") || strings.Contains(value, ":") {
 		return fmt.Errorf("%w: unsafe %s name %q", ErrInvalid, kind, value)
+	}
+	if kind == "agent" && strings.HasSuffix(value, ReviewerCoverageRepairSuffix) {
+		return fmt.Errorf("%w: reserved %s name %q: %q is reserved for the coverage repair pass of another agent", ErrInvalid, kind, value, ReviewerCoverageRepairSuffix)
 	}
 	return nil
 }

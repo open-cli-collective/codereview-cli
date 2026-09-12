@@ -48,6 +48,32 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 	return string(body), deps, nil
 }
 
+func buildReviewerCoverageRepairPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
+	prompt, deps, err := buildReviewerPrompt(paths, pr, selected, agent, changedFiles)
+	if err != nil {
+		return "", nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		return "", nil, fmt.Errorf("pipeline: decode reviewer prompt for coverage repair: %w", err)
+	}
+	payload["task"] = "complete one focused coverage repair pass and return findings JSON only"
+	payload["coverage_repair"] = map[string]any{
+		"files": append([]string(nil), selected.Files...),
+		"instructions": []string{
+			"The primary review explicitly skipped these assigned readable files.",
+			"Inspect each listed file in the prepared workspace, including only the changed content and dependency or workspace graph context relevant to this review.",
+			"Return findings from this focused pass only; primary findings are retained separately and must not be repeated.",
+			"List a file in inspected_files only after actually inspecting it. Keep any file you still cannot inspect in skipped_files so coverage remains incomplete.",
+		},
+	}
+	body, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", nil, err
+	}
+	return string(body), deps, nil
+}
+
 type reviewerDiscussionOutcome struct {
 	ThreadID   string `json:"thread_id"`
 	Kind       string `json:"kind"`

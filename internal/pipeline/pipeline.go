@@ -854,23 +854,23 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return nil, false, err
 	}
 	reviewerThreadResponses, reviewerCheckpointActions := recoverCheckpointThreadResponses(threadResponses, prepared.threadContext, checkpointActions)
-	findings, reviewerResults, reviewerSessions, reviewerLedgerSessions, findingSessions, reviewerFailures, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, reviewerDiscussionCheckpoint{responses: reviewerThreadResponses, actions: reviewerCheckpointActions})
+	reviewerRun, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, reviewerDiscussionCheckpoint{responses: reviewerThreadResponses, actions: reviewerCheckpointActions})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
-	result.Findings = findings
-	result.ReviewerFailures = reviewerFailures
-	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerSessions)
-	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerResults, reviewerFailures, prepared.changedFiles, deletedPatchPaths(prepared.parsed.Patches), reviewerToolEvidenceByAgent(reviewerSessions))
+	result.Findings = reviewerRun.findings
+	result.ReviewerFailures = reviewerRun.failures
+	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerRun.sessions)
+	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerRun.results, reviewerRun.failures, prepared.changedFiles, deletedPatchPaths(prepared.parsed.Patches), reviewerToolEvidenceByAgent(reviewerRun.primarySessions))
 	result.ReviewerCoverage = reviewerCoverage
-	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerLedgerSessions...)
+	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerRun.ledgerSessions...)
 
 	rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
-	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, findings, reviewerFailures, reviewerCoverage)
+	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, reviewerRun.findings, reviewerRun.failures, reviewerCoverage)
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
@@ -881,7 +881,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, err
 	}
-	reviewerDeps := reviewerTaskIDs(selection.SelectedAgents)
+	reviewerDeps := reviewerRun.taskIDs
 	rollupDeps := append([]string(nil), selectionTaskIDs...)
 	rollupDeps = append(rollupDeps, reviewerDeps...)
 	rollup, rollupSession, rollupLedgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
@@ -899,7 +899,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		resumeSessionID:   namedSession.resumeID(),
 	}, func(data []byte) (review.Rollup, error) {
 		return llm.DecodeRollup(data, llm.RollupOptions{
-			FindingSeverities:         findingSeverities(findings),
+			FindingSeverities:         findingSeverities(reviewerRun.findings),
 			MajorEventRequestsChanges: req.MajorRequestChanges,
 		})
 	})
@@ -916,17 +916,17 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		opts.emitWarning(fmt.Sprintf("session %q was not updated because no orchestrator session was produced", namedSession.active.Name))
 	}
 
-	plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
+	plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, reviewerRun.findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
 		threadResponses:  threadResponses,
 		repoSources:      repoSources,
 		hasRun:           true,
 		selection:        selectionSession,
 		selectionRan:     selectionRan,
-		reviewers:        reviewerSessions,
+		reviewers:        reviewerRun.sessions,
 		rollup:           rollupSession,
 		selectedAgents:   selection.SelectedAgents,
-		findingSessions:  findingSessions,
-		reviewerFailures: reviewerFailures,
+		findingSessions:  reviewerRun.findingSessions,
+		reviewerFailures: reviewerRun.failures,
 		reviewerCoverage: reviewerCoverage,
 		threadContext:    prepared.threadContext,
 		startedAt:        now,
@@ -936,7 +936,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 	plan.Actions = preserveCheckpointActions(plan.Actions, checkpointActions)
 	result.Plan = plan
-	return findingSessions, false, nil
+	return reviewerRun.findingSessions, false, nil
 }
 
 func executionPhaseFailure(err error) (map[review.FindingID]string, bool, error) {
@@ -1968,7 +1968,29 @@ func appendSessionsIfPresent(sessions []ledger.Session, more ...ledger.Session) 
 	return sessions
 }
 
-func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int, cohortScope ledger.ReviewerCohortScope, reviewerResumeIDs map[string]string, discussion reviewerDiscussionCheckpoint) ([]review.Finding, []llm.Findings, []sessionDraft, []ledger.Session, map[review.FindingID]string, []ReviewerFailure, error) {
+type reviewerBatchResult struct {
+	findings        []review.Finding
+	results         []llm.Findings
+	sessions        []sessionDraft
+	primarySessions []sessionDraft
+	ledgerSessions  []ledger.Session
+	findingSessions map[review.FindingID]string
+	failures        []ReviewerFailure
+	taskIDs         []string
+}
+
+type reviewerExecution struct {
+	result   llm.Findings
+	sessions []sessionDraft
+	// Primary passes only: the repair shares the agent ID, and merged tool evidence keeps the worse status.
+	primarySessions []sessionDraft
+	ledgerSessions  []ledger.Session
+	findingSessions map[review.FindingID]string
+	failure         *ReviewerFailure
+	taskIDs         []string
+}
+
+func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int, cohortScope ledger.ReviewerCohortScope, reviewerResumeIDs map[string]string, discussion reviewerDiscussionCheckpoint) (reviewerBatchResult, error) {
 	type job struct {
 		selected llm.SelectedAgent
 		agent    agents.Agent
@@ -1977,12 +1999,12 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 	for _, selected := range selection.SelectedAgents {
 		agent, ok := catalog.Find(selected.AgentID)
 		if !ok {
-			return nil, nil, nil, nil, nil, nil, fmt.Errorf("pipeline: selected agent %q not found", selected.AgentID)
+			return reviewerBatchResult{}, fmt.Errorf("pipeline: selected agent %q not found", selected.AgentID)
 		}
 		jobs = append(jobs, job{selected: selected, agent: agent})
 	}
 	if len(jobs) == 0 {
-		return nil, nil, nil, nil, nil, nil, nil
+		return reviewerBatchResult{findingSessions: map[review.FindingID]string{}}, nil
 	}
 	sort.Slice(jobs, func(i, j int) bool { return jobs[i].agent.ID < jobs[j].agent.ID })
 
@@ -1990,12 +2012,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 	defer cancel()
 	sem := make(chan struct{}, maxConcurrency)
 	var mu sync.Mutex
-	var allFindings []review.Finding
-	var reviewerResults []llm.Findings
-	var sessions []sessionDraft
-	var ledgerSessions []ledger.Session
-	findingSessions := map[review.FindingID]string{}
-	var failures []ReviewerFailure
+	batch := reviewerBatchResult{findingSessions: map[review.FindingID]string{}}
 	var firstErr error
 	var wg sync.WaitGroup
 	for _, current := range jobs {
@@ -2009,15 +2026,9 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 				return
 			}
 			defer func() { <-sem }()
-			result, session, ledgerSession, failure, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs, reviewerResume{scope: cohortScope, sessionID: reviewerResumeIDs[current.agent.ID], discussion: discussion})
+			execution, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs, reviewerResume{scope: cohortScope, sessionID: reviewerResumeIDs[current.agent.ID], discussion: discussion})
 			mu.Lock()
 			defer mu.Unlock()
-			if failure != nil {
-				failures = append(failures, *failure)
-				sessions = append(sessions, session)
-				ledgerSessions = appendSessionIfPresent(ledgerSessions, ledgerSession)
-				return
-			}
 			if err != nil {
 				if firstErr == nil {
 					firstErr = err
@@ -2025,23 +2036,31 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 				}
 				return
 			}
-			sessions = append(sessions, session)
-			ledgerSessions = appendSessionIfPresent(ledgerSessions, ledgerSession)
-			reviewerResults = append(reviewerResults, result)
-			for _, finding := range result.Findings {
-				allFindings = append(allFindings, finding)
-				findingSessions[finding.ID] = session.RowID
+			batch.sessions = append(batch.sessions, execution.sessions...)
+			batch.primarySessions = append(batch.primarySessions, execution.primarySessions...)
+			batch.ledgerSessions = append(batch.ledgerSessions, execution.ledgerSessions...)
+			batch.taskIDs = append(batch.taskIDs, execution.taskIDs...)
+			if execution.failure != nil {
+				batch.failures = append(batch.failures, *execution.failure)
+			}
+			if strings.TrimSpace(execution.result.AgentID) != "" {
+				batch.results = append(batch.results, execution.result)
+				batch.findings = append(batch.findings, execution.result.Findings...)
+			}
+			for findingID, sessionRowID := range execution.findingSessions {
+				batch.findingSessions[findingID] = sessionRowID
 			}
 		}()
 	}
 	wg.Wait()
 	if firstErr != nil {
-		return nil, nil, nil, nil, nil, nil, firstErr
+		return reviewerBatchResult{}, firstErr
 	}
-	sort.Slice(allFindings, func(i, j int) bool { return allFindings[i].ID < allFindings[j].ID })
-	sort.Slice(reviewerResults, func(i, j int) bool { return reviewerResults[i].AgentID < reviewerResults[j].AgentID })
-	sort.Slice(failures, func(i, j int) bool { return failures[i].AgentID < failures[j].AgentID })
-	return allFindings, reviewerResults, sessions, ledgerSessions, findingSessions, failures, nil
+	sort.Slice(batch.findings, func(i, j int) bool { return batch.findings[i].ID < batch.findings[j].ID })
+	sort.Slice(batch.results, func(i, j int) bool { return batch.results[i].AgentID < batch.results[j].AgentID })
+	sort.Slice(batch.failures, func(i, j int) bool { return batch.failures[i].AgentID < batch.failures[j].AgentID })
+	sort.Strings(batch.taskIDs)
+	return batch, nil
 }
 
 type reviewerResume struct {
@@ -2055,14 +2074,14 @@ type reviewerDiscussionCheckpoint struct {
 	actions   []ledger.PlannedAction
 }
 
-func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string, resume ...reviewerResume) (llm.Findings, sessionDraft, ledger.Session, *ReviewerFailure, error) {
+func runReviewer(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, parsed ParsedDiff, artifacts ArtifactPaths, selected llm.SelectedAgent, agent agents.Agent, dependencyTaskIDs []string, resume ...reviewerResume) (reviewerExecution, error) {
 	var resumeState reviewerResume
 	if len(resume) > 0 {
 		resumeState = resume[0]
 	}
 	runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
+		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 	changedFilePaths := reviewablePatchPaths(parsed.Patches)
@@ -2071,20 +2090,20 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	citableFiles := append(append([]string(nil), reviewerAssignmentScope(selected, changedFilePaths)...), mentionableExtraPaths(parsed.Patches)...)
 	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
+		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
 	if err := opts.checkPromptBudget("reviewer", agent.ID, model, strings.Join(selected.Files, ","), prompt); err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, Failure(FailureTerminal, err)
+		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
 	logPath, err := artifacts.AgentLog(agent.ID)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return reviewerExecution{}, err
 	}
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
 	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
 	if err != nil {
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return reviewerExecution{}, err
 	}
 	if req.ReviewerFast {
 		request.Fast = true
@@ -2123,36 +2142,213 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 			NewFindingID: opts.newFindingID,
 		})
 	})
-	if providerSessionID := strings.TrimSpace(session.ProviderReportedSessionID); providerSessionID != "" && strings.TrimSpace(resumeState.scope.PRKey) != "" {
-		if updateErr := opts.Store.UpdateReviewerCohortSession(ctx, resumeState.scope, agent.ID, providerSessionID, opts.now()); updateErr != nil {
-			return llm.Findings{}, session, ledgerSession, nil, updateErr
-		}
+	execution := reviewerExecution{
+		sessions:        []sessionDraft{session},
+		primarySessions: []sessionDraft{session},
+		ledgerSessions:  appendSessionIfPresent(nil, ledgerSession),
+		findingSessions: map[review.FindingID]string{},
+		taskIDs:         []string{taskID},
+	}
+	if updateErr := updateReviewerCohortProviderSession(ctx, opts, resumeState.scope, agent.ID, session); updateErr != nil {
+		return reviewerExecution{}, updateErr
 	}
 	if err != nil {
 		var taskErr *llmTaskError
 		if errors.As(err, &taskErr) && taskErr.status == llmTaskStatusFailedIsolated {
-			return llm.Findings{}, session, ledgerSession, &ReviewerFailure{
+			execution.failure = &ReviewerFailure{
 				TaskID:  taskID,
 				AgentID: agent.ID,
 				Error:   sanitizeTaskErrorForMarkdown(err),
-			}, nil
+			}
+			return execution, nil
 		}
-		return llm.Findings{}, sessionDraft{}, ledger.Session{}, nil, err
+		return reviewerExecution{}, err
 	}
-	return findings, session, ledgerSession, nil, nil
+	execution.result = findings
+	for _, finding := range findings.Findings {
+		execution.findingSessions[finding.ID] = session.RowID
+	}
+
+	repairFiles := reviewerCoverageRepairFiles(findings.SkippedFiles, parsed.Patches)
+	if len(repairFiles) == 0 {
+		return execution, nil
+	}
+	// The primary's own evidence already forces incomplete_tool, so no repair can clear it.
+	if reviewerToolEvidenceForcesIncomplete(session.Response.ReviewerToolEvidence) {
+		return execution, nil
+	}
+	repairSelected := llm.SelectedAgent{
+		AgentID:      selected.AgentID,
+		Rationale:    "complete coverage for readable files skipped by the primary review",
+		Files:        append([]string(nil), repairFiles...),
+		AllowedFiles: append([]string(nil), repairFiles...),
+	}
+	repairTaskID := reviewerCoverageRepairTaskID(agent.ID)
+	// The repair only adds coverage, so its setup failures are isolated like its execution failures.
+	repairSetupFailed := func(err error) (reviewerExecution, error) {
+		execution.failure = &ReviewerFailure{
+			TaskID:  repairTaskID,
+			AgentID: agent.ID,
+			Error:   sanitizeTaskErrorForMarkdown(err),
+		}
+		return execution, nil
+	}
+	repairPrompt, repairPromptDeps, err := buildReviewerCoverageRepairPrompt(artifacts, pr, repairSelected, agent, changedFilePaths)
+	if err != nil {
+		return repairSetupFailed(err)
+	}
+	if err := opts.checkPromptBudget("reviewer coverage repair", agent.ID, model, strings.Join(repairFiles, ","), repairPrompt); err != nil {
+		return repairSetupFailed(err)
+	}
+	repairIdentity := reviewerCoverageRepairIdentity(agent.ID)
+	repairLogPath, err := artifacts.AgentLog(repairIdentity)
+	if err != nil {
+		return repairSetupFailed(err)
+	}
+	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
+	if err != nil {
+		return repairSetupFailed(err)
+	}
+	if req.ReviewerFast {
+		repairRequest.Fast = true
+	}
+	defer func() {
+		if cleanupRepairWorkspace != nil {
+			if cleanupErr := cleanupRepairWorkspace(); cleanupErr != nil {
+				opts.emitWarning(fmt.Sprintf("cleanup coverage repair workspace for %s: %v", agent.ID, cleanupErr))
+			}
+		}
+	}()
+	repairDependencyTaskIDs := []string{taskID}
+	repairFingerprintDeps := append(append([]string(nil), repairDependencyTaskIDs...), repairPromptDeps...)
+	if req.ReviewerFast {
+		repairFingerprintDeps = append(repairFingerprintDeps, "fast=true")
+	}
+	repair, repairSession, repairLedgerSession, repairErr := runStructuredTask(ctx, opts, llmTaskSpec{
+		runID:             runID,
+		taskID:            repairTaskID,
+		phase:             "reviewer-coverage-repair",
+		dependencyTaskIDs: repairDependencyTaskIDs,
+		inputFingerprint:  llmlifecycle.Fingerprint(opts.Adapter.Name(), repairTaskID, "reviewer-coverage-repair", model, effort, repairPrompt, repairFingerprintDeps),
+		artifacts:         artifacts,
+		role:              ledger.SessionRoleReviewer,
+		agentID:           &agentID,
+		model:             model,
+		effort:            effort,
+		logPath:           repairLogPath,
+		prompt:            repairPrompt,
+		baseRequest:       repairRequest,
+		resumeSessionID:   session.ProviderReportedSessionID,
+		llmFailureStatus:  llmTaskStatusFailedIsolated,
+	}, func(data []byte) (llm.Findings, error) {
+		return llm.DecodeFindings(data, llm.FindingsOptions{
+			KnownAgents:  map[string]bool{agent.ID: true},
+			ChangedFiles: stringSet(repairFiles),
+			NewFindingID: opts.newFindingID,
+		})
+	})
+	// No cohort session update here: that slot seeds the next run's primary review.
+	execution.sessions = append(execution.sessions, repairSession)
+	execution.ledgerSessions = appendSessionIfPresent(execution.ledgerSessions, repairLedgerSession)
+	execution.taskIDs = append(execution.taskIDs, repairTaskID)
+	if repairErr != nil {
+		var taskErr *llmTaskError
+		if errors.As(repairErr, &taskErr) && taskErr.status == llmTaskStatusFailedIsolated {
+			execution.failure = &ReviewerFailure{
+				TaskID:  repairTaskID,
+				AgentID: agent.ID,
+				Error:   sanitizeTaskErrorForMarkdown(repairErr),
+			}
+			return execution, nil
+		}
+		return reviewerExecution{}, repairErr
+	}
+	if reviewerToolEvidenceForcesIncomplete(repairSession.Response.ReviewerToolEvidence) {
+		// A repair that never proved its own tool use inspected nothing, so its claim cannot clear a skip.
+		repair.InspectedFiles = nil
+	}
+	execution.result = mergeReviewerFindings(findings, repair)
+	for _, finding := range repair.Findings {
+		execution.findingSessions[finding.ID] = repairSession.RowID
+	}
+	return execution, nil
+}
+
+func updateReviewerCohortProviderSession(ctx context.Context, opts Options, scope ledger.ReviewerCohortScope, agentID string, session sessionDraft) error {
+	providerSessionID := strings.TrimSpace(session.ProviderReportedSessionID)
+	if providerSessionID == "" || strings.TrimSpace(scope.PRKey) == "" {
+		return nil
+	}
+	return opts.Store.UpdateReviewerCohortSession(ctx, scope, agentID, providerSessionID, opts.now())
 }
 
 func reviewerTaskID(agentID string) string {
 	return "reviewer-" + statepaths.Encode(agentID)
 }
 
-func reviewerTaskIDs(selected []llm.SelectedAgent) []string {
-	out := make([]string, 0, len(selected))
-	for _, agent := range selected {
-		out = append(out, reviewerTaskID(agent.AgentID))
+// reviewerCoverageRepairSuffix marks the repair pass's task ID, log, and
+// workspace as a distinct identity derived from the primary reviewer's. The
+// agent catalog rejects names ending in it so the two cannot collide.
+const reviewerCoverageRepairSuffix = agents.ReviewerCoverageRepairSuffix
+
+func reviewerCoverageRepairIdentity(agentID string) string {
+	return agentID + reviewerCoverageRepairSuffix
+}
+
+func reviewerCoverageRepairTaskID(agentID string) string {
+	return reviewerTaskID(reviewerCoverageRepairIdentity(agentID))
+}
+
+// reviewerCoverageRepairFiles returns skipped assignment paths whose head
+// content can be inspected. Deleted and binary patches retain their existing
+// fail-closed coverage state without spending a semantic repair pass.
+func reviewerCoverageRepairFiles(skipped []string, patches []FilePatch) []string {
+	repairable := make(map[string]bool, len(patches))
+	for _, patch := range patches {
+		if !patch.Deleted && !patch.Binary {
+			repairable[patch.Path] = true
+		}
 	}
-	sort.Strings(out)
-	return out
+	var files []string
+	for _, file := range skipped {
+		if repairable[file] && !slices.Contains(files, file) {
+			files = append(files, file)
+		}
+	}
+	return copySortedStrings(filterReviewableFiles(files))
+}
+
+func mergeReviewerFindings(primary, repair llm.Findings) llm.Findings {
+	merged := llm.Findings{
+		AgentID:        primary.AgentID,
+		Findings:       append(append([]review.Finding(nil), primary.Findings...), repair.Findings...),
+		InspectedFiles: appendUniqueStrings(nil, primary.InspectedFiles...),
+		SkippedFiles:   appendUniqueStrings(nil, primary.SkippedFiles...),
+		Constraints:    appendUniqueStrings(nil, primary.Constraints...),
+	}
+	merged.InspectedFiles = appendUniqueStrings(merged.InspectedFiles, repair.InspectedFiles...)
+	inspected := stringSet(repair.InspectedFiles)
+	remainingSkipped := merged.SkippedFiles[:0]
+	for _, file := range merged.SkippedFiles {
+		if !inspected[file] {
+			remainingSkipped = append(remainingSkipped, file)
+		}
+	}
+	merged.SkippedFiles = appendUniqueStrings(remainingSkipped, repair.SkippedFiles...)
+	merged.Constraints = appendUniqueStrings(merged.Constraints, repair.Constraints...)
+	return merged
+}
+
+func appendUniqueStrings(dst []string, values ...string) []string {
+	seen := stringSet(dst)
+	for _, value := range values {
+		if !seen[value] {
+			dst = append(dst, value)
+			seen[value] = true
+		}
+	}
+	return dst
 }
 
 type llmTaskSpec struct {
@@ -2477,13 +2673,13 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	if !inputs.hasRun {
 		return reviewplan.RunSummary{}, nil
 	}
-	reviewerByAgent := map[string]sessionDraft{}
+	reviewerByAgent := map[string][]sessionDraft{}
 	agentByRow := map[string]string{}
 	for _, draft := range inputs.reviewers {
 		if draft.AgentID == nil {
 			continue
 		}
-		reviewerByAgent[*draft.AgentID] = draft
+		reviewerByAgent[*draft.AgentID] = append(reviewerByAgent[*draft.AgentID], draft)
 		agentByRow[draft.RowID] = *draft.AgentID
 	}
 
@@ -2494,8 +2690,8 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
-		if draft, ok := reviewerByAgent[selected.AgentID]; ok && sessionDraftExecuted(draft) {
-			workstreams = append(workstreams, workstreamUsage(selected.AgentID, draft))
+		if drafts := reviewerByAgent[selected.AgentID]; slices.ContainsFunc(drafts, sessionDraftExecuted) {
+			workstreams = append(workstreams, workstreamUsageFromTotals(selected.AgentID, combineReviewerWorkstreamTotals(drafts)))
 		}
 	}
 	if sessionDraftExecuted(inputs.rollup) {
@@ -2522,6 +2718,106 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 		}
 	}
 	return summary, findingReviewers
+}
+
+// workstreamTotals is the usage a workstream reports. A reviewer's totals span
+// several provider sessions, so they are deliberately not a sessionDraft: there
+// is no single session they could be written back to.
+type workstreamTotals struct {
+	model       string
+	usage       llm.Usage
+	durationMS  int64
+	startedAt   time.Time
+	completedAt time.Time
+}
+
+func draftWorkstreamTotals(draft sessionDraft) workstreamTotals {
+	return workstreamTotals{
+		model:       draft.Model,
+		usage:       draft.Response.Usage,
+		durationMS:  draft.Response.DurationMS,
+		startedAt:   draft.StartedAt,
+		completedAt: draft.CompletedAt,
+	}
+}
+
+func combineReviewerWorkstreamTotals(drafts []sessionDraft) workstreamTotals {
+	if len(drafts) == 0 {
+		return workstreamTotals{}
+	}
+	combined := workstreamTotals{model: drafts[0].Model}
+	combined.usage = llm.Usage{
+		TokensIn:      sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.TokensIn }),
+		TokensOut:     sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.TokensOut }),
+		CacheRead:     sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.CacheRead }),
+		CacheCreate:   sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.CacheCreate }),
+		CacheCreate5m: sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.CacheCreate5m }),
+		CacheCreate1h: sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.CacheCreate1h }),
+		CostUSD:       sumReviewerSessionFloats(drafts, func(draft sessionDraft) *float64 { return draft.Response.Usage.CostUSD }),
+	}
+	allFast := true
+	allStandard := true
+	anySpeed := false
+	for _, draft := range drafts {
+		combined.durationMS += draft.Response.DurationMS
+		if combined.startedAt.IsZero() || !draft.StartedAt.IsZero() && draft.StartedAt.Before(combined.startedAt) {
+			combined.startedAt = draft.StartedAt
+		}
+		if draft.CompletedAt.After(combined.completedAt) {
+			combined.completedAt = draft.CompletedAt
+		}
+		// A draft that reports no speed does not contradict one that does.
+		if speed := draft.Response.Usage.Speed; speed != "" {
+			anySpeed = true
+			allFast = allFast && speed == "fast"
+			allStandard = allStandard && speed == "standard"
+		}
+	}
+	switch {
+	case anySpeed && allFast:
+		combined.usage.Speed = "fast"
+	case anySpeed && allStandard:
+		combined.usage.Speed = "standard"
+	default:
+		combined.usage.Speed = "unknown"
+	}
+	return combined
+}
+
+// A draft missing a metric contributes nothing to it; only a metric no draft
+// reports at all is absent.
+func sumReviewerSessionInts(drafts []sessionDraft, value func(sessionDraft) *int) *int {
+	total := 0
+	reported := false
+	for _, draft := range drafts {
+		current := value(draft)
+		if current == nil {
+			continue
+		}
+		total += *current
+		reported = true
+	}
+	if !reported {
+		return nil
+	}
+	return &total
+}
+
+func sumReviewerSessionFloats(drafts []sessionDraft, value func(sessionDraft) *float64) *float64 {
+	total := 0.0
+	reported := false
+	for _, draft := range drafts {
+		current := value(draft)
+		if current == nil {
+			continue
+		}
+		total += *current
+		reported = true
+	}
+	if !reported {
+		return nil
+	}
+	return &total
 }
 
 // sessionDraftExecuted distinguishes a phase that ran (or loaded durable
@@ -2561,15 +2857,51 @@ func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerF
 	return out
 }
 
+// reviewerToolEvidenceForcesIncomplete reports whether reported tool evidence denies a reviewer complete coverage.
+func reviewerToolEvidenceForcesIncomplete(evidence *llm.ReviewerToolEvidence) bool {
+	return evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded
+}
+
 func reviewerToolEvidenceByAgent(sessions []sessionDraft) map[string]*llm.ReviewerToolEvidence {
 	out := make(map[string]*llm.ReviewerToolEvidence, len(sessions))
 	for _, session := range sessions {
 		if session.AgentID == nil || session.Response.ReviewerToolEvidence == nil {
 			continue
 		}
-		out[*session.AgentID] = session.Response.ReviewerToolEvidence
+		out[*session.AgentID] = mergeReviewerToolEvidence(out[*session.AgentID], session.Response.ReviewerToolEvidence)
 	}
 	return out
+}
+
+func mergeReviewerToolEvidence(current, next *llm.ReviewerToolEvidence) *llm.ReviewerToolEvidence {
+	if current == nil {
+		if next == nil {
+			return nil
+		}
+		cloned := *next
+		return &cloned
+	}
+	if next == nil || reviewerToolEvidenceRank(current.DiffStatus) >= reviewerToolEvidenceRank(next.DiffStatus) {
+		cloned := *current
+		return &cloned
+	}
+	cloned := *next
+	return &cloned
+}
+
+func reviewerToolEvidenceRank(status llm.DiffToolStatus) int {
+	switch status {
+	case llm.DiffToolStatusSucceeded:
+		return 1
+	case llm.DiffToolStatusNotInvoked:
+		return 2
+	case llm.DiffToolStatusIncomplete:
+		return 3
+	case llm.DiffToolStatusFailed:
+		return 4
+	default:
+		return 5
+	}
 }
 
 // generatedLockfiles are dependency lockfiles: machine-written by a package
@@ -2757,26 +3089,29 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			AgentID: agent.AgentID,
 			Scope:   scope,
 		}
+		result, hasResult := resultByAgent[agent.AgentID]
+		if hasResult {
+			// Draw both scope and coverage rows from the same lockfile-exempt set,
+			// so a reviewer that did read a lockfile doesn't emit an inspected file
+			// outside its scope.
+			entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
+			entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
+			entry.Constraints = copySortedStrings(result.Constraints)
+		}
 		if failure, ok := failureByAgent[agent.AgentID]; ok {
+			// A reviewer that failed only its coverage repair keeps what the primary pass proved.
 			entry.Status = reviewerCoverageIncompleteFailed
 			entry.Diagnostic = failure.Error
 			out = append(out, entry)
 			continue
 		}
-		result, ok := resultByAgent[agent.AgentID]
-		if !ok {
+		if !hasResult {
 			entry.Status = reviewerCoverageIncompleteFailed
 			entry.Diagnostic = "reviewer result was not recorded"
 			out = append(out, entry)
 			continue
 		}
-		// Draw both scope and coverage rows from the same lockfile-exempt set,
-		// so a reviewer that did read a lockfile doesn't emit an inspected file
-		// outside its scope.
-		entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
-		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
-		entry.Constraints = copySortedStrings(result.Constraints)
-		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {
+		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); reviewerToolEvidenceForcesIncomplete(evidence) {
 			entry.Status = reviewerCoverageIncompleteTool
 			entry.Diagnostic = reviewerToolDiagnostic(evidence, "")
 			out = append(out, entry)
@@ -2920,10 +3255,14 @@ func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewer
 }
 
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
-	usage := draft.Response.Usage
+	return workstreamUsageFromTotals(name, draftWorkstreamTotals(draft))
+}
+
+func workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.WorkstreamUsage {
+	usage := totals.usage
 	workstream := reviewplan.WorkstreamUsage{
 		Name:          name,
-		Model:         draft.Model,
+		Model:         totals.model,
 		TokensIn:      usage.TokensIn,
 		TokensOut:     usage.TokensOut,
 		CacheRead:     usage.CacheRead,
@@ -2936,7 +3275,7 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 	// tokens at public list prices — only for models the price table knows, so an
 	// agent's unpriced model leaves cost unavailable rather than wrong.
 	if workstream.CostUSD == nil {
-		if est, ok := pricing.EstimateUsageUSD(draft.Model, pricing.Usage{
+		if est, ok := pricing.EstimateUsageUSD(totals.model, pricing.Usage{
 			TokensIn: usage.TokensIn, TokensOut: usage.TokensOut, CacheRead: usage.CacheRead,
 			CacheCreate5m: usage.CacheCreate5m, CacheCreate1h: usage.CacheCreate1h,
 			CacheCreateTotal: usage.CacheCreate, Speed: usage.Speed,
@@ -2950,11 +3289,11 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 	// pipeline's own start/complete clock for the workstream, and render
 	// unavailable (not 0s) when neither source has data.
 	switch {
-	case draft.Response.DurationMS > 0:
-		duration := draft.Response.DurationMS
+	case totals.durationMS > 0:
+		duration := totals.durationMS
 		workstream.DurationMS = &duration
-	case !draft.StartedAt.IsZero() && draft.CompletedAt.After(draft.StartedAt):
-		duration := draft.CompletedAt.Sub(draft.StartedAt).Milliseconds()
+	case !totals.startedAt.IsZero() && totals.completedAt.After(totals.startedAt):
+		duration := totals.completedAt.Sub(totals.startedAt).Milliseconds()
 		workstream.DurationMS = &duration
 	}
 	return workstream

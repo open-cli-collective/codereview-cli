@@ -44,7 +44,7 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 `schema_version` is currently `1`. Adding a new task that reuses the existing
 metadata shape does not require a schema bump, so the schema version stays at
-`1` for the dossier-phase addition in this slice.
+`1` for the dossier summary and reviewer coverage-repair tasks.
 
 Bump it when changing any load-bearing field, status value, fingerprint input,
 task identity, or resume rule in a way that could make an in-flight run unsafe
@@ -53,11 +53,12 @@ to resume.
 Load-bearing metadata fields are:
 
 - `task_id`: stable task identity. Current values are `orchestrator-selection`,
-  `reviewer-<encoded-agent-id>`, `orchestrator-rollup`,
+  `reviewer-<encoded-agent-id>`, `reviewer-<encoded-agent-id>-coverage-repair`,
+  `orchestrator-rollup`,
   `dossier-discussion-summary`, `thread-analysis-<thread-id>`, and
   `approval-override`.
-- `phase`: task phase, such as `selection`, `reviewer`, `rollup`, or
-  `dossier`.
+- `phase`: task phase, such as `selection`, `reviewer`,
+  `reviewer-coverage-repair`, `rollup`, or `dossier`.
 - `dependency_task_ids`: task IDs whose completed state was included in this
   task input.
 - `input_fingerprint`: hash of the task schema version, adapter, task identity,
@@ -154,11 +155,12 @@ claim; they do not add coverage or trigger another review attempt. Paths outside
 the reviewer's allowed assignment and paths claimed as both inspected and skipped
 remain invalid. Scope-repair diagnostics identify zero-based array positions
 without echoing the rejected path into the retry prompt.
-For a reviewer with a recorded result, explicit evidence with any status other
-than `succeeded` makes coverage `incomplete_tool`, even if the result reports
-all assigned files as inspected. Incomplete coverage clamps an otherwise
-approving review to `comment`. Successful tool evidence does not itself prove
-complete coverage; the normal assigned-file coverage checks also apply.
+For a reviewer with a recorded result, explicit evidence from its primary
+session with any status other than `succeeded` makes coverage `incomplete_tool`,
+even if the result reports all assigned files as inspected. Incomplete coverage
+clamps an otherwise approving review to `comment`. Successful tool evidence does
+not itself prove complete coverage; the normal assigned-file coverage checks
+also apply.
 
 The lifecycle persists this evidence in metadata and restores it when loading
 a cached task, so reusing successful output preserves the tool state used to
@@ -171,6 +173,53 @@ check, but the normal coverage checks for skipped, missing, and unassigned
 files still apply. The schema, fingerprint, and payload requirements for
 resume remain unchanged; absence alone does not establish that an artifact
 is safe to reuse.
+
+## Reviewer Coverage Repair Tasks
+
+After a successful primary reviewer task reports assigned readable files as
+skipped, the pipeline may run one focused coverage-repair task for that reviewer.
+Deleted and binary files are outside the repair set, as are files whose basename
+is in the `generatedLockfiles` set (`Cargo.lock`, `bun.lockb`, `go.sum`, and the
+rest of that map); a lockfile spelled outside it, such as `bun.lock`, is repaired
+like any other readable file. Files outside the repair set remain covered by the
+normal exemption or fail-closed rules. The repair is also skipped when the
+primary session reports `reviewer_tool_evidence` whose `diff_status` is anything
+other than `succeeded`: that session's own evidence already makes coverage
+`incomplete_tool`, so the entry would stand regardless of what the repair
+inspected. A repair task uses the same pinned PR revision and reviewer agent as
+its primary task, but has its own workspace, durable task artifacts, and ledger
+session.
+
+- `task_id`: `reviewer-<encoded-agent-id>-coverage-repair`, derived from the
+  primary reviewer task ID.
+- `phase`: `reviewer-coverage-repair`.
+- `dependency_task_ids`: exactly the primary `reviewer-<encoded-agent-id>` task
+  ID. The repair input fingerprint also includes its focused readable-file list
+  and prompt dependencies.
+- `validated-output.json` and `metadata.json` are written under the repair task
+  directory. The repair has its own session row and usage telemetry; when the
+  provider supports resume, the primary provider session ID seeds the repair
+  request without making the two task identities interchangeable.
+
+Resume applies the normal task rules: matching succeeded repair output is loaded
+without another provider call, while a changed fingerprint or dependency fails
+closed with rerun guidance. An isolated repair failure is retained as a reviewer
+failure so rollup can preserve the primary result while keeping coverage
+incomplete.
+
+The primary findings are retained and repair findings are appended. Inspected
+files are unioned, and a primary skipped file is cleared only when the repair
+explicitly reports it in `inspected_files` and the repair's own
+`reviewer_tool_evidence`, when present, reports `succeeded`; explicit repair
+evidence with any other status contributes no inspected files, so the skip
+stands. As with the primary session, absence does not trigger the
+tool-evidence check, so a repair reporting no evidence keeps its inspected
+files. Skipped files that remain skipped continue to make coverage incomplete.
+The reviewer task dependency list passed to rollup includes both the primary
+and repair task IDs, so their outputs, sessions, and coverage status are
+merged before approval is decided. Tool evidence is not merged across the two
+passes: coverage reads only the primary session's evidence, so a repair can
+neither improve nor worsen it.
 
 ## Resume Rules
 

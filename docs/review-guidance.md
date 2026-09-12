@@ -22,6 +22,10 @@ Repo-local definitions that remain after merging are required when applicable;
 the orchestrator selects every applicable repo-local reviewer before choosing
 from the shared profile and flag pool.
 
+Agent names ending in `-coverage-repair` are reserved. That suffix names the
+focused follow-up pass the pipeline may run for a reviewer, so a definition
+declaring it is rejected as invalid rather than colliding with that pass.
+
 Any source may set `required_on_match: true` with `file_globs`. Those reviewers
 are added deterministically whenever a glob matches a changed file, even if the
 orchestrator omits them. An explicit maximum smaller than the combined set of

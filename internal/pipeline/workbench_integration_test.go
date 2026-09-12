@@ -228,7 +228,7 @@ func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("selected agent %q missing from catalog", selection.SelectedAgents[0].AgentID)
 	}
-	if _, _, _, _, err := runReviewer(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.parsed, prepared.artifacts, selection.SelectedAgents[0], agent, []string{orchestratorSelectionStage}); err != nil {
+	if _, err := runReviewer(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.parsed, prepared.artifacts, selection.SelectedAgents[0], agent, []string{orchestratorSelectionStage}); err != nil {
 		t.Fatalf("runReviewer first: %v", err)
 	}
 	metaPath := prepared.artifacts.WorkbenchMetadataPath()
@@ -243,7 +243,7 @@ func TestRunReviewerRejectsStaleWorkbenchMetadata(t *testing.T) {
 	secondAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	secondOpts := opts
 	secondOpts.Adapter = secondAdapter
-	_, _, _, _, err = runReviewer(ctx, secondOpts, req, run.RunID, prepared.reviewPR, prepared.parsed, prepared.artifacts, selection.SelectedAgents[0], agent, []string{orchestratorSelectionStage})
+	_, err = runReviewer(ctx, secondOpts, req, run.RunID, prepared.reviewPR, prepared.parsed, prepared.artifacts, selection.SelectedAgents[0], agent, []string{orchestratorSelectionStage})
 	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
 		t.Fatalf("runReviewer stale workbench error = %v, want input fingerprint changed", err)
 	}
