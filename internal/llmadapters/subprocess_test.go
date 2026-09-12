@@ -2115,8 +2115,8 @@ const slowCleanupSleep = 400 * time.Millisecond
 
 func assertSlowSuccessDuration(t *testing.T, response Response) {
 	t.Helper()
-	if min := slowSuccessSleep.Milliseconds(); response.DurationMS < min {
-		t.Fatalf("DurationMS = %d, want >= %d", response.DurationMS, min)
+	if minMS := slowSuccessSleep.Milliseconds(); response.DurationMS < minMS {
+		t.Fatalf("DurationMS = %d, want >= %d", response.DurationMS, minMS)
 	}
 }
 
@@ -2125,8 +2125,8 @@ func assertSlowSuccessDuration(t *testing.T, response Response) {
 func assertClaudeBackgroundDuration(t *testing.T, response Response) {
 	t.Helper()
 	assertSlowSuccessDuration(t, response)
-	if max := (slowSuccessSleep + slowCleanupSleep/2).Milliseconds(); response.DurationMS >= max {
-		t.Fatalf("DurationMS = %d, want < %d: window extends past the response", response.DurationMS, max)
+	if maxMS := (slowSuccessSleep + slowCleanupSleep/2).Milliseconds(); response.DurationMS >= maxMS {
+		t.Fatalf("DurationMS = %d, want < %d: window extends past the response", response.DurationMS, maxMS)
 	}
 }
 
