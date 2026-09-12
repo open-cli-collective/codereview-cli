@@ -861,7 +861,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	result.Findings = reviewerRun.findings
 	result.ReviewerFailures = reviewerRun.failures
 	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerRun.sessions)
-	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerRun.results, reviewerRun.failures, prepared.changedFiles, deletedPatchPaths(prepared.parsed.Patches), reviewerToolEvidenceByAgent(reviewerRun.sessions))
+	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerRun.results, reviewerRun.failures, prepared.changedFiles, deletedPatchPaths(prepared.parsed.Patches), reviewerToolEvidenceByAgent(reviewerRun.primarySessions))
 	result.ReviewerCoverage = reviewerCoverage
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerRun.ledgerSessions...)
 
@@ -1972,6 +1972,7 @@ type reviewerBatchResult struct {
 	findings        []review.Finding
 	results         []llm.Findings
 	sessions        []sessionDraft
+	primarySessions []sessionDraft
 	ledgerSessions  []ledger.Session
 	findingSessions map[review.FindingID]string
 	failures        []ReviewerFailure
@@ -1979,8 +1980,10 @@ type reviewerBatchResult struct {
 }
 
 type reviewerExecution struct {
-	result          llm.Findings
-	sessions        []sessionDraft
+	result   llm.Findings
+	sessions []sessionDraft
+	// Primary passes only: the repair shares the agent ID, and merged tool evidence keeps the worse status.
+	primarySessions []sessionDraft
 	ledgerSessions  []ledger.Session
 	findingSessions map[review.FindingID]string
 	failure         *ReviewerFailure
@@ -2034,6 +2037,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 				return
 			}
 			batch.sessions = append(batch.sessions, execution.sessions...)
+			batch.primarySessions = append(batch.primarySessions, execution.primarySessions...)
 			batch.ledgerSessions = append(batch.ledgerSessions, execution.ledgerSessions...)
 			batch.taskIDs = append(batch.taskIDs, execution.taskIDs...)
 			if execution.failure != nil {
@@ -2140,6 +2144,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	})
 	execution := reviewerExecution{
 		sessions:        []sessionDraft{session},
+		primarySessions: []sessionDraft{session},
 		ledgerSessions:  appendSessionIfPresent(nil, ledgerSession),
 		findingSessions: map[review.FindingID]string{},
 		taskIDs:         []string{taskID},
@@ -2169,7 +2174,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return execution, nil
 	}
 	// Merged tool evidence keeps the worse pass, so a repair can never clear incomplete_tool.
-	if evidence := session.Response.ReviewerToolEvidence; evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {
+	if reviewerToolEvidenceForcesIncomplete(session.Response.ReviewerToolEvidence) {
 		return execution, nil
 	}
 	repairSelected := llm.SelectedAgent{
@@ -2848,6 +2853,11 @@ func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerF
 	return out
 }
 
+// reviewerToolEvidenceForcesIncomplete reports whether reported tool evidence denies a reviewer complete coverage.
+func reviewerToolEvidenceForcesIncomplete(evidence *llm.ReviewerToolEvidence) bool {
+	return evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded
+}
+
 func reviewerToolEvidenceByAgent(sessions []sessionDraft) map[string]*llm.ReviewerToolEvidence {
 	out := make(map[string]*llm.ReviewerToolEvidence, len(sessions))
 	for _, session := range sessions {
@@ -3097,7 +3107,7 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			out = append(out, entry)
 			continue
 		}
-		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {
+		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); reviewerToolEvidenceForcesIncomplete(evidence) {
 			entry.Status = reviewerCoverageIncompleteTool
 			entry.Diagnostic = reviewerToolDiagnostic(evidence, "")
 			out = append(out, entry)

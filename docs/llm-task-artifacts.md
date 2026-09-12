@@ -181,9 +181,13 @@ Deleted and binary files are outside the repair set, as are files whose basename
 is in the `generatedLockfiles` set (`Cargo.lock`, `bun.lockb`, `go.sum`, and the
 rest of that map); a lockfile spelled outside it, such as `bun.lock`, is repaired
 like any other readable file. Files outside the repair set remain covered by the
-normal exemption or fail-closed rules. A repair task uses the same pinned PR
-revision and reviewer agent as its primary task, but has its own workspace,
-durable task artifacts, and ledger session.
+normal exemption or fail-closed rules. The repair is also skipped when the
+primary session reports `reviewer_tool_evidence` whose `diff_status` is anything
+other than `succeeded`: merged evidence keeps the worse status, so the
+`incomplete_tool` coverage entry would stand regardless of what the repair
+inspected. A repair task uses the same pinned PR revision and reviewer agent as
+its primary task, but has its own workspace, durable task artifacts, and ledger
+session.
 
 - `task_id`: `reviewer-<encoded-agent-id>-coverage-repair`, derived from the
   primary reviewer task ID.

@@ -1456,6 +1456,50 @@ func TestDryRunSkipsCoverageRepairWhenPrimaryToolEvidenceFailed(t *testing.T) {
 	}
 }
 
+func TestDryRunCoverageRepairToolEvidenceDoesNotDowngradePrimary(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "other.go"), 1, 1))
+	primary := fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", []string{"main.go"}, []string{"other.go"}, "primary skipped file"), 2, 2)
+	primary.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(primary)
+	repair := fakeLLMResult("coverage-repair-session", coverageOnlyJSON("harness:reviewer", []string{"other.go"}, nil), 3, 3)
+	repair.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusNotInvoked}
+	adapter.Queue(repair)
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 4, 4))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-repair-tool-downgrade" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if requests := adapter.Requests(); len(requests) != 4 {
+		t.Fatalf("adapter requests = %d, want selection/primary/repair/rollup", len(requests))
+	}
+	coverage := result.Plan.Summary.Run.ReviewerCoverage
+	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageCompleteBroad || coverage[0].Diagnostic != "" {
+		t.Fatalf("coverage = %#v, want the primary tool evidence preserved rather than downgraded by the repair pass", coverage)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeApproved {
+		t.Fatalf("outcome = %q, want approval withheld only for a real coverage gap", result.Plan.Outcome)
+	}
+}
+
 func TestCombineReviewerWorkstreamTotalsKeepsMetricsAbsentFromOneDraft(t *testing.T) {
 	got := combineReviewerWorkstreamTotals([]sessionDraft{
 		{Model: "model", Response: llm.Response{Usage: llm.Usage{TokensIn: intPtr(7), TokensOut: intPtr(3), Speed: "standard"}, DurationMS: 100}},
