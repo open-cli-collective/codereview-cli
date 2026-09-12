@@ -381,6 +381,71 @@ func TestDecodeResultValidatesAfterSanitization(t *testing.T) {
 	}
 }
 
+func TestDecodeResultSchemaVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		wantErr string
+	}{
+		{
+			name: "absent schema_version defaults to current",
+			data: `{"thread_id":"thread-1","decision":"skip","resolve":false}`,
+		},
+		{
+			name:    "explicit zero schema_version is rejected",
+			data:    `{"schema_version":0,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+			wantErr: fmt.Sprintf("schema_version = 0, want %d", outputSchemaVersion),
+		},
+		{
+			name: "explicit current schema_version decodes",
+			data: `{"schema_version":1,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+		},
+		{
+			name:    "explicit future schema_version is rejected",
+			data:    `{"schema_version":2,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+			wantErr: fmt.Sprintf("schema_version = 2, want %d", outputSchemaVersion),
+		},
+		{
+			name:    "explicit far-future schema_version is rejected",
+			data:    `{"schema_version":99,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+			wantErr: fmt.Sprintf("schema_version = 99, want %d", outputSchemaVersion),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeResultForThread("thread-1")([]byte(tt.data))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("decodeResultForThread error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeResultForThread: %v", err)
+			}
+			if got.ThreadID != "thread-1" || got.Decision != DecisionSkip {
+				t.Fatalf("result = %#v, want decoded skip for thread-1", got)
+			}
+		})
+	}
+}
+
+func TestPromptForInputEnumeratesSchemaVersion(t *testing.T) {
+	prompt, err := promptForInput(analysisInputForThread("thread-1", promptThread("human reply")))
+	if err != nil {
+		t.Fatalf("promptForInput: %v", err)
+	}
+	anchor := fmt.Sprintf("schema_version (always %d)", outputSchemaVersion)
+	if !strings.Contains(prompt, anchor) {
+		t.Fatalf("prompt missing schema_version anchor %q:\n%s", anchor, prompt)
+	}
+	for _, field := range []string{"thread_id", "decision", "reply_body", "summary", "resolve", "rationale"} {
+		if !strings.Contains(prompt, field) {
+			t.Fatalf("prompt missing field %q:\n%s", field, prompt)
+		}
+	}
+}
+
 func TestDecodeResultSanitizesModelAuthoredText(t *testing.T) {
 	got, err := decodeResultForThread("thread-1")([]byte(`{
 		"schema_version": 1,
