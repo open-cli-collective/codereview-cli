@@ -131,6 +131,79 @@ func TestRunRetainsWorkbenchAfterSuccessfulPostWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestRunRetryPostsRemovesWorkbenchAfterSuccessfulPost(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.fake.SetError(gitprovider.OperationSubmitReview, errors.New("submit failed"))
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, workbench: true}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	first, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run first: %v", err)
+	}
+	if first.Outbox.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("first outbox outcome = %q, want failed", first.Outbox.Outcome)
+	}
+	seedWorkbenchCheckout(t, first.Run.ArtifactPath)
+
+	fixture.fake.SetError(gitprovider.OperationSubmitReview, nil)
+	retryOpts := fixture.opts(planner)
+	second, err := Run(ctx, retryOpts, Request{Pipeline: fixture.req, Flags: Flags{RetryPosts: true}})
+	if err != nil {
+		t.Fatalf("Run retry-posts: %v", err)
+	}
+	if second.Status != gateio.StatusRetryPostsExecuted {
+		t.Fatalf("retry status = %q, want retry_posts_executed", second.Status)
+	}
+	if _, err := os.Stat(filepath.Join(second.Run.ArtifactPath, "workbench")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workbench stat err = %v, want removed after successful retry post", err)
+	}
+}
+
+func TestRunRetryPostsRetainsWorkbenchAfterFailedRetry(t *testing.T) {
+	ctx := context.Background()
+	fixture := newFixture(t)
+	fixture.fake.SetError(gitprovider.OperationSubmitReview, errors.New("submit failed"))
+	planner := &fakePlanner{store: fixture.store, outcome: reviewplan.OutcomeComment, workbench: true}
+	opts := fixture.opts(planner)
+	opts.NewRunID = sequence("fresh")
+
+	first, err := Run(ctx, opts, Request{Pipeline: fixture.req})
+	if err != nil {
+		t.Fatalf("Run first: %v", err)
+	}
+	seedWorkbenchCheckout(t, first.Run.ArtifactPath)
+
+	// Same failing provider: the retry post fails again and must keep the workbench.
+	retryOpts := fixture.opts(planner)
+	second, err := Run(ctx, retryOpts, Request{Pipeline: fixture.req, Flags: Flags{RetryPosts: true}})
+	if err != nil {
+		t.Fatalf("Run retry-posts: %v", err)
+	}
+	if second.Outbox.Outcome != ledger.OutcomeFailed {
+		t.Fatalf("retry outbox outcome = %q, want failed", second.Outbox.Outcome)
+	}
+	if _, err := os.Stat(filepath.Join(second.Run.ArtifactPath, "workbench", "repo", "checkout.txt")); err != nil {
+		t.Fatalf("workbench missing after failed retry post: %v", err)
+	}
+}
+
+// seedWorkbenchCheckout makes the fake workbench non-empty so retention's
+// empty-directory cleanup does not reclaim it out from under the test; the run
+// artifact directory must survive until the post outcome drives teardown.
+func seedWorkbenchCheckout(t *testing.T, artifactPath string) {
+	t.Helper()
+	repoDir := filepath.Join(artifactPath, "workbench", "repo")
+	if err := os.MkdirAll(repoDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll workbench repo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "checkout.txt"), []byte("checkout"), 0o600); err != nil {
+		t.Fatalf("WriteFile workbench checkout: %v", err)
+	}
+}
+
 func TestRunRerunStartsFreshLocalRunAndPreservesProviderSessionChoice(t *testing.T) {
 	for _, freshSession := range []bool{false, true} {
 		t.Run(fmt.Sprintf("fresh_session_%v", freshSession), func(t *testing.T) {

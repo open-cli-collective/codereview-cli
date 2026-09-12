@@ -74,7 +74,6 @@ func TestRespondPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 		name           string
 		maxAgeDays     int
 		enforcement    config.RetentionEnforcement
-		keepWorkbench  bool
 		wantLiveMaxAge time.Duration
 		wantForever    bool
 		wantManualOnly bool
@@ -92,12 +91,6 @@ func TestRespondPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 			wantLiveMaxAge: 30 * 24 * time.Hour,
 			wantManualOnly: false,
 		},
-		{
-			name:           "workbench retention opt-out",
-			maxAgeDays:     90,
-			keepWorkbench:  true,
-			wantLiveMaxAge: 90 * 24 * time.Hour,
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,7 +99,6 @@ func TestRespondPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 				MaxAgeDays:  &tt.maxAgeDays,
 				Enforcement: tt.enforcement,
 			}
-			cfg.Data.KeepWorkbench = tt.keepWorkbench
 			responder := &fakeResponder{result: testThreadRespondResult(ledger.OutcomeDryRun)}
 			var got app.OpenRequest
 			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
@@ -122,9 +114,6 @@ func TestRespondPassesRetentionConfigToRuntimeFactory(t *testing.T) {
 			}
 			if got.Retention.LiveForever != tt.wantForever || got.Retention.LiveMaxAge != tt.wantLiveMaxAge || got.RetentionManualOnly != tt.wantManualOnly {
 				t.Fatalf("runtime retention = %#v manual %v, want forever=%v max_age=%s manual=%v", got.Retention, got.RetentionManualOnly, tt.wantForever, tt.wantLiveMaxAge, tt.wantManualOnly)
-			}
-			if got.KeepWorkbench != tt.keepWorkbench {
-				t.Fatalf("runtime KeepWorkbench = %v, want %v", got.KeepWorkbench, tt.keepWorkbench)
 			}
 		})
 	}

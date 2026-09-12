@@ -3361,7 +3361,7 @@ func RemoveWorkbench(artifactDir string, keepWorkbench bool) error {
 	if keepWorkbench || strings.TrimSpace(artifactDir) == "" {
 		return nil
 	}
-	return os.RemoveAll(filepath.Join(artifactDir, "workbench"))
+	return os.RemoveAll(ArtifactPathsFromDir(artifactDir).WorkbenchDir)
 }
 
 // tryPruneRetention runs automatic retention through the guarded entry

@@ -154,6 +154,7 @@ func Run(ctx context.Context, opts Options, req Request) (Result, error) {
 			return result, err
 		}
 		result.Run = run
+		removeWorkbenchAfterPost(opts, result.Outbox, run)
 		if err := applyAdvisoryThreadResolutionWarning(ctx, opts, &result); err != nil {
 			return result, err
 		}

@@ -96,6 +96,22 @@ func TestSaveCreatesPrivateConfigFileAndDoesNotTruncateOnInvalidSave(t *testing.
 	}
 }
 
+func TestSaveAcceptsKeepWorkbenchOnlyConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	cfg := File{Data: DataConfig{KeepWorkbench: true}}
+
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save keep-workbench-only config: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.Data.KeepWorkbench {
+		t.Fatalf("Load Data.KeepWorkbench = false, want true")
+	}
+}
+
 func TestLoadMissingConfig(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "missing.yml"))
 	if !errors.Is(err, ErrNotConfigured) {

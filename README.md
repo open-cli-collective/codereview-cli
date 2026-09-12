@@ -1241,6 +1241,7 @@ Policy and output flags:
 | `--allow-self-review` | Allow reviewer credentials that resolve to the PR author. |
 | `--allow-self-approve` | Allow approval when the posting identity is the PR author. |
 | `--no-resolve-threads` | Do not plan thread-resolution actions. Also implied by profile `resolve_threads: never`. |
+| `--keep-workbench` | Retain the run checkout (`workbench/`) after a successful review, overriding `data.keep_workbench`. Pass `--keep-workbench=false` to force deletion even when the config sets it true. Failed and errored runs always retain their workbench. |
 | `--json` | Emit JSON. |
 
 Fast mode defaults off; set `fast: true` on a profile to enable it by default.
@@ -1581,7 +1582,9 @@ independent from profile config.
 
 Successful runs delete their run checkout (`workbench/`) once the run reaches a
 successful terminal state. Failed and errored runs retain it for inspection, and
-`data.keep_workbench: true` retains it for successful runs too.
+`data.keep_workbench: true` retains it for successful runs too. `cr review
+--keep-workbench` overrides the config for one invocation; an explicit
+`--keep-workbench=false` forces deletion even when `data.keep_workbench: true`.
 
 ## Development
 

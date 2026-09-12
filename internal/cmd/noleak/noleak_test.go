@@ -286,6 +286,9 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 				h.assertNoLeaks(t, "returned error", []byte(err.Error()))
 			}
 			h.assertOwnedFilesDoNotLeak(t)
+			if strings.HasPrefix(tc.name, "review ") && !tc.wantErr {
+				h.assertWorkbenchMetadataExists(t)
+			}
 		})
 	}
 }
@@ -813,6 +816,7 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 		RetentionManualOnly: runtimeOpts.RetentionManualOnly,
 		MaxAgents:           runtimeOpts.MaxAgents,
 		MaxConcurrency:      runtimeOpts.MaxConcurrency,
+		KeepWorkbench:       true,
 		GitCommand:          noLeakGitCommand(h.prRef, h.workbenchRepoDir, gitClient.Run),
 		ResolveRepoRoot:     func(context.Context) (string, error) { return h.workbenchRepoDir, nil },
 	}
@@ -830,6 +834,7 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 			Warnings:                runtimeOpts.Warnings,
 			Retention:               runtimeOpts.Retention,
 			RetentionManualOnly:     runtimeOpts.RetentionManualOnly,
+			KeepWorkbench:           true,
 		},
 	}
 	return app.Runtime{
@@ -1209,6 +1214,34 @@ func (h *auditHarness) assertOwnedFilesDoNotLeak(t *testing.T) {
 		if err != nil {
 			t.Fatalf("WalkDir(%s): %v", rootDir, err)
 		}
+	}
+}
+
+// assertWorkbenchMetadataExists fails when a review run left no
+// workbench/metadata.json for the owned-file leak scan to inspect. Without a
+// retained workbench, assertOwnedFilesDoNotLeak would silently pass over an
+// empty tree and drop coverage of checkout metadata (for example a
+// credentialed remote URL).
+func (h *auditHarness) assertWorkbenchMetadataExists(t *testing.T) {
+	t.Helper()
+	found := false
+	err := filepath.WalkDir(h.layout.DataRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if filepath.Base(path) == "metadata.json" && filepath.Base(filepath.Dir(path)) == "workbench" {
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%s): %v", h.layout.DataRoot, err)
+	}
+	if !found {
+		t.Fatalf("no workbench/metadata.json under %s; workbench leak scan is vacuous", h.layout.DataRoot)
 	}
 }
 

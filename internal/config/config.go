@@ -973,7 +973,8 @@ func fileHasNoExplicitContent(cfg File) bool {
 		cfg.RepositoryProfiles == nil &&
 		cfg.Profiles == nil &&
 		cfg.Data.Retention.MaxAgeDays == nil &&
-		cfg.Data.Retention.Enforcement == ""
+		cfg.Data.Retention.Enforcement == "" &&
+		!cfg.Data.KeepWorkbench
 }
 
 func yamlDocumentHasMappingPath(body []byte, path ...string) bool {

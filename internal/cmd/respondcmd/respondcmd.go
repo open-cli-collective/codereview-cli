@@ -115,7 +115,6 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory Ru
 		PRURL:               prArg,
 		Retention:           appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly: cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
-		KeepWorkbench:       cfg.Data.KeepWorkbench,
 	})
 	if err != nil {
 		return cmdruntime.MapRunError(err)
