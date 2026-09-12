@@ -4520,6 +4520,10 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	if meta.LogPath != wantLog {
 		t.Fatalf("thread analysis log path = %q, want %q", meta.LogPath, wantLog)
 	}
+	// The fake adapter never opens the log, so assert the run created its directory.
+	if info, err := os.Stat(filepath.Dir(wantLog)); err != nil || !info.IsDir() {
+		t.Fatalf("thread-analysis log dir stat = %v info=%#v, want directory", err, info)
+	}
 	var sawReply, sawResolve bool
 	for _, action := range result.Plan.Actions {
 		switch action.Kind {

@@ -22,6 +22,13 @@ LLM tasks once, because cached artifacts sit under the old names; the stale
 directories are inert because enumerators key on the task ID recorded in
 `metadata.json`.
 
+Two derivations of that directory disagree on surrounding whitespace:
+`llmlifecycle.Paths.TaskDir` trims the task ID before encoding it, while
+`runartifact.Paths.LLMTaskDir` trims only for its emptiness check and then
+encodes the untrimmed ID. A padded task ID therefore resolves to two different
+directories depending on the caller. Issue #593 tracks reconciling them; callers
+should pass already-trimmed task IDs until then.
+
 Raw failed-attempt files are named `<label>.json` in the task directory. The
 current structured adapter labels are `initial` and `retry`, which produce
 `initial.json` and `retry.json` when raw invalid output is available.

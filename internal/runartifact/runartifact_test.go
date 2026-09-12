@@ -172,3 +172,14 @@ func TestThreadAnalysisLogEncodesThreadIDOnce(t *testing.T) {
 		t.Fatal("ThreadAnalysisLog blank thread ID error = nil, want error")
 	}
 }
+
+func TestThreadAnalysisPathsRequireConfiguredAgentLogsDir(t *testing.T) {
+	var paths Paths
+
+	if got := paths.ThreadAnalysisLogsDir(); got != "" {
+		t.Fatalf("ThreadAnalysisLogsDir = %q, want empty for unconfigured artifacts", got)
+	}
+	if _, err := paths.ThreadAnalysisLog("thread-1"); err == nil {
+		t.Fatal("ThreadAnalysisLog blank agent log dir error = nil, want error")
+	}
+}

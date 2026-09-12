@@ -691,11 +691,9 @@ func lockPath(layout statepaths.Layout, req Request, pr gitprovider.PR) (string,
 }
 
 func threadLogPath(artifacts runartifact.Paths, threadID gitprovider.ThreadID) string {
-	if strings.TrimSpace(artifacts.AgentLogsDir) == "" {
-		return ""
-	}
 	path, err := artifacts.ThreadAnalysisLog(string(threadID))
 	if err != nil {
+		// Unconfigured artifacts or a blank thread ID both mean "no log to tail", not a run failure.
 		return ""
 	}
 	return path
