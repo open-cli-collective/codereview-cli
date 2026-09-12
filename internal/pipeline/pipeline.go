@@ -2168,28 +2168,42 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if len(repairFiles) == 0 {
 		return execution, nil
 	}
+	// Merged tool evidence keeps the worse pass, so a repair can never clear incomplete_tool.
+	if evidence := session.Response.ReviewerToolEvidence; evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {
+		return execution, nil
+	}
 	repairSelected := llm.SelectedAgent{
 		AgentID:      selected.AgentID,
 		Rationale:    "complete coverage for readable files skipped by the primary review",
 		Files:        append([]string(nil), repairFiles...),
 		AllowedFiles: append([]string(nil), repairFiles...),
 	}
+	repairTaskID := reviewerCoverageRepairTaskID(agent.ID)
+	// The repair only adds coverage, so its setup failures are isolated like its execution failures.
+	repairSetupFailed := func(err error) (reviewerExecution, error) {
+		execution.failure = &ReviewerFailure{
+			TaskID:  repairTaskID,
+			AgentID: agent.ID,
+			Error:   sanitizeTaskErrorForMarkdown(err),
+		}
+		return execution, nil
+	}
 	repairPrompt, repairPromptDeps, err := buildReviewerCoverageRepairPrompt(artifacts, pr, repairSelected, agent, changedFilePaths)
 	if err != nil {
-		return reviewerExecution{}, Failure(FailureTerminal, err)
+		return repairSetupFailed(err)
 	}
 	if err := opts.checkPromptBudget("reviewer coverage repair", agent.ID, model, strings.Join(repairFiles, ","), repairPrompt); err != nil {
-		return reviewerExecution{}, Failure(FailureTerminal, err)
+		return repairSetupFailed(err)
 	}
 	repairIdentity := reviewerCoverageRepairIdentity(agent.ID)
 	repairLogPath, err := artifacts.AgentLog(repairIdentity)
 	if err != nil {
-		return reviewerExecution{}, err
+		return repairSetupFailed(err)
 	}
 	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
 	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
 	if err != nil {
-		return reviewerExecution{}, err
+		return repairSetupFailed(err)
 	}
 	if req.ReviewerFast {
 		repairRequest.Fast = true
@@ -2201,7 +2215,6 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 			}
 		}
 	}()
-	repairTaskID := reviewerCoverageRepairTaskID(agent.ID)
 	repairDependencyTaskIDs := []string{taskID}
 	repairFingerprintDeps := append(append([]string(nil), repairDependencyTaskIDs...), repairPromptDeps...)
 	if req.ReviewerFast {
@@ -2210,9 +2223,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	repair, repairSession, repairLedgerSession, repairErr := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            repairTaskID,
-		phase:             "reviewer_coverage_repair",
+		phase:             "reviewer-coverage-repair",
 		dependencyTaskIDs: repairDependencyTaskIDs,
-		inputFingerprint:  llmlifecycle.Fingerprint(opts.Adapter.Name(), repairTaskID, "reviewer_coverage_repair", model, effort, repairPrompt, repairFingerprintDeps),
+		inputFingerprint:  llmlifecycle.Fingerprint(opts.Adapter.Name(), repairTaskID, "reviewer-coverage-repair", model, effort, repairPrompt, repairFingerprintDeps),
 		artifacts:         artifacts,
 		role:              ledger.SessionRoleReviewer,
 		agentID:           &agentID,
@@ -2266,8 +2279,9 @@ func reviewerTaskID(agentID string) string {
 }
 
 // reviewerCoverageRepairSuffix marks the repair pass's task ID, log, and
-// workspace as a distinct identity derived from the primary reviewer's.
-const reviewerCoverageRepairSuffix = "-coverage-repair"
+// workspace as a distinct identity derived from the primary reviewer's. The
+// agent catalog rejects names ending in it so the two cannot collide.
+const reviewerCoverageRepairSuffix = agents.ReviewerCoverageRepairSuffix
 
 func reviewerCoverageRepairIdentity(agentID string) string {
 	return agentID + reviewerCoverageRepairSuffix
@@ -2734,6 +2748,7 @@ func combineReviewerWorkstreamTotals(drafts []sessionDraft) workstreamTotals {
 	}
 	allFast := true
 	allStandard := true
+	anySpeed := false
 	for _, draft := range drafts {
 		combined.durationMS += draft.Response.DurationMS
 		if combined.startedAt.IsZero() || !draft.StartedAt.IsZero() && draft.StartedAt.Before(combined.startedAt) {
@@ -2742,13 +2757,17 @@ func combineReviewerWorkstreamTotals(drafts []sessionDraft) workstreamTotals {
 		if draft.CompletedAt.After(combined.completedAt) {
 			combined.completedAt = draft.CompletedAt
 		}
-		allFast = allFast && draft.Response.Usage.Speed == "fast"
-		allStandard = allStandard && draft.Response.Usage.Speed == "standard"
+		// A draft that reports no speed does not contradict one that does.
+		if speed := draft.Response.Usage.Speed; speed != "" {
+			anySpeed = true
+			allFast = allFast && speed == "fast"
+			allStandard = allStandard && speed == "standard"
+		}
 	}
 	switch {
-	case allFast:
+	case anySpeed && allFast:
 		combined.usage.Speed = "fast"
-	case allStandard:
+	case anySpeed && allStandard:
 		combined.usage.Speed = "standard"
 	default:
 		combined.usage.Speed = "unknown"
@@ -2756,26 +2775,38 @@ func combineReviewerWorkstreamTotals(drafts []sessionDraft) workstreamTotals {
 	return combined
 }
 
+// A draft missing a metric contributes nothing to it; only a metric no draft
+// reports at all is absent.
 func sumReviewerSessionInts(drafts []sessionDraft, value func(sessionDraft) *int) *int {
 	total := 0
+	reported := false
 	for _, draft := range drafts {
 		current := value(draft)
 		if current == nil {
-			return nil
+			continue
 		}
 		total += *current
+		reported = true
+	}
+	if !reported {
+		return nil
 	}
 	return &total
 }
 
 func sumReviewerSessionFloats(drafts []sessionDraft, value func(sessionDraft) *float64) *float64 {
 	total := 0.0
+	reported := false
 	for _, draft := range drafts {
 		current := value(draft)
 		if current == nil {
-			return nil
+			continue
 		}
 		total += *current
+		reported = true
+	}
+	if !reported {
+		return nil
 	}
 	return &total
 }

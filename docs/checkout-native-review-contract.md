@@ -61,8 +61,13 @@ runs/<run-id>/
     reviewers/
       <reviewer-id>/
         repo/
+      <reviewer-id>-coverage-repair/
+        repo/
     scratch/
       <reviewer-id>/
+        cache/
+        tmp/
+      <reviewer-id>-coverage-repair/
         cache/
         tmp/
     metadata.json
@@ -88,6 +93,11 @@ Notes:
 - `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
 - `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
   cache roots.
+- A coverage-repair pass runs under the derived identity
+  `<reviewer-id>-coverage-repair`, so a repaired run also has that reviewer
+  checkout, that scratch root, and its own encoded agent log. Workspace
+  preparation clears the directory it is given, so the repair must never reuse
+  the primary reviewer's identity.
 - Reviewer subprocesses receive scratch-local environment paths:
   - `TMPDIR`, `TMP`, and `TEMP` point at `scratch/<reviewer-id>/tmp`
   - `GOCACHE` points at `scratch/<reviewer-id>/cache/go-build`

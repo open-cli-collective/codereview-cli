@@ -1099,7 +1099,7 @@ func TestDryRunRepairsReadableSkippedFileAndPreservesPrimaryFinding(t *testing.T
 	if !reflect.DeepEqual(repairPrompt.CoverageRepair.Files, []string{"bun.lock"}) {
 		t.Fatalf("coverage repair files = %#v, want bun.lock only", repairPrompt.CoverageRepair.Files)
 	}
-	repairTaskID := reviewerTaskID("harness:reviewer") + "-coverage-repair"
+	repairTaskID := reviewerCoverageRepairTaskID("harness:reviewer")
 	repairMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), repairTaskID)
 	if err != nil || !ok || repairMeta.Status != llmTaskStatusSucceeded ||
 		!reflect.DeepEqual(repairMeta.DependencyTaskIDs, []string{reviewerTaskID("harness:reviewer")}) {
@@ -1236,7 +1236,7 @@ func TestDryRunCoverageRepairFailurePreservesPrimaryFindingAndBlocksApproval(t *
 	if len(result.Findings) != 1 || result.Findings[0].Body != "Preserve this finding after repair failure" {
 		t.Fatalf("findings = %#v, want primary finding retained", result.Findings)
 	}
-	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].TaskID != reviewerTaskID("harness:reviewer")+"-coverage-repair" {
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].TaskID != reviewerCoverageRepairTaskID("harness:reviewer") {
 		t.Fatalf("reviewer failures = %#v, want isolated coverage repair failure", result.ReviewerFailures)
 	}
 	coverage := result.Plan.Summary.Run.ReviewerCoverage
@@ -1268,6 +1268,15 @@ func TestDryRunCoverageRepairFailurePreservesPrimaryFindingAndBlocksApproval(t *
 	}
 	if storedFindings[0].SessionRowID != primarySessionRow || primarySessionRow == "" {
 		t.Fatalf("primary finding session = %q, want primary reviewer session %q", storedFindings[0].SessionRowID, primarySessionRow)
+	}
+	var reviewerUsage reviewplan.WorkstreamUsage
+	for _, workstream := range result.Plan.Summary.Run.Workstreams {
+		if workstream.Name == "harness:reviewer" {
+			reviewerUsage = workstream
+		}
+	}
+	if reviewerUsage.TokensIn == nil || *reviewerUsage.TokensIn != 2 || reviewerUsage.TokensOut == nil || *reviewerUsage.TokensOut != 2 {
+		t.Fatalf("reviewer workstream usage = %#v, want the primary pass telemetry the failed repair cannot report", reviewerUsage)
 	}
 }
 
@@ -1341,6 +1350,125 @@ func TestDryRunCoverageRepairInspectsOneOfTwoReadableSkippedFiles(t *testing.T) 
 	}
 	if result.Plan.Outcome != reviewplan.OutcomeComment {
 		t.Fatalf("outcome = %q, want comment while a skipped file remains", result.Plan.Outcome)
+	}
+}
+
+func TestDryRunCoverageRepairWorkspaceFailurePreservesPrimaryReview(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "other.go"), 1, 1))
+	primary := fakeLLMResult("reviewer-session", findingsWithCoverageJSON(
+		"harness:reviewer",
+		[]string{"main.go"},
+		[]string{"other.go"},
+		nil,
+		[]findingJSONInput{{File: "main.go", Severity: "major", Line: 2, Body: "Preserve this finding after repair setup fails"}},
+	), 2, 2)
+	primary.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(primary)
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 3, 3))
+
+	repoDir := provider.fixtureRepoDir
+	gitCommand := workbenchGitCommandForTest(req.PRRef, repoDir)
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-repair-setup-failure" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+		ResolveRepoRoot: func(context.Context) (string, error) { return repoDir, nil },
+		GitCommand: func(gitCtx context.Context, dir string, args ...string) ([]byte, error) {
+			// Fail only the repair pass's clone, as a transient git or disk error would.
+			for _, arg := range args {
+				if strings.Contains(arg, statepaths.Encode(reviewerCoverageRepairIdentity("harness:reviewer"))) {
+					return nil, errors.New("disk full")
+				}
+			}
+			return gitCommand(gitCtx, dir, args...)
+		},
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Body != "Preserve this finding after repair setup fails" {
+		t.Fatalf("findings = %#v, want primary finding retained", result.Findings)
+	}
+	if len(result.ReviewerFailures) != 1 || result.ReviewerFailures[0].TaskID != reviewerCoverageRepairTaskID("harness:reviewer") ||
+		result.ReviewerFailures[0].Error == "" {
+		t.Fatalf("reviewer failures = %#v, want isolated coverage repair setup failure", result.ReviewerFailures)
+	}
+	coverage := result.Plan.Summary.Run.ReviewerCoverage
+	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteFailed ||
+		!reflect.DeepEqual(coverage[0].InspectedFiles, []string{"main.go"}) ||
+		!reflect.DeepEqual(coverage[0].SkippedFiles, []string{"other.go"}) {
+		t.Fatalf("coverage = %#v, want fail-closed reviewer keeping proven primary coverage", coverage)
+	}
+	if requests := adapter.Requests(); len(requests) != 3 {
+		t.Fatalf("adapter requests = %d, want selection/primary/rollup without a repair call", len(requests))
+	}
+}
+
+func TestDryRunSkipsCoverageRepairWhenPrimaryToolEvidenceFailed(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "other.go"), 1, 1))
+	primary := fakeLLMResult("reviewer-session", coverageOnlyJSON("harness:reviewer", []string{"main.go"}, []string{"other.go"}, "primary skipped file"), 2, 2)
+	primary.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusFailed, DiffDiagnostic: "primary diff failed"}
+	adapter.Queue(primary)
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("approve", nil), 3, 3))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-repair-tool-skip" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if requests := adapter.Requests(); len(requests) != 3 {
+		t.Fatalf("adapter requests = %d, want selection/primary/rollup without a repair the tool status already decided", len(requests))
+	}
+	coverage := result.Plan.Summary.Run.ReviewerCoverage
+	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteTool {
+		t.Fatalf("coverage = %#v, want incomplete tool coverage", coverage)
+	}
+}
+
+func TestCombineReviewerWorkstreamTotalsKeepsMetricsAbsentFromOneDraft(t *testing.T) {
+	got := combineReviewerWorkstreamTotals([]sessionDraft{
+		{Model: "model", Response: llm.Response{Usage: llm.Usage{TokensIn: intPtr(7), TokensOut: intPtr(3), Speed: "standard"}, DurationMS: 100}},
+		{Model: "model"},
+	})
+	if got.usage.TokensIn == nil || *got.usage.TokensIn != 7 || got.usage.TokensOut == nil || *got.usage.TokensOut != 3 {
+		t.Fatalf("usage = %#v, want the reported primary tokens preserved", got.usage)
+	}
+	if got.usage.Speed != "standard" {
+		t.Fatalf("speed = %q, want the only reported speed", got.usage.Speed)
+	}
+	if absent := combineReviewerWorkstreamTotals([]sessionDraft{{Model: "model"}, {Model: "model"}}); absent.usage.TokensIn != nil || absent.usage.Speed != "unknown" {
+		t.Fatalf("usage = %#v, want absent tokens and unknown speed when no draft reports either", absent.usage)
 	}
 }
 

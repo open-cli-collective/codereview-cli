@@ -58,7 +58,7 @@ Load-bearing metadata fields are:
   `dossier-discussion-summary`, `thread-analysis-<thread-id>`, and
   `approval-override`.
 - `phase`: task phase, such as `selection`, `reviewer`,
-  `reviewer_coverage_repair`, `rollup`, or `dossier`.
+  `reviewer-coverage-repair`, `rollup`, or `dossier`.
 - `dependency_task_ids`: task IDs whose completed state was included in this
   task input.
 - `input_fingerprint`: hash of the task schema version, adapter, task identity,
@@ -187,7 +187,7 @@ durable task artifacts, and ledger session.
 
 - `task_id`: `reviewer-<encoded-agent-id>-coverage-repair`, derived from the
   primary reviewer task ID.
-- `phase`: `reviewer_coverage_repair`.
+- `phase`: `reviewer-coverage-repair`.
 - `dependency_task_ids`: exactly the primary `reviewer-<encoded-agent-id>` task
   ID. The repair input fingerprint also includes its focused readable-file list
   and prompt dependencies.
