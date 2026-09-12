@@ -4,6 +4,7 @@ package reviewplan
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -430,7 +431,7 @@ func (b *builder) buildNoDiff() (Plan, error) {
 
 func (b *builder) buildRepoGuidanceUnavailable() (Plan, error) {
 	summary := b.deriveSummary(nil)
-	body := b.renderRepoGuidanceUnavailableRollup(summary)
+	body := redactAbsolutePaths(b.renderRepoGuidanceUnavailableRollup(summary))
 
 	submit, err := b.newAction(ActionKindSubmitReview)
 	if err != nil {
@@ -495,7 +496,7 @@ func (b *builder) buildReview() (Plan, error) {
 
 	anchored := b.anchoredForOrdered(ordered)
 	summary := b.deriveSummary(ordered)
-	rollupBody := b.renderRollup(ordered, anchored, summary, approvalWithheld)
+	rollupBody := redactAbsolutePaths(b.renderRollup(ordered, anchored, summary, approvalWithheld))
 	submit, err := b.newAction(ActionKindSubmitReview)
 	if err != nil {
 		return Plan{}, err
@@ -1162,6 +1163,18 @@ func displaySeverity(severity review.Severity) string {
 
 func sanitize(text string) string {
 	return strings.ReplaceAll(text, markerPrefix, escapedMarkerPrefix)
+}
+
+// absolutePathRE matches POSIX and Windows absolute paths, including spaces
+// inside path segments; repo-relative paths are left untouched. The leading
+// group preserves the boundary character.
+var absolutePathRE = regexp.MustCompile(`(^|[^\w./~\\<>-])((?:[A-Za-z]:[\\/]|/)(?:[^\s/\\"'\x60<>()\[\]{};,|]+(?:\s+[^\s/\\"'\x60<>()\[\]{};,|]+)*[\\/])*[^\s/\\"'\x60<>()\[\]{};,|]+)`)
+
+// redactAbsolutePaths replaces local absolute filesystem paths in a composed
+// review body with the <path> token. It backstops per-field redaction at the
+// output boundary.
+func redactAbsolutePaths(markdown string) string {
+	return absolutePathRE.ReplaceAllString(markdown, "${1}<path>")
 }
 
 func sidePtr(side review.DiffSide) *review.DiffSide {
