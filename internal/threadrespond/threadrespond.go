@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -367,7 +366,7 @@ func postAndRefresh(ctx context.Context, opts Options, req Request, result Resul
 func ensureArtifactDirs(artifacts runartifact.Paths) error {
 	for _, dir := range []string{
 		artifacts.AgentLogsDir,
-		filepath.Join(artifacts.AgentLogsDir, "thread-analysis"),
+		artifacts.ThreadAnalysisLogsDir(),
 		artifacts.LLMTasksDir,
 	} {
 		if strings.TrimSpace(dir) == "" {
@@ -692,10 +691,12 @@ func lockPath(layout statepaths.Layout, req Request, pr gitprovider.PR) (string,
 }
 
 func threadLogPath(artifacts runartifact.Paths, threadID gitprovider.ThreadID) string {
-	if strings.TrimSpace(artifacts.AgentLogsDir) == "" {
+	path, err := artifacts.ThreadAnalysisLog(string(threadID))
+	if err != nil {
+		// Unconfigured artifacts or a blank thread ID both mean "no log to tail", not a run failure.
 		return ""
 	}
-	return filepath.Join(artifacts.AgentLogsDir, "thread-analysis", statepaths.Encode(string(threadID))+".jsonl")
+	return path
 }
 
 func postMode(req Request) ledger.PostMode {

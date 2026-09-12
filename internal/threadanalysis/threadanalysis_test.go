@@ -609,3 +609,49 @@ func fixedClock() func() time.Time {
 		return testNow.Add(time.Duration(calls) * time.Second)
 	}
 }
+
+func TestAnalyzeThreadsSeparatesThreadIDsDifferingOnlyByCase(t *testing.T) {
+	threads := []threadcontext.Thread{
+		promptThreadWithID("PRRT_exampleThreadNodeIda", "first reply"),
+		promptThreadWithID("PRRT_exampleThreadNodeIdA", "second reply"),
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	for _, thread := range threads {
+		adapter.Queue(llm.FakeResult{
+			SessionID: "session-" + string(thread.ID),
+			Response:  llm.Response{StructuredOutput: []byte(validSkipOutput(string(thread.ID)))},
+		})
+	}
+	opts := testOptions(t, newFakeStore(), adapter)
+
+	dirs := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		dir, err := opts.LifecyclePaths.TaskDir("thread-analysis-" + string(thread.ID))
+		if err != nil {
+			t.Fatalf("TaskDir(%s): %v", thread.ID, err)
+		}
+		dirs = append(dirs, dir)
+	}
+	if strings.EqualFold(dirs[0], dirs[1]) {
+		t.Fatalf("task directories fold together: %q and %q", dirs[0], dirs[1])
+	}
+
+	results, err := AnalyzeThreads(context.Background(), opts, threads, func(thread threadcontext.Thread) (string, error) {
+		return filepath.Join("logs", string(thread.ID)+".jsonl"), nil
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeThreads: %v", err)
+	}
+	if len(results) != len(threads) {
+		t.Fatalf("results = %d, want %d", len(results), len(threads))
+	}
+	for i, thread := range threads {
+		if results[i].ThreadID != string(thread.ID) {
+			t.Fatalf("result %d thread ID = %q, want %q", i, results[i].ThreadID, thread.ID)
+		}
+		meta := readThreadMetadata(t, opts, string(thread.ID))
+		if meta.TaskID != "thread-analysis-"+string(thread.ID) {
+			t.Fatalf("thread %s metadata task ID = %q, want the exact provider thread ID", thread.ID, meta.TaskID)
+		}
+	}
+}

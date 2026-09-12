@@ -1102,6 +1102,9 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 	if err := os.MkdirAll(artifacts.AgentLogsDir, 0o700); err != nil {
 		return preparedSelectionContext{}, fmt.Errorf("pipeline: create agent log dir: %w", err)
 	}
+	if err := os.MkdirAll(artifacts.ThreadAnalysisLogsDir(), 0o700); err != nil {
+		return preparedSelectionContext{}, fmt.Errorf("pipeline: create thread analysis log dir: %w", err)
+	}
 	if err := os.MkdirAll(artifacts.LLMTasksDir, 0o700); err != nil {
 		return preparedSelectionContext{}, fmt.Errorf("pipeline: create LLM task dir: %w", err)
 	}
@@ -1333,7 +1336,7 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 		ResumeSessionID: resumeSessionID,
 		OnSessionID:     onSessionID,
 	}, eligible, func(thread threadcontext.Thread) (string, error) {
-		return artifacts.AgentLog("thread-analysis-" + string(thread.ID))
+		return artifacts.ThreadAnalysisLog(string(thread.ID))
 	})
 	if err != nil {
 		return nil, pipelineTaskError(err)
