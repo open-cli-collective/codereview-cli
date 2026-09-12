@@ -42,6 +42,11 @@ check: tidy fmt lint test build
 
 install:
 	go install ./cmd/cr
+	@if [ -n "$(CODESIGN_IDENTITY)" ] && [ "$$(uname -s)" = Darwin ]; then \
+		bin="$$(go env GOBIN)"; bin="$${bin:-$$(go env GOPATH)/bin}"; \
+		codesign --force --timestamp=none --sign "$(CODESIGN_IDENTITY)" --identifier "org.open-cli-collective.cr" "$$bin/cr"; \
+		codesign --verify --strict "$$bin/cr"; \
+	fi
 
 # goreleaser wrappers. `snapshot` builds locally without publishing (the same
 # build CI's release.yml runs). `release` is the real publish and is intended for
