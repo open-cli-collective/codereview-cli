@@ -2173,7 +2173,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if len(repairFiles) == 0 {
 		return execution, nil
 	}
-	// Merged tool evidence keeps the worse pass, so a repair can never clear incomplete_tool.
+	// The primary's own evidence already forces incomplete_tool, so no repair can clear it.
 	if reviewerToolEvidenceForcesIncomplete(session.Response.ReviewerToolEvidence) {
 		return execution, nil
 	}
@@ -2263,6 +2263,10 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 			return execution, nil
 		}
 		return reviewerExecution{}, repairErr
+	}
+	if reviewerToolEvidenceForcesIncomplete(repairSession.Response.ReviewerToolEvidence) {
+		// A repair that never proved its own tool use inspected nothing, so its claim cannot clear a skip.
+		repair.InspectedFiles = nil
 	}
 	execution.result = mergeReviewerFindings(findings, repair)
 	for _, finding := range repair.Findings {

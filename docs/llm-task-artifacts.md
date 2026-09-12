@@ -155,11 +155,12 @@ claim; they do not add coverage or trigger another review attempt. Paths outside
 the reviewer's allowed assignment and paths claimed as both inspected and skipped
 remain invalid. Scope-repair diagnostics identify zero-based array positions
 without echoing the rejected path into the retry prompt.
-For a reviewer with a recorded result, explicit evidence with any status other
-than `succeeded` makes coverage `incomplete_tool`, even if the result reports
-all assigned files as inspected. Incomplete coverage clamps an otherwise
-approving review to `comment`. Successful tool evidence does not itself prove
-complete coverage; the normal assigned-file coverage checks also apply.
+For a reviewer with a recorded result, explicit evidence from its primary
+session with any status other than `succeeded` makes coverage `incomplete_tool`,
+even if the result reports all assigned files as inspected. Incomplete coverage
+clamps an otherwise approving review to `comment`. Successful tool evidence does
+not itself prove complete coverage; the normal assigned-file coverage checks
+also apply.
 
 The lifecycle persists this evidence in metadata and restores it when loading
 a cached task, so reusing successful output preserves the tool state used to
@@ -183,8 +184,8 @@ rest of that map); a lockfile spelled outside it, such as `bun.lock`, is repaire
 like any other readable file. Files outside the repair set remain covered by the
 normal exemption or fail-closed rules. The repair is also skipped when the
 primary session reports `reviewer_tool_evidence` whose `diff_status` is anything
-other than `succeeded`: merged evidence keeps the worse status, so the
-`incomplete_tool` coverage entry would stand regardless of what the repair
+other than `succeeded`: that session's own evidence already makes coverage
+`incomplete_tool`, so the entry would stand regardless of what the repair
 inspected. A repair task uses the same pinned PR revision and reviewer agent as
 its primary task, but has its own workspace, durable task artifacts, and ledger
 session.
@@ -208,11 +209,14 @@ incomplete.
 
 The primary findings are retained and repair findings are appended. Inspected
 files are unioned, and a primary skipped file is cleared only when the repair
-explicitly reports it in `inspected_files`; skipped files that remain skipped
-continue to make coverage incomplete. The reviewer task dependency list passed
-to rollup includes both the primary and repair task IDs, so their outputs,
-sessions, tool evidence, and coverage status are merged before approval is
-decided.
+explicitly reports it in `inspected_files` and the repair's own
+`reviewer_tool_evidence` reports `succeeded`; a repair with any other status
+contributes no inspected files, so the skip stands. Skipped files that remain
+skipped continue to make coverage incomplete. The reviewer task dependency list
+passed to rollup includes both the primary and repair task IDs, so their outputs,
+sessions, and coverage status are merged before approval is decided. Tool
+evidence is not merged across the two passes: coverage reads only the primary
+session's evidence, so a repair can neither improve nor worsen it.
 
 ## Resume Rules
 
