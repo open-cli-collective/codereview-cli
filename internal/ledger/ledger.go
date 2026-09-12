@@ -584,12 +584,8 @@ func isSQLiteBusyError(err error) bool {
 	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	switch sqliteErr.Code() & 0xff {
-	case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
-		return true
-	default:
-		return false
-	}
+	// The driver enables extended result codes, so mask to the primary code.
+	return sqliteErr.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
 func migrations() []dbmig.Migration {

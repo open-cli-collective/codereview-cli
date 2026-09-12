@@ -3,6 +3,12 @@
 // Apply works with database/sql so callers own SQLite connection setup. The cr
 // ledger startup path should still enforce its own connection contract,
 // including single-writer behavior or db.SetMaxOpenConns(1).
+//
+// Concurrent callers must open SQLite with immediate transactions. Apply
+// re-reads schema_version inside each migration transaction, and that read is
+// only race-free when BEGIN takes the write lock up front; with a deferred
+// transaction the following DDL upgrades a read lock and SQLite skips the busy
+// handler for that upgrade.
 package dbmig
 
 import (
@@ -75,14 +81,18 @@ func Apply(ctx context.Context, db *sql.DB, migrations []Migration) (Result, err
 		if migration.Version <= current {
 			continue
 		}
-		applied, err := applyMigration(ctx, db, migration)
+		observed, applied, err := applyMigration(ctx, db, migration)
 		if err != nil {
 			return result, err
 		}
-		current = migration.Version
+		// Trust the version read under the write lock, not the planned one: a
+		// concurrent newer binary may have moved the schema past this target.
+		current = observed
 		result.CurrentVersion = current
+		if current > target {
+			return result, fmt.Errorf("%w: database version %d, code version %d", ErrDowngrade, current, target)
+		}
 		if !applied {
-			// Another process applied this migration after Apply planned the run.
 			continue
 		}
 		result.Applied = append(result.Applied, AppliedMigration{
@@ -244,10 +254,10 @@ func requireMetaColumn(columns map[string]metaColumn, name, columnType string) e
 	return nil
 }
 
-func applyMigration(ctx context.Context, db *sql.DB, migration Migration) (bool, error) {
+func applyMigration(ctx context.Context, db *sql.DB, migration Migration) (int, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("dbmig: begin migration %d %q: %w", migration.Version, migration.Name, err)
+		return 0, false, fmt.Errorf("dbmig: begin migration %d %q: %w", migration.Version, migration.Name, err)
 	}
 	defer func() {
 		_ = tx.Rollback()
@@ -260,33 +270,33 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration) (bool,
 	// the read happens under the write lock.
 	var current int
 	if err := tx.QueryRowContext(ctx, "SELECT schema_version FROM meta").Scan(&current); err != nil {
-		return false, fmt.Errorf("%w: reading schema_version before migration %d: %w", ErrInvalidMeta, migration.Version, err)
+		return 0, false, fmt.Errorf("%w: reading schema_version before migration %d: %w", ErrInvalidMeta, migration.Version, err)
 	}
 	if current >= migration.Version {
-		return false, nil
+		return current, false, nil
 	}
 	if current != migration.Version-1 {
-		return false, fmt.Errorf("%w: schema_version %d before migration %d", ErrInvalidMeta, current, migration.Version)
+		return current, false, fmt.Errorf("%w: schema_version %d before migration %d", ErrInvalidMeta, current, migration.Version)
 	}
 
 	if err := migration.Up(ctx, tx); err != nil {
-		return false, fmt.Errorf("dbmig: apply migration %d %q: %w", migration.Version, migration.Name, err)
+		return current, false, fmt.Errorf("dbmig: apply migration %d %q: %w", migration.Version, migration.Name, err)
 	}
 
 	result, err := tx.ExecContext(ctx, "UPDATE meta SET schema_version = ? WHERE rowid = (SELECT MIN(rowid) FROM meta)", migration.Version)
 	if err != nil {
-		return false, fmt.Errorf("%w: updating schema_version for migration %d: %w", ErrInvalidMeta, migration.Version, err)
+		return current, false, fmt.Errorf("%w: updating schema_version for migration %d: %w", ErrInvalidMeta, migration.Version, err)
 	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("dbmig: checking schema_version update for migration %d: %w", migration.Version, err)
+		return current, false, fmt.Errorf("dbmig: checking schema_version update for migration %d: %w", migration.Version, err)
 	}
 	if rowsAffected != 1 {
-		return false, fmt.Errorf("%w: schema_version update affected %d rows", ErrInvalidMeta, rowsAffected)
+		return current, false, fmt.Errorf("%w: schema_version update affected %d rows", ErrInvalidMeta, rowsAffected)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("dbmig: commit migration %d %q: %w", migration.Version, migration.Name, err)
+		return current, false, fmt.Errorf("dbmig: commit migration %d %q: %w", migration.Version, migration.Name, err)
 	}
-	return true, nil
+	return migration.Version, true, nil
 }

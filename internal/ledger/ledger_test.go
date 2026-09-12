@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -126,6 +127,26 @@ func TestOpenConcurrentOnSamePathSucceeds(t *testing.T) {
 	}
 	if len(failures) > 0 {
 		t.Fatalf("%d/%d concurrent Open calls failed:\n%v", len(failures), openers, errors.Join(failures...))
+	}
+
+	// A racing open must not merely avoid erroring; it must land on a fully
+	// migrated database in WAL mode.
+	wantVersion := len(migrations())
+	for i, store := range stores {
+		var version int
+		if err := store.db.QueryRowContext(context.Background(), "SELECT schema_version FROM meta").Scan(&version); err != nil {
+			t.Fatalf("opener %d: read schema_version: %v", i, err)
+		}
+		if version != wantVersion {
+			t.Fatalf("opener %d: schema_version = %d, want %d", i, version, wantVersion)
+		}
+		var mode string
+		if err := store.db.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
+			t.Fatalf("opener %d: read journal_mode: %v", i, err)
+		}
+		if strings.ToLower(mode) != "wal" {
+			t.Fatalf("opener %d: journal_mode = %q, want wal", i, mode)
+		}
 	}
 }
 

@@ -494,3 +494,68 @@ func execSQL(t *testing.T, db *sql.DB, statement string, args ...any) {
 		t.Fatalf("exec %q: %v", statement, err)
 	}
 }
+
+func TestApplyMigrationReportsVersionObservedUnderWriteLock(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applied := 0
+	second := countedMigration(2, "create reviews", &applied, "CREATE TABLE reviews (id INTEGER PRIMARY KEY)")
+	migrations := []Migration{
+		countedMigration(1, "create widgets", &applied, "CREATE TABLE widgets (id INTEGER PRIMARY KEY)"),
+		second,
+	}
+	if _, err := Apply(ctx, db, migrations); err != nil {
+		t.Fatalf("seed Apply: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE meta SET schema_version = 7"); err != nil {
+		t.Fatalf("advance schema_version: %v", err)
+	}
+
+	// A concurrent newer binary moved the schema past this migration. The
+	// version observed under the write lock must be reported so Apply can
+	// refuse the downgrade instead of continuing on a schema it does not know.
+	observed, didApply, err := applyMigration(ctx, db, second)
+	if err != nil {
+		t.Fatalf("applyMigration: %v", err)
+	}
+	if didApply {
+		t.Fatal("applyMigration reapplied a migration the database already has")
+	}
+	if observed != 7 {
+		t.Fatalf("observed version = %d, want 7", observed)
+	}
+}
+
+func TestApplyRefusesDowngradeDiscoveredMidRun(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applied := 0
+
+	// Stand in for a newer binary that wins the race and advances the schema
+	// past this run's target while this run is between migrations. The trigger
+	// fires on the schema_version write that ends migration 1, so migration 2
+	// re-reads a version this code does not know.
+	advance := Migration{
+		Version: 1,
+		Name:    "create widgets",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "CREATE TABLE widgets (id INTEGER PRIMARY KEY)"); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, "CREATE TRIGGER advance AFTER UPDATE ON meta BEGIN UPDATE meta SET schema_version = 9; END")
+			return err
+		},
+	}
+	migrations := []Migration{
+		advance,
+		countedMigration(2, "create reviews", &applied, "CREATE TABLE reviews (id INTEGER PRIMARY KEY)"),
+	}
+
+	_, err := Apply(ctx, db, migrations)
+	if !errors.Is(err, ErrDowngrade) {
+		t.Fatalf("Apply error = %v, want ErrDowngrade", err)
+	}
+	if applied != 0 {
+		t.Fatalf("migration 2 ran %d times against a newer schema, want 0", applied)
+	}
+}
