@@ -500,6 +500,7 @@ type piRPCStream struct {
 }
 
 func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
+	start := time.Now()
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
@@ -539,6 +540,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	case !scanResult.agentEnd:
 		result.err = errors.New("llm pi rpc: missing agent_end")
 	}
+	recordRequestDuration(&result.response, start, result.err)
 	s.Cancel()
 	s.CloseProcessGroup()
 	s.CloseLog()
