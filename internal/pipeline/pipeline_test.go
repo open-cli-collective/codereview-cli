@@ -1141,7 +1141,7 @@ func TestDryRunRepairsReadableSkippedFileAndPreservesPrimaryFinding(t *testing.T
 	}
 }
 
-func TestDryRunCoverageRepairResumesPrimaryReviewerSessionAndUpdatesCohort(t *testing.T) {
+func TestDryRunCoverageRepairResumesPrimaryReviewerSessionAndKeepsCohortSeed(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -1188,8 +1188,8 @@ func TestDryRunCoverageRepairResumesPrimaryReviewerSessionAndUpdatesCohort(t *te
 	if err != nil {
 		t.Fatalf("GetReviewerCohort: %v", err)
 	}
-	if len(cohort.Members) != 1 || cohort.Members[0].ProviderSessionID != "coverage-repair-session" {
-		t.Fatalf("cohort = %#v, want latest focused repair session", cohort)
+	if len(cohort.Members) != 1 || cohort.Members[0].ProviderSessionID != "reviewer-session" {
+		t.Fatalf("cohort = %#v, want primary reviewer session as the next run's resume seed", cohort)
 	}
 }
 
@@ -1240,8 +1240,11 @@ func TestDryRunCoverageRepairFailurePreservesPrimaryFindingAndBlocksApproval(t *
 		t.Fatalf("reviewer failures = %#v, want isolated coverage repair failure", result.ReviewerFailures)
 	}
 	coverage := result.Plan.Summary.Run.ReviewerCoverage
-	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteFailed {
-		t.Fatalf("coverage = %#v, want fail-closed incomplete reviewer", coverage)
+	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteFailed ||
+		!reflect.DeepEqual(coverage[0].InspectedFiles, []string{"main.go"}) ||
+		!reflect.DeepEqual(coverage[0].SkippedFiles, []string{"other.go"}) ||
+		coverage[0].Diagnostic == "" {
+		t.Fatalf("coverage = %#v, want fail-closed reviewer keeping proven primary coverage", coverage)
 	}
 	if result.Plan.Outcome != reviewplan.OutcomeComment {
 		t.Fatalf("outcome = %q, want comment after repair failure", result.Plan.Outcome)
@@ -1265,6 +1268,79 @@ func TestDryRunCoverageRepairFailurePreservesPrimaryFindingAndBlocksApproval(t *
 	}
 	if storedFindings[0].SessionRowID != primarySessionRow || primarySessionRow == "" {
 		t.Fatalf("primary finding session = %q, want primary reviewer session %q", storedFindings[0].SessionRowID, primarySessionRow)
+	}
+}
+
+func TestDryRunCoverageRepairInspectsOneOfTwoReadableSkippedFiles(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go") + smallDiff("third.go")
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:reviewer", "main.go", "other.go", "third.go"), 1, 1))
+	primary := fakeLLMResult("reviewer-session", findingsWithCoverageJSON(
+		"harness:reviewer",
+		[]string{"main.go"},
+		[]string{"other.go", "third.go"},
+		nil,
+		[]findingJSONInput{{File: "main.go", Severity: "major", Line: 2, Body: "Keep this primary finding"}},
+	), 2, 2)
+	primary.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(primary)
+	repair := fakeLLMResult("coverage-repair-session", coverageOnlyJSON(
+		"harness:reviewer",
+		[]string{"other.go"},
+		[]string{"third.go"},
+	), 3, 3)
+	repair.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusSucceeded}
+	adapter.Queue(repair)
+	adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1"}), 4, 4))
+
+	result, err := dryRunForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewRunID:        func() string { return "run-partial-coverage-repair" },
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    findingSequence("finding"),
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("adapter requests = %d, want selection/primary/repair/rollup", len(requests))
+	}
+	var repairPrompt struct {
+		CoverageRepair struct {
+			Files []string `json:"files"`
+		} `json:"coverage_repair"`
+	}
+	if err := json.Unmarshal([]byte(requests[2].Prompt), &repairPrompt); err != nil {
+		t.Fatalf("decode coverage repair prompt: %v", err)
+	}
+	if !reflect.DeepEqual(repairPrompt.CoverageRepair.Files, []string{"other.go", "third.go"}) {
+		t.Fatalf("coverage repair files = %#v, want both readable skipped files", repairPrompt.CoverageRepair.Files)
+	}
+	primaryWorkspace, repairWorkspace := requests[1].ReviewerWorkspace, requests[2].ReviewerWorkspace
+	if primaryWorkspace == nil || repairWorkspace == nil ||
+		primaryWorkspace.RepoDir == repairWorkspace.RepoDir || primaryWorkspace.ScratchDir == repairWorkspace.ScratchDir {
+		t.Fatalf("repair workspace = %#v, want its own directories separate from the primary pass %#v", repairWorkspace, primaryWorkspace)
+	}
+	coverage := result.Plan.Summary.Run.ReviewerCoverage
+	if len(coverage) != 1 || coverage[0].Status != reviewerCoverageIncompleteSkipped ||
+		!reflect.DeepEqual(coverage[0].InspectedFiles, []string{"main.go", "other.go"}) ||
+		!reflect.DeepEqual(coverage[0].SkippedFiles, []string{"third.go"}) {
+		t.Fatalf("coverage = %#v, want the repaired file cleared and the still-skipped file retained once", coverage)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeComment {
+		t.Fatalf("outcome = %q, want comment while a skipped file remains", result.Plan.Outcome)
 	}
 }
 

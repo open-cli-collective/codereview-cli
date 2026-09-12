@@ -29,7 +29,9 @@ The runtime sequence for checkout-native review is:
    - final dossier artifacts
 4. Run orchestrator selection from dossier/workbench inputs, selecting every
    applicable repo-local reviewer before optional shared reviewers.
-5. Run specialist reviewers against per-reviewer disposable workspaces.
+5. Run specialist reviewers against per-reviewer disposable workspaces, then one
+   focused coverage-repair pass for each reviewer that reported assigned
+   readable files as skipped.
 6. Run rollup from findings, reviewer failures, and inspected coverage.
 
 This order is load-bearing. Discussion summarization happens before final
@@ -339,8 +341,9 @@ the rollup says so under an **Approval Withheld** heading, naming the reviewers
 that produced no result, the coverage diagnostics behind any other incomplete
 status, and every changed file no reviewer inspected. Without it, a review that
 approved and a review that found nothing but could not approve render
-identically as a table of zeros, and re-running is not a remedy: a reviewer that
-declined a file declines it again.
+identically as a table of zeros. Re-running is not a remedy either: the focused
+coverage-repair pass has already re-inspected every readable skipped file it
+could, so what the section names is what stayed skipped after that second look.
 
 The section renders whenever that coercion fired, rather than deciding again
 from the evidence, so it cannot disagree with the gate about whether coverage

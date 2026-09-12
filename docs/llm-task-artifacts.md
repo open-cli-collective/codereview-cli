@@ -177,10 +177,13 @@ is safe to reuse.
 
 After a successful primary reviewer task reports assigned readable files as
 skipped, the pipeline may run one focused coverage-repair task for that reviewer.
-Deleted, binary, and generated dependency-lock files are outside the repair set;
-they remain covered by the normal exemption or fail-closed rules. A repair task
-uses the same pinned PR revision and reviewer identity as its primary task, but
-has its own durable task artifacts and ledger session.
+Deleted and binary files are outside the repair set, as are files whose basename
+is in the `generatedLockfiles` set (`Cargo.lock`, `bun.lockb`, `go.sum`, and the
+rest of that map); a lockfile spelled outside it, such as `bun.lock`, is repaired
+like any other readable file. Files outside the repair set remain covered by the
+normal exemption or fail-closed rules. A repair task uses the same pinned PR
+revision and reviewer agent as its primary task, but has its own workspace,
+durable task artifacts, and ledger session.
 
 - `task_id`: `reviewer-<encoded-agent-id>-coverage-repair`, derived from the
   primary reviewer task ID.

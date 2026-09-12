@@ -2181,11 +2181,13 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if err := opts.checkPromptBudget("reviewer coverage repair", agent.ID, model, strings.Join(repairFiles, ","), repairPrompt); err != nil {
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
-	repairLogPath, err := artifacts.AgentLog(agent.ID + "-coverage-repair")
+	repairIdentity := reviewerCoverageRepairIdentity(agent.ID)
+	repairLogPath, err := artifacts.AgentLog(repairIdentity)
 	if err != nil {
 		return reviewerExecution{}, err
 	}
-	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
+	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
 	if err != nil {
 		return reviewerExecution{}, err
 	}
@@ -2228,12 +2230,10 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 			NewFindingID: opts.newFindingID,
 		})
 	})
+	// No cohort session update here: that slot seeds the next run's primary review.
 	execution.sessions = append(execution.sessions, repairSession)
 	execution.ledgerSessions = appendSessionIfPresent(execution.ledgerSessions, repairLedgerSession)
 	execution.taskIDs = append(execution.taskIDs, repairTaskID)
-	if updateErr := updateReviewerCohortProviderSession(ctx, opts, resumeState.scope, agent.ID, repairSession); updateErr != nil {
-		return reviewerExecution{}, updateErr
-	}
 	if repairErr != nil {
 		var taskErr *llmTaskError
 		if errors.As(repairErr, &taskErr) && taskErr.status == llmTaskStatusFailedIsolated {
@@ -2265,8 +2265,16 @@ func reviewerTaskID(agentID string) string {
 	return "reviewer-" + statepaths.Encode(agentID)
 }
 
+// reviewerCoverageRepairSuffix marks the repair pass's task ID, log, and
+// workspace as a distinct identity derived from the primary reviewer's.
+const reviewerCoverageRepairSuffix = "-coverage-repair"
+
+func reviewerCoverageRepairIdentity(agentID string) string {
+	return agentID + reviewerCoverageRepairSuffix
+}
+
 func reviewerCoverageRepairTaskID(agentID string) string {
-	return reviewerTaskID(agentID) + "-coverage-repair"
+	return reviewerTaskID(reviewerCoverageRepairIdentity(agentID))
 }
 
 // reviewerCoverageRepairFiles returns skipped assignment paths whose head
@@ -2659,12 +2667,8 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
-		if drafts := reviewerByAgent[selected.AgentID]; len(drafts) > 0 {
-			draft := combineReviewerSessionDrafts(drafts)
-			if !sessionDraftExecuted(draft) {
-				continue
-			}
-			workstreams = append(workstreams, workstreamUsage(selected.AgentID, draft))
+		if drafts := reviewerByAgent[selected.AgentID]; slices.ContainsFunc(drafts, sessionDraftExecuted) {
+			workstreams = append(workstreams, workstreamUsageFromTotals(selected.AgentID, combineReviewerWorkstreamTotals(drafts)))
 		}
 	}
 	if sessionDraftExecuted(inputs.rollup) {
@@ -2693,13 +2697,33 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 	return summary, findingReviewers
 }
 
-func combineReviewerSessionDrafts(drafts []sessionDraft) sessionDraft {
-	if len(drafts) == 0 {
-		return sessionDraft{}
+// workstreamTotals is the usage a workstream reports. A reviewer's totals span
+// several provider sessions, so they are deliberately not a sessionDraft: there
+// is no single session they could be written back to.
+type workstreamTotals struct {
+	model       string
+	usage       llm.Usage
+	durationMS  int64
+	startedAt   time.Time
+	completedAt time.Time
+}
+
+func draftWorkstreamTotals(draft sessionDraft) workstreamTotals {
+	return workstreamTotals{
+		model:       draft.Model,
+		usage:       draft.Response.Usage,
+		durationMS:  draft.Response.DurationMS,
+		startedAt:   draft.StartedAt,
+		completedAt: draft.CompletedAt,
 	}
-	combined := drafts[0]
-	combined.Response = llm.Response{}
-	combined.Response.Usage = llm.Usage{
+}
+
+func combineReviewerWorkstreamTotals(drafts []sessionDraft) workstreamTotals {
+	if len(drafts) == 0 {
+		return workstreamTotals{}
+	}
+	combined := workstreamTotals{model: drafts[0].Model}
+	combined.usage = llm.Usage{
 		TokensIn:      sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.TokensIn }),
 		TokensOut:     sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.TokensOut }),
 		CacheRead:     sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.CacheRead }),
@@ -2708,29 +2732,26 @@ func combineReviewerSessionDrafts(drafts []sessionDraft) sessionDraft {
 		CacheCreate1h: sumReviewerSessionInts(drafts, func(draft sessionDraft) *int { return draft.Response.Usage.CacheCreate1h }),
 		CostUSD:       sumReviewerSessionFloats(drafts, func(draft sessionDraft) *float64 { return draft.Response.Usage.CostUSD }),
 	}
-	combined.StartedAt = time.Time{}
-	combined.CompletedAt = time.Time{}
 	allFast := true
 	allStandard := true
 	for _, draft := range drafts {
-		combined.Response.DurationMS += draft.Response.DurationMS
-		combined.Response.ReviewerToolEvidence = mergeReviewerToolEvidence(combined.Response.ReviewerToolEvidence, draft.Response.ReviewerToolEvidence)
-		if combined.StartedAt.IsZero() || !draft.StartedAt.IsZero() && draft.StartedAt.Before(combined.StartedAt) {
-			combined.StartedAt = draft.StartedAt
+		combined.durationMS += draft.Response.DurationMS
+		if combined.startedAt.IsZero() || !draft.StartedAt.IsZero() && draft.StartedAt.Before(combined.startedAt) {
+			combined.startedAt = draft.StartedAt
 		}
-		if draft.CompletedAt.After(combined.CompletedAt) {
-			combined.CompletedAt = draft.CompletedAt
+		if draft.CompletedAt.After(combined.completedAt) {
+			combined.completedAt = draft.CompletedAt
 		}
 		allFast = allFast && draft.Response.Usage.Speed == "fast"
 		allStandard = allStandard && draft.Response.Usage.Speed == "standard"
 	}
 	switch {
 	case allFast:
-		combined.Response.Usage.Speed = "fast"
+		combined.usage.Speed = "fast"
 	case allStandard:
-		combined.Response.Usage.Speed = "standard"
+		combined.usage.Speed = "standard"
 	default:
-		combined.Response.Usage.Speed = "unknown"
+		combined.usage.Speed = "unknown"
 	}
 	return combined
 }
@@ -3023,25 +3044,28 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			AgentID: agent.AgentID,
 			Scope:   scope,
 		}
+		result, hasResult := resultByAgent[agent.AgentID]
+		if hasResult {
+			// Draw both scope and coverage rows from the same lockfile-exempt set,
+			// so a reviewer that did read a lockfile doesn't emit an inspected file
+			// outside its scope.
+			entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
+			entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
+			entry.Constraints = copySortedStrings(result.Constraints)
+		}
 		if failure, ok := failureByAgent[agent.AgentID]; ok {
+			// A reviewer that failed only its coverage repair keeps what the primary pass proved.
 			entry.Status = reviewerCoverageIncompleteFailed
 			entry.Diagnostic = failure.Error
 			out = append(out, entry)
 			continue
 		}
-		result, ok := resultByAgent[agent.AgentID]
-		if !ok {
+		if !hasResult {
 			entry.Status = reviewerCoverageIncompleteFailed
 			entry.Diagnostic = "reviewer result was not recorded"
 			out = append(out, entry)
 			continue
 		}
-		// Draw both scope and coverage rows from the same lockfile-exempt set,
-		// so a reviewer that did read a lockfile doesn't emit an inspected file
-		// outside its scope.
-		entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
-		entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
-		entry.Constraints = copySortedStrings(result.Constraints)
 		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); evidence != nil && evidence.DiffStatus != llm.DiffToolStatusSucceeded {
 			entry.Status = reviewerCoverageIncompleteTool
 			entry.Diagnostic = reviewerToolDiagnostic(evidence, "")
@@ -3186,10 +3210,14 @@ func distinctWorkstreamModels(workstreams []reviewplan.WorkstreamUsage, reviewer
 }
 
 func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
-	usage := draft.Response.Usage
+	return workstreamUsageFromTotals(name, draftWorkstreamTotals(draft))
+}
+
+func workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.WorkstreamUsage {
+	usage := totals.usage
 	workstream := reviewplan.WorkstreamUsage{
 		Name:          name,
-		Model:         draft.Model,
+		Model:         totals.model,
 		TokensIn:      usage.TokensIn,
 		TokensOut:     usage.TokensOut,
 		CacheRead:     usage.CacheRead,
@@ -3202,7 +3230,7 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 	// tokens at public list prices — only for models the price table knows, so an
 	// agent's unpriced model leaves cost unavailable rather than wrong.
 	if workstream.CostUSD == nil {
-		if est, ok := pricing.EstimateUsageUSD(draft.Model, pricing.Usage{
+		if est, ok := pricing.EstimateUsageUSD(totals.model, pricing.Usage{
 			TokensIn: usage.TokensIn, TokensOut: usage.TokensOut, CacheRead: usage.CacheRead,
 			CacheCreate5m: usage.CacheCreate5m, CacheCreate1h: usage.CacheCreate1h,
 			CacheCreateTotal: usage.CacheCreate, Speed: usage.Speed,
@@ -3216,11 +3244,11 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 	// pipeline's own start/complete clock for the workstream, and render
 	// unavailable (not 0s) when neither source has data.
 	switch {
-	case draft.Response.DurationMS > 0:
-		duration := draft.Response.DurationMS
+	case totals.durationMS > 0:
+		duration := totals.durationMS
 		workstream.DurationMS = &duration
-	case !draft.StartedAt.IsZero() && draft.CompletedAt.After(draft.StartedAt):
-		duration := draft.CompletedAt.Sub(draft.StartedAt).Milliseconds()
+	case !totals.startedAt.IsZero() && totals.completedAt.After(totals.startedAt):
+		duration := totals.completedAt.Sub(totals.startedAt).Milliseconds()
 		workstream.DurationMS = &duration
 	}
 	return workstream
