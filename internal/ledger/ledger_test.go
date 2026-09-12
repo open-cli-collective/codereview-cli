@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -54,6 +55,88 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
+	}
+}
+
+func TestOpenAppliesPerConnectionPragmasFromDSN(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	dsn, err := sqliteDataSourceName(path)
+	if err != nil {
+		t.Fatalf("sqliteDataSourceName: %v", err)
+	}
+
+	// A connection dialled from the DSN alone must already carry the
+	// per-connection pragmas. This is what protects connections that
+	// database/sql dials after discarding one, which never run
+	// configureSQLite.
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close DSN connection: %v", err)
+		}
+	})
+	assertSQLitePragmas(t, db)
+
+	// Open must expose the same values on the connection it uses.
+	store := openStoreAt(t, path)
+	assertSQLitePragmas(t, store.db)
+}
+
+func TestOpenConcurrentOnSamePathSucceeds(t *testing.T) {
+	const openers = 8
+
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	start := make(chan struct{})
+	errs := make([]error, openers)
+	stores := make([]*Store, openers)
+
+	var wg sync.WaitGroup
+	for i := range openers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			stores[i], errs[i] = Open(context.Background(), path)
+		}()
+	}
+
+	// Release every opener at once so they genuinely race for the WAL lock.
+	close(start)
+	wg.Wait()
+
+	t.Cleanup(func() {
+		for _, store := range stores {
+			if store == nil {
+				continue
+			}
+			if err := store.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+		}
+	})
+
+	failures := make([]error, 0, openers)
+	for i, err := range errs {
+		if err != nil {
+			failures = append(failures, fmt.Errorf("opener %d: %w", i, err))
+		}
+	}
+	if len(failures) > 0 {
+		t.Fatalf("%d/%d concurrent Open calls failed:\n%v", len(failures), openers, errors.Join(failures...))
+	}
+}
+
+func assertSQLitePragmas(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if got := queryInt(t, db, "PRAGMA busy_timeout"); int64(got) != DefaultBusyTimeout.Milliseconds() {
+		t.Fatalf("PRAGMA busy_timeout = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
+	}
+	if got := queryInt(t, db, "PRAGMA foreign_keys"); got != 1 {
+		t.Fatalf("PRAGMA foreign_keys = %d, want 1", got)
 	}
 }
 
