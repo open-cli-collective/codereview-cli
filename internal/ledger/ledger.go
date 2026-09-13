@@ -530,6 +530,12 @@ func sqliteDataSourceName(path string) (string, error) {
 	// writers wait on busy_timeout instead of failing instantly with
 	// SQLITE_BUSY_SNAPSHOT. Startup migrations rely on that to serialize
 	// against another process opening the same fresh ledger.
+	// Every BeginTx on this handle is therefore a write transaction: do not add
+	// a read-only BeginTx here, it would serialize behind the writer. Reads run
+	// as autocommit queries instead. dbmig.Apply also depends on this — its
+	// in-transaction schema_version re-read is only race-free under the write
+	// lock — so this setting is a cross-package contract, pinned by
+	// TestSQLiteDataSourceName.
 	query.Set("_txlock", "immediate")
 
 	uri := url.URL{

@@ -527,35 +527,57 @@ func TestApplyMigrationReportsVersionObservedUnderWriteLock(t *testing.T) {
 }
 
 func TestApplyRefusesDowngradeDiscoveredMidRun(t *testing.T) {
-	ctx := context.Background()
-	db := openTestDB(t)
-	applied := 0
-
 	// Stand in for a newer binary that wins the race and advances the schema
-	// past this run's target while this run is between migrations. The trigger
-	// fires on the schema_version write that ends migration 1, so migration 2
-	// re-reads a version this code does not know.
-	advance := Migration{
-		Version: 1,
-		Name:    "create widgets",
-		Up: func(ctx context.Context, tx *sql.Tx) error {
-			if _, err := tx.ExecContext(ctx, "CREATE TABLE widgets (id INTEGER PRIMARY KEY)"); err != nil {
+	// past this run's target. The trigger fires on the schema_version write
+	// that ends its migration, so the version moves underneath this run. It
+	// must be refused whether that happens on an early migration or on the
+	// last one in the plan.
+	advanceOn := func(version int, name, ddl string) Migration {
+		return Migration{
+			Version: version,
+			Name:    name,
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				if _, err := tx.ExecContext(ctx, ddl); err != nil {
+					return err
+				}
+				_, err := tx.ExecContext(ctx, "CREATE TRIGGER advance AFTER UPDATE ON meta BEGIN UPDATE meta SET schema_version = 9; END")
 				return err
-			}
-			_, err := tx.ExecContext(ctx, "CREATE TRIGGER advance AFTER UPDATE ON meta BEGIN UPDATE meta SET schema_version = 9; END")
-			return err
-		},
-	}
-	migrations := []Migration{
-		advance,
-		countedMigration(2, "create reviews", &applied, "CREATE TABLE reviews (id INTEGER PRIMARY KEY)"),
+			},
+		}
 	}
 
-	_, err := Apply(ctx, db, migrations)
-	if !errors.Is(err, ErrDowngrade) {
-		t.Fatalf("Apply error = %v, want ErrDowngrade", err)
-	}
-	if applied != 0 {
-		t.Fatalf("migration 2 ran %d times against a newer schema, want 0", applied)
+	for _, tt := range []struct {
+		name    string
+		advance int
+	}{
+		{name: "first migration", advance: 1},
+		{name: "last migration", advance: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			db := openTestDB(t)
+			applied := 0
+
+			migrations := make([]Migration, 0, 2)
+			for _, m := range []struct {
+				version int
+				name    string
+				ddl     string
+			}{
+				{1, "create widgets", "CREATE TABLE widgets (id INTEGER PRIMARY KEY)"},
+				{2, "create reviews", "CREATE TABLE reviews (id INTEGER PRIMARY KEY)"},
+			} {
+				if m.version == tt.advance {
+					migrations = append(migrations, advanceOn(m.version, m.name, m.ddl))
+					continue
+				}
+				migrations = append(migrations, countedMigration(m.version, m.name, &applied, m.ddl))
+			}
+
+			_, err := Apply(ctx, db, migrations)
+			if !errors.Is(err, ErrDowngrade) {
+				t.Fatalf("Apply error = %v, want ErrDowngrade", err)
+			}
+		})
 	}
 }

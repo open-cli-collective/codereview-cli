@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -1995,4 +1997,91 @@ func indexColumns(t *testing.T, db *sql.DB, name string) []string {
 
 func strPtr(value string) *string {
 	return &value
+}
+
+func TestSQLiteDataSourceName(t *testing.T) {
+	// The helper builds a file: URI rather than concatenating the path, because
+	// the driver splits the query string at the first '?'. A data root
+	// containing any of these characters would otherwise produce a DSN whose
+	// parameters are truncated or whose path is wrong.
+	for _, name := range []string{
+		"ledger.db",
+		"with space.db",
+		"question?.db",
+		"hash#.db",
+		"percent%41.db",
+		"amp&eq=.db",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), name)
+			dsn, err := sqliteDataSourceName(path)
+			if err != nil {
+				t.Fatalf("sqliteDataSourceName(%q): %v", path, err)
+			}
+			if !strings.HasPrefix(dsn, "file://") {
+				t.Fatalf("dsn = %q, want a file: URI", dsn)
+			}
+
+			db, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				t.Fatalf("sql.Open(%q): %v", dsn, err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Fatalf("close: %v", err)
+				}
+			})
+			// The pragmas surviving the encoding is the proof the query string
+			// was not truncated by a character in the path.
+			assertSQLitePragmas(t, db)
+
+			var opened string
+			if err := db.QueryRowContext(context.Background(), "SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&opened); err != nil {
+				t.Fatalf("read opened path: %v", err)
+			}
+			// Resolve both sides: macOS reports the temp dir through
+			// /private/var while t.TempDir hands back /var.
+			wantPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatalf("resolve %q: %v", path, err)
+			}
+			gotPath, err := filepath.EvalSymlinks(opened)
+			if err != nil {
+				t.Fatalf("resolve %q: %v", opened, err)
+			}
+			if gotPath != wantPath {
+				t.Fatalf("opened %q, want %q", gotPath, wantPath)
+			}
+		})
+	}
+
+	t.Run("resolves a relative path", func(t *testing.T) {
+		dsn, err := sqliteDataSourceName("ledger.db")
+		if err != nil {
+			t.Fatalf("sqliteDataSourceName: %v", err)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("Getwd: %v", err)
+		}
+		if !strings.Contains(dsn, filepath.ToSlash(cwd)) {
+			t.Fatalf("dsn = %q, want it to resolve against %q", dsn, cwd)
+		}
+	})
+
+	t.Run("requires immediate transactions", func(t *testing.T) {
+		dsn, err := sqliteDataSourceName(filepath.Join(t.TempDir(), "ledger.db"))
+		if err != nil {
+			t.Fatalf("sqliteDataSourceName: %v", err)
+		}
+		parsed, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatalf("parse dsn %q: %v", dsn, err)
+		}
+		// dbmig.Apply's in-transaction re-read is only race-free under the
+		// write lock, so this is a cross-package contract, not a tuning knob.
+		if got := parsed.Query().Get("_txlock"); got != "immediate" {
+			t.Fatalf("_txlock = %q, want immediate", got)
+		}
+	})
 }
