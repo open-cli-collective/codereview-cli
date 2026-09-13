@@ -4,10 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +58,108 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
+	}
+}
+
+func TestOpenAppliesPerConnectionPragmasFromDSN(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	dsn, err := sqliteDataSourceName(path)
+	if err != nil {
+		t.Fatalf("sqliteDataSourceName: %v", err)
+	}
+
+	// A connection dialed from the DSN alone must already carry the
+	// per-connection pragmas. This is what protects connections that
+	// database/sql dials after discarding one, which never run
+	// configureSQLite.
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close DSN connection: %v", err)
+		}
+	})
+	assertSQLitePragmas(t, db)
+
+	// Open must expose the same values on the connection it uses.
+	store := openStoreAt(t, path)
+	assertSQLitePragmas(t, store.db)
+}
+
+func TestOpenConcurrentOnSamePathSucceeds(t *testing.T) {
+	const openers = 8
+
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	start := make(chan struct{})
+	errs := make([]error, openers)
+	stores := make([]*Store, openers)
+
+	var wg sync.WaitGroup
+	for i := range openers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			stores[i], errs[i] = Open(context.Background(), path)
+		}()
+	}
+
+	// Release every opener at once so they genuinely race for the WAL lock.
+	close(start)
+	wg.Wait()
+
+	t.Cleanup(func() {
+		for _, store := range stores {
+			if store == nil {
+				continue
+			}
+			if err := store.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+		}
+	})
+
+	failures := make([]error, 0, openers)
+	for i, err := range errs {
+		if err != nil {
+			failures = append(failures, fmt.Errorf("opener %d: %w", i, err))
+		}
+	}
+	if len(failures) > 0 {
+		t.Fatalf("%d/%d concurrent Open calls failed:\n%v", len(failures), openers, errors.Join(failures...))
+	}
+
+	// A racing open must not merely avoid erroring; it must land on a fully
+	// migrated database in WAL mode.
+	wantVersion := len(migrations())
+	for i, store := range stores {
+		var version int
+		if err := store.db.QueryRowContext(context.Background(), "SELECT schema_version FROM meta").Scan(&version); err != nil {
+			t.Fatalf("opener %d: read schema_version: %v", i, err)
+		}
+		if version != wantVersion {
+			t.Fatalf("opener %d: schema_version = %d, want %d", i, version, wantVersion)
+		}
+		var mode string
+		if err := store.db.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
+			t.Fatalf("opener %d: read journal_mode: %v", i, err)
+		}
+		if strings.ToLower(mode) != "wal" {
+			t.Fatalf("opener %d: journal_mode = %q, want wal", i, mode)
+		}
+	}
+}
+
+func assertSQLitePragmas(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if got := queryInt(t, db, "PRAGMA busy_timeout"); int64(got) != DefaultBusyTimeout.Milliseconds() {
+		t.Fatalf("PRAGMA busy_timeout = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
+	}
+	if got := queryInt(t, db, "PRAGMA foreign_keys"); got != 1 {
+		t.Fatalf("PRAGMA foreign_keys = %d, want 1", got)
 	}
 }
 
@@ -1891,4 +1997,91 @@ func indexColumns(t *testing.T, db *sql.DB, name string) []string {
 
 func strPtr(value string) *string {
 	return &value
+}
+
+func TestSQLiteDataSourceName(t *testing.T) {
+	// The helper builds a file: URI rather than concatenating the path, because
+	// the driver splits the query string at the first '?'. A data root
+	// containing any of these characters would otherwise produce a DSN whose
+	// parameters are truncated or whose path is wrong.
+	for _, name := range []string{
+		"ledger.db",
+		"with space.db",
+		"question?.db",
+		"hash#.db",
+		"percent%41.db",
+		"amp&eq=.db",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), name)
+			dsn, err := sqliteDataSourceName(path)
+			if err != nil {
+				t.Fatalf("sqliteDataSourceName(%q): %v", path, err)
+			}
+			if !strings.HasPrefix(dsn, "file://") {
+				t.Fatalf("dsn = %q, want a file: URI", dsn)
+			}
+
+			db, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				t.Fatalf("sql.Open(%q): %v", dsn, err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Fatalf("close: %v", err)
+				}
+			})
+			// The pragmas surviving the encoding is the proof the query string
+			// was not truncated by a character in the path.
+			assertSQLitePragmas(t, db)
+
+			var opened string
+			if err := db.QueryRowContext(context.Background(), "SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&opened); err != nil {
+				t.Fatalf("read opened path: %v", err)
+			}
+			// Resolve both sides: macOS reports the temp dir through
+			// /private/var while t.TempDir hands back /var.
+			wantPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatalf("resolve %q: %v", path, err)
+			}
+			gotPath, err := filepath.EvalSymlinks(opened)
+			if err != nil {
+				t.Fatalf("resolve %q: %v", opened, err)
+			}
+			if gotPath != wantPath {
+				t.Fatalf("opened %q, want %q", gotPath, wantPath)
+			}
+		})
+	}
+
+	t.Run("resolves a relative path", func(t *testing.T) {
+		dsn, err := sqliteDataSourceName("ledger.db")
+		if err != nil {
+			t.Fatalf("sqliteDataSourceName: %v", err)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("Getwd: %v", err)
+		}
+		if !strings.Contains(dsn, filepath.ToSlash(cwd)) {
+			t.Fatalf("dsn = %q, want it to resolve against %q", dsn, cwd)
+		}
+	})
+
+	t.Run("requires immediate transactions", func(t *testing.T) {
+		dsn, err := sqliteDataSourceName(filepath.Join(t.TempDir(), "ledger.db"))
+		if err != nil {
+			t.Fatalf("sqliteDataSourceName: %v", err)
+		}
+		parsed, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatalf("parse dsn %q: %v", dsn, err)
+		}
+		// dbmig.Apply's in-transaction re-read is only race-free under the
+		// write lock, so this is a cross-package contract, not a tuning knob.
+		if got := parsed.Query().Get("_txlock"); got != "immediate" {
+			t.Fatalf("_txlock = %q, want immediate", got)
+		}
+	})
 }

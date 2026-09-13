@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,7 @@ const (
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
 	writeQueueSize     = 64
+	walRetryInterval   = 10 * time.Millisecond
 )
 
 var (
@@ -413,7 +416,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("ledger: create db parent: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqliteDataSourceName(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: open sqlite: %w", err)
 	}
@@ -496,17 +503,95 @@ func (s *Store) checkOpen() error {
 	return nil
 }
 
+// sqliteDataSourceName builds the DSN used to open path.
+//
+// busy_timeout and foreign_keys are per-connection settings, so they are carried
+// in the DSN and applied by the driver to every connection it dials. Applying
+// them once through configureSQLite is not enough: database/sql discards a
+// connection that returns driver.ErrBadConn and replaces it with one that never
+// sees configureSQLite.
+//
+// The DSN is a SQLite "file:" URI rather than a bare path because the driver
+// splits the query string at the first '?', and a filesystem path may itself
+// contain '?', '#', or '%'. The absolute path is percent-encoded as a URI path.
+// The localhost authority keeps the URI well formed: SQLite accepts only an
+// empty or "localhost" authority, and without one url.URL would render a
+// Windows drive path such as "C:/data" as an authority that SQLite rejects.
+func sqliteDataSourceName(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("ledger: resolve db path: %w", err)
+	}
+
+	query := url.Values{}
+	query.Add("_pragma", "busy_timeout="+strconv.FormatInt(DefaultBusyTimeout.Milliseconds(), 10))
+	query.Add("_pragma", "foreign_keys=ON")
+	// Immediate transactions take the write lock before reading, so concurrent
+	// writers wait on busy_timeout instead of failing instantly with
+	// SQLITE_BUSY_SNAPSHOT. Startup migrations rely on that to serialize
+	// against another process opening the same fresh ledger.
+	// Every BeginTx on this handle is therefore a write transaction: do not add
+	// a read-only BeginTx here, it would serialize behind the writer. Reads run
+	// as autocommit queries instead. dbmig.Apply also depends on this — its
+	// in-transaction schema_version re-read is only race-free under the write
+	// lock — so this setting is a cross-package contract, pinned by
+	// TestSQLiteDataSourceName.
+	query.Set("_txlock", "immediate")
+
+	uri := url.URL{
+		Scheme:   "file",
+		Host:     "localhost",
+		Path:     filepath.ToSlash(absolute),
+		RawQuery: query.Encode(),
+	}
+	return uri.String(), nil
+}
+
+// configureSQLite applies the database-wide pragmas that only need setting once.
+// Per-connection pragmas live in the DSN instead (see sqliteDataSourceName).
 func configureSQLite(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		return fmt.Errorf("ledger: enable foreign keys: %w", err)
+	// journal_mode is persisted in the database header, not per connection, so it
+	// is set once here. Converting a fresh database to WAL upgrades a read
+	// transaction to a write transaction, and SQLite skips the busy handler for
+	// that upgrade, so a concurrent holder returns SQLITE_BUSY immediately; retry
+	// instead of relying on busy_timeout.
+	deadline := time.Now().Add(DefaultBusyTimeout)
+	for {
+		mode, err := setWALJournalMode(ctx, db)
+		if err == nil {
+			if mode != "wal" {
+				return fmt.Errorf("ledger: enable WAL: journal_mode = %q, want wal", mode)
+			}
+			return nil
+		}
+		if !isSQLiteBusyError(err) || !time.Now().Before(deadline) {
+			return fmt.Errorf("ledger: enable WAL: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("ledger: enable WAL: %w", ctx.Err())
+		case <-time.After(walRetryInterval):
+		}
 	}
-	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
-		return fmt.Errorf("ledger: enable WAL: %w", err)
+}
+
+// setWALJournalMode asks SQLite for WAL mode and returns the resulting mode.
+func setWALJournalMode(ctx context.Context, db *sql.DB) (string, error) {
+	var mode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&mode); err != nil {
+		return "", err
 	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", DefaultBusyTimeout.Milliseconds())); err != nil {
-		return fmt.Errorf("ledger: set busy timeout: %w", err)
+	return strings.ToLower(mode), nil
+}
+
+// isSQLiteBusyError reports whether err is lock contention reported by SQLite.
+func isSQLiteBusyError(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
 	}
-	return nil
+	// The driver enables extended result codes, so mask to the primary code.
+	return sqliteErr.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
 func migrations() []dbmig.Migration {
