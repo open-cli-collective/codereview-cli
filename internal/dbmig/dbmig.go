@@ -92,6 +92,13 @@ func Apply(ctx context.Context, db *sql.DB, migrations []Migration) (Result, err
 		if current > target {
 			return result, fmt.Errorf("%w: database version %d, code version %d", ErrDowngrade, current, target)
 		}
+		// A migration that ran must leave meta exactly where it put it. Any
+		// other value means something moved the schema underneath this run,
+		// including into the band below target where the check above cannot
+		// see it, and later migrations would be skipped without running.
+		if applied && current != migration.Version {
+			return result, fmt.Errorf("%w: schema_version %d after migration %d", ErrDowngrade, current, migration.Version)
+		}
 		if !applied {
 			continue
 		}

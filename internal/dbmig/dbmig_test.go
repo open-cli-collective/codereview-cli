@@ -557,6 +557,7 @@ func TestApplyRefusesDowngradeDiscoveredMidRun(t *testing.T) {
 		{name: "last migration advances", advance: 2, to: 9, wantErr: ErrDowngrade},
 		{name: "first migration lowers", advance: 1, to: 0, wantErr: ErrInvalidMeta},
 		{name: "last migration lowers", advance: 2, to: 0, wantErr: ErrInvalidMeta},
+		{name: "advances only to the target", advance: 1, to: 2, wantErr: ErrDowngrade},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
