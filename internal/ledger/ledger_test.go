@@ -27,14 +27,9 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	if version := queryInt(t, store.db, "SELECT schema_version FROM meta"); version != SchemaVersion {
 		t.Fatalf("schema_version = %d, want %d", version, SchemaVersion)
 	}
-	if got := queryInt(t, store.db, "PRAGMA foreign_keys"); got != 1 {
-		t.Fatalf("PRAGMA foreign_keys = %d, want 1", got)
-	}
+	assertSQLitePragmas(t, store.db)
 	if got := queryString(t, store.db, "PRAGMA journal_mode"); got != "wal" {
 		t.Fatalf("PRAGMA journal_mode = %q, want wal", got)
-	}
-	if got := queryInt(t, store.db, "PRAGMA busy_timeout"); int64(got) != DefaultBusyTimeout.Milliseconds() {
-		t.Fatalf("PRAGMA busy_timeout = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
 	}
 
 	for _, table := range []string{"prs", "runs", "sessions", "findings", "planned_actions", "named_sessions", "reviewer_cohorts", "reviewer_cohort_members"} {
@@ -133,7 +128,7 @@ func TestOpenConcurrentOnSamePathSucceeds(t *testing.T) {
 
 	// A racing open must not merely avoid erroring; it must land on a fully
 	// migrated database in WAL mode.
-	wantVersion := len(migrations())
+	wantVersion := SchemaVersion
 	for i, store := range stores {
 		var version int
 		if err := store.db.QueryRowContext(context.Background(), "SELECT schema_version FROM meta").Scan(&version); err != nil {
@@ -2018,8 +2013,14 @@ func TestSQLiteDataSourceName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sqliteDataSourceName(%q): %v", path, err)
 			}
-			if !strings.HasPrefix(dsn, "file://") {
-				t.Fatalf("dsn = %q, want a file: URI", dsn)
+			parsedDSN, err := url.Parse(dsn)
+			if err != nil {
+				t.Fatalf("parse dsn %q: %v", dsn, err)
+			}
+			// SQLite requires an empty or "localhost" authority; without one a
+			// Windows drive path renders as an invalid authority.
+			if parsedDSN.Scheme != "file" || parsedDSN.Host != "localhost" {
+				t.Fatalf("dsn = %q, want a file://localhost URI", dsn)
 			}
 
 			db, err := sql.Open("sqlite", dsn)
@@ -2064,8 +2065,12 @@ func TestSQLiteDataSourceName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Getwd: %v", err)
 		}
-		if !strings.Contains(dsn, filepath.ToSlash(cwd)) {
-			t.Fatalf("dsn = %q, want it to resolve against %q", dsn, cwd)
+		parsed, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatalf("parse dsn %q: %v", dsn, err)
+		}
+		if want := filepath.ToSlash(filepath.Join(cwd, "ledger.db")); parsed.Path != want {
+			t.Fatalf("dsn path = %q, want %q", parsed.Path, want)
 		}
 	})
 
@@ -2082,6 +2087,120 @@ func TestSQLiteDataSourceName(t *testing.T) {
 		// write lock, so this is a cross-package contract, not a tuning knob.
 		if got := parsed.Query().Get("_txlock"); got != "immediate" {
 			t.Fatalf("_txlock = %q, want immediate", got)
+		}
+	})
+}
+
+// busyError returns a genuine SQLITE_BUSY from the driver. The driver exposes
+// no constructor for sqlite.Error, and isSQLiteBusyError matches only that
+// concrete type, so the error is provoked by holding a write lock and writing
+// from a second connection with no busy timeout.
+func busyError(t *testing.T) error {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "busy.db")
+	dsn := "file://localhost" + filepath.ToSlash(path) + "?_pragma=busy_timeout(0)&_txlock=immediate"
+	holder := openRawSQLite(t, dsn)
+	contender := openRawSQLite(t, dsn)
+
+	ctx := context.Background()
+	if _, err := holder.ExecContext(ctx, "CREATE TABLE lock_probe (id INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatalf("create lock probe: %v", err)
+	}
+	tx, err := holder.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin holder transaction: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tx.Rollback()
+	})
+	if _, err := tx.ExecContext(ctx, "INSERT INTO lock_probe DEFAULT VALUES"); err != nil {
+		t.Fatalf("take write lock: %v", err)
+	}
+
+	_, err = contender.ExecContext(ctx, "INSERT INTO lock_probe DEFAULT VALUES")
+	if !isSQLiteBusyError(err) {
+		t.Fatalf("contended write error = %v, want a SQLITE_BUSY the retry loop recognizes", err)
+	}
+	return err
+}
+
+func openRawSQLite(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close %q: %v", dsn, err)
+		}
+	})
+	return db
+}
+
+func TestRetryWhileBusy(t *testing.T) {
+	t.Run("retries until success", func(t *testing.T) {
+		busy := busyError(t)
+		calls := 0
+		value, err := retryWhileBusy(context.Background(), time.Millisecond, time.Second, func(context.Context) (string, error) {
+			calls++
+			if calls < 3 {
+				return "", busy
+			}
+			return "wal", nil
+		})
+		if err != nil {
+			t.Fatalf("retryWhileBusy: %v", err)
+		}
+		if value != "wal" {
+			t.Fatalf("value = %q, want wal", value)
+		}
+		if calls != 3 {
+			t.Fatalf("attempts = %d, want 3", calls)
+		}
+	})
+
+	t.Run("gives up at the budget", func(t *testing.T) {
+		busy := busyError(t)
+		calls := 0
+		_, err := retryWhileBusy(context.Background(), time.Millisecond, 20*time.Millisecond, func(context.Context) (string, error) {
+			calls++
+			return "", busy
+		})
+		if !isSQLiteBusyError(err) {
+			t.Fatalf("err = %v, want the busy error surfaced", err)
+		}
+		if calls < 2 {
+			t.Fatalf("attempts = %d, want more than one", calls)
+		}
+	})
+
+	t.Run("returns a non-busy error immediately", func(t *testing.T) {
+		calls := 0
+		wantErr := errors.New("boom")
+		_, err := retryWhileBusy(context.Background(), time.Millisecond, time.Second, func(context.Context) (string, error) {
+			calls++
+			return "", wantErr
+		})
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want %v", err, wantErr)
+		}
+		if calls != 1 {
+			t.Fatalf("attempts = %d, want 1", calls)
+		}
+	})
+
+	t.Run("stops on a canceled context", func(t *testing.T) {
+		busy := busyError(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := retryWhileBusy(ctx, time.Millisecond, time.Second, func(context.Context) (string, error) {
+			return "", busy
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
 		}
 	})
 }

@@ -295,12 +295,18 @@ func applyMigration(ctx context.Context, db *sql.DB, migration Migration) (int, 
 		return current, false, fmt.Errorf("%w: schema_version update affected %d rows", ErrInvalidMeta, rowsAffected)
 	}
 
-	// Read the stored value back rather than returning the planned version: a
+	// Read the stored value back rather than trusting the planned version: a
 	// trigger or a concurrent writer can leave meta somewhere other than where
-	// this migration put it, and Apply's downgrade check needs the truth.
+	// this migration put it, in either direction.
 	var stored int
 	if err := tx.QueryRowContext(ctx, "SELECT schema_version FROM meta").Scan(&stored); err != nil {
 		return current, false, fmt.Errorf("%w: reading schema_version after migration %d: %w", ErrInvalidMeta, migration.Version, err)
+	}
+	// A value below what this migration wrote means meta was tampered with
+	// inside this transaction; a value above it means a newer binary moved the
+	// schema forward, which Apply reports as a downgrade once it sees it.
+	if stored < migration.Version {
+		return current, false, fmt.Errorf("%w: schema_version %d after migration %d", ErrInvalidMeta, stored, migration.Version)
 	}
 
 	if err := tx.Commit(); err != nil {

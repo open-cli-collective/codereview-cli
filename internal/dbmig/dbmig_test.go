@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -532,7 +533,7 @@ func TestApplyRefusesDowngradeDiscoveredMidRun(t *testing.T) {
 	// that ends its migration, so the version moves underneath this run. It
 	// must be refused whether that happens on an early migration or on the
 	// last one in the plan.
-	advanceOn := func(version int, name, ddl string) Migration {
+	advanceOn := func(version int, name, ddl string, to int) Migration {
 		return Migration{
 			Version: version,
 			Name:    name,
@@ -540,7 +541,7 @@ func TestApplyRefusesDowngradeDiscoveredMidRun(t *testing.T) {
 				if _, err := tx.ExecContext(ctx, ddl); err != nil {
 					return err
 				}
-				_, err := tx.ExecContext(ctx, "CREATE TRIGGER advance AFTER UPDATE ON meta BEGIN UPDATE meta SET schema_version = 9; END")
+				_, err := tx.ExecContext(ctx, fmt.Sprintf("CREATE TRIGGER advance AFTER UPDATE ON meta BEGIN UPDATE meta SET schema_version = %d; END", to))
 				return err
 			},
 		}
@@ -549,9 +550,13 @@ func TestApplyRefusesDowngradeDiscoveredMidRun(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		advance int
+		to      int
+		wantErr error
 	}{
-		{name: "first migration", advance: 1},
-		{name: "last migration", advance: 2},
+		{name: "first migration advances", advance: 1, to: 9, wantErr: ErrDowngrade},
+		{name: "last migration advances", advance: 2, to: 9, wantErr: ErrDowngrade},
+		{name: "first migration lowers", advance: 1, to: 0, wantErr: ErrInvalidMeta},
+		{name: "last migration lowers", advance: 2, to: 0, wantErr: ErrInvalidMeta},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -568,15 +573,15 @@ func TestApplyRefusesDowngradeDiscoveredMidRun(t *testing.T) {
 				{2, "create reviews", "CREATE TABLE reviews (id INTEGER PRIMARY KEY)"},
 			} {
 				if m.version == tt.advance {
-					migrations = append(migrations, advanceOn(m.version, m.name, m.ddl))
+					migrations = append(migrations, advanceOn(m.version, m.name, m.ddl, tt.to))
 					continue
 				}
 				migrations = append(migrations, countedMigration(m.version, m.name, &applied, m.ddl))
 			}
 
 			_, err := Apply(ctx, db, migrations)
-			if !errors.Is(err, ErrDowngrade) {
-				t.Fatalf("Apply error = %v, want ErrDowngrade", err)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Apply error = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}

@@ -555,22 +555,34 @@ func configureSQLite(ctx context.Context, db *sql.DB) error {
 	// transaction to a write transaction, and SQLite skips the busy handler for
 	// that upgrade, so a concurrent holder returns SQLITE_BUSY immediately; retry
 	// instead of relying on busy_timeout.
-	deadline := time.Now().Add(DefaultBusyTimeout)
+	mode, err := retryWhileBusy(ctx, walRetryInterval, DefaultBusyTimeout, func(ctx context.Context) (string, error) {
+		return setWALJournalMode(ctx, db)
+	})
+	if err != nil {
+		return fmt.Errorf("ledger: enable WAL: %w", err)
+	}
+	if mode != "wal" {
+		return fmt.Errorf("ledger: enable WAL: journal_mode = %q, want wal", mode)
+	}
+	return nil
+}
+
+// retryWhileBusy repeats attempt until it succeeds, returns a non-busy error,
+// or budget elapses.
+func retryWhileBusy(ctx context.Context, interval, budget time.Duration, attempt func(context.Context) (string, error)) (string, error) {
+	deadline := time.Now().Add(budget)
 	for {
-		mode, err := setWALJournalMode(ctx, db)
+		value, err := attempt(ctx)
 		if err == nil {
-			if mode != "wal" {
-				return fmt.Errorf("ledger: enable WAL: journal_mode = %q, want wal", mode)
-			}
-			return nil
+			return value, nil
 		}
 		if !isSQLiteBusyError(err) || !time.Now().Before(deadline) {
-			return fmt.Errorf("ledger: enable WAL: %w", err)
+			return "", err
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("ledger: enable WAL: %w", ctx.Err())
-		case <-time.After(walRetryInterval):
+			return "", ctx.Err()
+		case <-time.After(interval):
 		}
 	}
 }
