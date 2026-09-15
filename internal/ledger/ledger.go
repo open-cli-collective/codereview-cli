@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -411,17 +412,17 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("ledger: create db parent: %w", err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
-	if err := configureSQLite(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	if _, err := dbmig.Apply(ctx, db, migrations()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ledger: migrate: %w", err)
@@ -494,17 +495,28 @@ func (s *Store) checkOpen() error {
 	return nil
 }
 
-func configureSQLite(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
-		return fmt.Errorf("ledger: enable foreign keys: %w", err)
+func sqliteDSN(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("ledger: resolve db path: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
-		return fmt.Errorf("ledger: enable WAL: %w", err)
+	query := url.Values{}
+	query.Add("_pragma", "foreign_keys=ON")
+	query.Add("_pragma", "journal_mode=WAL")
+	query.Add("_pragma", fmt.Sprintf("busy_timeout=%d", DefaultBusyTimeout.Milliseconds()))
+	return (&url.URL{
+		Scheme:   "file",
+		Path:     sqliteURIPath(absPath),
+		RawQuery: query.Encode(),
+	}).String(), nil
+}
+
+func sqliteURIPath(path string) string {
+	path = filepath.ToSlash(path)
+	if len(path) >= 2 && path[1] == ':' && path[0] != '/' {
+		path = "/" + path
 	}
-	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", DefaultBusyTimeout.Milliseconds())); err != nil {
-		return fmt.Errorf("ledger: set busy timeout: %w", err)
-	}
-	return nil
+	return path
 }
 
 func migrations() []dbmig.Migration {

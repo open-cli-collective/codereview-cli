@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"sync"
@@ -49,6 +51,46 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
+	}
+}
+
+func TestOpenReappliesPragmasAfterCanceledQuery(t *testing.T) {
+	name := "ledger #&%.db"
+	if runtime.GOOS != "windows" {
+		name = "ledger #?&%.db"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	store := openStoreAt(t, path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("ledger file at requested path: %v", err)
+	}
+	run := allocateRun(t, store, validAllocateRunParams())
+	session := validSession(run.RunID)
+	insertSession(t, store, session)
+	insertFinding(t, store, validFinding(run.RunID, session.SessionRowID))
+	insertPlannedAction(t, store, validPlannedAction(run.RunID))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := store.db.ExecContext(ctx, `WITH RECURSIVE cnt(x) AS (
+		VALUES(0) UNION ALL SELECT x+1 FROM cnt WHERE x < 1000000000
+	) SELECT sum(x) FROM cnt`); err == nil {
+		t.Fatal("canceled query error = nil, want cancellation")
+	}
+
+	if got := queryInt(t, store.db, "PRAGMA foreign_keys"); got != 1 {
+		t.Fatalf("PRAGMA foreign_keys after cancellation = %d, want 1", got)
+	}
+	if got := queryInt(t, store.db, "PRAGMA busy_timeout"); int64(got) != DefaultBusyTimeout.Milliseconds() {
+		t.Fatalf("PRAGMA busy_timeout after cancellation = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
+	}
+	if err := store.DeleteRun(context.Background(), run.RunID); err != nil {
+		t.Fatalf("DeleteRun after cancellation: %v", err)
+	}
+	for _, table := range []string{"sessions", "findings", "planned_actions"} {
+		if count := queryInt(t, store.db, "SELECT COUNT(*) FROM "+table); count != 0 {
+			t.Fatalf("%s count after cascade = %d, want 0", table, count)
+		}
 	}
 }
 

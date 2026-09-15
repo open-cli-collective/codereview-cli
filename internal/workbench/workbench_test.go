@@ -250,7 +250,7 @@ func TestReviewerWorkspaceSmokeAllowsReadAndWorkspaceWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareReviewerRequest: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 
 	type smokeResult struct {
 		ReadOK              bool `json:"read_ok"`
@@ -299,7 +299,7 @@ func TestReviewerWorkspaceAllowedFilesPreservesRealCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if workspace.RepoDir == artifacts.WorkbenchRepoDir {
 		t.Fatalf("repo dir = %q, want disposable checkout distinct from workbench repo", workspace.RepoDir)
 	}
@@ -331,7 +331,7 @@ func TestReviewerWorkspaceAllowedFilesAcceptsDeletedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if _, err := os.Stat(filepath.Join(workspace.RepoDir, "main.go")); err != nil {
 		t.Fatalf("Stat(main.go): %v", err)
 	}
@@ -353,7 +353,7 @@ func TestReviewerWorkspaceAllowedFilesResetsWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace(second): %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if _, err := os.ReadFile(filepath.Join(workspace.RepoDir, "other.go")); err != nil { // #nosec G304 -- test reads only fixture paths.
 		t.Fatalf("ReadFile(other.go): %v", err)
 	}
@@ -389,7 +389,7 @@ func TestReviewerWorkspaceAllowedFilesAcceptsSymlinkTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	info, err := os.Lstat(filepath.Join(workspace.RepoDir, "other.go"))
 	if err != nil {
 		t.Fatalf("Lstat(other.go): %v", err)
@@ -417,7 +417,7 @@ func TestReviewerWorkspaceAllowedFilesAcceptsSubmoduleTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	info, err := os.Stat(filepath.Join(workspace.RepoDir, "vendor", "shared"))
 	if err != nil {
 		t.Fatalf("Stat(vendor/shared): %v", err)
@@ -476,7 +476,7 @@ func TestPrepareReviewerRequestAcceptsPermissionBoundedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareReviewerRequest: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if req.ReviewerWorkspace == nil {
 		t.Fatalf("ReviewerWorkspace = nil")
 	}
@@ -498,7 +498,7 @@ func TestPrepareReviewerRequestValidationRetryGetsFreshWorkspaceWithSameFixedDif
 	if err != nil {
 		t.Fatalf("PrepareReviewerRequest: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	firstRepo := req.ReviewerWorkspace.RepoDir
 	if err := os.WriteFile(filepath.Join(firstRepo, "untracked"), []byte("dirty"), 0o600); err != nil {
 		t.Fatalf("WriteFile(untracked): %v", err)
