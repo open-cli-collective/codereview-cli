@@ -917,7 +917,14 @@ func readGateHostStateWithReviews(ctx context.Context, provider outbox.LiveProvi
 
 func summarizePRFromHost(host gateHostState, req Request) gate.PRSummary {
 	records := markerActionRecords(host, req.PostingIdentity)
-	return classifyMarkers(records, req.PR.Head.SHA, req.PR.Base.SHA)
+	summary := classifyMarkers(records, req.PR.Head.SHA, req.PR.Base.SHA)
+	if summary.State == gate.PRStateCompleteReview {
+		latest, found := latestVerdictReviewByPostingIdentity(host.reviews, req.PostingIdentity)
+		if found && latest.State == gitprovider.ReviewStateCommented {
+			return gate.PRSummary{State: gate.PRStateFresh}
+		}
+	}
+	return summary
 }
 
 func markerActionRecords(host gateHostState, posting gitprovider.Identity) []markerRecord {
@@ -990,6 +997,11 @@ func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) 
 }
 
 func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) bool {
+	selected, found := latestVerdictReviewByPostingIdentity(reviews, posting)
+	return found && selected.State == gitprovider.ReviewStateApproved
+}
+
+func latestVerdictReviewByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) (gitprovider.Review, bool) {
 	var (
 		selected gitprovider.Review
 		found    bool
@@ -999,21 +1011,19 @@ func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitpr
 			continue
 		}
 		switch review.State {
-		case gitprovider.ReviewStateApproved, gitprovider.ReviewStateChangesRequested:
-		case gitprovider.ReviewStateCommented, gitprovider.ReviewStateDismissed, gitprovider.ReviewStatePending:
+		case gitprovider.ReviewStateApproved, gitprovider.ReviewStateChangesRequested, gitprovider.ReviewStateCommented:
+		case gitprovider.ReviewStateDismissed, gitprovider.ReviewStatePending:
 			continue
 		default:
 			continue
 		}
 		if !found || review.SubmittedAt.After(selected.SubmittedAt) ||
-			(review.SubmittedAt.Equal(selected.SubmittedAt) &&
-				selected.State == gitprovider.ReviewStateApproved &&
-				review.State == gitprovider.ReviewStateChangesRequested) {
+			(review.SubmittedAt.Equal(selected.SubmittedAt) && string(review.ID) > string(selected.ID)) {
 			selected = review
 			found = true
 		}
 	}
-	return found && selected.State == gitprovider.ReviewStateApproved
+	return selected, found
 }
 
 func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request, host *gateHostState) (Result, bool, error) {

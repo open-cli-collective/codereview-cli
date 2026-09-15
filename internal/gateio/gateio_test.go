@@ -277,6 +277,41 @@ func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testin
 	}
 }
 
+func TestEvaluateNewerCommentedReviewDoesNotUseApprovalFastPath(t *testing.T) {
+	fixture := newFixture(t)
+	submit := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "run-approved",
+		ActionID: "submit-1",
+		Kind:     marker.ActionKindSubmitReview,
+		SHA:      testHeadSHA,
+		BaseSHA:  testBaseSHA,
+	})
+	setReviews(t, fixture, []gitprovider.Review{
+		{
+			ID:          "review-approved",
+			Author:      fixture.req.PostingIdentity,
+			Body:        submit,
+			State:       gitprovider.ReviewStateApproved,
+			SubmittedAt: testNow.Add(-time.Minute),
+		},
+		{
+			ID:          "review-commented",
+			Author:      fixture.req.PostingIdentity,
+			State:       gitprovider.ReviewStateCommented,
+			SubmittedAt: testNow,
+		},
+	})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review after newer commented review", result)
+	}
+}
+
 func TestEvaluateRetryPostsIgnoresActiveApprovalAndOverride(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
