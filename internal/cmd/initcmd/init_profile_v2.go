@@ -895,9 +895,6 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 		draft.LLMCredentialStore = initCredentialStoreDefaultID()
 		draft.LLMCredentialRef = ""
 	}
-	if err := m.normalizeStorageLabels(&draft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime); err != nil {
-		return draft, err
-	}
 	if m.document.fieldIndexByID(initProfileV2FieldReviewerModelTier) >= 0 {
 		draft.LLMReviewerModelTier = m.document.selectedValue(initProfileV2FieldReviewerModelTier)
 	}
@@ -929,10 +926,6 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 	draft.RoutesSet = true
 	draft.Routes = routes
 	return draft, nil
-}
-
-func (m initProfileV2ReadOnlyModel) normalizeStorageLabels(*initDraft, string, string, string) error {
-	return nil
 }
 
 func (m *initProfileV2ReadOnlyModel) syncProfileNameDerivedCredentialFields() {

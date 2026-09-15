@@ -8034,45 +8034,8 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsStore(t *t
 	}
 }
 
-func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletionOrder(t *testing.T) {
-	cfg := config.File{
-		Profiles: map[string]config.Profile{"default": basicProfile("default")},
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"personal": {
-					DisplayName: "Personal",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-				},
-			},
-		},
-	}
-	pendingDeletes := map[string]initPendingSecretsManagementDelete{
-		"alpha": {ID: "alpha", Profile: config.SecretsStore{
-			DisplayName: "Alpha",
-			Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-		}},
-		"beta": {ID: "beta", Profile: config.SecretsStore{
-			DisplayName: "Beta",
-			Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-		}},
-	}
-
-	options := initSecretsManagementTargetOptions(cfg, pendingDeletes, []string{"alpha", "beta"})
-	values := make([]string, 0, len(options))
-	for _, option := range options {
-		values = append(values, option.Value)
-	}
-	wantSuffix := []string{
-		initLinearRestoreSelection("secrets_management", "alpha"),
-		initLinearRestoreSelection("secrets_management", "beta"),
-	}
-	if len(values) < len(wantSuffix) || !reflect.DeepEqual(values[len(values)-len(wantSuffix):], wantSuffix) {
-		t.Fatalf("target option values = %#v, want pending deletes last in staging order %#v", values, wantSuffix)
-	}
-}
-
 func TestInitSecretsManagementTargetOptionsExcludeBuiltInOSStore(t *testing.T) {
-	options := initSecretsManagementTargetOptions(config.File{}, nil, nil)
+	options := initSecretsManagementTargetOptions(config.File{})
 	for _, option := range options {
 		if option.Value == config.LocalOSCredentialStoreID {
 			t.Fatalf("target options include built-in OS store as selectable row: %#v", options)
@@ -8471,7 +8434,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 32)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
@@ -8532,7 +8495,7 @@ func TestInitSecretsManagementLinearEditorCanCreateStoreBeforeReviewProfile(t *t
 			Name: "Private",
 		}},
 	}}}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(config.File{}, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(config.File{}, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
@@ -8588,7 +8551,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVaul
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 
@@ -8646,7 +8609,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryIncludesAccountWithout
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 
@@ -8692,7 +8655,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualVaultInSel
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopVault, initOnePasswordManualSelection)
@@ -8739,7 +8702,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualAccount(t 
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopAccount, initOnePasswordManualSelection)
@@ -8780,7 +8743,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryFailureAllowsManualPro
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	discovery := initOnePasswordDesktopDiscovery{Err: os.ErrNotExist}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 32)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
