@@ -267,26 +267,44 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	return StructuredResult[T]{Value: retryValue, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts, AcceptedOutput: retryAcceptedOutput}, nil
 }
 
-// decodeStructuredAccepted strict-decodes data, then on failure recovers a
-// response that wraps exactly one balanced top-level JSON object in surrounding
-// prose by decoding the extracted object with the same schema decoder. When the
-// extracted object also fails the schema, that error is returned because it
-// describes the real schema violation; otherwise the strict error stands.
+// decodeStructuredAccepted strict-decodes data, then on failure decodes each
+// balanced top-level JSON object found in the surrounding prose with the same
+// schema decoder. Exactly one candidate passing the schema is accepted; zero or
+// several keep the strict error, except a lone failing candidate reports its
+// own schema error because that describes the real violation.
 func decodeStructuredAccepted[T any](decode Decoder[T], data []byte) (T, []byte, error) {
 	value, err := decode(data)
 	if err == nil {
 		return value, data, nil
 	}
 	var zero T
-	extracted, ok := extractSingleJSONObject(data)
-	if !ok || bytes.Equal(extracted, data) {
+	candidates := extractJSONObjects(data)
+	if len(candidates) == 0 || (len(candidates) == 1 && bytes.Equal(candidates[0], data)) {
 		return zero, nil, err
 	}
-	extractedValue, extractedErr := decode(extracted)
-	if extractedErr != nil {
-		return zero, nil, extractedErr
+	var (
+		accepted       T
+		acceptedOutput []byte
+		candidateErr   error
+		passed         int
+	)
+	for _, candidate := range candidates {
+		candidateValue, decodeErr := decode(candidate)
+		if decodeErr != nil {
+			candidateErr = decodeErr
+			continue
+		}
+		accepted, acceptedOutput = candidateValue, candidate
+		passed++
 	}
-	return extractedValue, extracted, nil
+	switch {
+	case passed == 1:
+		return accepted, acceptedOutput, nil
+	case len(candidates) == 1:
+		return zero, nil, candidateErr
+	default:
+		return zero, nil, err
+	}
 }
 
 // runOnceWithSession runs a single attempt and retries transient provider
