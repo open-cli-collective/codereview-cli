@@ -180,7 +180,7 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 		for caseIndex, benchCase := range selectedCases {
 			matrixIndex++
 			runID := benchmarkRunID(matrixIndex, candidateIndex, caseIndex, candidate, benchCase)
-			runSummary, runErr := executeBenchmarkSelectRun(ctx, logger, suiteDir, resultsDir, runID, candidate, benchCase, resolveRuntime)
+			runSummary, runErr := executeBenchmarkSelectRun(ctx, logger, suiteDir, resultsDir, runID, candidate, benchCase, resolveRuntime, cfg.Data.KeepWorkbench)
 			if runErr != nil {
 				return benchmarkSuiteSummary{}, runErr
 			}
@@ -213,7 +213,7 @@ func runBenchmarkSelectionSuite(ctx context.Context, cmd *cobra.Command, opts *r
 	return summary, nil
 }
 
-func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, suiteDir, resultsDir, runID string, candidate benchmark.Candidate, benchCase benchmark.Case, resolveRuntime selectionRuntimeResolver) (benchmarkRun, error) {
+func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, suiteDir, resultsDir, runID string, candidate benchmark.Candidate, benchCase benchmark.Case, resolveRuntime selectionRuntimeResolver, keepWorkbench bool) (benchmarkRun, error) {
 	runSpan := logger.Start("benchmark.select", "execute_run", runID)
 	runDir := filepath.Join(resultsDir, runID)
 	if err := os.MkdirAll(runDir, artifactDirPerm); err != nil {
@@ -319,6 +319,11 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 	runSummary.FailureClassification = failureNone
 	runSummary.SelectedAgents = summarizeSelectedAgents(selectionResult.Selection.SelectedAgents)
 	runSummary.ThreadActionCount = len(selectionResult.Selection.ThreadActions)
+	// The selection workbench is caller-owned, so the benchmark reclaims it once
+	// the run is done; failed runs return above and keep theirs for inspection.
+	if err := pipeline.RemoveWorkbench(runDir, keepWorkbench); err != nil {
+		runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("workbench cleanup: %s", err))
+	}
 	finalized, err := finalizeSelectionRun(runSummary, start, rawSelectionJSON, stderrBody)
 	if err != nil {
 		return benchmarkRun{}, runSpan.End(err)

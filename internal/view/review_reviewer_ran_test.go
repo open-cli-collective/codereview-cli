@@ -18,11 +18,15 @@ func TestReviewSummaryJSONDistinguishesFailedReviewer(t *testing.T) {
 			{Name: "security:code-auditor", Findings: 0},
 			{Name: "documentation:docs", Findings: 0},
 			{Name: "policies:conventions", Findings: 0},
+			{Name: "tool-zero", Findings: 0},
+			{Name: "tool-findings", Findings: 2},
 		},
 		Run: reviewplan.RunSummary{
 			ReviewerCoverage: []reviewplan.ReviewerCoverageSummary{
 				{AgentID: "security:code-auditor", Status: "incomplete_failed"},
 				{AgentID: "documentation:docs", Status: "complete_broad"},
+				{AgentID: "tool-zero", Status: "incomplete_tool"},
+				{AgentID: "tool-findings", Status: "incomplete_tool"},
 				// policies:conventions absent: status unknown.
 			},
 		},
@@ -39,6 +43,14 @@ func TestReviewSummaryJSONDistinguishesFailedReviewer(t *testing.T) {
 	}
 	if !strings.Contains(got, `"name":"documentation:docs","findings":0,"ran":true`) {
 		t.Fatalf("completed reviewer must serialize ran:true, got:\n%s", got)
+	}
+	for _, want := range []string{
+		`"name":"tool-zero","findings":0,"ran":true`,
+		`"name":"tool-findings","findings":2,"ran":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tool-incomplete reviewer must preserve its result %s, got:\n%s", want, got)
+		}
 	}
 	// Unknown coverage omits the field rather than guessing a failure.
 	if !strings.Contains(got, `"name":"policies:conventions","findings":0}`) {

@@ -59,6 +59,14 @@ func TestRunDryRunFiltersAndPlansThreadResponses(t *testing.T) {
 	if info, err := os.Stat(filepath.Join(result.Artifacts.AgentLogsDir, "thread-analysis")); err != nil || !info.IsDir() {
 		t.Fatalf("thread-analysis log dir stat = %v info=%#v, want directory", err, info)
 	}
+	wantLog := filepath.Join(result.Artifacts.AgentLogsDir, "thread-analysis", statepaths.EncodeUnique("thread-clarify")+".jsonl")
+	analysisMeta, ok, err := llmlifecycle.ReadMetadata(llmlifecycle.Paths{LLMTasksDir: result.Artifacts.LLMTasksDir}, "thread-analysis-thread-clarify")
+	if err != nil || !ok {
+		t.Fatalf("read thread analysis metadata ok=%t err=%v", ok, err)
+	}
+	if analysisMeta.LogPath != wantLog {
+		t.Fatalf("thread analysis log path = %q, want %q", analysisMeta.LogPath, wantLog)
+	}
 	if len(result.PlannedActions) != 3 {
 		t.Fatalf("planned actions = %d, want reply, summary reply, resolve", len(result.PlannedActions))
 	}

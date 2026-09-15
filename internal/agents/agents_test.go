@@ -125,6 +125,21 @@ func TestLoadRejectsInvalidAgentModelMetadata(t *testing.T) {
 			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '[bad'\nrequired_on_match: true\n",
 			want:  `file_glob "[bad" is invalid`,
 		},
+		{
+			name:  "only exclusion globs",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '!**/*.test.*'\n",
+			want:  "requires at least one include file_glob",
+		},
+		{
+			name:  "empty exclusion glob",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\n  - '!'\n",
+			want:  `file_glob "!" is invalid`,
+		},
+		{
+			name:  "invalid exclusion glob",
+			index: "name: reviewer\ndescription: desc\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '**/*.go'\n  - '![bad'\n",
+			want:  `file_glob "![bad" is invalid`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -908,6 +923,15 @@ func TestLoadRejectsUnsafeAndMismatchedNames(t *testing.T) {
 				t.Fatalf("Load error = %v, want ErrInvalid", err)
 			}
 		})
+	}
+}
+
+func TestLoadRejectsAgentNameReservedForCoverageRepair(t *testing.T) {
+	root := t.TempDir()
+	writeAgent(t, root, "structure", "repo-health"+ReviewerCoverageRepairSuffix, "desc", "medium", "low", "prompt")
+	_, err := Load(context.Background(), LoadOptions{ProfileDirs: []string{root}})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "reserved for the coverage repair pass") {
+		t.Fatalf("Load error = %v, want the reserved coverage repair name rejected", err)
 	}
 }
 

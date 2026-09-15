@@ -381,6 +381,71 @@ func TestDecodeResultValidatesAfterSanitization(t *testing.T) {
 	}
 }
 
+func TestDecodeResultSchemaVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		wantErr string
+	}{
+		{
+			name: "absent schema_version defaults to current",
+			data: `{"thread_id":"thread-1","decision":"skip","resolve":false}`,
+		},
+		{
+			name:    "explicit zero schema_version is rejected",
+			data:    `{"schema_version":0,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+			wantErr: fmt.Sprintf("schema_version = 0, want %d", outputSchemaVersion),
+		},
+		{
+			name: "explicit current schema_version decodes",
+			data: `{"schema_version":1,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+		},
+		{
+			name:    "explicit future schema_version is rejected",
+			data:    `{"schema_version":2,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+			wantErr: fmt.Sprintf("schema_version = 2, want %d", outputSchemaVersion),
+		},
+		{
+			name:    "explicit far-future schema_version is rejected",
+			data:    `{"schema_version":99,"thread_id":"thread-1","decision":"skip","resolve":false}`,
+			wantErr: fmt.Sprintf("schema_version = 99, want %d", outputSchemaVersion),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeResultForThread("thread-1")([]byte(tt.data))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("decodeResultForThread error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("decodeResultForThread: %v", err)
+			}
+			if got.ThreadID != "thread-1" || got.Decision != DecisionSkip {
+				t.Fatalf("result = %#v, want decoded skip for thread-1", got)
+			}
+		})
+	}
+}
+
+func TestPromptForInputEnumeratesSchemaVersion(t *testing.T) {
+	prompt, err := promptForInput(analysisInputForThread("thread-1", promptThread("human reply")))
+	if err != nil {
+		t.Fatalf("promptForInput: %v", err)
+	}
+	anchor := fmt.Sprintf("schema_version (always %d)", outputSchemaVersion)
+	if !strings.Contains(prompt, anchor) {
+		t.Fatalf("prompt missing schema_version anchor %q:\n%s", anchor, prompt)
+	}
+	for _, field := range []string{"thread_id", "decision", "reply_body", "summary", "resolve", "rationale"} {
+		if !strings.Contains(prompt, field) {
+			t.Fatalf("prompt missing field %q:\n%s", field, prompt)
+		}
+	}
+}
+
 func TestDecodeResultSanitizesModelAuthoredText(t *testing.T) {
 	got, err := decodeResultForThread("thread-1")([]byte(`{
 		"schema_version": 1,
@@ -607,5 +672,51 @@ func fixedClock() func() time.Time {
 	return func() time.Time {
 		calls++
 		return testNow.Add(time.Duration(calls) * time.Second)
+	}
+}
+
+func TestAnalyzeThreadsSeparatesThreadIDsDifferingOnlyByCase(t *testing.T) {
+	threads := []threadcontext.Thread{
+		promptThreadWithID("PRRT_exampleThreadNodeIda", "first reply"),
+		promptThreadWithID("PRRT_exampleThreadNodeIdA", "second reply"),
+	}
+	adapter := &llm.FakeAdapter{NameValue: "fake"}
+	for _, thread := range threads {
+		adapter.Queue(llm.FakeResult{
+			SessionID: "session-" + string(thread.ID),
+			Response:  llm.Response{StructuredOutput: []byte(validSkipOutput(string(thread.ID)))},
+		})
+	}
+	opts := testOptions(t, newFakeStore(), adapter)
+
+	dirs := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		dir, err := opts.LifecyclePaths.TaskDir("thread-analysis-" + string(thread.ID))
+		if err != nil {
+			t.Fatalf("TaskDir(%s): %v", thread.ID, err)
+		}
+		dirs = append(dirs, dir)
+	}
+	if strings.EqualFold(dirs[0], dirs[1]) {
+		t.Fatalf("task directories fold together: %q and %q", dirs[0], dirs[1])
+	}
+
+	results, err := AnalyzeThreads(context.Background(), opts, threads, func(thread threadcontext.Thread) (string, error) {
+		return filepath.Join("logs", string(thread.ID)+".jsonl"), nil
+	})
+	if err != nil {
+		t.Fatalf("AnalyzeThreads: %v", err)
+	}
+	if len(results) != len(threads) {
+		t.Fatalf("results = %d, want %d", len(results), len(threads))
+	}
+	for i, thread := range threads {
+		if results[i].ThreadID != string(thread.ID) {
+			t.Fatalf("result %d thread ID = %q, want %q", i, results[i].ThreadID, thread.ID)
+		}
+		meta := readThreadMetadata(t, opts, string(thread.ID))
+		if meta.TaskID != "thread-analysis-"+string(thread.ID) {
+			t.Fatalf("thread %s metadata task ID = %q, want the exact provider thread ID", thread.ID, meta.TaskID)
+		}
 	}
 }

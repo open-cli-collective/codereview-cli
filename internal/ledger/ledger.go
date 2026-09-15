@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,10 +27,11 @@ import (
 
 const (
 	// SchemaVersion is the current ledger schema version.
-	SchemaVersion = 4
+	SchemaVersion = 5
 	// DefaultBusyTimeout is the SQLite busy timeout configured at open.
 	DefaultBusyTimeout = 5 * time.Second
 	writeQueueSize     = 64
+	walRetryInterval   = 10 * time.Millisecond
 )
 
 var (
@@ -297,6 +299,8 @@ type Session struct {
 	TokensOut         *int64
 	CacheRead         *int64
 	CacheCreate       *int64
+	CacheCreate5m     *int64
+	CacheCreate1h     *int64
 	CostUSD           *float64
 }
 
@@ -412,7 +416,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("ledger: create db parent: %w", err)
 	}
 
-	dsn, err := sqliteDSN(path)
+	dsn, err := sqliteDataSourceName(path)
 	if err != nil {
 		return nil, err
 	}
@@ -423,6 +427,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
+	if err := configureSQLite(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := dbmig.Apply(ctx, db, migrations()); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ledger: migrate: %w", err)
@@ -495,28 +503,107 @@ func (s *Store) checkOpen() error {
 	return nil
 }
 
-func sqliteDSN(path string) (string, error) {
-	absPath, err := filepath.Abs(path)
+// sqliteDataSourceName builds the DSN used to open path.
+//
+// busy_timeout and foreign_keys are per-connection settings, so they are carried
+// in the DSN and applied by the driver to every connection it dials. Applying
+// them once through configureSQLite is not enough: database/sql discards a
+// connection that returns driver.ErrBadConn and replaces it with one that never
+// sees configureSQLite.
+//
+// The DSN is a SQLite "file:" URI rather than a bare path because the driver
+// splits the query string at the first '?', and a filesystem path may itself
+// contain '?', '#', or '%'. The absolute path is percent-encoded as a URI path.
+// The localhost authority keeps the URI well formed: SQLite accepts only an
+// empty or "localhost" authority, and without one url.URL would render a
+// Windows drive path such as "C:/data" as an authority that SQLite rejects.
+func sqliteDataSourceName(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("ledger: resolve db path: %w", err)
 	}
+
 	query := url.Values{}
+	query.Add("_pragma", "busy_timeout="+strconv.FormatInt(DefaultBusyTimeout.Milliseconds(), 10))
 	query.Add("_pragma", "foreign_keys=ON")
-	query.Add("_pragma", "journal_mode=WAL")
-	query.Add("_pragma", fmt.Sprintf("busy_timeout=%d", DefaultBusyTimeout.Milliseconds()))
-	return (&url.URL{
+	// Immediate transactions take the write lock before reading, so concurrent
+	// writers wait on busy_timeout instead of failing instantly with
+	// SQLITE_BUSY_SNAPSHOT. Startup migrations rely on that to serialize
+	// against another process opening the same fresh ledger.
+	// Every BeginTx on this handle is therefore a write transaction: do not add
+	// a read-only BeginTx here, it would serialize behind the writer. Reads run
+	// as autocommit queries instead. dbmig.Apply also depends on this — its
+	// in-transaction schema_version re-read is only race-free under the write
+	// lock — so this setting is a cross-package contract, pinned by
+	// TestSQLiteDataSourceName.
+	query.Set("_txlock", "immediate")
+
+	uri := url.URL{
 		Scheme:   "file",
-		Path:     sqliteURIPath(absPath),
+		Host:     "localhost",
+		Path:     filepath.ToSlash(absolute),
 		RawQuery: query.Encode(),
-	}).String(), nil
+	}
+	return uri.String(), nil
 }
 
-func sqliteURIPath(path string) string {
-	path = filepath.ToSlash(path)
-	if len(path) >= 2 && path[1] == ':' && path[0] != '/' {
-		path = "/" + path
+// configureSQLite applies the database-wide pragmas that only need setting once.
+// Per-connection pragmas live in the DSN instead (see sqliteDataSourceName).
+func configureSQLite(ctx context.Context, db *sql.DB) error {
+	// journal_mode is persisted in the database header, not per connection, so it
+	// is set once here. Converting a fresh database to WAL upgrades a read
+	// transaction to a write transaction, and SQLite skips the busy handler for
+	// that upgrade, so a concurrent holder returns SQLITE_BUSY immediately; retry
+	// instead of relying on busy_timeout.
+	mode, err := retryWhileBusy(ctx, walRetryInterval, DefaultBusyTimeout, func(ctx context.Context) (string, error) {
+		return setWALJournalMode(ctx, db)
+	})
+	if err != nil {
+		return fmt.Errorf("ledger: enable WAL: %w", err)
 	}
-	return path
+	if mode != "wal" {
+		return fmt.Errorf("ledger: enable WAL: journal_mode = %q, want wal", mode)
+	}
+	return nil
+}
+
+// retryWhileBusy repeats attempt until it succeeds, returns a non-busy error,
+// or budget elapses.
+func retryWhileBusy(ctx context.Context, interval, budget time.Duration, attempt func(context.Context) (string, error)) (string, error) {
+	deadline := time.Now().Add(budget)
+	for {
+		value, err := attempt(ctx)
+		if err == nil {
+			return value, nil
+		}
+		if !isSQLiteBusyError(err) || !time.Now().Before(deadline) {
+			return "", err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+// setWALJournalMode asks SQLite for WAL mode and returns the resulting mode.
+func setWALJournalMode(ctx context.Context, db *sql.DB) (string, error) {
+	var mode string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode = WAL").Scan(&mode); err != nil {
+		return "", err
+	}
+	return strings.ToLower(mode), nil
+}
+
+// isSQLiteBusyError reports whether err is lock contention reported by SQLite.
+func isSQLiteBusyError(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	// The driver enables extended result codes, so mask to the primary code.
+	return sqliteErr.Code()&0xff == sqlite3.SQLITE_BUSY
 }
 
 func migrations() []dbmig.Migration {
@@ -554,6 +641,21 @@ func migrations() []dbmig.Migration {
 			Name:    "reviewer cohorts",
 			Up: func(ctx context.Context, tx *sql.Tx) error {
 				for _, statement := range reviewerCohortSchemaStatements {
+					if _, err := tx.ExecContext(ctx, statement); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
+		{
+			Version: 5,
+			Name:    "cache creation TTL buckets",
+			Up: func(ctx context.Context, tx *sql.Tx) error {
+				for _, statement := range []string{
+					`ALTER TABLE sessions ADD COLUMN cache_create_5m INTEGER`,
+					`ALTER TABLE sessions ADD COLUMN cache_create_1h INTEGER`,
+				} {
 					if _, err := tx.ExecContext(ctx, statement); err != nil {
 						return err
 					}
@@ -811,11 +913,13 @@ func (s *Store) InsertSession(ctx context.Context, session Session) error {
 		_, err := db.ExecContext(ctx, `
 INSERT INTO sessions (
 	session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
-	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create,
+	cache_create_5m, cache_create_1h, cost_usd
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			session.SessionRowID, session.RunID, session.ProviderSessionID, session.Role.String(), session.AgentID,
 			session.Adapter, session.Model, session.Effort, encodeTime(session.StartedAt), encodeOptionalTime(session.CompletedAt),
-			session.DurationMS, session.TokensIn, session.TokensOut, session.CacheRead, session.CacheCreate, session.CostUSD,
+			session.DurationMS, session.TokensIn, session.TokensOut, session.CacheRead, session.CacheCreate,
+			session.CacheCreate5m, session.CacheCreate1h, session.CostUSD,
 		)
 		if err != nil {
 			return fmt.Errorf("ledger: insert session: %w", err)
@@ -834,7 +938,8 @@ func (s *Store) GetSession(ctx context.Context, sessionRowID string) (Session, e
 	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
-	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
+	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create,
+	cache_create_5m, cache_create_1h, cost_usd
 FROM sessions WHERE session_row_id = ?`, sessionRowID)
 	session, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -856,7 +961,8 @@ func (s *Store) ListSessionsForRun(ctx context.Context, runID string) ([]Session
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT session_row_id, run_id, provider_session_id, role, agent_id, adapter, model, effort,
-	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create, cost_usd
+	started_at, completed_at, duration_ms, tokens_in, tokens_out, cache_read, cache_create,
+	cache_create_5m, cache_create_1h, cost_usd
 FROM sessions WHERE run_id = ? ORDER BY session_row_id`, runID)
 	if err != nil {
 		return nil, fmt.Errorf("ledger: list sessions for run: %w", err)
@@ -1730,23 +1836,25 @@ func scanRun(row interface{ Scan(...any) error }) (Run, error) {
 
 func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var (
-		session     Session
-		role        string
-		agentID     sql.Null[string]
-		effort      sql.Null[string]
-		startedAt   string
-		completedAt sql.Null[string]
-		durationMS  sql.Null[int64]
-		tokensIn    sql.Null[int64]
-		tokensOut   sql.Null[int64]
-		cacheRead   sql.Null[int64]
-		cacheCreate sql.Null[int64]
-		costUSD     sql.Null[float64]
+		session       Session
+		role          string
+		agentID       sql.Null[string]
+		effort        sql.Null[string]
+		startedAt     string
+		completedAt   sql.Null[string]
+		durationMS    sql.Null[int64]
+		tokensIn      sql.Null[int64]
+		tokensOut     sql.Null[int64]
+		cacheRead     sql.Null[int64]
+		cacheCreate   sql.Null[int64]
+		cacheCreate5m sql.Null[int64]
+		cacheCreate1h sql.Null[int64]
+		costUSD       sql.Null[float64]
 	)
 	if err := row.Scan(
 		&session.SessionRowID, &session.RunID, &session.ProviderSessionID, &role, &agentID, &session.Adapter,
 		&session.Model, &effort, &startedAt, &completedAt, &durationMS, &tokensIn, &tokensOut,
-		&cacheRead, &cacheCreate, &costUSD,
+		&cacheRead, &cacheCreate, &cacheCreate5m, &cacheCreate1h, &costUSD,
 	); err != nil {
 		return Session{}, err
 	}
@@ -1770,6 +1878,8 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	session.TokensOut = ptrFromNull(tokensOut)
 	session.CacheRead = ptrFromNull(cacheRead)
 	session.CacheCreate = ptrFromNull(cacheCreate)
+	session.CacheCreate5m = ptrFromNull(cacheCreate5m)
+	session.CacheCreate1h = ptrFromNull(cacheCreate1h)
 	session.CostUSD = ptrFromNull(costUSD)
 	return session, nil
 }

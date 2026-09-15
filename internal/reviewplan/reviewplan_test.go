@@ -762,3 +762,77 @@ func deniedImport(path string) bool {
 	}
 	return false
 }
+
+// TestBuildRedactsAbsolutePathsFromComposedBody proves the output-boundary
+// backstop: local absolute paths are replaced with <path> in the posted review
+// body while repo-relative paths and file:line references survive untouched.
+func TestBuildRedactsAbsolutePathsFromComposedBody(t *testing.T) {
+	tests := []struct {
+		name        string
+		constraint  string
+		wantAbsent  []string
+		wantPresent []string
+	}{
+		{
+			name:       "posix absolute path with spaces",
+			constraint: `pi reviewer tool: inspect "site/assets/x.js": lstat /Users/someone/Library/Application Support/cr/data/runs/abc/def`,
+			wantAbsent: []string{"/Users/someone/Library/Application Support/cr/data/runs/abc/def"},
+			wantPresent: []string{
+				`"site/assets/x.js"`,
+				"<path>",
+			},
+		},
+		{
+			name:        "windows absolute path",
+			constraint:  `cr_diff: fixed diff: open C:\Users\someone\AppData\Local\Temp\run\def: no such file`,
+			wantAbsent:  []string{`C:\Users\someone\AppData\Local\Temp\run\def`},
+			wantPresent: []string{"<path>"},
+		},
+		{
+			name:       "repo-relative paths and file:line references survive",
+			constraint: "see internal/pipeline/pipeline.go, .github/workflows/validate.yml, and internal/reviewplan/summary.go:341",
+			wantPresent: []string{
+				"internal/pipeline/pipeline.go",
+				".github/workflows/validate.yml",
+				"internal/reviewplan/summary.go:341",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := baseRequest()
+			req.Findings = nil
+			req.Rollup = review.Rollup{ReviewEvent: review.ReviewEventApprove}
+			req.RunSummary = RunSummary{
+				SelectedReviewers: []string{"go:implementation-tests"},
+				ReviewerCoverage: []ReviewerCoverageSummary{{
+					AgentID:     "go:implementation-tests",
+					Status:      "incomplete_tool",
+					Constraints: []string{tt.constraint},
+				}},
+			}
+			plan, err := Build(req)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			submits := actionsOfKind(plan.Actions, ActionKindSubmitReview)
+			if len(submits) != 1 || submits[0].SubmitReview == nil {
+				t.Fatalf("submit review actions = %#v", submits)
+			}
+			body := submits[0].SubmitReview.Body
+			if body != plan.RollupMarkdown {
+				t.Fatalf("submit body diverged from rollup markdown:\n%s", body)
+			}
+			for _, absent := range tt.wantAbsent {
+				if strings.Contains(body, absent) {
+					t.Fatalf("body leaked %q:\n%s", absent, body)
+				}
+			}
+			for _, present := range tt.wantPresent {
+				if !strings.Contains(body, present) {
+					t.Fatalf("body missing %q:\n%s", present, body)
+				}
+			}
+		})
+	}
+}

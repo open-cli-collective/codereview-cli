@@ -50,6 +50,20 @@ func TestEncodeDecode(t *testing.T) {
 	}
 }
 
+func TestEncodeUniqueSeparatesValuesDifferingOnlyByCase(t *testing.T) {
+	const lowerID, upperID = "PRRT_exampleNodeIda", "PRRT_exampleNodeIdA"
+	lower, upper := EncodeUnique(lowerID), EncodeUnique(upperID)
+	if strings.EqualFold(lower, upper) {
+		t.Fatalf("EncodeUnique segments fold together: %q and %q", lower, upper)
+	}
+	if !strings.HasPrefix(lower, lowerID+"-") {
+		t.Fatalf("EncodeUnique(%q) = %q, want the encoded value kept as a readable prefix", lowerID, lower)
+	}
+	if again := EncodeUnique(lowerID); again != lower {
+		t.Fatalf("EncodeUnique(%q) = %q then %q, want a deterministic segment", lowerID, lower, again)
+	}
+}
+
 func TestPRKeyAndResumeScope(t *testing.T) {
 	prKey, err := PRKey("github.com", "open-cli", "repo/name", 12)
 	if err != nil {

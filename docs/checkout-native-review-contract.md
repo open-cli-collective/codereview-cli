@@ -29,7 +29,9 @@ The runtime sequence for checkout-native review is:
    - final dossier artifacts
 4. Run orchestrator selection from dossier/workbench inputs, selecting every
    applicable repo-local reviewer before optional shared reviewers.
-5. Run specialist reviewers against per-reviewer disposable workspaces.
+5. Run specialist reviewers against per-reviewer disposable workspaces, then one
+   focused coverage-repair pass for each reviewer that reported assigned
+   readable files as skipped.
 6. Run rollup from findings, reviewer failures, and inspected coverage.
 
 This order is load-bearing. Discussion summarization happens before final
@@ -59,8 +61,13 @@ runs/<run-id>/
     reviewers/
       <reviewer-id>/
         repo/
+      <reviewer-id>-coverage-repair/
+        repo/
     scratch/
       <reviewer-id>/
+        cache/
+        tmp/
+      <reviewer-id>-coverage-repair/
         cache/
         tmp/
     metadata.json
@@ -86,6 +93,11 @@ Notes:
 - `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
 - `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
   cache roots.
+- A coverage-repair pass runs under the derived identity
+  `<reviewer-id>-coverage-repair`, so a repaired run also has that reviewer
+  checkout, that scratch root, and its own encoded agent log. Workspace
+  preparation clears the directory it is given, so the repair must never reuse
+  the primary reviewer's identity.
 - Reviewer subprocesses receive scratch-local environment paths:
   - `TMPDIR`, `TMP`, and `TEMP` point at `scratch/<reviewer-id>/tmp`
   - `GOCACHE` points at `scratch/<reviewer-id>/cache/go-build`
@@ -95,8 +107,17 @@ Notes:
 The workbench is run-owned, not cache-owned. Shared clone or fetch caches are a
 possible future optimization but are not part of the correctness contract.
 
-`workbench/metadata.json` is a versioned durable artifact. Schema version `2`
-records:
+A successful run removes its `workbench/` tree when it reaches a successful
+terminal state, after rollup and plan build, so retention no longer pins a full
+checkout per run. A live run reaches that state when its outbox post succeeds;
+failed, aborted, and incomplete runs retain the workbench for inspection, and
+`data.keep_workbench: true` opts a run back into retention on success. The
+benchmark caller-owned selection path (`cr benchmark select`) reclaims its
+checkout on success under the same opt-out.
+
+`workbench/metadata.json` is a versioned artifact for retained workbenches:
+failed or errored runs, and successful runs with `data.keep_workbench: true`.
+Schema version `2` records:
 
 - `schema_version`
 - `checkout_mode`
@@ -339,8 +360,9 @@ the rollup says so under an **Approval Withheld** heading, naming the reviewers
 that produced no result, the coverage diagnostics behind any other incomplete
 status, and every changed file no reviewer inspected. Without it, a review that
 approved and a review that found nothing but could not approve render
-identically as a table of zeros, and re-running is not a remedy: a reviewer that
-declined a file declines it again.
+identically as a table of zeros. Re-running is not a remedy either: the focused
+coverage-repair pass has already re-inspected every readable skipped file it
+could, so what the section names is what stayed skipped after that second look.
 
 The section renders whenever that coercion fired, rather than deciding again
 from the evidence, so it cannot disagree with the gate about whether coverage

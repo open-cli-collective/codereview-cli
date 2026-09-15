@@ -75,14 +75,18 @@ type ReviewRunSummary struct {
 
 // ReviewWorkstream is adapter-reported usage for one workstream.
 type ReviewWorkstream struct {
-	Name        string   `json:"name"`
-	Model       string   `json:"model,omitempty"`
-	TokensIn    *int     `json:"tokens_in"`
-	TokensOut   *int     `json:"tokens_out"`
-	CacheRead   *int     `json:"cache_read"`
-	CacheCreate *int     `json:"cache_create"`
-	CostUSD     *float64 `json:"cost_usd"`
-	DurationMS  *int64   `json:"duration_ms"`
+	Name              string   `json:"name"`
+	Model             string   `json:"model,omitempty"`
+	TokensIn          *int     `json:"tokens_in"`
+	TokensOut         *int     `json:"tokens_out"`
+	CacheRead         *int     `json:"cache_read"`
+	CacheCreate       *int     `json:"cache_create"`
+	CacheCreate5m     *int     `json:"cache_create_5m"`
+	CacheCreate1h     *int     `json:"cache_create_1h"`
+	CostUSD           *float64 `json:"cost_usd"`
+	CostEstimated     bool     `json:"cost_estimated"`
+	CostEstimateBasis string   `json:"cost_estimate_basis,omitempty"`
+	DurationMS        *int64   `json:"duration_ms"`
 }
 
 // ReviewWorkstreamTotals holds run-wide aggregates; each field is non-null
@@ -92,7 +96,11 @@ type ReviewWorkstreamTotals struct {
 	TokensOut         *int     `json:"tokens_out"`
 	CacheRead         *int     `json:"cache_read"`
 	CacheCreate       *int     `json:"cache_create"`
+	CacheCreate5m     *int     `json:"cache_create_5m"`
+	CacheCreate1h     *int     `json:"cache_create_1h"`
 	CostUSD           *float64 `json:"cost_usd"`
+	CostEstimated     bool     `json:"cost_estimated"`
+	CostEstimateBasis string   `json:"cost_estimate_basis,omitempty"`
 	ComputeDurationMS *int64   `json:"compute_duration_ms"`
 }
 
@@ -254,7 +262,11 @@ func newReviewSummary(summary reviewplan.Summary) ReviewSummary {
 			TokensOut:         summary.Totals.TokensOut,
 			CacheRead:         summary.Totals.CacheRead,
 			CacheCreate:       summary.Totals.CacheCreate,
+			CacheCreate5m:     summary.Totals.CacheCreate5m,
+			CacheCreate1h:     summary.Totals.CacheCreate1h,
 			CostUSD:           summary.Totals.CostUSD,
+			CostEstimated:     summary.Totals.CostEstimated,
+			CostEstimateBasis: summary.Totals.CostEstimateBasis,
 			ComputeDurationMS: summary.Totals.ComputeDurationMS,
 		},
 	}
@@ -279,14 +291,18 @@ func newReviewSummary(summary reviewplan.Summary) ReviewSummary {
 	}
 	for _, workstream := range summary.Run.Workstreams {
 		out.Run.Workstreams = append(out.Run.Workstreams, ReviewWorkstream{
-			Name:        workstream.Name,
-			Model:       workstream.Model,
-			TokensIn:    workstream.TokensIn,
-			TokensOut:   workstream.TokensOut,
-			CacheRead:   workstream.CacheRead,
-			CacheCreate: workstream.CacheCreate,
-			CostUSD:     workstream.CostUSD,
-			DurationMS:  workstream.DurationMS,
+			Name:              workstream.Name,
+			Model:             workstream.Model,
+			TokensIn:          workstream.TokensIn,
+			TokensOut:         workstream.TokensOut,
+			CacheRead:         workstream.CacheRead,
+			CacheCreate:       workstream.CacheCreate,
+			CacheCreate5m:     workstream.CacheCreate5m,
+			CacheCreate1h:     workstream.CacheCreate1h,
+			CostUSD:           workstream.CostUSD,
+			CostEstimated:     workstream.CostEstimated,
+			CostEstimateBasis: workstream.CostEstimateBasis,
+			DurationMS:        workstream.DurationMS,
 		})
 	}
 	return out

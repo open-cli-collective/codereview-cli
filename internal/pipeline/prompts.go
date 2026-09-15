@@ -10,8 +10,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/gobwas/glob"
-
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/dossier"
@@ -42,6 +40,32 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 	}
 	if len(checkpoints) > 0 && len(checkpoints[0].responses) > 0 {
 		payload["discussion_outcomes"] = reviewerDiscussionOutcomes(checkpoints[0])
+	}
+	body, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", nil, err
+	}
+	return string(body), deps, nil
+}
+
+func buildReviewerCoverageRepairPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
+	prompt, deps, err := buildReviewerPrompt(paths, pr, selected, agent, changedFiles)
+	if err != nil {
+		return "", nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		return "", nil, fmt.Errorf("pipeline: decode reviewer prompt for coverage repair: %w", err)
+	}
+	payload["task"] = "complete one focused coverage repair pass and return findings JSON only"
+	payload["coverage_repair"] = map[string]any{
+		"files": append([]string(nil), selected.Files...),
+		"instructions": []string{
+			"The primary review explicitly skipped these assigned readable files.",
+			"Inspect each listed file in the prepared workspace, including only the changed content and dependency or workspace graph context relevant to this review.",
+			"Return findings from this focused pass only; primary findings are retained separately and must not be repeated.",
+			"List a file in inspected_files only after actually inspecting it. Keep any file you still cannot inspect in skipped_files so coverage remains incomplete.",
+		},
 	}
 	body, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -177,25 +201,13 @@ func requiredOnMatchFiles(agent agents.Agent, changedFiles []string) []string {
 	return matched
 }
 
-// globsMatchFile reports whether any of the agent file glob patterns match
-// the file. A "**/"-prefixed pattern also matches at the repository root,
-// mirroring gitignore-style expectations.
+// globsMatchFile reports whether any include pattern matches the file unless
+// an exclusion pattern, prefixed with "!", also matches it. A "**/"-prefixed
+// pattern also matches at the repository root, mirroring gitignore-style
+// expectations.
 func globsMatchFile(patterns []string, file string) bool {
-	for _, pattern := range patterns {
-		matcher, err := glob.Compile(pattern, '/')
-		if err != nil {
-			continue
-		}
-		if matcher.Match(file) {
-			return true
-		}
-		if strings.HasPrefix(pattern, "**/") {
-			if rootMatcher, err := glob.Compile(strings.TrimPrefix(pattern, "**/"), '/'); err == nil && rootMatcher.Match(file) {
-				return true
-			}
-		}
-	}
-	return false
+	set, err := agents.CompileFileGlobs(patterns)
+	return err == nil && set.Matches(file)
 }
 
 type reviewerAgentPrompt struct {

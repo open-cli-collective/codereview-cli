@@ -20,9 +20,9 @@ func writeTranscript(t *testing.T, content string) string {
 func TestClaudeTranscriptUsage(t *testing.T) {
 	t.Run("sums job-scoped assistant turns and dedupes streamed repeats", func(t *testing.T) {
 		path := writeTranscript(t, `{"type":"user","timestamp":"2026-06-09T20:00:01Z","message":{"id":"u1"}}
-{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"m1","usage":{"input_tokens":3,"cache_creation_input_tokens":7225,"cache_read_input_tokens":3266,"output_tokens":50,"speed":"fast"}}}
-{"type":"assistant","timestamp":"2026-06-09T20:00:03Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":300,"speed":"fast"}}}
-{"type":"assistant","timestamp":"2026-06-09T20:00:04Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":400,"speed":"standard"}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"m1","usage":{"input_tokens":3,"cache_creation_input_tokens":7225,"cache_read_input_tokens":3266,"output_tokens":50,"speed":"fast","cache_creation":{"ephemeral_5m_input_tokens":25,"ephemeral_1h_input_tokens":7200}}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:03Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":300,"speed":"fast","cache_creation":{"ephemeral_5m_input_tokens":40,"ephemeral_1h_input_tokens":60}}}}
+{"type":"assistant","timestamp":"2026-06-09T20:00:04Z","message":{"id":"m2","usage":{"input_tokens":1,"cache_creation_input_tokens":100,"cache_read_input_tokens":200,"output_tokens":400,"speed":"standard","cache_creation":{"ephemeral_5m_input_tokens":40,"ephemeral_1h_input_tokens":60}}}}
 not json at all
 {"type":"assistant","timestamp":"2026-06-09T20:00:05Z","message":{"id":"","usage":{"input_tokens":999}}}
 {"type":"assistant","timestamp":"2026-06-09T20:00:06Z","message":{"id":"m3"}}
@@ -32,14 +32,16 @@ not json at all
 		if usage.TokensIn == nil || *usage.TokensIn != 4 ||
 			usage.TokensOut == nil || *usage.TokensOut != 450 ||
 			usage.CacheRead == nil || *usage.CacheRead != 3466 ||
-			usage.CacheCreate == nil || *usage.CacheCreate != 7325 {
+			usage.CacheCreate == nil || *usage.CacheCreate != 7325 ||
+			usage.CacheCreate5m == nil || *usage.CacheCreate5m != 65 ||
+			usage.CacheCreate1h == nil || *usage.CacheCreate1h != 7260 {
 			t.Fatalf("usage = %#v, want deduped sums (in=4 out=450 read=3466 create=7325)", usage)
 		}
 		if usage.CostUSD != nil {
 			t.Fatalf("cost = %v, want nil (transcripts carry no cost)", *usage.CostUSD)
 		}
-		if usage.Speed != "standard" {
-			t.Fatalf("speed = %q, want standard to win", usage.Speed)
+		if usage.Speed != "mixed" {
+			t.Fatalf("speed = %q, want mixed when a transcript spans speed tiers", usage.Speed)
 		}
 	})
 
@@ -51,6 +53,18 @@ not json at all
 		usage := claudeBGTranscriptUsage(map[string]any{"linkScanPath": path, "createdAt": transcriptJobCreatedAt})
 		if usage.TokensIn == nil || *usage.TokensIn != 10 || usage.TokensOut == nil || *usage.TokensOut != 20 || usage.Speed != "fast" {
 			t.Fatalf("usage = %#v, want only the current job's turn (in=10 out=20)", usage)
+		}
+	})
+
+	t.Run("aggregate cache creation without TTL provenance keeps split nullable", func(t *testing.T) {
+		path := writeTranscript(t, `{"type":"assistant","timestamp":"2026-06-09T20:00:02Z","message":{"id":"current","usage":{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":30,"speed":"standard"}}}`+"\n")
+
+		usage := claudeBGTranscriptUsage(map[string]any{"linkScanPath": path, "createdAt": transcriptJobCreatedAt})
+		if usage.CacheCreate == nil || *usage.CacheCreate != 30 {
+			t.Fatalf("cache create = %#v, want aggregate 30", usage.CacheCreate)
+		}
+		if usage.CacheCreate5m != nil || usage.CacheCreate1h != nil {
+			t.Fatalf("cache TTL buckets = %v/%v, want nil without provider provenance", usage.CacheCreate5m, usage.CacheCreate1h)
 		}
 	})
 

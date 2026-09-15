@@ -102,12 +102,33 @@ func (p Paths) AgentLog(agentID string) (string, error) {
 	return filepath.Join(p.AgentLogsDir, statepaths.Encode(agentID)+".jsonl"), nil
 }
 
+// ThreadAnalysisLogsDir returns the directory holding per-thread analysis logs,
+// or "" when artifacts are not configured.
+func (p Paths) ThreadAnalysisLogsDir() string {
+	if strings.TrimSpace(p.AgentLogsDir) == "" {
+		return ""
+	}
+	return filepath.Join(p.AgentLogsDir, "thread-analysis")
+}
+
+// ThreadAnalysisLog returns the tailable LLM log path for one thread analysis.
+func (p Paths) ThreadAnalysisLog(threadID string) (string, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return "", fmt.Errorf("runartifact: thread ID is required")
+	}
+	if p.ThreadAnalysisLogsDir() == "" {
+		return "", fmt.Errorf("runartifact: agent log directory is required")
+	}
+	// Thread IDs are provider-supplied, so they need the folding-safe encoder.
+	return filepath.Join(p.ThreadAnalysisLogsDir(), statepaths.EncodeUnique(threadID)+".jsonl"), nil
+}
+
 // LLMTaskDir returns the artifact directory for one durable LLM task.
 func (p Paths) LLMTaskDir(taskID string) (string, error) {
 	if strings.TrimSpace(taskID) == "" {
 		return "", fmt.Errorf("runartifact: LLM task ID is required")
 	}
-	return filepath.Join(p.LLMTasksDir, statepaths.Encode(taskID)), nil
+	return filepath.Join(p.LLMTasksDir, statepaths.EncodeUnique(taskID)), nil
 }
 
 // LLMTaskMetadata returns the metadata artifact path for one durable LLM task.
