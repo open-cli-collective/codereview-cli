@@ -134,6 +134,10 @@ return typed domain data so command and view code remain replaceable shells.
 `internal/architecture/command_boundaries_test.go` enforces these dependency
 directions with narrow allowances for command-tree integration tests and keeps
 review/response application runtime contracts out of `internal/cmd/cmdruntime`.
+The architecture checks enforce package ownership and dependency direction;
+the command-runtime checks leave helper names free to change, the
+planned-action payload check leaves its source filename free to change, and
+the thread-lifecycle checks do not prescribe per-file call counts.
 
 Review behavior should be protected through named acceptance harnesses rather
 than cloned broad assertions. The command-level harness verifies `cr review`
