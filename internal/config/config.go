@@ -17,7 +17,7 @@ import (
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedir"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 )

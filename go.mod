@@ -15,9 +15,9 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/open-cli-collective/cli-common v0.4.1
 	github.com/spf13/cobra v1.10.2
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/sys v0.46.0
 	golang.org/x/term v0.44.0
-	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.51.0
 )
 
