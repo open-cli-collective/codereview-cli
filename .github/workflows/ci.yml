@@ -26,7 +26,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: open-cli-collective/.github/actions/go-build@b6382514b809d960c6fbdc85745a60c14cde04f # shared .github
+      - uses: open-cli-collective/.github/actions/go-build@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
         with:
           go-version-file: go.mod
 
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f # shared .github
+      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
         with:
           go-version-file: go.mod
 
@@ -54,7 +54,7 @@ jobs:
       GOFLAGS: -tags=keyring_nopassage,keyring_no1password
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f # shared .github
+      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
         with:
           go-version-file: go.mod
 
@@ -65,7 +65,7 @@ jobs:
       GOFLAGS: -tags=keyring_nopassage
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f # shared .github
+      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
         with:
           go-version-file: go.mod
           target: test-static-smoke
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: open-cli-collective/.github/actions/go-lint@b6382514b809d960c6fbdc85745a60c14cde04f # shared .github
+      - uses: open-cli-collective/.github/actions/go-lint@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
         with:
           go-version-file: go.mod
 
@@ -82,12 +82,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: open-cli-collective/.github/actions/identity-check@b6382514b809d960c6fbdc85745a60c14cde04f # shared .github; distribution.md §8.2
+      - uses: open-cli-collective/.github/actions/identity-check@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github; distribution.md §8.2
 
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: open-cli-collective/.github/actions/pr-title@b6382514b809d960c6fbdc85745a60c14cde04f # shared .github
+      - uses: open-cli-collective/.github/actions/pr-title@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
         with:
           title: ${{ github.event.pull_request.title }}
