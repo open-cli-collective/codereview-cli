@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "profile_id": "jev-advisory-fixture-v1",
+  "run_id": "run-fixture-golden-1",
+  "cohort_input_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "effective_decision_invariant": "keep",
+  "findings": [
+    {"finding_id": "F-001", "severity": "minor", "body": "required work may be outside the changed lines", "expected_proposed_decision": "keep", "expected_effective_decision": "keep"},
+    {"finding_id": "F-002", "severity": "nits", "body": "a speculative adjacent improvement", "expected_proposed_decision": "suppress_scope_expansion", "expected_effective_decision": "keep"},
+    {"finding_id": "F-003", "severity": "major", "body": "major findings retain regardless of evaluator answers", "expected_proposed_decision": "keep", "expected_effective_decision": "keep"}
+  ],
+  "invariance": ["raw_findings", "finding_order", "severity", "rollup", "review_event", "inline_actions", "fail_on", "outbox", "resume_retry", "github_output"]
+}
