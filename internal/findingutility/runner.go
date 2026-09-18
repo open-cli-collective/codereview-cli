@@ -21,7 +21,7 @@ func RunAdvisory(ctx context.Context, options Options, snapshot Snapshot) Outcom
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return keepOutcome(snapshot, nil, nil, ReasonEvaluatorFailure, "cancelled", err, options.Now, options.Warn)
+		return keepOutcome(snapshot, nil, nil, ReasonEvaluatorFailure, "cancelled", err, options.Now, options.Warn) //nolint:misspell // Preserve the advisory outcome contract.
 	}
 
 	states, controls, stateErr := BuildStates(snapshot, options.Profile.BoundProfile)

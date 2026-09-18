@@ -87,43 +87,6 @@ const (
 	choiceOther               = "other"
 )
 
-var noulQuestionSpecs = []struct {
-	id          NoulID
-	instruction string
-	trueText    string
-	falseText   string
-}{
-	{NoulGroundedInEvidence, "Does the supplied `evidence.items`, `evidence.relations`, and `pull_request.changes` support the material factual claim in `finding.title` and `finding.body`?", "Supplied code, requirements, observed behavior, or tests substantiate the material claim and its stated trigger; necessary causal steps are supported.", "Supplied evidence contradicts the material claim, or complete relevant evidence demonstrates that its factual premise is unsupported. Mere absence of needed evidence is uncertainty. A purely subjective preference with no factual defect is not grounded as a defect."},
-	{NoulIntroducedOrMateriallyAffected, "Did `pull_request.changes` introduce or materially affect the condition described in `finding.body`, comparing the supplied base and head evidence?", "The PR introduces the condition, worsens it, makes an existing condition reachable, changes a relevant guarantee, or makes remediation necessary through a changed caller or contract.", "Adequate base/head and caller evidence shows the condition is unchanged and unaffected by the PR. Being outside the diff does not establish false."},
-	{NoulRemediationRequiredForIntent, "Is remediation of the condition in `finding.body` necessary to deliver `pull_request.intent` safely and correctly, using the supplied `evidence` and `pull_request.changes`?", "The stated intent or a safety/correctness property needed to deliver it fails without remediation, including work in unchanged code or another file.", "The stated intent is delivered safely and correctly without this remediation, and supplied evidence establishes that the recommendation is optional, invalid, already satisfied, or separate work."},
-	{NoulAdjacentImprovement, "Is the recommendation in `finding.body` a useful separate enhancement beyond the work needed to deliver `pull_request.intent` safely and correctly?", "The recommendation has a concrete plausible benefit but requests independent enhancement, cleanup, generalization, or future capability that is unnecessary for the stated intent.", "The recommendation is necessary remediation for the intent, an in-scope useful improvement, or lacks a supported benefit. Cross-file location or effort alone does not establish a separate enhancement."},
-	{NoulSpeculative, "Does the material claim or recommendation in `finding.body` depend on a hypothetical future condition unsupported by `evidence` and `pull_request.intent`?", "Its justification requires an unestablished future client, requirement, deployment, compatibility target, caller, scale, or failure trigger; that assumption is material to its claimed benefit or defect.", "Its trigger is supplied or follows concretely from evidenced behavior and supported requirements. A rare but evidenced failure is not speculative. Missing evidence alone does not prove an imagined future condition."},
-	{NoulActionable, "Do `finding.body`, `finding.location`, and the supplied `evidence` identify a concrete remediation or sufficiently specific next action?", "An engineer can locate the condition and take a bounded fix, test, reproduction, or investigation step; a complete implementation prescription is unnecessary.", "With adequate context, the finding identifies no concrete change, verification, or bounded investigation beyond vague dissatisfaction. Complexity or effort does not make a specific action non-actionable."},
-	{NoulMissingDecisionContext, "Are `pull_request.intent`, `evidence`, `related_findings`, or `input_limitations` missing or contradicting information needed for a safe utility classification of `finding.body`?", "A necessary source, caller, requirement, revision, representative, or causal link is missing, stale, truncated, materially redacted, or contradictory; resolving it could change classification or protection.", "Supplied context resolves all facts material to the classification; known omissions are demonstrably irrelevant. Confidence, low severity, and lack of a visible risk do not establish sufficiency."},
-	{NoulPossibleSecurityRisk, "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern a security risk?", "The claim plausibly concerns exploitability, injection, unsafe execution, credential exposure, integrity compromise, or weakened defensive controls, even if its premise may be wrong or its severity is minor.", "Adequate context establishes that the claim concerns only a non-security matter. A disputed security claim still concerns security."},
-	{NoulPossibleCorrectnessRisk, "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern a correctness risk?", "The claim plausibly concerns wrong results, broken behavior, violated invariants/contracts, missing required cases, or regressions under an evidenced or plausible trigger.", "Adequate context establishes a wholly nonfunctional preference or separate enhancement with no plausible correctness claim. Being pre-existing, rare, or outside the diff does not establish false."},
-	{NoulPossibleAuthorizationRisk, "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern an authorization risk?", "The claim plausibly concerns permissions, access decisions, tenant boundaries, privilege escalation, or a missing/incorrect authorization check.", "Adequate context establishes an unrelated matter with no plausible access-control concern. Low severity and evaluator confidence cannot override an authorization claim."},
-	{NoulPossiblePrivacyRisk, "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern a privacy risk?", "The claim plausibly concerns unintended collection, exposure, retention, logging, use, or disclosure of sensitive or personal data.", "Adequate context establishes an unrelated matter with no plausible privacy concern. No visible personal data in a snippet is insufficient by itself."},
-	{NoulPossibleDataLossRisk, "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern data loss or corruption?", "The claim plausibly concerns deletion, overwrite, dropped writes, corruption, failed recovery, migration damage, or loss of durable records.", "Adequate context establishes a matter without plausible loss or corruption of data. Recoverability must be evidenced before it can qualify the claim."},
-	{NoulPossibleOperationalRisk, "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern operational risk?", "The claim plausibly concerns availability, latency, resource exhaustion, cost escalation, deployment, rollout, rollback, retries, observability needed for operations, or recovery behavior.", "Adequate context establishes a matter without plausible operational consequence. A claim is not non-operational merely because the current load is small."},
-}
-
-const primaryUtilityInstruction = "What single utility class best describes `finding.body` for this `pull_request.intent`, given `evidence`, `related_findings`, and `input_limitations`? Select the first applicable class in this precedence: `insufficient_context`, `duplicate`, `required`, `scope_expansion`, `useful_nonblocking`, `low_value`, `other`. Apply the option criteria to the whole finding; if it contains a required issue plus optional advice, preserve the required issue. A class is an assessment of utility, not authority to suppress."
-
-var primaryUtilityOptions = []ChoiceOption{
-	{Key: choiceInsufficientContext, Criteria: "Missing, stale, truncated, or conflicting material evidence prevents a safe classification or resolution of protection. This takes precedence over guesses about invalidity, scope, or duplication."},
-	{Key: choiceDuplicate, Criteria: "A supplied earlier-ranked candidate represents the same condition, impact, and necessary remediation with no material information loss, and the current finding adds no distinct required action. The representative must be selectable from the supplied candidate set. Similar wording alone is insufficient."},
-	{Key: choiceRequired, Criteria: "Remediation is necessary to deliver the stated intent safely and correctly. Necessary work remains required when it touches unchanged files or expands the immediate diff."},
-	{Key: choiceScopeExpansion, Criteria: "The recommendation requests a concrete useful independent enhancement beyond the stated intent, with no necessary safety/correctness remediation. Unsupported hypothetical requirements belong to low_value instead."},
-	{Key: choiceUsefulNonblocking, Criteria: "The finding is grounded, actionable, and useful to this change, but remediation is not necessary before it lands and is not primarily an independent enhancement."},
-	{Key: choiceLowValue, Criteria: "Adequate context establishes an invalid, speculative, preference-only, stale-at-generation, non-actionable, or otherwise unhelpful recommendation. Grounded actionable non-required work is not automatically low value; useful_nonblocking or scope_expansion may apply."},
-	{Key: choiceOther, Criteria: "Context is adequate but none of the defined classes fits; this preserves an explicit escape from forced classification."},
-}
-
-const duplicateInstruction = "Which one of `related_findings.items` fully represents the condition, impact, and remediation in `finding.body`, without losing distinct material information? Judge from the supplied bodies and `evidence`; choose the earliest-ranked complete representative if several qualify. Choose `none` when adequate context shows none qualifies, and `insufficient_context` when relevant equivalence cannot be determined. Do not select the current finding or invent an ID."
-
-const utilityScoreInstruction = "What is the incremental value of acting on or investigating `finding.body` for delivering this `pull_request.intent`, given `evidence` and work already represented by `related_findings`? Judge value to this change, not severity, writing quality, confidence, effort, or usefulness of a separate future project. Use the supplied descriptive levels; this diagnostic does not authorize suppression."
-
 // LoadRubric returns the embedded, strict-decoded frozen rubric fixture.
 func LoadRubric() (Rubric, error) {
 	var rubric Rubric
@@ -319,13 +282,4 @@ func cloneQuestion(question Question) Question {
 	clone.Options = append([]ChoiceOption(nil), question.Options...)
 	clone.Levels = append([]ScoreLevel(nil), question.Levels...)
 	return clone
-}
-
-func questionFor(set QuestionSet, id string) (Question, bool) {
-	for _, question := range set.Questions {
-		if question.ID == id {
-			return question, true
-		}
-	}
-	return Question{}, false
 }

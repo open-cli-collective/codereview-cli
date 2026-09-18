@@ -747,9 +747,10 @@ func findingLocation(finding review.Finding) *Location {
 		return nil
 	}
 	side := ""
-	if finding.Anchor.Side == review.DiffSideLeft {
+	switch finding.Anchor.Side {
+	case review.DiffSideLeft:
 		side = "base"
-	} else if finding.Anchor.Side == review.DiffSideRight {
+	case review.DiffSideRight:
 		side = "head"
 	}
 	if side == "" {
@@ -775,10 +776,13 @@ func repositoryID(pr gitprovider.PR) string {
 
 func prSourceRef(pr gitprovider.PR, kind SourceKind) SourceRef {
 	value := ""
-	if kind == SourcePRTitle {
+	switch kind {
+	case SourcePRTitle:
 		value = pr.Title
-	} else if kind == SourcePRBody {
+	case SourcePRBody:
 		value = pr.Body
+	case SourceWorkItem, SourceRepositoryFile, SourceDiff, SourceTestResult, SourceReviewMetadata, SourceHumanScope:
+		// These source kinds do not carry pull-request title or body text.
 	}
 	return SourceRef{SourceID: prID(pr) + ":" + string(kind), Kind: kind, Revision: optionalString(pr.Head.SHA), Digest: DigestBytes([]byte(value))}
 }
@@ -841,13 +845,13 @@ func optionalString(value string) *string {
 	if value == "" {
 		return nil
 	}
-	copy := value
-	return &copy
+	clone := value
+	return &clone
 }
 
 func stringPtr(value string) *string {
-	copy := value
-	return &copy
+	clone := value
+	return &clone
 }
 
 func cloneChanges(changes []Change) []Change {

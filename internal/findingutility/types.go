@@ -15,6 +15,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
+// StateSchemaVersion and related values identify the frozen contract schemas.
 const (
 	StateSchemaVersion     = "cr-finding-state-v1"
 	RubricVersion          = "cr-finding-utility-v1"
@@ -38,6 +39,7 @@ type Digest string
 // Disposition is the policy output.  Advisory v1 never applies a suppression.
 type Disposition string
 
+// DispositionKeep and related values identify policy dispositions.
 const (
 	DispositionKeep                   Disposition = "keep"
 	DispositionAbstain                Disposition = "abstain"
@@ -46,6 +48,7 @@ const (
 	DispositionSuppressDuplicate      Disposition = "suppress_duplicate"
 )
 
+// Valid reports whether d is a supported disposition.
 func (d Disposition) Valid() bool {
 	switch d {
 	case DispositionKeep, DispositionAbstain, DispositionSuppressLowValue,
@@ -59,6 +62,7 @@ func (d Disposition) Valid() bool {
 // NoulID identifies one atomic probability question.
 type NoulID string
 
+// NoulGroundedInEvidence and related values identify the frozen Noul questions.
 const (
 	NoulGroundedInEvidence             NoulID = "grounded_in_evidence"
 	NoulIntroducedOrMateriallyAffected NoulID = "introduced_or_materially_affected"
@@ -96,19 +100,23 @@ func (id NoulID) String() string { return string(id) }
 // AllNoulIDs returns the frozen v1 order.
 func AllNoulIDs() []NoulID { return append([]NoulID(nil), allNoulIDs...) }
 
+// QuestionType identifies the evaluator question shape.
 type QuestionType string
 
+// QuestionTypeNoul and related values identify supported question shapes.
 const (
 	QuestionTypeNoul   QuestionType = "noul"
 	QuestionTypeChoice QuestionType = "choice"
 	QuestionTypeScore  QuestionType = "score"
 )
 
+// ChoiceOption describes one selectable answer option.
 type ChoiceOption struct {
 	Key      string `json:"key"`
 	Criteria string `json:"criteria"`
 }
 
+// ScoreLevel describes one position in a score question.
 type ScoreLevel struct {
 	Position    int    `json:"position"`
 	Label       string `json:"label"`
@@ -125,6 +133,7 @@ type Question struct {
 	Levels       []ScoreLevel      `json:"levels,omitempty"`
 }
 
+// QuestionSet is the expanded evaluator question set and its digest.
 type QuestionSet struct {
 	SchemaVersion       int               `json:"schema_version"`
 	RubricVersion       string            `json:"rubric_version"`
@@ -148,8 +157,10 @@ type Rubric struct {
 	Questions            []Question `json:"questions"`
 }
 
+// SourceKind identifies the origin of a state value.
 type SourceKind string
 
+// SourcePRTitle and related values identify supported source kinds.
 const (
 	SourcePRTitle        SourceKind = "pr_title"
 	SourcePRBody         SourceKind = "pr_body"
@@ -161,6 +172,7 @@ const (
 	SourceHumanScope     SourceKind = "human_scope_statement"
 )
 
+// SourceRef identifies the source and revision behind a state value.
 type SourceRef struct {
 	SourceID string     `json:"source_id"`
 	Kind     SourceKind `json:"kind"`
@@ -169,6 +181,7 @@ type SourceRef struct {
 	URI      *string    `json:"uri"`
 }
 
+// Location identifies a source file range.
 type Location struct {
 	Path      string `json:"path"`
 	Side      string `json:"side"`
@@ -176,6 +189,7 @@ type Location struct {
 	LineEnd   int    `json:"line_end"`
 }
 
+// FindingState is the normalized finding presented to an evaluator.
 type FindingState struct {
 	ID                  string    `json:"id"`
 	SourceOrdinal       int       `json:"source_ordinal"`
@@ -189,6 +203,7 @@ type FindingState struct {
 	EvidenceIDs         []string  `json:"evidence_ids"`
 }
 
+// Intent describes the requested change and its explicit non-goals.
 type Intent struct {
 	Text             *string          `json:"text"`
 	SourceRefs       []SourceRef      `json:"source_refs"`
@@ -196,11 +211,13 @@ type Intent struct {
 	Unresolved       []string         `json:"unresolved"`
 }
 
+// ScopeStatement records one scoped statement and its source.
 type ScopeStatement struct {
 	Text      string    `json:"text"`
 	SourceRef SourceRef `json:"source_ref"`
 }
 
+// Change describes one pull-request change and its evidence links.
 type Change struct {
 	ID          string    `json:"id"`
 	OldPath     *string   `json:"old_path"`
@@ -212,6 +229,7 @@ type Change struct {
 	Complete    bool      `json:"complete"`
 }
 
+// PullRequestState is the normalized pull-request context.
 type PullRequestState struct {
 	ID           string   `json:"id"`
 	RepositoryID string   `json:"repository_id"`
@@ -222,16 +240,20 @@ type PullRequestState struct {
 	Changes      []Change `json:"changes"`
 }
 
+// EvidenceAvailability describes whether a piece of evidence is available.
 type EvidenceAvailability string
 
+// EvidencePresent and related values identify evidence availability states.
 const (
 	EvidencePresent EvidenceAvailability = "present"
 	EvidenceMissing EvidenceAvailability = "missing"
 	EvidenceOmitted EvidenceAvailability = "omitted"
 )
 
+// EvidenceKind identifies the form of an evidence item.
 type EvidenceKind string
 
+// EvidenceCode and related values identify supported evidence kinds.
 const (
 	EvidenceCode          EvidenceKind = "code"
 	EvidenceDiff          EvidenceKind = "diff"
@@ -242,6 +264,7 @@ const (
 	EvidenceDocumentation EvidenceKind = "documentation"
 )
 
+// EvidenceItem is one bounded piece of evaluator evidence.
 type EvidenceItem struct {
 	ID            string               `json:"id"`
 	Kind          EvidenceKind         `json:"kind"`
@@ -252,8 +275,10 @@ type EvidenceItem struct {
 	LimitationIDs []string             `json:"limitation_ids"`
 }
 
+// EvidenceRelationKind identifies a relationship between evidence items.
 type EvidenceRelationKind string
 
+// RelationCalls and related values identify supported evidence relationships.
 const (
 	RelationCalls       EvidenceRelationKind = "calls"
 	RelationImplements  EvidenceRelationKind = "implements"
@@ -263,6 +288,7 @@ const (
 	RelationSupports    EvidenceRelationKind = "supports"
 )
 
+// EvidenceRelation connects two evidence items.
 type EvidenceRelation struct {
 	FromID    string               `json:"from_id"`
 	ToID      string               `json:"to_id"`
@@ -270,11 +296,13 @@ type EvidenceRelation struct {
 	SourceRef SourceRef            `json:"source_ref"`
 }
 
+// EvidenceState contains the evidence items and their relations.
 type EvidenceState struct {
 	Items     []EvidenceItem     `json:"items"`
 	Relations []EvidenceRelation `json:"relations"`
 }
 
+// RelatedFinding is a candidate representative for another finding.
 type RelatedFinding struct {
 	ID                  string    `json:"id"`
 	SourceOrdinal       int       `json:"source_ordinal"`
@@ -288,6 +316,7 @@ type RelatedFinding struct {
 	EvidenceIDs         []string  `json:"evidence_ids"`
 }
 
+// RelatedFindingsState contains the ordered representative candidates.
 type RelatedFindingsState struct {
 	CandidateSetID      string           `json:"candidate_set_id"`
 	ConstructionVersion string           `json:"construction_version"`
@@ -296,6 +325,7 @@ type RelatedFindingsState struct {
 	Items               []RelatedFinding `json:"items"`
 }
 
+// PolicyState records the policy rules bound into evaluator state.
 type PolicyState struct {
 	StateSchemaVersion   string   `json:"state_schema_version"`
 	RubricVersion        string   `json:"rubric_version"`
@@ -306,8 +336,10 @@ type PolicyState struct {
 	UntrustedContentRule string   `json:"untrusted_content_rule"`
 }
 
+// LimitationCode identifies why evaluator context is limited.
 type LimitationCode string
 
+// LimitationMissingIntent and related values identify limitation codes.
 const (
 	LimitationMissingIntent          LimitationCode = "missing_intent"
 	LimitationMissingSource          LimitationCode = "missing_source"
@@ -320,14 +352,17 @@ const (
 	LimitationOther                  LimitationCode = "other"
 )
 
+// LimitationImpact describes the effect of a limitation on policy decisions.
 type LimitationImpact string
 
+// ImpactDecisionRelevant and related values identify limitation impacts.
 const (
 	ImpactDecisionRelevant LimitationImpact = "decision_relevant"
 	ImpactIrrelevant       LimitationImpact = "irrelevant"
 	ImpactUnknown          LimitationImpact = "unknown"
 )
 
+// Limitation describes one bounded input limitation.
 type Limitation struct {
 	ID            string           `json:"id"`
 	Code          LimitationCode   `json:"code"`
@@ -337,14 +372,17 @@ type Limitation struct {
 	ImpactSource  *SourceRef       `json:"impact_source"`
 }
 
+// Freshness describes the recency of supplied context.
 type Freshness string
 
+// FreshnessCurrent and related values identify context freshness states.
 const (
 	FreshnessCurrent Freshness = "current"
 	FreshnessStale   Freshness = "stale"
 	FreshnessUnknown Freshness = "unknown"
 )
 
+// InputLimitations summarizes limitations on evaluator input.
 type InputLimitations struct {
 	Items           []Limitation `json:"items"`
 	SourceComplete  bool         `json:"source_complete"`
@@ -363,6 +401,7 @@ type State struct {
 	InputLimitations InputLimitations     `json:"input_limitations"`
 }
 
+// FindingSource identifies the reviewer output that produced a finding.
 type FindingSource struct {
 	FindingID       review.FindingID `json:"finding_id"`
 	ReviewerID      string           `json:"reviewer_id"`
@@ -372,6 +411,7 @@ type FindingSource struct {
 	OutputDigest    string           `json:"output_digest"`
 }
 
+// ChangeSource identifies one source diff and its completeness.
 type ChangeSource struct {
 	ID       string `json:"id"`
 	OldPath  string `json:"old_path"`
@@ -381,6 +421,7 @@ type ChangeSource struct {
 	Complete bool   `json:"complete"`
 }
 
+// SourceArtifact contains an exact source file payload and digest.
 type SourceArtifact struct {
 	ID           string `json:"id"`
 	RelativePath string `json:"relative_path"`
@@ -388,6 +429,7 @@ type SourceArtifact struct {
 	Bytes        []byte `json:"bytes"`
 }
 
+// Snapshot is the immutable input bundle for one advisory run.
 type Snapshot struct {
 	RunID           string           `json:"run_id"`
 	PR              gitprovider.PR   `json:"pr"`
@@ -398,8 +440,10 @@ type Snapshot struct {
 	ArtifactRoot    string           `json:"artifact_root"`
 }
 
+// ProtectedDomain identifies a domain that must not be suppressed casually.
 type ProtectedDomain string
 
+// ProtectedSecurity and related values identify protected domains.
 const (
 	ProtectedSecurity      ProtectedDomain = "security"
 	ProtectedCorrectness   ProtectedDomain = "correctness"
@@ -409,14 +453,17 @@ const (
 	ProtectedOperational   ProtectedDomain = "operational"
 )
 
+// ProtectionStatus describes the protection evidence available for a finding.
 type ProtectionStatus string
 
+// ProtectionProtected and related values identify protection states.
 const (
 	ProtectionProtected      ProtectionStatus = "protected"
 	ProtectionNotEstablished ProtectionStatus = "not_established"
 	ProtectionUnknown        ProtectionStatus = "unknown"
 )
 
+// ProtectionEvidence records evidence for a protected domain.
 type ProtectionEvidence struct {
 	Domain       ProtectedDomain `json:"domain"`
 	SourceKind   string          `json:"source_kind"`
@@ -425,28 +472,34 @@ type ProtectionEvidence struct {
 	Detail       string          `json:"detail"`
 }
 
+// Protection summarizes protected domains and supporting evidence.
 type Protection struct {
 	Status   ProtectionStatus     `json:"status"`
 	Domains  []ProtectedDomain    `json:"domains"`
 	Evidence []ProtectionEvidence `json:"evidence"`
 }
 
+// AuthorityKind identifies the source of an eligibility authority.
 type AuthorityKind string
 
+// AuthorityHumanAttestation and related values identify authority kinds.
 const (
 	AuthorityHumanAttestation      AuthorityKind = "human_attestation"
 	AuthorityApprovedDeterministic AuthorityKind = "approved_deterministic_rule"
 	AuthorityNone                  AuthorityKind = "none"
 )
 
+// EligibilityStatus describes whether a finding may be evaluated.
 type EligibilityStatus string
 
+// EligibilityEligible and related values identify eligibility states.
 const (
 	EligibilityEligible   EligibilityStatus = "eligible"
 	EligibilityIneligible EligibilityStatus = "ineligible"
 	EligibilityUnknown    EligibilityStatus = "unknown"
 )
 
+// Eligibility records the authority and digests supporting evaluation.
 type Eligibility struct {
 	Status             EligibilityStatus `json:"status"`
 	AuthorityKind      AuthorityKind     `json:"authority_kind"`
@@ -458,14 +511,17 @@ type Eligibility struct {
 	ApprovedAt         *time.Time        `json:"approved_at"`
 }
 
+// VendorDataClass identifies the data class sent to a vendor.
 type VendorDataClass string
 
+// DataClassPublic and related values identify vendor data classes.
 const (
 	DataClassPublic    VendorDataClass = "public"
 	DataClassSynthetic VendorDataClass = "synthetic"
 	DataClassPrivate   VendorDataClass = "private"
 )
 
+// VendorPermission records whether a vendor may receive the data class.
 type VendorPermission struct {
 	DataClass        VendorDataClass `json:"data_class"`
 	PermissionID     *string         `json:"permission_id"`
@@ -473,6 +529,7 @@ type VendorPermission struct {
 	Permitted        bool            `json:"permitted"`
 }
 
+// Execution records model and deadline constraints for evaluation.
 type Execution struct {
 	RequestedModel        *string    `json:"requested_model"`
 	AllowedResolvedModels []string   `json:"allowed_resolved_models"`
@@ -482,6 +539,7 @@ type Execution struct {
 	StartedAt             *time.Time `json:"started_at"`
 }
 
+// BoundProfile contains the limits and identity bound to evaluator state.
 type BoundProfile struct {
 	ID                     string `json:"id"`
 	Digest                 Digest `json:"digest"`
@@ -497,6 +555,7 @@ type BoundProfile struct {
 	SelectionRuleDigest    Digest `json:"selection_rule_digest"`
 }
 
+// DevelopmentProfile is the checked-in synthetic evaluator profile.
 type DevelopmentProfile struct {
 	SchemaVersion          int              `json:"schema_version"`
 	ProfileID              string           `json:"profile_id"`
@@ -517,11 +576,13 @@ type DevelopmentProfile struct {
 	AllowedResolvedModels  []string         `json:"allowed_resolved_models"`
 }
 
+// NumericTolerance bounds accepted evaluator probability and score values.
 type NumericTolerance struct {
 	ProbabilitySum float64 `json:"probability_sum"`
 	ScoreMean      float64 `json:"score_mean"`
 }
 
+// NoulBand contains retain and suppress thresholds for one Noul.
 type NoulBand struct {
 	FalseRetain   float64                 `json:"false_retain"`
 	TrueRetain    float64                 `json:"true_retain"`
@@ -529,16 +590,19 @@ type NoulBand struct {
 	TrueSuppress  map[Disposition]float64 `json:"true_suppress"`
 }
 
+// ChoiceGate contains confidence thresholds for one choice.
 type ChoiceGate struct {
 	Confidence          float64 `json:"confidence"`
 	SelectedProbability float64 `json:"selected_probability"`
 }
 
+// ChoiceGates contains primary and duplicate choice thresholds.
 type ChoiceGates struct {
 	Primary                 PrimaryChoiceGates   `json:"primary"`
 	DuplicateRepresentative DuplicateChoiceGates `json:"duplicate_representative"`
 }
 
+// PrimaryChoiceGates contains thresholds for primary utility choices.
 type PrimaryChoiceGates struct {
 	Retain         ChoiceGate `json:"retain"`
 	LowValue       ChoiceGate `json:"low_value"`
@@ -546,11 +610,13 @@ type PrimaryChoiceGates struct {
 	Duplicate      ChoiceGate `json:"duplicate"`
 }
 
+// DuplicateChoiceGates contains thresholds for duplicate choices.
 type DuplicateChoiceGates struct {
 	Retain   ChoiceGate `json:"retain"`
 	Suppress ChoiceGate `json:"suppress"`
 }
 
+// ScoreGate contains thresholds for utility score decisions.
 type ScoreGate struct {
 	ConfidenceRetain   float64 `json:"confidence_retain"`
 	ConfidenceSuppress float64 `json:"confidence_suppress"`
@@ -558,10 +624,12 @@ type ScoreGate struct {
 	HighMassRetain     float64 `json:"high_mass_retain"`
 }
 
+// StabilityParameters configures repeated-evaluation stability checks.
 type StabilityParameters struct {
 	Required bool `json:"required"`
 }
 
+// ThresholdSet is the calibrated policy threshold set.
 type ThresholdSet struct {
 	ID                        string              `json:"id"`
 	Version                   string              `json:"version"`
@@ -584,14 +652,17 @@ type ThresholdSet struct {
 	TestOnly                  bool                `json:"test_only"`
 }
 
+// AnswerStatus describes the presence and validity of an answer.
 type AnswerStatus string
 
+// AnswerStatusPresent and related values identify answer states.
 const (
 	AnswerStatusPresent AnswerStatus = "present"
 	AnswerStatusMissing AnswerStatus = "missing"
 	AnswerStatusInvalid AnswerStatus = "invalid"
 )
 
+// NoulAnswer contains the probability assigned to a Noul being true.
 type NoulAnswer struct {
 	PTrue   float64 `json:"p_true"`
 	present bool
@@ -623,12 +694,14 @@ func (answer *NoulAnswer) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ChoiceAnswer contains a selected choice and its probability distribution.
 type ChoiceAnswer struct {
 	Choice        string             `json:"choice"`
 	Probabilities map[string]float64 `json:"probabilities"`
 	Confidence    float64            `json:"confidence"`
 }
 
+// ScoreAnswer contains a numeric utility score and its distribution.
 type ScoreAnswer struct {
 	Score         float64   `json:"score"`
 	Legend        []string  `json:"legend"`
@@ -636,6 +709,7 @@ type ScoreAnswer struct {
 	Confidence    float64   `json:"confidence"`
 }
 
+// Answer is one typed evaluator response.
 type Answer struct {
 	Type   QuestionType  `json:"type"`
 	Noul   *NoulAnswer   `json:"noul,omitempty"`
@@ -644,8 +718,10 @@ type Answer struct {
 	Status AnswerStatus  `json:"status,omitempty"`
 }
 
+// AnswerSet maps question IDs to typed evaluator responses.
 type AnswerSet map[string]Answer
 
+// EvaluationResponse is the strict typed response from an evaluator.
 type EvaluationResponse struct {
 	SchemaVersion  int       `json:"schema_version"`
 	RequestedModel string    `json:"requested_model"`
@@ -655,6 +731,7 @@ type EvaluationResponse struct {
 	decoded        bool
 }
 
+// UnmarshalJSON decodes an evaluator response with strict field checking.
 func (response *EvaluationResponse) UnmarshalJSON(data []byte) error {
 	type responseAlias EvaluationResponse
 	var value responseAlias
@@ -675,8 +752,10 @@ func (response *EvaluationResponse) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ReasonResult describes the result of one policy rule evaluation.
 type ReasonResult string
 
+// ReasonPass and related values identify policy rule results.
 const (
 	ReasonPass         ReasonResult = "pass"
 	ReasonVeto         ReasonResult = "veto"
@@ -684,6 +763,7 @@ const (
 	ReasonNotEvaluated ReasonResult = "not_evaluated"
 )
 
+// ReasonTrace records one policy rule's inputs and result.
 type ReasonTrace struct {
 	RuleID         string         `json:"rule_id"`
 	InputPaths     []string       `json:"input_paths"`
@@ -693,13 +773,16 @@ type ReasonTrace struct {
 	Decision       *Disposition   `json:"decision"`
 }
 
+// CandidateStatus describes whether a model candidate is available.
 type CandidateStatus string
 
+// CandidateAvailable and related values identify candidate states.
 const (
 	CandidateAvailable   CandidateStatus = "available"
 	CandidateUnavailable CandidateStatus = "unavailable"
 )
 
+// Decision contains proposed and effective policy outcomes.
 type Decision struct {
 	ProposedDecision       Disposition     `json:"proposed_decision"`
 	EffectiveDecision      Disposition     `json:"effective_decision"`
@@ -709,29 +792,34 @@ type Decision struct {
 	ModelCandidateDecision *Disposition    `json:"model_candidate_decision"`
 }
 
+// EvaluatorStatus describes the evaluator lifecycle result.
 type EvaluatorStatus string
 
+// EvaluatorNotRequested and related values identify evaluator lifecycle states.
 const (
 	EvaluatorNotRequested      EvaluatorStatus = "not_requested"
 	EvaluatorSkippedPermission EvaluatorStatus = "skipped_permission"
 	EvaluatorSkippedConfig     EvaluatorStatus = "skipped_configuration"
 	EvaluatorSucceeded         EvaluatorStatus = "succeeded"
 	EvaluatorTimeout           EvaluatorStatus = "timeout"
-	EvaluatorCancelled         EvaluatorStatus = "cancelled"
+	EvaluatorCancelled         EvaluatorStatus = "cancelled" //nolint:misspell // Preserve the serialized evaluator status contract.
 	EvaluatorTransportError    EvaluatorStatus = "transport_error"
 	EvaluatorProviderError     EvaluatorStatus = "provider_error"
 	EvaluatorInvalidResponse   EvaluatorStatus = "invalid_response"
 	EvaluatorStaleResult       EvaluatorStatus = "stale_result"
 )
 
+// AuditStatus describes the persisted audit lifecycle result.
 type AuditStatus string
 
+// AuditStatusComplete and related values identify audit states.
 const (
 	AuditStatusComplete AuditStatus = "complete"
 	AuditStatusDegraded AuditStatus = "degraded"
 	AuditStatusFailed   AuditStatus = "failed"
 )
 
+// Usage records evaluator resource usage and pricing metadata.
 type Usage struct {
 	InputTokens      *int     `json:"input_tokens"`
 	OutputTokens     *int     `json:"output_tokens"`
@@ -743,6 +831,7 @@ type Usage struct {
 	PricingVersion   *string  `json:"pricing_version"`
 }
 
+// Latency records the elapsed stages of evaluator execution.
 type Latency struct {
 	QueueMS    *int64 `json:"queue_ms"`
 	ProviderMS *int64 `json:"provider_ms"`
@@ -751,12 +840,14 @@ type Latency struct {
 	DeadlineMS *int   `json:"deadline_ms"`
 }
 
+// RawResponseArtifact identifies the persisted raw evaluator response.
 type RawResponseArtifact struct {
 	RelativePath string `json:"relative_path"`
 	Digest       Digest `json:"digest"`
 	Bytes        int64  `json:"bytes"`
 }
 
+// EvaluationRecord is the durable per-finding evaluation and audit record.
 type EvaluationRecord struct {
 	RecordSchemaVersion        int                  `json:"record_schema_version"`
 	RecordID                   string               `json:"record_id"`
@@ -809,6 +900,7 @@ type EvaluationRecord struct {
 	ResultFingerprint          Digest               `json:"result_fingerprint"`
 }
 
+// StabilityReceipt records the result of repeated-evaluation checks.
 type StabilityReceipt struct {
 	Digest           Digest `json:"digest"`
 	Successful       bool   `json:"successful"`
@@ -816,6 +908,7 @@ type StabilityReceipt struct {
 	Unstable         bool   `json:"unstable"`
 }
 
+// Control contains the identities and gates controlling one finding evaluation.
 type Control struct {
 	RunID                string            `json:"run_id"`
 	TaskID               string            `json:"task_id"`
@@ -849,8 +942,10 @@ type Control struct {
 	QuestionSet          *QuestionSet      `json:"-"`
 }
 
+// AdapterFactory constructs an evaluator adapter for one invocation.
 type AdapterFactory func(Invocation) (llm.Adapter, error)
 
+// Invocation contains the request and identity passed to an evaluator adapter.
 type Invocation struct {
 	Version                string            `json:"version"`
 	Request                EvaluationRequest `json:"request"`
@@ -861,6 +956,7 @@ type Invocation struct {
 	DataClass              VendorDataClass   `json:"data_class"`
 }
 
+// EvaluationRequest is the provider-neutral evaluator request.
 type EvaluationRequest struct {
 	ProtocolVersion string      `json:"protocol_version"`
 	Model           string      `json:"model"`
@@ -868,12 +964,14 @@ type EvaluationRequest struct {
 	Questions       QuestionSet `json:"questions"`
 }
 
+// Warning describes a non-fatal advisory-run condition.
 type Warning struct {
 	Code      string           `json:"code"`
 	FindingID review.FindingID `json:"finding_id"`
 	Message   string           `json:"message"`
 }
 
+// Options configures one advisory utility run.
 type Options struct {
 	Profile      DevelopmentProfile
 	NewAdapter   AdapterFactory
@@ -883,6 +981,7 @@ type Options struct {
 	Warn         func(Warning)
 }
 
+// Outcome contains the advisory run's audit result and warnings.
 type Outcome struct {
 	AuditPath   string             `json:"audit_path"`
 	AuditStatus AuditStatus        `json:"audit_status"`
@@ -890,12 +989,14 @@ type Outcome struct {
 	Warnings    []Warning          `json:"warnings"`
 }
 
+// AuditFile identifies one file in a committed audit bundle.
 type AuditFile struct {
 	RelativePath string `json:"relative_path"`
 	Digest       Digest `json:"digest"`
 	Bytes        int64  `json:"bytes"`
 }
 
+// Manifest identifies the committed audit bundle and its files.
 type Manifest struct {
 	SchemaVersion       int         `json:"schema_version"`
 	Mode                string      `json:"mode"`
@@ -913,6 +1014,7 @@ type Manifest struct {
 	FixtureOnly         bool        `json:"fixture_only"`
 }
 
+// VerificationInputs supplies independent identity for audit verification.
 type VerificationInputs struct {
 	Snapshot             Snapshot
 	Files                map[string][]byte
@@ -921,6 +1023,7 @@ type VerificationInputs struct {
 	ExpectedCohortDigest string
 }
 
+// AuditBundle contains the inputs and records to commit as an audit.
 type AuditBundle struct {
 	Snapshot          Snapshot
 	Manifest          Manifest

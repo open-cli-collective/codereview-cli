@@ -79,6 +79,8 @@ func validateNoCallRecord(record EvaluationRecord, runID string) error {
 	}
 	switch record.EvaluatorStatus {
 	case "", EvaluatorNotRequested, EvaluatorSkippedPermission, EvaluatorSkippedConfig:
+	case EvaluatorSucceeded, EvaluatorTimeout, EvaluatorCancelled, EvaluatorTransportError, EvaluatorProviderError, EvaluatorInvalidResponse, EvaluatorStaleResult:
+		return fmt.Errorf("evaluated records are not supported by this audit writer")
 	default:
 		return fmt.Errorf("evaluated records are not supported by this audit writer")
 	}

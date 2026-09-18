@@ -382,17 +382,23 @@ func canonicalTypedValue(value reflect.Value) (any, error) {
 			object[name] = item
 		}
 		return object, nil
+	case reflect.Invalid, reflect.Complex64, reflect.Complex128, reflect.Chan, reflect.Func, reflect.Interface, reflect.Pointer, reflect.UnsafePointer:
+		return canonicalTypedFallback(value)
 	default:
-		data, err := marshalJSONNoHTML(value.Interface())
-		if err != nil {
-			return nil, err
-		}
-		canonical, err := CanonicalizeJSON(data)
-		if err != nil {
-			return nil, err
-		}
-		return canonicalRawJSON(canonical), nil
+		return canonicalTypedFallback(value)
 	}
+}
+
+func canonicalTypedFallback(value reflect.Value) (any, error) {
+	data, err := marshalJSONNoHTML(value.Interface())
+	if err != nil {
+		return nil, err
+	}
+	canonical, err := CanonicalizeJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return canonicalRawJSON(canonical), nil
 }
 
 func formatTypedFloat(value float64, bitSize int) string {
@@ -413,6 +419,8 @@ func canonicalMapKey(key reflect.Value) (string, error) {
 		return strconv.FormatInt(key.Int(), 10), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return strconv.FormatUint(key.Uint(), 10), nil
+	case reflect.Invalid, reflect.Bool, reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.Array, reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.Struct, reflect.UnsafePointer:
+		return "", fmt.Errorf("findingutility: unsupported map key type %s", key.Type())
 	default:
 		return "", fmt.Errorf("findingutility: unsupported map key type %s", key.Type())
 	}
@@ -450,6 +458,8 @@ func isEmptyJSONValue(value reflect.Value) bool {
 		return value.Float() == 0
 	case reflect.Interface, reflect.Pointer:
 		return value.IsNil()
+	case reflect.Invalid, reflect.Complex64, reflect.Complex128, reflect.Chan, reflect.Func, reflect.Struct, reflect.UnsafePointer:
+		return false
 	}
 	return false
 }
@@ -638,6 +648,8 @@ func validateFinite(value reflect.Value, path string) error {
 				return err
 			}
 		}
+	case reflect.Invalid, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr, reflect.Complex64, reflect.Complex128, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		// These kinds do not contain recursively inspectable values.
 	}
 	return nil
 }

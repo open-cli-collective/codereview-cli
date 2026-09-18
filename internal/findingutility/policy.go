@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// ReasonInvalidState and the other reason codes identify policy outcomes.
 const (
 	ReasonInvalidState                   = "invalid_state"
 	ReasonStaleInput                     = "stale_input"
@@ -635,7 +636,7 @@ func duplicateRepresentative(control Control, answers AnswerSet, thresholds Thre
 	return ""
 }
 
-func nonDuplicateRepresentativeGuard(control Control, answers AnswerSet, thresholds ThresholdSet) string {
+func nonDuplicateRepresentativeGuard(_ Control, answers AnswerSet, thresholds ThresholdSet) string {
 	answer, ok := answers[duplicateRepresentativeID]
 	if !ok || answer.Choice == nil {
 		return ReasonInvalidResponse
@@ -655,7 +656,7 @@ func nonDuplicateRepresentativeGuard(control Control, answers AnswerSet, thresho
 	}
 }
 
-func choicePassesGate(answer *ChoiceAnswer, questions QuestionSet, id string, thresholds ThresholdSet, choice string) bool {
+func choicePassesGate(answer *ChoiceAnswer, _ QuestionSet, id string, thresholds ThresholdSet, choice string) bool {
 	if id == duplicateRepresentativeID {
 		gate := thresholds.ChoiceGates.DuplicateRepresentative.Suppress
 		if choice == "none" || choice == choiceInsufficientContext {
@@ -696,7 +697,7 @@ func choicePassesGateWithGate(answer *ChoiceAnswer, gate ChoiceGate, choice stri
 	return true
 }
 
-func hasProtectionNoulSignal(control Control, answers AnswerSet, thresholds ThresholdSet) bool {
+func hasProtectionNoulSignal(_ Control, answers AnswerSet, thresholds ThresholdSet) bool {
 	protected := []NoulID{NoulPossibleSecurityRisk, NoulPossibleCorrectnessRisk, NoulPossibleAuthorizationRisk, NoulPossiblePrivacyRisk, NoulPossibleDataLossRisk, NoulPossibleOperationalRisk}
 	for _, id := range protected {
 		answer := answers[id.String()]
@@ -816,6 +817,8 @@ func evaluatorReason(status EvaluatorStatus) string {
 		return ReasonInputNotPermitted
 	case EvaluatorSkippedConfig:
 		return ReasonUncalibratedPolicy
+	case EvaluatorNotRequested, EvaluatorSucceeded, EvaluatorTimeout, EvaluatorCancelled, EvaluatorTransportError, EvaluatorProviderError:
+		return ReasonEvaluatorFailure
 	default:
 		return ReasonEvaluatorFailure
 	}

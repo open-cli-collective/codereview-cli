@@ -42,13 +42,13 @@ func TestWriteAndVerifyAuditPreservesRawAndEffectiveProjection(t *testing.T) {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 	cohortDir := filepath.Join(root, string(cohortDigest)[len("sha256:"):])
-	manifestBytes, err := os.ReadFile(filepath.Join(cohortDir, artifactManifestFile))
+	manifestBytes, err := os.ReadFile(filepath.Join(cohortDir, artifactManifestFile)) //nolint:gosec // cohortDir is rooted in t.TempDir.
 	if err != nil {
 		t.Fatal(err)
 	}
 	files := map[string][]byte{}
 	for _, file := range manifest.Files {
-		content, err := os.ReadFile(filepath.Join(cohortDir, file.RelativePath))
+		content, err := os.ReadFile(filepath.Join(cohortDir, file.RelativePath)) //nolint:gosec // manifest paths are written by the test fixture.
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -193,13 +193,13 @@ func TestVerifyArtifactRequiresExpectedProfileAndReconstructedIdentity(t *testin
 		t.Fatal(err)
 	}
 	cohortDir := filepath.Join(root, string(cohort)[len("sha256:"):])
-	manifestBytes, err := os.ReadFile(filepath.Join(cohortDir, artifactManifestFile))
+	manifestBytes, err := os.ReadFile(filepath.Join(cohortDir, artifactManifestFile)) //nolint:gosec // cohortDir is rooted in t.TempDir.
 	if err != nil {
 		t.Fatal(err)
 	}
 	files := make(map[string][]byte, len(manifest.Files))
 	for _, file := range manifest.Files {
-		files[file.RelativePath], err = os.ReadFile(filepath.Join(cohortDir, file.RelativePath))
+		files[file.RelativePath], err = os.ReadFile(filepath.Join(cohortDir, file.RelativePath)) //nolint:gosec // manifest paths are written by the test fixture.
 		if err != nil {
 			t.Fatal(err)
 		}

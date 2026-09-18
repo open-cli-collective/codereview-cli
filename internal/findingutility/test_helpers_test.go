@@ -32,7 +32,7 @@ func testSnapshot() Snapshot {
 }
 
 func testBoundProfile() BoundProfile {
-	return BoundProfile{
+	return BoundProfile{ //nolint:gosec // all values are synthetic test-fixture metadata.
 		ID:                     FixtureProfileID,
 		MaxStateBytes:          49152,
 		MaxRequestTokens:       65536,
