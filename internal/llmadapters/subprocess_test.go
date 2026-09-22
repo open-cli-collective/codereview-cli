@@ -622,6 +622,34 @@ func TestParseClaudeBGActiveJobs(t *testing.T) {
 		}
 	})
 
+	t.Run("accepts a session listing with only interactive sessions", func(t *testing.T) {
+		payload, err := os.ReadFile(filepath.Join("testdata", "claude_agents_interactive_only.json"))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		activeJobs, err := parseClaudeBGActiveJobs(payload)
+		if err != nil {
+			t.Fatalf("parseClaudeBGActiveJobs: %v", err)
+		}
+		if len(activeJobs) != 0 {
+			t.Fatalf("activeJobs = %#v, want empty", activeJobs)
+		}
+	})
+
+	t.Run("collects background ids from a mixed session listing", func(t *testing.T) {
+		payload, err := os.ReadFile(filepath.Join("testdata", "claude_agents_mixed.json"))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		activeJobs, err := parseClaudeBGActiveJobs(payload)
+		if err != nil {
+			t.Fatalf("parseClaudeBGActiveJobs: %v", err)
+		}
+		if len(activeJobs) != 1 || !activeJobs["de41e310"] {
+			t.Fatalf("activeJobs = %#v, want only de41e310", activeJobs)
+		}
+	})
+
 	t.Run("allows empty arrays", func(t *testing.T) {
 		activeJobs, err := parseClaudeBGActiveJobs([]byte(`[]`))
 		if err != nil {
