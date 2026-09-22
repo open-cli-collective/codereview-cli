@@ -1817,10 +1817,28 @@ func parseClaudeBGActiveJobs(data []byte) (map[string]bool, error) {
 	}
 	activeJobs := map[string]bool{}
 	collectClaudeBGActiveJobs(jsonRoot, 0, activeJobs)
-	if len(activeJobs) == 0 && claudeBGJSONShapeNonEmpty(jsonRoot) {
+	if len(activeJobs) == 0 && claudeBGJSONShapeNonEmpty(jsonRoot) && !isClaudeSessionListing(jsonRoot) {
 		return nil, errors.New("unrecognized non-empty JSON shape")
 	}
 	return activeJobs, nil
+}
+
+// isClaudeSessionListing reports whether value is the session listing
+// `claude agents --json` prints: an array of session objects, each carrying a
+// sessionId. Only background sessions carry a job id, so a listing of
+// interactive sessions alone is a recognized shape with no active jobs.
+func isClaudeSessionListing(value any) bool {
+	sessions, ok := value.([]any)
+	if !ok || len(sessions) == 0 {
+		return false
+	}
+	for _, session := range sessions {
+		fields, ok := session.(map[string]any)
+		if !ok || claudeBGStateString(fields, "sessionId") == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func collectClaudeBGActiveJobs(value any, depth int, activeJobs map[string]bool) {
