@@ -387,14 +387,14 @@ func TestModelMapValidationAndResolution(t *testing.T) {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
 	effective := EffectiveModelMap(resolved.LLM)
-	if effective[ModelTierSmall].Model != "gpt-5.4-mini" || effective[ModelTierSmall].Source != ModelMapSourceBuiltIn {
-		t.Fatalf("small resolution = %#v, want built-in gpt-5.4-mini", effective[ModelTierSmall])
+	if effective[ModelTierSmall].Model != "gpt-6-luna" || effective[ModelTierSmall].Source != ModelMapSourceBuiltIn {
+		t.Fatalf("small resolution = %#v, want built-in gpt-6-luna", effective[ModelTierSmall])
 	}
 	if effective[ModelTierMedium].Model != "gpt-custom" || effective[ModelTierMedium].Source != ModelMapSourceConfig {
 		t.Fatalf("medium resolution = %#v, want config override", effective[ModelTierMedium])
 	}
-	if got, ok := ResolveModelTier(resolved.LLM, ModelTierLarge); !ok || got.Model != "gpt-5.5" || got.Source != ModelMapSourceBuiltIn {
-		t.Fatalf("ResolveModelTier large = %#v ok=%t, want built-in gpt-5.5", got, ok)
+	if got, ok := ResolveModelTier(resolved.LLM, ModelTierLarge); !ok || got.Model != "gpt-6-sol" || got.Source != ModelMapSourceBuiltIn {
+		t.Fatalf("ResolveModelTier large = %#v ok=%t, want built-in gpt-6-sol", got, ok)
 	}
 	if resolved.LLM.ReviewerModelTier != "" {
 		t.Fatalf("ReviewerModelTier = %q, want empty by default", resolved.LLM.ReviewerModelTier)
@@ -446,9 +446,9 @@ func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
 			provider: LLMProviderOpenAI,
 			adapter:  LLMAdapterCodexCLI,
 			want: ModelMap{
-				"small":  "gpt-5.4-mini",
-				"medium": "gpt-5.4",
-				"large":  "gpt-5.5",
+				"small":  "gpt-6-luna",
+				"medium": "gpt-6-sol",
+				"large":  "gpt-6-sol",
 			},
 		},
 		{
@@ -456,9 +456,9 @@ func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
 			provider: LLMProviderOpenAI,
 			adapter:  LLMAdapterOpenAIAPI,
 			want: ModelMap{
-				"small":  "gpt-5.4-mini",
-				"medium": "gpt-5.4",
-				"large":  "gpt-5.5",
+				"small":  "gpt-6-luna",
+				"medium": "gpt-6-sol",
+				"large":  "gpt-6-sol",
 			},
 		},
 		{
@@ -468,7 +468,7 @@ func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
 			want: ModelMap{
 				"small":  "claude-haiku-4-5",
 				"medium": "claude-sonnet-5",
-				"large":  "claude-opus-5",
+				"large":  "claude-opus-5-5",
 			},
 		},
 		{name: "anthropic api", provider: LLMProviderAnthropic, adapter: LLMAdapterAnthropicAPI, want: ModelMap{}},

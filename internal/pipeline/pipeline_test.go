@@ -3760,7 +3760,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 		FloorTier:      "large",
 		BaselineTier:   "small",
 		EffectiveTier:  "large",
-		ResolvedModel:  "claude-opus-5",
+		ResolvedModel:  "claude-opus-5-5",
 		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	}) {
