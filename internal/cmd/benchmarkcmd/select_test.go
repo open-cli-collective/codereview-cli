@@ -3,6 +3,7 @@ package benchmarkcmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/app"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -500,6 +502,67 @@ func withBenchmarkSelectSeams(
 		benchmarkNow = oldNow
 		openSelectionRuntime = oldOpener
 	})
+}
+
+func TestSelectReclaimsSelectionWorkbench(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		keepWorkbench bool
+	}{
+		{name: "reclaims by default"},
+		{name: "retains when opted out", keepWorkbench: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Data.KeepWorkbench = tc.keepWorkbench
+			cfgPath := filepath.Join(t.TempDir(), "config.yml")
+			if err := config.Save(cfgPath, cfg); err != nil {
+				t.Fatalf("config Save: %v", err)
+			}
+			cmd, _, _ := cmdtest.New(&root.Options{ConfigPath: cfgPath, Quiet: true}, Register)
+			suitePath := writeBenchmarkSuite(t, validBenchmarkSuite(t))
+			resultsDir := filepath.Join(t.TempDir(), "results")
+			var workbenchDir string
+			withBenchmarkSelectSeams(t,
+				func(_ context.Context, _ string, _ bool, _ config.File, _ config.Profile, _ gitprovider.PRRef) (app.SelectionRuntime, error) {
+					return app.SelectionRuntime{Cleanup: func() {}}, nil
+				},
+				func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+					artifacts := pipeline.ArtifactPathsFromDir(req.ArtifactDir)
+					if err := os.MkdirAll(artifacts.WorkbenchRepoDir, 0o700); err != nil {
+						t.Fatalf("MkdirAll workbench: %v", err)
+					}
+					workbenchDir = artifacts.WorkbenchDir
+					return pipeline.SelectionResult{
+						Artifacts: artifacts,
+						SelectionSession: pipeline.SelectionSession{
+							Response: llm.Response{StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[],"thread_actions":[],"reasoning":"ok"}`)},
+						},
+					}, nil
+				},
+			)
+
+			if err := root.Execute(cmd, []string{
+				"benchmark", "select", suitePath,
+				"--candidate", "first",
+				"--case", "case_one",
+				"--results-dir", resultsDir,
+				"--json",
+			}); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if workbenchDir == "" {
+				t.Fatal("selection workbench was not created")
+			}
+			if _, err := os.Stat(workbenchDir); tc.keepWorkbench {
+				if err != nil {
+					t.Fatalf("workbench missing with keep_workbench: %v", err)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("workbench stat err = %v, want reclaimed after benchmark select", err)
+			}
+		})
+	}
 }
 
 func TestSelectionReportMarkdownListsSelectedReviewers(t *testing.T) {

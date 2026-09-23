@@ -268,6 +268,14 @@ func validateOptions(opts Options) error {
 	return nil
 }
 
+// resolveOutputSchemaVersion maps an absent schema_version to the current version.
+func resolveOutputSchemaVersion(raw *int) int {
+	if raw == nil {
+		return outputSchemaVersion
+	}
+	return *raw
+}
+
 func decodeResultForThread(threadID string) llm.Decoder[Result] {
 	return func(data []byte) (Result, error) {
 		var raw resultOutput
@@ -280,8 +288,9 @@ func decodeResultForThread(threadID string) llm.Decoder[Result] {
 		if err := decoder.Decode(&extra); err != io.EOF {
 			return Result{}, fmt.Errorf("threadanalysis: decode result: trailing data is not allowed")
 		}
-		if raw.SchemaVersion != outputSchemaVersion {
-			return Result{}, fmt.Errorf("threadanalysis: schema_version = %d, want %d", raw.SchemaVersion, outputSchemaVersion)
+		version := resolveOutputSchemaVersion(raw.SchemaVersion)
+		if version != outputSchemaVersion {
+			return Result{}, fmt.Errorf("threadanalysis: schema_version = %d, want %d", version, outputSchemaVersion)
 		}
 		result := Result{
 			ThreadID:  strings.TrimSpace(raw.ThreadID),
@@ -402,7 +411,7 @@ func promptForInput(input analysisInput) (string, error) {
 	prompt := strings.Join([]string{
 		"Analyze this inline code-review discussion thread.",
 		"Return JSON only. Do not include markdown fences or prose outside JSON.",
-		"Use schema_version 1 and fields: thread_id, decision, reply_body, summary, resolve, rationale.",
+		fmt.Sprintf("Return JSON with fields: schema_version (always %d), thread_id, decision, reply_body, summary, resolve, rationale.", outputSchemaVersion),
 		"Decisions: skip, reply_only, acknowledge, clarify, concede, summarize.",
 		"Output contract:",
 		"skip: reply_body and summary must be empty; resolve must be false.",
@@ -459,7 +468,7 @@ func formatTime(value time.Time) string {
 }
 
 type resultOutput struct {
-	SchemaVersion int      `json:"schema_version"`
+	SchemaVersion *int     `json:"schema_version"`
 	ThreadID      string   `json:"thread_id"`
 	Decision      Decision `json:"decision"`
 	ReplyBody     string   `json:"reply_body"`

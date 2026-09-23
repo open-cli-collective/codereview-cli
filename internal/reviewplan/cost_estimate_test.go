@@ -8,9 +8,9 @@ import (
 func TestWriteRunFooterMarksEstimatedCost(t *testing.T) {
 	var out strings.Builder
 	cost := 1.23
-	totals := AggregateUsage{CostUSD: &cost, CostEstimated: true}
+	totals := AggregateUsage{CostUSD: &cost, CostEstimated: true, CostEstimateBasis: "anthropic-public-2026-09-02"}
 	writeRunFooter(&out, RunSummary{ToolVersion: "1.0.0"}, totals)
-	if got := out.String(); !strings.Contains(got, "~$1.23 (est.)") {
+	if got := out.String(); !strings.Contains(got, "~$1.23 (est.)") || !strings.Contains(got, "anthropic-public-2026-09-02") {
 		t.Fatalf("want estimated cost marker; got:\n%s", got)
 	}
 }

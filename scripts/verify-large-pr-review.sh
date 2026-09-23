@@ -80,6 +80,14 @@ assert_file_omits() {
   fi
 }
 
+assert_workbench_absent() {
+  local invariant="$1"
+  local path="$2"
+  if [[ -e "$path" ]]; then
+    fail "$invariant" "workbench survived a successful run: $path"
+  fi
+}
+
 json_field() {
   local json_path="$1"
   local field_path="$2"
@@ -121,6 +129,7 @@ model_facing_files() {
 
 assert_artifact_shape() {
   local artifact_dir="$1"
+  local keep_workbench="$2"
   assert_file_exists "artifact_root_exists" "$artifact_dir"
   assert_file_exists "raw_diff_exists" "$artifact_dir/diff.patch"
   assert_file_exists "dossier_exists" "$artifact_dir/dossier/index.json"
@@ -129,9 +138,13 @@ assert_artifact_shape() {
   assert_file_exists "dossier_exists" "$artifact_dir/dossier/final/change-map.md"
   assert_file_exists "dossier_exists" "$artifact_dir/dossier/final/repo-guidance.md"
   assert_file_exists "dossier_exists" "$artifact_dir/dossier/final/discussion.md"
-  assert_file_exists "workbench_exists" "$artifact_dir/workbench/metadata.json"
-  assert_file_exists "workbench_exists" "$artifact_dir/workbench/repo"
-  assert_file_exists "workbench_exists" "$artifact_dir/workbench/scratch"
+  if [[ "$keep_workbench" == "1" ]]; then
+    assert_file_exists "workbench_exists" "$artifact_dir/workbench/metadata.json"
+    assert_file_exists "workbench_exists" "$artifact_dir/workbench/repo"
+    assert_file_exists "workbench_exists" "$artifact_dir/workbench/scratch"
+  else
+    assert_workbench_absent "workbench_absent" "$artifact_dir/workbench"
+  fi
 }
 
 assert_context_artifacts() {
@@ -164,9 +177,12 @@ assert_context_artifacts() {
 assert_sentinel_source() {
   local artifact_dir="$1"
   local sentinel="$2"
+  local keep_workbench="$3"
   [[ -n "$sentinel" ]] || fail "sentinel_source_exists" "no source sentinel supplied or derived"
   assert_file_contains "sentinel_source_exists" "$artifact_dir/diff.patch" "$sentinel"
-  grep -R -F -- "$sentinel" "$artifact_dir/workbench/repo" >/dev/null || fail "sentinel_source_exists" "workbench repo does not contain expected sentinel"
+  if [[ "$keep_workbench" == "1" ]]; then
+    grep -R -F -- "$sentinel" "$artifact_dir/workbench/repo" >/dev/null || fail "sentinel_source_exists" "workbench repo does not contain expected sentinel"
+  fi
 }
 
 github_pr_parts() {
@@ -261,13 +277,16 @@ run_review() {
   local cr_bin="$3"
   local stdout_path="$4"
   local stderr_path="$5"
+  local keep_workbench="${6:-0}"
   local timeout_seconds="${CR_LARGE_PR_REVIEW_TIMEOUT_SECONDS:-$default_review_timeout_seconds}"
   local interval_seconds=5
   local elapsed_seconds=0
   local pid
 
   note "Running ${label} dry-run review against ${target}"
-  "$cr_bin" review "$target" --no-post --json >"$stdout_path" 2>"$stderr_path" &
+  local -a review_args=(review "$target" --no-post --json)
+  [[ "$keep_workbench" == "1" ]] && review_args+=(--keep-workbench)
+  "$cr_bin" "${review_args[@]}" >"$stdout_path" 2>"$stderr_path" &
   pid=$!
   while kill -0 "$pid" >/dev/null 2>&1; do
     if (( elapsed_seconds >= timeout_seconds )); then
@@ -327,9 +346,13 @@ run_self_test() {
   printf '[]\n' >"$artifact_dir/findings.json"
   printf 'No findings.\n' >"$artifact_dir/rollup.md"
 
-  assert_artifact_shape "$artifact_dir"
-  assert_sentinel_source "$artifact_dir" "$sentinel"
+  assert_artifact_shape "$artifact_dir" 1
+  assert_sentinel_source "$artifact_dir" "$sentinel" 1
   assert_context_artifacts "$artifact_dir" "$sentinel" "$default_max_context_bytes"
+
+  # teardown contract: without --keep-workbench the workbench is removed after success
+  rm -rf "$artifact_dir/workbench"
+  assert_artifact_shape "$artifact_dir" 0
 
   printf '%s\n' "$sentinel" >>"$artifact_dir/agent-logs/orchestrator-selection.jsonl"
   set +e
@@ -458,20 +481,20 @@ run_real() {
   after_posts="$tmp/run/after-posts.txt"
 
   github_post_snapshot "$target" "$before_posts"
-  XDG_DATA_HOME="$tmp/data-home" XDG_CACHE_HOME="$tmp/cache-home" run_review "first" "$target" "$cr_bin" "$first_stdout" "$first_stderr"
+  XDG_DATA_HOME="$tmp/data-home" XDG_CACHE_HOME="$tmp/cache-home" run_review "first" "$target" "$cr_bin" "$first_stdout" "$first_stderr" 1
   first_artifacts="$(json_field "$first_stdout" "run.artifact_path")"
-  assert_artifact_shape "$first_artifacts"
+  assert_artifact_shape "$first_artifacts" 1
 
   if [[ -z "$sentinel" ]]; then
     sentinel="$(derive_sentinel "$first_artifacts/diff.patch")"
   fi
-  assert_sentinel_source "$first_artifacts" "$sentinel"
+  assert_sentinel_source "$first_artifacts" "$sentinel" 1
   assert_context_artifacts "$first_artifacts" "$sentinel" "$max_bytes"
 
-  XDG_DATA_HOME="$tmp/data-home" XDG_CACHE_HOME="$tmp/cache-home" run_review "second" "$target" "$cr_bin" "$second_stdout" "$second_stderr"
+  XDG_DATA_HOME="$tmp/data-home" XDG_CACHE_HOME="$tmp/cache-home" run_review "second" "$target" "$cr_bin" "$second_stdout" "$second_stderr" 0
   second_artifacts="$(json_field "$second_stdout" "run.artifact_path")"
-  assert_artifact_shape "$second_artifacts"
-  assert_sentinel_source "$second_artifacts" "$sentinel"
+  assert_artifact_shape "$second_artifacts" 0
+  assert_sentinel_source "$second_artifacts" "$sentinel" 0
   assert_context_artifacts "$second_artifacts" "$sentinel" "$max_bytes"
   assert_breadcrumbs "$first_stderr" "$second_stderr"
   github_post_snapshot "$target" "$after_posts"

@@ -85,6 +85,7 @@ type commandFlags struct {
 	allowSelfReview   bool
 	allowSelfApprove  bool
 	noResolveThreads  bool
+	keepWorkbench     bool
 }
 
 // Register attaches the review command to rootCmd.
@@ -128,6 +129,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.allowSelfReview, "allow-self-review", false, "Allow reviewer credentials matching the PR author")
 	cmd.Flags().BoolVar(&flags.allowSelfApprove, "allow-self-approve", false, "Allow approval when posting identity is the PR author")
 	cmd.Flags().BoolVar(&flags.noResolveThreads, "no-resolve-threads", false, "Do not plan thread-resolution actions")
+	cmd.Flags().BoolVar(&flags.keepWorkbench, "keep-workbench", false, "Keep the run workbench checkout instead of deleting it after a successful review")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -288,6 +290,10 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if reviewerFast && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("fast mode cannot be used with --retry-posts"))
 	}
+	keepWorkbench := cfg.Data.KeepWorkbench
+	if cmd.Flags().Changed("keep-workbench") {
+		keepWorkbench = flags.keepWorkbench
+	}
 
 	runtimeReq := app.OpenRequest{
 		Config:                            cfg,
@@ -305,6 +311,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
 		Retention:                         appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
+		KeepWorkbench:                     keepWorkbench,
 	}
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(ctx, runtimeReq)

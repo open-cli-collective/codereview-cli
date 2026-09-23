@@ -19,7 +19,7 @@ import (
 	"strings"
 
 	"github.com/gobwas/glob"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
@@ -30,6 +30,11 @@ const (
 	repoAgentsRoot            = ".codereview/agents"
 	maxGitWorktreeSearchDepth = 40
 )
+
+// ReviewerCoverageRepairSuffix is appended to an agent ID to name that
+// reviewer's coverage repair pass. An agent whose own name ends in it would
+// share the repair pass's task ID, log, and disposable workspace.
+const ReviewerCoverageRepairSuffix = "-coverage-repair"
 
 var (
 	// ErrInvalid identifies malformed agent definitions or unsafe agent names.
@@ -175,6 +180,79 @@ type Agent struct {
 	Prompt               string     `json:"prompt,omitempty"`
 	Provenance           Provenance `json:"provenance"`
 	Overridden           []string   `json:"overridden,omitempty"`
+}
+
+type compiledFileGlob struct {
+	matcher     glob.Glob
+	rootMatcher glob.Glob
+}
+
+func (g compiledFileGlob) matches(file string) bool {
+	return g.matcher.Match(file) || g.rootMatcher != nil && g.rootMatcher.Match(file)
+}
+
+// FileGlobSet is a validated agent file-scope expression. Positive patterns
+// include files and !-prefixed patterns exclude matching files.
+type FileGlobSet struct {
+	includes []compiledFileGlob
+	excludes []compiledFileGlob
+}
+
+// CompileFileGlobs validates and compiles an agent's file_globs contract.
+func CompileFileGlobs(patterns []string) (FileGlobSet, error) {
+	var set FileGlobSet
+	for _, rawPattern := range patterns {
+		excluded := strings.HasPrefix(rawPattern, "!")
+		pattern := strings.TrimPrefix(rawPattern, "!")
+		if pattern == "" {
+			return FileGlobSet{}, fmt.Errorf("file_glob %q is invalid", rawPattern)
+		}
+		matcher, err := glob.Compile(pattern, '/')
+		if err != nil {
+			return FileGlobSet{}, fmt.Errorf("file_glob %q is invalid: %w", rawPattern, err)
+		}
+		compiled := compiledFileGlob{matcher: matcher}
+		if strings.HasPrefix(pattern, "**/") {
+			compiled.rootMatcher, err = glob.Compile(strings.TrimPrefix(pattern, "**/"), '/')
+			if err != nil {
+				return FileGlobSet{}, fmt.Errorf("file_glob %q is invalid: %w", rawPattern, err)
+			}
+		}
+		if excluded {
+			set.excludes = append(set.excludes, compiled)
+		} else {
+			set.includes = append(set.includes, compiled)
+		}
+	}
+	if len(patterns) > 0 && len(set.includes) == 0 {
+		return FileGlobSet{}, errors.New("file_globs requires at least one include file_glob")
+	}
+	return set, nil
+}
+
+// Matches reports whether the file is included and not excluded.
+func (s FileGlobSet) Matches(file string) bool {
+	included := false
+	for _, pattern := range s.includes {
+		if pattern.matches(file) {
+			included = true
+			break
+		}
+	}
+	if !included {
+		return false
+	}
+	for _, pattern := range s.excludes {
+		if pattern.matches(file) {
+			return false
+		}
+	}
+	return true
+}
+
+// HasExclusions reports whether the set contains any exclusion patterns.
+func (s FileGlobSet) HasExclusions() bool {
+	return len(s.excludes) > 0
 }
 
 // RepoReader is the narrow read seam needed to load repo-local agent files.
@@ -740,11 +818,9 @@ func validateAgentYAML(categoryName, agentName string, index agentYAML) error {
 		if len(index.FileGlobs) == 0 {
 			return fmt.Errorf("%w: agent %s:%s required_on_match requires file_globs", ErrInvalid, categoryName, agentName)
 		}
-		for _, pattern := range index.FileGlobs {
-			if _, err := glob.Compile(pattern, '/'); err != nil {
-				return fmt.Errorf("%w: agent %s:%s file_glob %q is invalid: %w", ErrInvalid, categoryName, agentName, pattern, err)
-			}
-		}
+	}
+	if _, err := CompileFileGlobs(index.FileGlobs); err != nil {
+		return fmt.Errorf("%w: agent %s:%s %w", ErrInvalid, categoryName, agentName, err)
 	}
 	return nil
 }
@@ -809,6 +885,9 @@ func validateName(kind, value string) error {
 	}
 	if strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, "..") || strings.Contains(value, ":") {
 		return fmt.Errorf("%w: unsafe %s name %q", ErrInvalid, kind, value)
+	}
+	if kind == "agent" && strings.HasSuffix(value, ReviewerCoverageRepairSuffix) {
+		return fmt.Errorf("%w: reserved %s name %q: %q is reserved for the coverage repair pass of another agent", ErrInvalid, kind, value, ReviewerCoverageRepairSuffix)
 	}
 	return nil
 }

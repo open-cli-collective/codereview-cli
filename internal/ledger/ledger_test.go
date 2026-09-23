@@ -4,10 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,14 +28,9 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	if version := queryInt(t, store.db, "SELECT schema_version FROM meta"); version != SchemaVersion {
 		t.Fatalf("schema_version = %d, want %d", version, SchemaVersion)
 	}
-	if got := queryInt(t, store.db, "PRAGMA foreign_keys"); got != 1 {
-		t.Fatalf("PRAGMA foreign_keys = %d, want 1", got)
-	}
+	assertSQLitePragmas(t, store.db)
 	if got := queryString(t, store.db, "PRAGMA journal_mode"); got != "wal" {
 		t.Fatalf("PRAGMA journal_mode = %q, want wal", got)
-	}
-	if got := queryInt(t, store.db, "PRAGMA busy_timeout"); int64(got) != DefaultBusyTimeout.Milliseconds() {
-		t.Fatalf("PRAGMA busy_timeout = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
 	}
 
 	for _, table := range []string{"prs", "runs", "sessions", "findings", "planned_actions", "named_sessions", "reviewer_cohorts", "reviewer_cohort_members"} {
@@ -46,9 +46,151 @@ func TestOpenMigratesFreshDatabaseAndAppliesStartupContract(t *testing.T) {
 	if !columnExists(t, store.db, "planned_actions", "failure_class") {
 		t.Fatal("planned_actions.failure_class column does not exist")
 	}
+	for _, column := range []string{"cache_create", "cache_create_5m", "cache_create_1h"} {
+		if !columnExists(t, store.db, "sessions", column) {
+			t.Fatalf("sessions.%s column does not exist", column)
+		}
+	}
 	wantResumeIndex := []string{"pr_key", "sha", "base_sha", "profile", "posting_identity", "post_mode", "outcome"}
 	if got := indexColumns(t, store.db, "runs_resume"); !reflect.DeepEqual(got, wantResumeIndex) {
 		t.Fatalf("runs_resume columns = %#v, want %#v", got, wantResumeIndex)
+	}
+}
+
+func TestOpenAppliesPerConnectionPragmasFromDSN(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	dsn, err := sqliteDataSourceName(path)
+	if err != nil {
+		t.Fatalf("sqliteDataSourceName: %v", err)
+	}
+
+	// A connection dialed from the DSN alone must already carry the
+	// per-connection pragmas. This is what protects connections that
+	// database/sql dials after discarding one, which never run
+	// configureSQLite.
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("close DSN connection: %v", err)
+		}
+	})
+	assertSQLitePragmas(t, db)
+
+	// Open must expose the same values on the connection it uses.
+	store := openStoreAt(t, path)
+	assertSQLitePragmas(t, store.db)
+}
+
+func TestOpenReappliesPragmasAfterCanceledQuery(t *testing.T) {
+	name := "ledger #&%.db"
+	if runtime.GOOS != "windows" {
+		name = "ledger #?&%.db"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	store := openStoreAt(t, path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("ledger file at requested path: %v", err)
+	}
+	run := allocateRun(t, store, validAllocateRunParams())
+	session := validSession(run.RunID)
+	insertSession(t, store, session)
+	insertFinding(t, store, validFinding(run.RunID, session.SessionRowID))
+	insertPlannedAction(t, store, validPlannedAction(run.RunID))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := store.db.ExecContext(ctx, `WITH RECURSIVE cnt(x) AS (
+		VALUES(0) UNION ALL SELECT x+1 FROM cnt WHERE x < 1000000000
+	) SELECT sum(x) FROM cnt`); err == nil {
+		t.Fatal("canceled query error = nil, want cancellation")
+	}
+
+	assertSQLitePragmas(t, store.db)
+	if err := store.DeleteRun(context.Background(), run.RunID); err != nil {
+		t.Fatalf("DeleteRun after cancellation: %v", err)
+	}
+	for _, table := range []string{"sessions", "findings", "planned_actions"} {
+		if count := queryInt(t, store.db, "SELECT COUNT(*) FROM "+table); count != 0 {
+			t.Fatalf("%s count after cascade = %d, want 0", table, count)
+		}
+	}
+}
+
+func TestOpenConcurrentOnSamePathSucceeds(t *testing.T) {
+	const openers = 8
+
+	path := filepath.Join(t.TempDir(), "ledger.db")
+	start := make(chan struct{})
+	errs := make([]error, openers)
+	stores := make([]*Store, openers)
+
+	var wg sync.WaitGroup
+	for i := range openers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			stores[i], errs[i] = Open(context.Background(), path)
+		}()
+	}
+
+	// Release every opener at once so they genuinely race for the WAL lock.
+	close(start)
+	wg.Wait()
+
+	t.Cleanup(func() {
+		for _, store := range stores {
+			if store == nil {
+				continue
+			}
+			if err := store.Close(); err != nil {
+				t.Errorf("Close: %v", err)
+			}
+		}
+	})
+
+	failures := make([]error, 0, openers)
+	for i, err := range errs {
+		if err != nil {
+			failures = append(failures, fmt.Errorf("opener %d: %w", i, err))
+		}
+	}
+	if len(failures) > 0 {
+		t.Fatalf("%d/%d concurrent Open calls failed:\n%v", len(failures), openers, errors.Join(failures...))
+	}
+
+	// A racing open must not merely avoid erroring; it must land on a fully
+	// migrated database in WAL mode.
+	wantVersion := SchemaVersion
+	for i, store := range stores {
+		var version int
+		if err := store.db.QueryRowContext(context.Background(), "SELECT schema_version FROM meta").Scan(&version); err != nil {
+			t.Fatalf("opener %d: read schema_version: %v", i, err)
+		}
+		if version != wantVersion {
+			t.Fatalf("opener %d: schema_version = %d, want %d", i, version, wantVersion)
+		}
+		var mode string
+		if err := store.db.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
+			t.Fatalf("opener %d: read journal_mode: %v", i, err)
+		}
+		if strings.ToLower(mode) != "wal" {
+			t.Fatalf("opener %d: journal_mode = %q, want wal", i, mode)
+		}
+	}
+}
+
+func assertSQLitePragmas(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	if got := queryInt(t, db, "PRAGMA busy_timeout"); int64(got) != DefaultBusyTimeout.Milliseconds() {
+		t.Fatalf("PRAGMA busy_timeout = %d, want %d", got, DefaultBusyTimeout.Milliseconds())
+	}
+	if got := queryInt(t, db, "PRAGMA foreign_keys"); got != 1 {
+		t.Fatalf("PRAGMA foreign_keys = %d, want 1", got)
 	}
 }
 
@@ -181,6 +323,13 @@ func TestOpenMigratesVersion1LedgerAndPreservesPlannedActions(t *testing.T) {
 	}
 	if !columnExists(t, store.db, "planned_actions", "failure_class") {
 		t.Fatal("planned_actions.failure_class column does not exist")
+	}
+	sessions, err := store.ListSessionsForRun(context.Background(), "run-1")
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("ListSessionsForRun after migration = %#v, err = %v, want one session", sessions, err)
+	}
+	if sessions[0].CacheCreate == nil || *sessions[0].CacheCreate != 17 || sessions[0].CacheCreate5m != nil || sessions[0].CacheCreate1h != nil {
+		t.Fatalf("migrated cache creation = %#v, want aggregate 17 with nullable TTL buckets", sessions[0])
 	}
 
 	actions, err := store.ListPlannedActions(context.Background(), "run-1")
@@ -1505,6 +1654,12 @@ run_id, pr_key, sha, base_sha, attempt, profile, posting_identity, post_mode, st
 		"run-1", "pr-1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		1, "default", "reviewer@example.com", PostModeLive.String(), encodeTime(time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC)), "/tmp/run-1",
 	)
+	execSQL(t, db, `INSERT INTO sessions (
+session_row_id, run_id, provider_session_id, role, adapter, model, started_at, cache_create
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"session-1", "run-1", "provider-session-1", SessionRoleReviewer.String(), "claude_cli", "claude-sonnet-4-6",
+		encodeTime(time.Date(2026, 5, 30, 12, 1, 30, 0, time.UTC)), 17,
+	)
 	execSQL(t, db, `INSERT INTO planned_actions (
 action_id, run_id, kind, finding_id, thread_id, planned_at, payload_json, status,
 required, attempts, attempted_at, posted_at, upstream_id, error
@@ -1873,4 +2028,233 @@ func indexColumns(t *testing.T, db *sql.DB, name string) []string {
 
 func strPtr(value string) *string {
 	return &value
+}
+
+func TestSQLiteDataSourceName(t *testing.T) {
+	// The helper builds a file: URI rather than concatenating the path, because
+	// the driver splits the query string at the first '?'. A data root
+	// containing any of these characters would otherwise produce a DSN whose
+	// parameters are truncated or whose path is wrong.
+	names := []string{
+		"ledger.db",
+		"with space.db",
+		"hash#.db",
+		"percent%41.db",
+		"amp&eq=.db",
+	}
+	if runtime.GOOS != "windows" {
+		names = append(names, "question?.db")
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), name)
+			dsn, err := sqliteDataSourceName(path)
+			if err != nil {
+				t.Fatalf("sqliteDataSourceName(%q): %v", path, err)
+			}
+			parsedDSN, err := url.Parse(dsn)
+			if err != nil {
+				t.Fatalf("parse dsn %q: %v", dsn, err)
+			}
+			// SQLite requires an empty or "localhost" authority; without one a
+			// Windows drive path renders as an invalid authority.
+			if parsedDSN.Scheme != "file" || parsedDSN.Host != "localhost" {
+				t.Fatalf("dsn = %q, want a file://localhost URI", dsn)
+			}
+
+			db, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				t.Fatalf("sql.Open(%q): %v", dsn, err)
+			}
+			t.Cleanup(func() {
+				if err := db.Close(); err != nil {
+					t.Fatalf("close: %v", err)
+				}
+			})
+			// The pragmas surviving the encoding is the proof the query string
+			// was not truncated by a character in the path.
+			assertSQLitePragmas(t, db)
+
+			var opened string
+			if err := db.QueryRowContext(context.Background(), "SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&opened); err != nil {
+				t.Fatalf("read opened path: %v", err)
+			}
+			// Resolve both sides: macOS reports the temp dir through
+			// /private/var while t.TempDir hands back /var.
+			wantPath, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatalf("resolve %q: %v", path, err)
+			}
+			gotPath, err := filepath.EvalSymlinks(opened)
+			if err != nil {
+				t.Fatalf("resolve %q: %v", opened, err)
+			}
+			if gotPath != wantPath {
+				t.Fatalf("opened %q, want %q", gotPath, wantPath)
+			}
+		})
+	}
+
+	t.Run("resolves a relative path", func(t *testing.T) {
+		dsn, err := sqliteDataSourceName("ledger.db")
+		if err != nil {
+			t.Fatalf("sqliteDataSourceName: %v", err)
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("Getwd: %v", err)
+		}
+		parsed, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatalf("parse dsn %q: %v", dsn, err)
+		}
+		want := filepath.ToSlash(filepath.Join(cwd, "ledger.db"))
+		if runtime.GOOS == "windows" && !strings.HasPrefix(want, "/") {
+			want = "/" + want
+		}
+		if parsed.Path != want {
+			t.Fatalf("dsn path = %q, want %q", parsed.Path, want)
+		}
+	})
+
+	t.Run("requires immediate transactions", func(t *testing.T) {
+		dsn, err := sqliteDataSourceName(filepath.Join(t.TempDir(), "ledger.db"))
+		if err != nil {
+			t.Fatalf("sqliteDataSourceName: %v", err)
+		}
+		parsed, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatalf("parse dsn %q: %v", dsn, err)
+		}
+		// dbmig.Apply's in-transaction re-read is only race-free under the
+		// write lock, so this is a cross-package contract, not a tuning knob.
+		if got := parsed.Query().Get("_txlock"); got != "immediate" {
+			t.Fatalf("_txlock = %q, want immediate", got)
+		}
+	})
+}
+
+// busyError returns a genuine SQLITE_BUSY from the driver. The driver exposes
+// no constructor for sqlite.Error, and isSQLiteBusyError matches only that
+// concrete type, so the error is provoked by holding a write lock and writing
+// from a second connection with no busy timeout.
+func busyError(t *testing.T) error {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "busy.db")
+	dsn, err := sqliteDataSourceName(path)
+	if err != nil {
+		t.Fatalf("sqliteDataSourceName: %v", err)
+	}
+	parsedDSN, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn %q: %v", dsn, err)
+	}
+	query := parsedDSN.Query()
+	query.Set("_pragma", "busy_timeout(0)")
+	parsedDSN.RawQuery = query.Encode()
+	dsn = parsedDSN.String()
+	holder := openRawSQLite(t, dsn)
+	contender := openRawSQLite(t, dsn)
+
+	ctx := context.Background()
+	if _, err := holder.ExecContext(ctx, "CREATE TABLE lock_probe (id INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatalf("create lock probe: %v", err)
+	}
+	tx, err := holder.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin holder transaction: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tx.Rollback()
+	})
+	if _, err := tx.ExecContext(ctx, "INSERT INTO lock_probe DEFAULT VALUES"); err != nil {
+		t.Fatalf("take write lock: %v", err)
+	}
+
+	_, err = contender.ExecContext(ctx, "INSERT INTO lock_probe DEFAULT VALUES")
+	if !isSQLiteBusyError(err) {
+		t.Fatalf("contended write error = %v, want a SQLITE_BUSY the retry loop recognizes", err)
+	}
+	return err
+}
+
+func openRawSQLite(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("sql.Open(%q): %v", dsn, err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close %q: %v", dsn, err)
+		}
+	})
+	return db
+}
+
+func TestRetryWhileBusy(t *testing.T) {
+	t.Run("retries until success", func(t *testing.T) {
+		busy := busyError(t)
+		calls := 0
+		value, err := retryWhileBusy(context.Background(), time.Millisecond, time.Second, func(context.Context) (string, error) {
+			calls++
+			if calls < 3 {
+				return "", busy
+			}
+			return "wal", nil
+		})
+		if err != nil {
+			t.Fatalf("retryWhileBusy: %v", err)
+		}
+		if value != "wal" {
+			t.Fatalf("value = %q, want wal", value)
+		}
+		if calls != 3 {
+			t.Fatalf("attempts = %d, want 3", calls)
+		}
+	})
+
+	t.Run("gives up at the budget", func(t *testing.T) {
+		busy := busyError(t)
+		calls := 0
+		_, err := retryWhileBusy(context.Background(), time.Millisecond, 20*time.Millisecond, func(context.Context) (string, error) {
+			calls++
+			return "", busy
+		})
+		if !isSQLiteBusyError(err) {
+			t.Fatalf("err = %v, want the busy error surfaced", err)
+		}
+		if calls < 2 {
+			t.Fatalf("attempts = %d, want more than one", calls)
+		}
+	})
+
+	t.Run("returns a non-busy error immediately", func(t *testing.T) {
+		calls := 0
+		wantErr := errors.New("boom")
+		_, err := retryWhileBusy(context.Background(), time.Millisecond, time.Second, func(context.Context) (string, error) {
+			calls++
+			return "", wantErr
+		})
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("err = %v, want %v", err, wantErr)
+		}
+		if calls != 1 {
+			t.Fatalf("attempts = %d, want 1", calls)
+		}
+	})
+
+	t.Run("stops on a canceled context", func(t *testing.T) {
+		busy := busyError(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := retryWhileBusy(ctx, time.Millisecond, time.Second, func(context.Context) (string, error) {
+			return "", busy
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	})
 }

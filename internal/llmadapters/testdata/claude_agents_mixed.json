@@ -1,0 +1,22 @@
+[
+  {
+    "pid": 10240,
+    "cwd": "/home/dev/projects/service-a",
+    "kind": "interactive",
+    "startedAt": 1789704757845,
+    "sessionId": "0a119af3-fa96-44b8-b975-e69936e7d0e2",
+    "name": "service-a-3b",
+    "status": "idle"
+  },
+  {
+    "pid": 7035,
+    "id": "de41e310",
+    "cwd": "/home/dev/.local/share/cr/runs/run-1/workbench/reviewers/reviewer-a/repo",
+    "kind": "background",
+    "startedAt": 1790101202780,
+    "sessionId": "de41e310-0409-418b-bc03-809db309cd71",
+    "name": "read cr prompt",
+    "status": "busy",
+    "state": "working"
+  }
+]

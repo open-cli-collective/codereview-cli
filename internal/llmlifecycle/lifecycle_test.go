@@ -154,6 +154,7 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 				CacheRead:   intPtr(55),
 				CacheCreate: intPtr(34),
 				CostUSD:     floatPtr(1.44),
+				Speed:       "fast",
 			},
 		},
 	})
@@ -198,6 +199,9 @@ func TestRunStructuredReloadsSucceededTaskWithRealLedgerAfterRestart(t *testing.
 	}
 	if cached.Session.RunID != runID || cached.Session.ProviderSessionID != "provider-session-1" {
 		t.Fatalf("cached session = %#v, want reloaded ledger session", cached.Session)
+	}
+	if cached.Draft.Response.Usage.Speed != "fast" {
+		t.Fatalf("cached speed = %q, want fast after ledger reload", cached.Draft.Response.Usage.Speed)
 	}
 	if len(progress.loads) != 1 {
 		t.Fatalf("cached progress loads = %#v, want one cached progress result", progress.loads)
@@ -633,7 +637,10 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 		SessionID: "provider-session-1",
 		Response: llm.Response{
 			StructuredOutput: []byte(`{"ok":true}`),
-			Usage:            llm.Usage{TokensIn: intPtr(55), TokensOut: intPtr(21), CacheRead: intPtr(13), CacheCreate: intPtr(8), CostUSD: floatPtr(0.55), Speed: "fast"},
+			Usage: llm.Usage{
+				TokensIn: intPtr(55), TokensOut: intPtr(21), CacheRead: intPtr(13), CacheCreate: intPtr(8),
+				CacheCreate5m: intPtr(3), CacheCreate1h: intPtr(5), CostUSD: floatPtr(0.55), Speed: "fast",
+			},
 		},
 	})
 	req := lifecycleRequest(t, nil, adapter)
@@ -658,6 +665,7 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	}
 	if meta.TokensIn == nil || *meta.TokensIn != 55 || meta.TokensOut == nil || *meta.TokensOut != 21 ||
 		meta.CacheRead == nil || *meta.CacheRead != 13 || meta.CacheCreate == nil || *meta.CacheCreate != 8 ||
+		meta.CacheCreate5m == nil || *meta.CacheCreate5m != 3 || meta.CacheCreate1h == nil || *meta.CacheCreate1h != 5 ||
 		meta.CostUSD == nil || *meta.CostUSD != 0.55 || meta.Speed != "fast" {
 		t.Fatalf("metadata usage = %#v, want caller-owned cache usage persisted", meta)
 	}
@@ -672,8 +680,10 @@ func TestRunStructuredCallerOwnedCacheDoesNotRequireRunOrSessionStore(t *testing
 	if !cached.Cached || !cached.Value.OK {
 		t.Fatalf("cached no-run result = %#v, want cached ok", cached)
 	}
-	if cached.Draft.Response.Usage.Speed != "fast" {
-		t.Fatalf("cached speed = %q, want fast", cached.Draft.Response.Usage.Speed)
+	if cached.Draft.Response.Usage.Speed != "fast" ||
+		cached.Draft.Response.Usage.CacheCreate5m == nil || *cached.Draft.Response.Usage.CacheCreate5m != 3 ||
+		cached.Draft.Response.Usage.CacheCreate1h == nil || *cached.Draft.Response.Usage.CacheCreate1h != 5 {
+		t.Fatalf("cached usage = %#v, want fast with 3/5 cache-write split", cached.Draft.Response.Usage)
 	}
 	if len(cachedAdapter.Requests()) != 0 {
 		t.Fatalf("cached adapter requests = %d, want 0", len(cachedAdapter.Requests()))
