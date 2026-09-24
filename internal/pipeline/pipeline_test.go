@@ -1450,7 +1450,7 @@ func TestDryRunCoverageRepairWorkspaceFailurePreservesPrimaryReview(t *testing.T
 		GitCommand: func(gitCtx context.Context, dir string, args ...string) ([]byte, error) {
 			// Fail only the repair pass's clone, as a transient git or disk error would.
 			for _, arg := range args {
-				if strings.Contains(arg, statepaths.Encode(reviewerCoverageRepairIdentity("harness:reviewer"))) {
+				if strings.Contains(arg, workbench.ReviewerWorkspaceSegment(reviewerCoverageRepairIdentity("harness:reviewer"))) {
 					return nil, errors.New("disk full")
 				}
 			}
@@ -1680,7 +1680,7 @@ func TestRunReviewerRecordsPrimarySessionOnEveryCoverageRepairPath(t *testing.T)
 				gitCommand := opts.GitCommand
 				opts.GitCommand = func(gitCtx context.Context, dir string, args ...string) ([]byte, error) {
 					for _, arg := range args {
-						if strings.Contains(arg, statepaths.Encode(reviewerCoverageRepairIdentity("harness:reviewer"))) {
+						if strings.Contains(arg, workbench.ReviewerWorkspaceSegment(reviewerCoverageRepairIdentity("harness:reviewer"))) {
 							return nil, errors.New("disk full")
 						}
 					}
@@ -3144,7 +3144,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 		t.Fatalf("reviewer starts = %d, want all three reviewers to start before release", got)
 	}
 	for _, agentID := range []string{"harness:alpha", "harness:beta", "harness:gamma"} {
-		encoded := statepaths.Encode(agentID)
+		encoded := workbench.ReviewerWorkspaceSegment(agentID)
 		if _, err := os.Stat(filepath.Join(result.Artifacts.WorkbenchDir, "reviewers", encoded)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("reviewer workspace %s stat err = %v, want cleaned", agentID, err)
 		}

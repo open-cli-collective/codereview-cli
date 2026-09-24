@@ -3,6 +3,8 @@ package workbench
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +21,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
-	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
 
 const (
@@ -397,6 +398,30 @@ func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter,
 	}, cleanupCurrent, nil
 }
 
+// ReviewerWorkspaceSegment names a reviewer's workspace and scratch directories.
+// These paths are handed to the model, which writes its result file under the
+// scratch directory, so the segment carries no escape sequences: a model that
+// reads "%3A" in a path can write to the decoded ":" path instead, and the result
+// then lands where the adapter never looks. Runes outside [A-Za-z0-9._-] become
+// "-", and a changed ID gets a hash suffix so distinct IDs keep distinct paths.
+func ReviewerWorkspaceSegment(agentID string) string {
+	var b strings.Builder
+	for _, r := range agentID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	segment := b.String()
+	if segment == agentID && strings.Trim(segment, ".") != "" {
+		return segment
+	}
+	sum := sha256.Sum256([]byte(agentID))
+	return segment + "-" + hex.EncodeToString(sum[:])[:8]
+}
+
 func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int) (llm.ReviewerWorkspaceRequest, func() error, error) {
 	if strings.TrimSpace(artifacts.WorkbenchRepoDir) == "" {
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: workbench repo dir is required for reviewer workspace")
@@ -407,10 +432,10 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 	if strings.TrimSpace(agentID) == "" {
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: agent ID is required for reviewer workspace")
 	}
-	encodedAgentID := statepaths.Encode(agentID)
-	workspaceRoot := filepath.Join(artifacts.WorkbenchDir, "reviewers", encodedAgentID)
+	segment := ReviewerWorkspaceSegment(agentID)
+	workspaceRoot := filepath.Join(artifacts.WorkbenchDir, "reviewers", segment)
 	workspaceRepo := filepath.Join(workspaceRoot, "repo")
-	workspaceScratch := filepath.Join(artifacts.WorkbenchScratch, encodedAgentID)
+	workspaceScratch := filepath.Join(artifacts.WorkbenchScratch, segment)
 	for _, dir := range []string{workspaceRoot, workspaceScratch} {
 		if err := os.RemoveAll(dir); err != nil {
 			return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: reset reviewer workspace: %w", err)

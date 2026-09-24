@@ -441,7 +441,7 @@ func TestReviewerWorkspaceAllowedFilesRejectsEscapePathsAndCleansUp(t *testing.T
 		if cleanup != nil {
 			t.Fatalf("prepareReviewerWorkspace(%q) cleanup = non-nil, want nil on setup failure", path)
 		}
-		encoded := statepaths.Encode(agentID)
+		encoded := ReviewerWorkspaceSegment(agentID)
 		if _, statErr := os.Stat(filepath.Join(artifacts.WorkbenchDir, "reviewers", encoded)); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("reviewer workspace for %q stat err = %v, want cleaned", path, statErr)
 		}
@@ -825,4 +825,43 @@ func gitCommandSucceeds(dir string, args ...string) bool {
 	cmd.Env = gittest.Env()
 	cmd.Dir = dir
 	return cmd.Run() == nil
+}
+
+func TestReviewerWorkspaceSegmentCarriesNoEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		agentID string
+		want    string
+	}{
+		{agentID: "plain-reviewer_1.v2", want: "plain-reviewer_1.v2"},
+		{agentID: "go:implementation-tests"},
+		{agentID: "go%3Aimplementation-tests"},
+		{agentID: "../escape"},
+		{agentID: ".."},
+		{agentID: "a/b"},
+	} {
+		got := ReviewerWorkspaceSegment(tc.agentID)
+		if tc.want != "" && got != tc.want {
+			t.Fatalf("ReviewerWorkspaceSegment(%q) = %q, want %q", tc.agentID, got, tc.want)
+		}
+		if strings.ContainsAny(got, "%:/\\") || strings.Trim(got, ".") == "" {
+			t.Fatalf("ReviewerWorkspaceSegment(%q) = %q, want a single plain path segment", tc.agentID, got)
+		}
+	}
+	if ReviewerWorkspaceSegment("go:tests") == ReviewerWorkspaceSegment("go-tests") {
+		t.Fatal("distinct agent IDs mapped to the same workspace segment")
+	}
+}
+
+func TestReviewerWorkspaceScratchPathHasNoEscapes(t *testing.T) {
+	fixture, artifacts, deps := prepareReviewerFixture(t)
+	workspace, cleanup, err := prepareReviewerWorkspace(context.Background(), deps, artifacts, fixture.headSHA, "harness:colon-id", nil, 1024)
+	if err != nil {
+		t.Fatalf("prepareReviewerWorkspace: %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+	for label, dir := range map[string]string{"repo": workspace.RepoDir, "scratch": workspace.ScratchDir} {
+		if strings.Contains(dir, "%") {
+			t.Fatalf("reviewer %s dir = %q, want no percent escapes the model could decode", label, dir)
+		}
+	}
 }
