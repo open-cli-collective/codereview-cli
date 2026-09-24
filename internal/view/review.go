@@ -127,6 +127,8 @@ type ReviewRun struct {
 	HeadSHA        string `json:"head_sha,omitempty"`
 	CurrentBaseSHA string `json:"current_base_sha,omitempty"`
 	CurrentHeadSHA string `json:"current_head_sha,omitempty"`
+	// WithoutDiscussion marks a replay that ran without the PR's discussion.
+	WithoutDiscussion bool `json:"without_discussion,omitempty"`
 }
 
 // ReviewOutbox summarizes live posting state.
@@ -187,14 +189,15 @@ func NewReviewDryRun(result pipeline.Result) (ReviewDryRun, error) {
 	}
 	rendered := ReviewDryRun{
 		Run: ReviewRun{
-			RunID:        result.Run.RunID,
-			PRURL:        result.PR.URL,
-			PRKey:        result.PRKey,
-			PostMode:     result.Run.PostMode.String(),
-			Outcome:      outcome,
-			ArtifactPath: result.Run.ArtifactPath,
-			BaseSHA:      result.ReviewBaseSHA,
-			HeadSHA:      result.ReviewHeadSHA,
+			RunID:             result.Run.RunID,
+			PRURL:             result.PR.URL,
+			PRKey:             result.PRKey,
+			PostMode:          result.Run.PostMode.String(),
+			Outcome:           outcome,
+			ArtifactPath:      result.Run.ArtifactPath,
+			BaseSHA:           result.ReviewBaseSHA,
+			HeadSHA:           result.ReviewHeadSHA,
+			WithoutDiscussion: result.WithoutDiscussion,
 		},
 		RollupMarkdown:  result.Plan.RollupMarkdown,
 		Summary:         newReviewSummary(result.Plan.Summary),

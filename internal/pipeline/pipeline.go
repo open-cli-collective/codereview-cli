@@ -199,8 +199,12 @@ type Request struct {
 	ReviewerFast                bool
 	ReviewBaseSHA               string
 	ReviewHeadSHA               string
-	Rerun                       bool
-	FreshSession                bool
+	// WithoutDiscussion replays a pinned dry-run review as a first pass: no
+	// PR discussion is fetched, and no PR-scoped orchestrator or reviewer
+	// session (which saw earlier discussion) is resumed or updated.
+	WithoutDiscussion bool
+	Rerun             bool
+	FreshSession      bool
 
 	FailOn              *review.Severity
 	AllowSelfReview     bool
@@ -290,6 +294,7 @@ type Result struct {
 	CurrentHeadSHA        string
 	ReviewBaseSHA         string
 	ReviewHeadSHA         string
+	WithoutDiscussion     bool
 	ReviewerFailures      []ReviewerFailure
 	ReviewerCoverage      []reviewplan.ReviewerCoverageSummary
 	reviewerFastDelivered string
@@ -376,9 +381,11 @@ type selectionSetupRequest struct {
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
 	NoResolveThreads bool
-	ResolvedPR       *reviewPRContext
-	InvocationRoot   *string
-	ResolveArtifacts func(gitprovider.PR) (ArtifactPaths, error)
+	// WithoutDiscussion skips every PR discussion read, independent of pinning.
+	WithoutDiscussion bool
+	ResolvedPR        *reviewPRContext
+	InvocationRoot    *string
+	ResolveArtifacts  func(gitprovider.PR) (ArtifactPaths, error)
 }
 
 type preparedSelectionContext struct {
@@ -453,6 +460,9 @@ func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Resul
 	}
 	if strings.TrimSpace(req.ReviewBaseSHA) != "" || strings.TrimSpace(req.ReviewHeadSHA) != "" {
 		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: pinned review SHAs require dry-run review"))
+	}
+	if req.WithoutDiscussion {
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: review without discussion requires dry-run review"))
 	}
 	if strings.TrimSpace(run.RunID) == "" {
 		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live run ID is required"))
@@ -623,15 +633,16 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
 	}
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
-		PRRef:            req.PRRef,
-		Profile:          req.Profile,
-		PostingIdentity:  req.PostingIdentity,
-		AgentDirs:        req.AgentDirs,
-		ReviewBaseSHA:    req.ReviewBaseSHA,
-		ReviewHeadSHA:    req.ReviewHeadSHA,
-		NoResolveThreads: req.NoResolveThreads,
-		ResolvedPR:       &reviewCtx,
-		InvocationRoot:   &invocationRoot,
+		PRRef:             req.PRRef,
+		Profile:           req.Profile,
+		PostingIdentity:   req.PostingIdentity,
+		AgentDirs:         req.AgentDirs,
+		ReviewBaseSHA:     req.ReviewBaseSHA,
+		ReviewHeadSHA:     req.ReviewHeadSHA,
+		NoResolveThreads:  req.NoResolveThreads,
+		WithoutDiscussion: req.WithoutDiscussion,
+		ResolvedPR:        &reviewCtx,
+		InvocationRoot:    &invocationRoot,
 		ResolveArtifacts: func(reviewPR gitprovider.PR) (ArtifactPaths, error) {
 			if mode.live {
 				return ArtifactPathsFromDir(mode.run.ArtifactPath), nil
@@ -655,6 +666,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	opts.emitWarning(warning)
 
 	result := prepared.reviewResult()
+	result.WithoutDiscussion = req.WithoutDiscussion
 	run := mode.run
 	if !mode.live {
 		if resumedDryRun != nil {
@@ -675,7 +687,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			if err != nil {
 				return Result{}, err
 			}
-			if err := runartifact.WriteMarker(prepared.artifacts.Dir, runartifact.KindReview, run.RunID); err != nil {
+			if err := runartifact.WriteMarkerWithOptions(prepared.artifacts.Dir, runartifact.KindReview, run.RunID, runartifact.MarkerOptions{WithoutDiscussion: req.WithoutDiscussion}); err != nil {
 				return Result{}, err
 			}
 		}
@@ -693,6 +705,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ChangedFiles:     prepared.changedFiles,
 		Artifacts:        prepared.artifacts,
 		HeadRefNamespace: opts.Provider.Capabilities().HeadRefNamespace,
+		Offline:          req.WithoutDiscussion,
 	}); err != nil {
 		if errors.Is(err, workbench.ErrUnsafeFetchRef) || errors.Is(err, workbench.ErrInvalidRepositoryIdentity) {
 			return Result{}, Failure(FailureTerminal, err)
@@ -780,15 +793,25 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
-	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
-	if err != nil {
-		return nil, false, err
-	}
-
-	cohortScope := ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
-	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, reviewablePatchPaths(prepared.parsed.Patches), maxAgents)
-	if err != nil {
-		return executionPhaseFailure(err)
+	// A review without discussion must not resume the PR's orchestrator or
+	// reviewer sessions: they carry earlier discussion. It also leaves them
+	// untouched, so a replay never becomes the PR's next live context. The zero
+	// named-session state and cohort scope make every checkpoint a no-op.
+	var namedSession namedSessionState
+	var cohortScope ledger.ReviewerCohortScope
+	var selection llm.Selection
+	var reviewerResumeIDs map[string]string
+	reusedCohort := false
+	if !req.WithoutDiscussion {
+		namedSession, err = prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
+		if err != nil {
+			return nil, false, err
+		}
+		cohortScope = ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
+		selection, reviewerResumeIDs, reusedCohort, err = loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, reviewablePatchPaths(prepared.parsed.Patches), maxAgents)
+		if err != nil {
+			return executionPhaseFailure(err)
+		}
 	}
 	if reusedCohort {
 		if err := restoreOrchestratorSessionFromRun(ctx, opts.Store, run.RunID, prepared.artifacts, &namedSession); err != nil {
@@ -834,7 +857,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		if err != nil {
 			return executionPhaseFailure(err)
 		}
-		if !reusedCohort {
+		if !reusedCohort && !req.WithoutDiscussion {
 			if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
 				return nil, false, err
 			}
@@ -1009,7 +1032,13 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 		}
 		runs = append(runs, legacyRuns...)
 	}
-	best, found := runlifecycle.NewestCompatibleIncompleteRun(runs, pr.Base.SHA, ledger.PostModeDryRun, runartifact.KindReview, runartifact.MarkerMatches)
+	// A run resumes only into a run with the same discussion setting, so a
+	// discussion-free replay never reuses tasks or sessions that saw discussion.
+	markerMatches := func(artifactPath, kind, runID string) bool {
+		marker, err := runartifact.ReadMarker(artifactPath, kind)
+		return err == nil && marker.RunID == runID && marker.WithoutDiscussion == req.WithoutDiscussion
+	}
+	best, found := runlifecycle.NewestCompatibleIncompleteRun(runs, pr.Base.SHA, ledger.PostModeDryRun, runartifact.KindReview, markerMatches)
 	return best, found, nil
 }
 
@@ -1134,7 +1163,9 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 	var threadContext []threadcontext.Thread
 	var reviews []gitprovider.Review
 	var issueComments []gitprovider.IssueComment
-	if !reviewCtx.pinnedReview {
+	// Discussion is cut off here, at its only source, so no later consumer
+	// (dossier, selection, thread analysis, reviewers, planner) can see it.
+	if !reviewCtx.pinnedReview && !req.WithoutDiscussion {
 		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
 		if err != nil {
 			return preparedSelectionContext{}, err
@@ -1202,6 +1233,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		CurrentPR:             pr,
 		ReviewPR:              reviewPR,
 		PinnedReview:          reviewCtx.pinnedReview,
+		WithoutDiscussion:     req.WithoutDiscussion,
 		ChangedFiles:          dossierChangedFiles(parsed.Patches),
 		Threads:               threads,
 		ThreadContext:         threadContext,
@@ -1210,11 +1242,18 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		Catalog:               catalog,
 		CurrentBaseSHA:        reviewCtx.currentBaseSHA,
 		CurrentHeadSHA:        reviewCtx.currentHeadSHA,
-		DiscussionOmittedNote: "Current PR discussion omitted because this review is pinned to explicit base/head SHAs.",
+		DiscussionOmittedNote: discussionOmittedNote(req.WithoutDiscussion),
 	}); err != nil {
 		return preparedSelectionContext{}, err
 	}
 	return out, nil
+}
+
+func discussionOmittedNote(withoutDiscussion bool) string {
+	if withoutDiscussion {
+		return "No PR discussion is provided for this review."
+	}
+	return "Current PR discussion omitted because this review is pinned to explicit base/head SHAs."
 }
 
 func resolveReviewPRContext(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, reviewBaseSHA, reviewHeadSHA string) (reviewPRContext, error) {
@@ -2107,7 +2146,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
-	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
+	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion})
 	if err != nil {
 		return reviewerExecution{}, err
 	}
@@ -2124,6 +2163,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	fingerprintDeps := append(append([]string(nil), dependencyTaskIDs...), promptDeps...)
 	if req.ReviewerFast {
 		fingerprintDeps = append(fingerprintDeps, "fast=true")
+	}
+	if req.WithoutDiscussion {
+		fingerprintDeps = append(fingerprintDeps, "without_discussion=true")
 	}
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
@@ -2212,7 +2254,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return repairSetupFailed(err)
 	}
 	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
-	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion})
 	if err != nil {
 		return repairSetupFailed(err)
 	}
@@ -2230,6 +2272,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	repairFingerprintDeps := append(append([]string(nil), repairDependencyTaskIDs...), repairPromptDeps...)
 	if req.ReviewerFast {
 		repairFingerprintDeps = append(repairFingerprintDeps, "fast=true")
+	}
+	if req.WithoutDiscussion {
+		repairFingerprintDeps = append(repairFingerprintDeps, "without_discussion=true")
 	}
 	repair, repairSession, repairLedgerSession, repairErr := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
@@ -3419,6 +3464,9 @@ func validate(opts Options, req Request) error {
 	}
 	if strings.TrimSpace(req.PRURL) == "" {
 		return fmt.Errorf("pipeline: PR URL is required")
+	}
+	if req.WithoutDiscussion && (strings.TrimSpace(req.ReviewBaseSHA) == "" || strings.TrimSpace(req.ReviewHeadSHA) == "") {
+		return fmt.Errorf("pipeline: review without discussion requires pinned review base and head SHAs")
 	}
 	if strings.TrimSpace(runlifecycle.PostingKey(req.PostingIdentity)) == "" {
 		return fmt.Errorf("pipeline: posting identity is required")

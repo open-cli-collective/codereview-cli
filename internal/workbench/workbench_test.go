@@ -826,3 +826,44 @@ func gitCommandSucceeds(dir string, args ...string) bool {
 	cmd.Dir = dir
 	return cmd.Run() == nil
 }
+
+func TestOfflineWorkbenchAndReviewerWorkspaceHaveNoRemotes(t *testing.T) {
+	ctx := context.Background()
+	for _, offline := range []bool{false, true} {
+		fixture := newWorkbenchGitFixture(t)
+		artifacts := runartifact.FromDir(t.TempDir())
+		deps := Deps{GitCommand: testGitRunner(t, map[string]string{
+			"https://github.com/open-cli-collective/codereview-cli.git": fixture.repoDir,
+		})}
+		req := Request{PRRef: fixture.pr.Ref, ReviewPR: fixture.pr, ChangedFiles: []string{"main.go"}, Artifacts: artifacts, Offline: offline}
+		// The second call takes the reuse path, which must also leave no remotes.
+		for range 2 {
+			if err := Prepare(ctx, deps, req); err != nil {
+				t.Fatalf("Prepare(offline=%v): %v", offline, err)
+			}
+			remotes := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "remote"))
+			if offline && remotes != "" {
+				t.Fatalf("offline workbench remotes = %q, want none", remotes)
+			}
+			if !offline && remotes != "origin" {
+				t.Fatalf("workbench remotes = %q, want origin", remotes)
+			}
+		}
+
+		workspace, cleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, fixture.headSHA, "harness:offline", []string{"main.go"}, 1024, ReviewerOptions{Offline: offline})
+		if err != nil {
+			t.Fatalf("prepareReviewerWorkspace(offline=%v): %v", offline, err)
+		}
+		t.Cleanup(cleanupForTest(t, cleanup))
+		remotes := strings.TrimSpace(gitCommandOutput(t, workspace.RepoDir, "remote"))
+		if offline && (remotes != "" || !workspace.NoNetwork) {
+			t.Fatalf("offline reviewer workspace remotes = %q, NoNetwork = %v; want none and true", remotes, workspace.NoNetwork)
+		}
+		if !offline && (remotes != "origin" || workspace.NoNetwork) {
+			t.Fatalf("reviewer workspace remotes = %q, NoNetwork = %v; want origin and false", remotes, workspace.NoNetwork)
+		}
+		if got := strings.TrimSpace(gitCommandOutput(t, workspace.RepoDir, "rev-parse", "HEAD")); got != fixture.headSHA {
+			t.Fatalf("reviewer workspace HEAD = %q, want %q", got, fixture.headSHA)
+		}
+	}
+}
