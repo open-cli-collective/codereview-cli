@@ -6856,7 +6856,7 @@ func TestNormalizeInitModelMapDropsBuiltInsAndBlanks(t *testing.T) {
 		Adapter:  config.LLMAdapterCodexCLI,
 	}
 	got := normalizeInitModelMap(llm, config.ModelMap{
-		"small":  "gpt-5.4-mini",
+		"small":  "gpt-6-luna",
 		"medium": " custom-medium ",
 		"large":  " \t ",
 	})
@@ -10265,14 +10265,14 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldLLMRuntime, "openai-work")
 
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-5.4-mini" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-6-luna" {
 		t.Fatalf("small model after runtime change = %q, want OpenAI built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-5.4" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6-sol" {
 		t.Fatalf("medium model after runtime change = %q, want OpenAI built-in", got)
 	}
 	smallIndex := model.document.fieldIndexByID(initProfileV2FieldModelMap(config.ModelTierSmall))
-	if smallIndex < 0 || !strings.Contains(model.document[smallIndex].Description, "Built-in small model for this runtime: gpt-5.4-mini.") {
+	if smallIndex < 0 || !strings.Contains(model.document[smallIndex].Description, "Built-in small model for this runtime: gpt-6-luna.") {
 		t.Fatalf("small model description after runtime change = %q", model.document[smallIndex].Description)
 	}
 }

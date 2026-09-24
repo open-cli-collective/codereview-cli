@@ -213,7 +213,7 @@ LLM:
   Model map:
     small: claude-haiku-4-5 (built_in)
     medium: claude-sonnet-5 (built_in) [max effort: low]
-    large: claude-opus-5 (built_in)
+    large: claude-opus-5-5 (built_in)
 Credentials:
   - git: codereview/home (pat)
     git_token: missing

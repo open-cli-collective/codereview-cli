@@ -261,8 +261,12 @@ func TestSubprocessClaudeReviewerWorkspaceLaunch(t *testing.T) {
 	if !containsSamePath(addDirs, record.AddDir) || !containsSamePath(addDirs, repoRoot) {
 		t.Fatalf("--add-dir values = %#v, want scratch %q and repo %q", addDirs, record.AddDir, repoRoot)
 	}
-	if !samePath(t, record.Cwd, repoRoot) {
-		t.Fatalf("cwd = %q, want reviewer workspace repo %q", record.Cwd, repoRoot)
+	// Launching inside the PR checkout would load its .claude/ project settings.
+	if wantWorkDir := filepath.Join(filepath.Dir(recordPath), "claude-bg-workdir"); !samePath(t, record.Cwd, wantWorkDir) {
+		t.Fatalf("cwd = %q, want Claude bg workdir %q outside the reviewer checkout", record.Cwd, wantWorkDir)
+	}
+	if !strings.Contains(record.PromptFile, repoRoot) {
+		t.Fatalf("prompt file = %q, want reviewer checkout path %q", record.PromptFile, repoRoot)
 	}
 	if tools := flagValue(record.AdapterArgs, "--tools"); tools != "Read,Write,Bash" {
 		t.Fatalf("--tools = %q, want reviewer workspace tools", tools)
