@@ -270,11 +270,8 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 		DecodeError: retryErr,
 	})
 
-	// A retry that still decodes as an incomplete JSON value - empty, or cut
-	// off mid-token - means the response never finished, not that its content
-	// was wrong. The "your JSON was invalid" retry prompt only addresses the
-	// latter, so a truncated retry earns one more independent attempt instead
-	// of failing the whole task on what may be a one-off cut stream.
+	// A truncated retry never finished, so the "invalid JSON" prompt can't fix
+	// it; give it one more attempt instead of failing the task.
 	if !isTruncatedStructuredOutput(retryErr) {
 		return StructuredResult[T]{Value: zero, Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, &StructuredValidationError{Attempts: attempts}
 	}
@@ -309,11 +306,8 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	return StructuredResult[T]{Value: secondRetryValue, Response: secondRetryResponse, SessionID: secondRetrySessionID, ValidationAttempts: attempts, AcceptedOutput: secondRetryAcceptedOutput}, nil
 }
 
-// isTruncatedStructuredOutput reports whether decodeErr means the response
-// ended before a complete JSON value was written - empty, or cut off
-// mid-token - as opposed to a well-formed value that simply failed schema
-// validation. strict decoding via encoding/json.Decoder surfaces this class
-// as io.EOF (nothing was read) or io.ErrUnexpectedEOF (stopped mid-value).
+// isTruncatedStructuredOutput reports whether decoding stopped before a
+// complete JSON value: io.EOF when empty, io.ErrUnexpectedEOF when cut off.
 func isTruncatedStructuredOutput(err error) bool {
 	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF)
 }
