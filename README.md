@@ -1227,6 +1227,7 @@ Review selection and execution flags:
 | `--reviewer-effort <effort>` | Override reviewer-stage effort with `low`, `medium`, `high`, `xhigh`, or `max`, subject to runtime support. Available for dry-run, no-post, and live reviews. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
+| `--without-discussion` | Replay the pinned review as a first pass. No review threads, thread outcomes, issue comments, or prior reviews are read, and the PR's orchestrator session and reviewer cohort sessions are neither resumed nor updated, so selection, reviewers, and rollup see only the PR title, description, and diff. The run marker (`review-run.json`), dossier discussion artifacts, and `--json` run output record `without_discussion: true`, and such a run never resumes an incomplete run made with discussion (or the reverse). Requires `--review-base-sha`, `--review-head-sha`, and `--dry-run` or `--no-post`. |
 | `--session <name>` | Override the PR's default orchestrator session with a named live-review session. Reviewer cohorts remain PR-scoped. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 
 Review progress on stderr reports the merged reviewer catalog, final selected

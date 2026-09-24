@@ -206,17 +206,32 @@ type Marker struct {
 	SchemaVersion int    `json:"schema_version"`
 	Kind          string `json:"kind"`
 	RunID         string `json:"run_id"`
+	// WithoutDiscussion records a review run that was given no PR discussion.
+	WithoutDiscussion bool `json:"without_discussion,omitempty"`
+}
+
+// MarkerOptions records run options that make one run's artifacts
+// incompatible with another run's.
+type MarkerOptions struct {
+	WithoutDiscussion bool
 }
 
 // WriteMarker persists the run-kind discriminator for an artifact root.
 func WriteMarker(artifactPath, kind, runID string) error {
+	return WriteMarkerWithOptions(artifactPath, kind, runID, MarkerOptions{})
+}
+
+// WriteMarkerWithOptions persists the run-kind discriminator and run options
+// for an artifact root.
+func WriteMarkerWithOptions(artifactPath, kind, runID string, options MarkerOptions) error {
 	if _, err := markerFile(kind); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(Marker{
-		SchemaVersion: markerSchema,
-		Kind:          kind,
-		RunID:         runID,
+		SchemaVersion:     markerSchema,
+		Kind:              kind,
+		RunID:             runID,
+		WithoutDiscussion: options.WithoutDiscussion,
 	}, "", "  ")
 	if err != nil {
 		return err

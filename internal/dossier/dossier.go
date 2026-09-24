@@ -42,9 +42,12 @@ type ChangedFile struct {
 
 // Inputs contains the source material written to raw dossier artifacts.
 type Inputs struct {
-	CurrentPR             gitprovider.PR
-	ReviewPR              gitprovider.PR
-	PinnedReview          bool
+	CurrentPR    gitprovider.PR
+	ReviewPR     gitprovider.PR
+	PinnedReview bool
+	// WithoutDiscussion drops every discussion input, even if a caller
+	// supplied some, and records that the review ran without discussion.
+	WithoutDiscussion     bool
 	ChangedFiles          []ChangedFile
 	Threads               []gitprovider.InlineThread
 	ThreadContext         []threadcontext.Thread
@@ -128,6 +131,7 @@ type dossierPRContextArtifact struct {
 
 type dossierDiscussionArtifact struct {
 	PinnedReview          bool                             `json:"pinned_review"`
+	WithoutDiscussion     bool                             `json:"without_discussion,omitempty"`
 	DiscussionOmittedNote string                           `json:"discussion_omitted_note,omitempty"`
 	TopLevelComments      []dossierTopLevelCommentArtifact `json:"top_level_comments,omitempty"`
 	InlineThreads         []dossierInlineThreadArtifact    `json:"inline_threads,omitempty"`
@@ -138,6 +142,7 @@ type DiscussionSummary struct {
 	SchemaVersion         int                      `json:"schema_version"`
 	SourceFingerprint     string                   `json:"source_fingerprint,omitempty"`
 	PinnedReview          bool                     `json:"pinned_review"`
+	WithoutDiscussion     bool                     `json:"without_discussion,omitempty"`
 	DiscussionOmittedNote string                   `json:"discussion_omitted_note,omitempty"`
 	TopLevelOmitted       int                      `json:"top_level_comments_omitted,omitempty"`
 	InlineThreadsOmitted  int                      `json:"inline_threads_omitted,omitempty"`
@@ -286,6 +291,12 @@ func WriteRaw(paths runartifact.Paths, in Inputs) error {
 			return fmt.Errorf("pipeline: create dossier dir: %w", err)
 		}
 	}
+	if in.WithoutDiscussion {
+		in.Threads = nil
+		in.ThreadContext = nil
+		in.Reviews = nil
+		in.IssueComments = nil
+	}
 
 	prContext := dossierPRContextArtifact{
 		Title:         in.CurrentPR.Title,
@@ -314,9 +325,10 @@ func WriteRaw(paths runartifact.Paths, in Inputs) error {
 	}
 	discussion := dossierDiscussionArtifact{
 		PinnedReview:          in.PinnedReview,
+		WithoutDiscussion:     in.WithoutDiscussion,
 		DiscussionOmittedNote: strings.TrimSpace(in.DiscussionOmittedNote),
 	}
-	if !in.PinnedReview {
+	if !in.PinnedReview && !in.WithoutDiscussion {
 		discussion.TopLevelComments = topLevelComments
 		discussion.InlineThreads = inlineThreads
 	}
@@ -395,10 +407,11 @@ func ReadDiscussionSummary(paths runartifact.Paths) (DiscussionSummary, error) {
 }
 
 func summarizeDiscussionArtifacts(ctx context.Context, env Env, req PreparationRequest, discussion dossierDiscussionArtifact) (DiscussionSummary, error) {
-	if discussion.PinnedReview {
+	if discussion.PinnedReview || discussion.WithoutDiscussion {
 		return DiscussionSummary{
 			SchemaVersion:         dossierSummarySchemaVersion,
-			PinnedReview:          true,
+			PinnedReview:          discussion.PinnedReview,
+			WithoutDiscussion:     discussion.WithoutDiscussion,
 			DiscussionOmittedNote: strings.TrimSpace(discussion.DiscussionOmittedNote),
 		}, nil
 	}
@@ -797,7 +810,7 @@ func renderDossierDiscussionSummaryMarkdown(summary DiscussionSummary, title str
 	var out strings.Builder
 	out.WriteString(title)
 	out.WriteString("\n\n")
-	if summary.PinnedReview {
+	if summary.PinnedReview || summary.WithoutDiscussion {
 		note := strings.TrimSpace(summary.DiscussionOmittedNote)
 		if note == "" {
 			note = "Current PR discussion omitted for pinned review."

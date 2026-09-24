@@ -80,6 +80,7 @@ type commandFlags struct {
 	reviewerEffort    string
 	reviewBaseSHA     string
 	reviewHeadSHA     string
+	withoutDiscussion bool
 	maxAgents         int
 	maxConcurrency    int
 	allowSelfReview   bool
@@ -124,6 +125,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().StringVar(&flags.reviewerEffort, "reviewer-effort", "", "Override reviewer effort for this review")
 	cmd.Flags().StringVar(&flags.reviewBaseSHA, "review-base-sha", "", "Review this base commit SHA instead of the PR's current base SHA; requires --dry-run and --review-head-sha")
 	cmd.Flags().StringVar(&flags.reviewHeadSHA, "review-head-sha", "", "Review this head commit SHA instead of the PR's current head SHA; requires --dry-run and --review-base-sha")
+	cmd.Flags().BoolVar(&flags.withoutDiscussion, "without-discussion", false, "Replay the pinned review as a first pass, without the PR's existing discussion or review sessions; requires --dry-run, --review-base-sha, and --review-head-sha")
 	cmd.Flags().IntVar(&flags.maxAgents, "max-agents", 0, "Maximum selected reviewer agents")
 	cmd.Flags().IntVar(&flags.maxConcurrency, "max-concurrency", 0, "Maximum concurrent reviewer agents")
 	cmd.Flags().BoolVar(&flags.allowSelfReview, "allow-self-review", false, "Allow reviewer credentials matching the PR author")
@@ -200,6 +202,14 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		}
 		if !flags.dryRun {
 			return exitcode.Usage(fmt.Errorf("--review-base-sha and --review-head-sha require --dry-run or --no-post"))
+		}
+	}
+	if flags.withoutDiscussion {
+		if !flags.dryRun {
+			return exitcode.Usage(fmt.Errorf("--without-discussion requires --dry-run or --no-post"))
+		}
+		if !reviewBaseChanged {
+			return exitcode.Usage(fmt.Errorf("--without-discussion requires --review-base-sha and --review-head-sha"))
 		}
 	}
 	if flags.rerun && flags.retryPosts {
@@ -348,6 +358,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ReviewerFast:                reviewerFast,
 		ReviewBaseSHA:               reviewBaseSHA,
 		ReviewHeadSHA:               reviewHeadSHA,
+		WithoutDiscussion:           flags.withoutDiscussion,
 		Rerun:                       flags.rerun,
 		FreshSession:                flags.freshSession,
 		ToolVersion:                 version.Version,
