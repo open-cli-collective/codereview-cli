@@ -261,7 +261,7 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 		_ = cleanup()
 		return nil, err
 	}
-	if err := writeClaudeBGPromptFile(req.Prompt, scratch); err != nil {
+	if err := writeClaudeBGPromptFile(req.Prompt, scratch, req.ReviewerWorkspace); err != nil {
 		_ = cleanup()
 		return nil, err
 	}
@@ -281,16 +281,14 @@ func (a *SubprocessAdapter) startClaudeBG(ctx context.Context, req Request, resu
 	}
 
 	execArgs := append(append([]string(nil), a.commandArgsPrefix...), args...)
-	launchDir := workDir
-	if req.ReviewerWorkspace != nil {
-		launchDir = req.ReviewerWorkspace.RepoDir
-	}
+	// Never launch inside the reviewer checkout: Claude would load the PR's
+	// .claude/ project settings. The checkout is reachable through --add-dir.
 	env, err := a.processEnv(req, scratch)
 	if err != nil {
 		_ = cleanup()
 		return nil, err
 	}
-	process, err := launchProcess(ctx, a.command, execArgs, launchDir, env, a.timeout, req.LogPath, cleanup, false)
+	process, err := launchProcess(ctx, a.command, execArgs, workDir, env, a.timeout, req.LogPath, cleanup, false)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +504,7 @@ func (a *SubprocessAdapter) startClaudeForeground(ctx context.Context, req Reque
 		_ = cleanup()
 		return nil, err
 	}
-	if err := writeClaudeBGPromptFile(req.Prompt, scratch); err != nil {
+	if err := writeClaudeBGPromptFile(req.Prompt, scratch, req.ReviewerWorkspace); err != nil {
 		_ = cleanup()
 		return nil, err
 	}
@@ -1974,13 +1972,20 @@ func claudeBGSprintedValue(value any) string {
 	return stringValue
 }
 
-func writeClaudeBGPromptFile(prompt string, scratch string) error {
+func writeClaudeBGPromptFile(prompt string, scratch string, workspace *ReviewerWorkspaceRequest) error {
 	promptPath := filepath.Join(scratch, claudeBGPromptFilename)
 	resultPath := filepath.Join(scratch, claudeBGResultFilename)
+	if workspace != nil {
+		prompt = claudeReviewerWorkspaceNote(workspace.RepoDir) + "\n\n" + prompt
+	}
 	if err := os.WriteFile(promptPath, []byte(wrapClaudeBGPrompt(prompt, resultPath)), 0o600); err != nil {
 		return fmt.Errorf("llm subprocess: writing Claude bg prompt file: %w", err)
 	}
 	return nil
+}
+
+func claudeReviewerWorkspaceNote(repoDir string) string {
+	return fmt.Sprintf("The pull request checkout is at %s. Repository-relative paths in these instructions are relative to it. Your shell does not start there: run commands with `cd %q && ...` or `git -C %q`.", repoDir, repoDir, repoDir)
 }
 
 func claudeBGPositionalPrompt(scratch string) string {
