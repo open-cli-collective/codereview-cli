@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -345,6 +346,7 @@ func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID stri
 	if workspace := req.ReviewerWorkspace; workspace != nil {
 		args = append(args, "--add-dir", workspace.RepoDir)
 	}
+	args = appendClaudeNoNetworkArgs(args, req)
 	if resumeSessionID != "" {
 		args = append(args, "--resume", resumeSessionID)
 	}
@@ -358,6 +360,33 @@ func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID stri
 		args = append(args, "--settings", `{"fastMode":true}`)
 	}
 	return append(args, "--", claudeBGPositionalPrompt(scratch))
+}
+
+// claudeNoNetworkDisallowedTools denies the ways a Claude reviewer could look
+// up live PR state from its workspace: web tools, the GitHub CLI, HTTP
+// clients, and git commands that talk to a remote. Bash can still reach the
+// network by other means, so this narrows the tool surface; it is not a sandbox.
+var claudeNoNetworkDisallowedTools = strings.Join([]string{
+	"WebFetch",
+	"WebSearch",
+	"Bash(gh *)",
+	"Bash(curl *)",
+	"Bash(wget *)",
+	"Bash(git fetch *)",
+	"Bash(git pull *)",
+	"Bash(git ls-remote *)",
+	"Bash(git clone *)",
+	"Bash(git remote *)",
+	"Bash(git -C * fetch *)",
+	"Bash(git -C * pull *)",
+	"Bash(git -C * ls-remote *)",
+}, ",")
+
+func appendClaudeNoNetworkArgs(args []string, req Request) []string {
+	if req.ReviewerWorkspace == nil || !req.ReviewerWorkspace.NoNetwork {
+		return args
+	}
+	return append(args, "--disallowedTools", claudeNoNetworkDisallowedTools)
 }
 
 // startClaude picks the transport for a Claude task. Background mode is the
@@ -774,6 +803,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		if workspace := req.ReviewerWorkspace; workspace != nil {
 			args = append(args, "--add-dir", workspace.RepoDir)
 		}
+		args = appendClaudeNoNetworkArgs(args, req)
 		if resumeSessionID != "" {
 			args = append(args, "--resume", resumeSessionID)
 		}
@@ -803,6 +833,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		if req.Fast {
 			args = append(args, "-c", `service_tier="fast"`)
 		}
+		args = appendCodexNoNetworkArgs(args, req)
 		if resumeSessionID != "" {
 			args = subprocessCodexResumeArgs()
 			if req.Model != "" {
@@ -814,12 +845,31 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 			if req.Fast {
 				args = append(args, "-c", `service_tier="fast"`)
 			}
+			args = appendCodexNoNetworkArgs(args, req)
 			args = append(args, resumeSessionID)
 		}
 		return append(args, "--", req.Prompt), nil
 	default:
 		return nil, fmt.Errorf("%w: unknown subprocess adapter %q", ErrUnsafeSubprocessConfig, a.kind)
 	}
+}
+
+// codexNoNetworkConfig turns off Codex web search (on by default, in cached
+// mode) and pins the workspace-write sandbox's network access off, so a
+// reviewer cannot look up live PR state.
+var codexNoNetworkConfig = []string{
+	`web_search="disabled"`,
+	"sandbox_workspace_write.network_access=false",
+}
+
+func appendCodexNoNetworkArgs(args []string, req Request) []string {
+	if req.ReviewerWorkspace == nil || !req.ReviewerWorkspace.NoNetwork {
+		return args
+	}
+	for _, value := range codexNoNetworkConfig {
+		args = append(args, "-c", value)
+	}
+	return args
 }
 
 func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string, durable bool) []string {
@@ -874,7 +924,11 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 			"--model":            true,
 			"--effort":           true,
 			"--settings":         true,
+			"--disallowedTools":  true,
 		}); err != nil {
+			return err
+		}
+		if err := validateClaudeNoNetworkArgs(checkedArgs, req); err != nil {
 			return err
 		}
 		// Exactly one transport: the detached job service (--bg) or headless
@@ -950,6 +1004,28 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 				return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 			}
 		}
+		if workspace != nil && workspace.NoNetwork {
+			configs := flagValues(checkedArgs, "-c")
+			for _, want := range codexNoNetworkConfig {
+				if !slices.Contains(configs, want) {
+					return fmt.Errorf("%w: codex_cli offline reviewer must pass -c %s", ErrUnsafeSubprocessConfig, want)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateClaudeNoNetworkArgs(args []string, req Request) error {
+	got, ok := flagValueOK(args, "--disallowedTools")
+	if req.ReviewerWorkspace != nil && req.ReviewerWorkspace.NoNetwork {
+		if !ok || got != claudeNoNetworkDisallowedTools {
+			return fmt.Errorf("%w: claude_cli offline reviewer must deny network tools", ErrUnsafeSubprocessConfig)
+		}
+		return nil
+	}
+	if ok {
+		return fmt.Errorf("%w: claude_cli must not pass --disallowedTools without an offline reviewer workspace", ErrUnsafeSubprocessConfig)
 	}
 	return nil
 }

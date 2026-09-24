@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -2583,4 +2584,94 @@ func TestSubprocessClaudeBackgroundNothingLeftBehindIsRetried(t *testing.T) {
 	// too and the primary error is what surfaces — but it must have been
 	// attempted.
 	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), true)
+}
+
+func offlineTestRequest(t *testing.T, noNetwork bool) (Request, string) {
+	t.Helper()
+	tempDir := t.TempDir()
+	scratch := filepath.Join(tempDir, "scratch")
+	repoRoot := filepath.Join(tempDir, "repo")
+	for _, dir := range []string{scratch, repoRoot} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	return Request{
+		Prompt: "prompt",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir:    repoRoot,
+			ScratchDir: scratch,
+			NoNetwork:  noNetwork,
+		},
+	}, scratch
+}
+
+func TestSubprocessClaudeDeniesNetworkToolsOnlyForOfflineReviewer(t *testing.T) {
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
+	for _, noNetwork := range []bool{false, true} {
+		req, scratch := offlineTestRequest(t, noNetwork)
+		background, err := adapter.buildArgsForSession(req, scratch, "")
+		if err != nil {
+			t.Fatalf("buildArgsForSession: %v", err)
+		}
+		resumed, err := adapter.buildArgsForSession(req, scratch, "session-1")
+		if err != nil {
+			t.Fatalf("buildArgsForSession(resume): %v", err)
+		}
+		foreground := buildClaudeForegroundArgs(req, scratch, "")
+		for name, args := range map[string][]string{"background": background, "resumed": resumed, "foreground": foreground} {
+			got, ok := flagValueOK(argsBeforePrompt(args), "--disallowedTools")
+			if noNetwork {
+				if !ok {
+					t.Fatalf("%s offline args = %v, want --disallowedTools", name, args)
+				}
+				for _, rule := range []string{"WebFetch", "WebSearch", "Bash(gh *)", "Bash(curl *)", "Bash(wget *)", "Bash(git fetch *)", "Bash(git pull *)", "Bash(git ls-remote *)"} {
+					if !slices.Contains(strings.Split(got, ","), rule) {
+						t.Fatalf("%s disallowed tools = %q, missing %q", name, got, rule)
+					}
+				}
+			} else if ok {
+				t.Fatalf("%s args = %v, want no --disallowedTools without the offline flag", name, args)
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("%s validateArgs(noNetwork=%v): %v", name, noNetwork, err)
+			}
+		}
+		if noNetwork {
+			if err := adapter.validateArgs(removeFlagPair(background, "--disallowedTools"), scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+				t.Fatalf("validateArgs without deny rules = %v, want unsafe config", err)
+			}
+		}
+	}
+}
+
+func TestSubprocessCodexDisablesNetworkOnlyForOfflineReviewer(t *testing.T) {
+	adapter := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
+	for _, noNetwork := range []bool{false, true} {
+		req, scratch := offlineTestRequest(t, noNetwork)
+		started, err := adapter.buildArgsForSession(req, scratch, "")
+		if err != nil {
+			t.Fatalf("buildArgsForSession: %v", err)
+		}
+		resumed, err := adapter.buildArgsForSession(req, scratch, "session-1")
+		if err != nil {
+			t.Fatalf("buildArgsForSession(resume): %v", err)
+		}
+		for name, args := range map[string][]string{"started": started, "resumed": resumed} {
+			configs := flagValues(argsBeforePrompt(args), "-c")
+			for _, want := range []string{`web_search="disabled"`, "sandbox_workspace_write.network_access=false"} {
+				if slices.Contains(configs, want) != noNetwork {
+					t.Fatalf("%s -c values = %v, want %q present=%v", name, configs, want, noNetwork)
+				}
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("%s validateArgs(noNetwork=%v): %v", name, noNetwork, err)
+			}
+		}
+		if noNetwork {
+			if err := adapter.validateArgs(removeFlagPair(started, "-c"), scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+				t.Fatalf("validateArgs without network config = %v, want unsafe config", err)
+			}
+		}
+	}
 }

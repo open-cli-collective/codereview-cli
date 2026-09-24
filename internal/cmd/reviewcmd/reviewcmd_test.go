@@ -609,6 +609,7 @@ func TestReviewRejectsWithoutDiscussionOutsidePinnedDryRun(t *testing.T) {
 		{name: "dry run without SHAs", args: []string{"--dry-run", "--without-discussion"}, wantErr: "--without-discussion requires --review-base-sha and --review-head-sha"},
 		{name: "no post without SHAs", args: []string{"--no-post", "--without-discussion"}, wantErr: "--without-discussion requires --review-base-sha and --review-head-sha"},
 		{name: "dry run with base only", args: []string{"--dry-run", "--review-base-sha", "1111111", "--without-discussion"}, wantErr: "must be set together"},
+		{name: "fresh session", args: []string{"--dry-run", "--review-base-sha", "1111111", "--review-head-sha", "2222222", "--without-discussion", "--fresh-session"}, wantErr: "--fresh-session cannot be used with --without-discussion"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -705,6 +705,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ChangedFiles:     prepared.changedFiles,
 		Artifacts:        prepared.artifacts,
 		HeadRefNamespace: opts.Provider.Capabilities().HeadRefNamespace,
+		Offline:          req.WithoutDiscussion,
 	}); err != nil {
 		if errors.Is(err, workbench.ErrUnsafeFetchRef) || errors.Is(err, workbench.ErrInvalidRepositoryIdentity) {
 			return Result{}, Failure(FailureTerminal, err)
@@ -2145,7 +2146,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	}
 	agentID := agent.ID
 	taskID := reviewerTaskID(agent.ID)
-	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
+	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion})
 	if err != nil {
 		return reviewerExecution{}, err
 	}
@@ -2253,7 +2254,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return repairSetupFailed(err)
 	}
 	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
-	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion})
 	if err != nil {
 		return repairSetupFailed(err)
 	}

@@ -194,6 +194,9 @@ func TestDryRunWithoutDiscussionReplaysAsFirstPass(t *testing.T) {
 			}
 		}
 	}
+	if reviewer := adapter.Requests()[1]; reviewer.ReviewerWorkspace == nil || !reviewer.ReviewerWorkspace.NoNetwork {
+		t.Fatalf("reviewer workspace = %#v, want network tools denied", reviewer.ReviewerWorkspace)
+	}
 	if !strings.Contains(prompts[0], "Replay title") || !strings.Contains(prompts[0], "Replay description stays visible.") {
 		t.Fatalf("selection prompt lost PR title/description:\n%s", prompts[0])
 	}
@@ -259,6 +262,11 @@ func TestDryRunPinnedWithDiscussionStillResumesPriorSessions(t *testing.T) {
 	}
 	if !resumed[priorReviewerSession] || !resumed[priorOrchestratorSession] {
 		t.Fatalf("resumes = %#v, want prior reviewer and orchestrator sessions", adapter.Resumes())
+	}
+	for _, resume := range adapter.Resumes() {
+		if workspace := resume.Request.ReviewerWorkspace; workspace != nil && workspace.NoNetwork {
+			t.Fatalf("reviewer workspace = %#v, want network tools left alone without the flag", workspace)
+		}
 	}
 	if result.WithoutDiscussion {
 		t.Fatal("result.WithoutDiscussion = true, want false")
