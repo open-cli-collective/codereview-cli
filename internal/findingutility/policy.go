@@ -73,19 +73,19 @@ func ValidateAnswers(questions QuestionSet, response EvaluationResponse, toleran
 			return fmt.Errorf("findingutility: answer %q type %q does not match %q", question.ID, answer.Type, question.Type)
 		}
 		switch question.Type {
-		case QuestionTypeNoul:
-			if answer.Noul == nil || (response.decoded && !answer.Noul.present) || answer.Choice != nil || answer.Score != nil || !finiteProbability(answer.Noul.PTrue) {
-				return fmt.Errorf("findingutility: Noul %q has invalid p_true", question.ID)
+		case QuestionTypeBinary:
+			if answer.Binary == nil || (response.decoded && !answer.Binary.present) || answer.Choice != nil || answer.Score != nil || !finiteProbability(answer.Binary.PTrue) {
+				return fmt.Errorf("findingutility: Binary %q has invalid p_true", question.ID)
 			}
 		case QuestionTypeChoice:
-			if answer.Choice == nil || answer.Noul != nil || answer.Score != nil {
+			if answer.Choice == nil || answer.Binary != nil || answer.Score != nil {
 				return fmt.Errorf("findingutility: Choice %q is missing", question.ID)
 			}
 			if err := validateChoice(question, *answer.Choice, tolerance.ProbabilitySum); err != nil {
 				return fmt.Errorf("findingutility: Choice %q: %w", question.ID, err)
 			}
 		case QuestionTypeScore:
-			if answer.Score == nil || answer.Noul != nil || answer.Choice != nil {
+			if answer.Score == nil || answer.Binary != nil || answer.Choice != nil {
 				return fmt.Errorf("findingutility: Score %q is missing", question.ID)
 			}
 			if err := validateScore(question, *answer.Score, tolerance); err != nil {
@@ -222,7 +222,7 @@ func decide(control Control, answers AnswerSet, thresholds *ThresholdSet, allowT
 			decision.ReasonCodes = append(decision.ReasonCodes, reason)
 		}
 	}
-	modelProtectionSignal := hasProtectionNoulSignal(control, answers, *thresholds)
+	modelProtectionSignal := hasProtectionBinarySignal(control, answers, *thresholds)
 
 	// Independent guards are applied after the counterfactual utility layer so
 	// protected/major/ineligible findings retain a visible model candidate while
@@ -265,25 +265,25 @@ func decide(control Control, answers AnswerSet, thresholds *ThresholdSet, allowT
 	}
 
 	action := suppressionActionForPrimary(answers)
-	if answers[NoulMissingDecisionContext.String()].Noul != nil {
-		classification := classifyNoul(NoulMissingDecisionContext, action, answers, *thresholds)
-		if classification != noulFalse {
-			if classification == noulInvalid {
+	if answers[BinaryMissingDecisionContext.String()].Binary != nil {
+		classification := classifyBinary(BinaryMissingDecisionContext, action, answers, *thresholds)
+		if classification != binaryFalse {
+			if classification == binaryInvalid {
 				return withReason(decision, ReasonInvalidResponse)
 			}
 			return withAbstainReason(decision, ReasonContextUncertain)
 		}
 	}
-	if answers[NoulRemediationRequiredForIntent.String()].Noul != nil {
+	if answers[BinaryRemediationRequiredForIntent.String()].Binary != nil {
 		if remediationRetentionBand(answers, *thresholds, action) {
 			return withReason(decision, ReasonNecessityRetention)
 		}
-		classification := classifyNoul(NoulRemediationRequiredForIntent, action, answers, *thresholds)
-		if classification == noulInvalid {
+		classification := classifyBinary(BinaryRemediationRequiredForIntent, action, answers, *thresholds)
+		if classification == binaryInvalid {
 			return withReason(decision, ReasonInvalidResponse)
 		}
-		if classification != noulFalse {
-			if classification == noulTrue {
+		if classification != binaryFalse {
+			if classification == binaryTrue {
 				return withReason(decision, ReasonNecessitySignal)
 			}
 			return withAbstainReason(decision, ReasonUncertainAnswer)
@@ -377,27 +377,27 @@ func decideUtility(control Control, answers AnswerSet, thresholds ThresholdSet, 
 	}
 	decision.CandidateStatus = CandidateAvailable
 	action := suppressionActionForPrimary(answers)
-	if answers[NoulMissingDecisionContext.String()].Noul == nil || answers[NoulRemediationRequiredForIntent.String()].Noul == nil {
+	if answers[BinaryMissingDecisionContext.String()].Binary == nil || answers[BinaryRemediationRequiredForIntent.String()].Binary == nil {
 		return withAbstainReason(decision, ReasonInvalidResponse)
 	}
-	missingContext := classifyNoul(NoulMissingDecisionContext, action, answers, thresholds)
-	if missingContext == noulInvalid {
+	missingContext := classifyBinary(BinaryMissingDecisionContext, action, answers, thresholds)
+	if missingContext == binaryInvalid {
 		return withReason(decision, ReasonInvalidResponse)
 	}
-	if missingContext != noulFalse {
+	if missingContext != binaryFalse {
 		return withAbstainReason(decision, ReasonContextUncertain)
 	}
-	necessity := classifyNoul(NoulRemediationRequiredForIntent, action, answers, thresholds)
-	if necessity == noulInvalid {
+	necessity := classifyBinary(BinaryRemediationRequiredForIntent, action, answers, thresholds)
+	if necessity == binaryInvalid {
 		return withReason(decision, ReasonInvalidResponse)
 	}
 	if remediationRetentionBand(answers, thresholds, action) {
 		return withReason(decision, ReasonNecessityRetention)
 	}
-	if necessity == noulTrue {
+	if necessity == binaryTrue {
 		return withReason(decision, ReasonNecessitySignal)
 	}
-	if necessity != noulFalse {
+	if necessity != binaryFalse {
 		return withAbstainReason(decision, ReasonUncertainAnswer)
 	}
 	switch primary.Choice.Choice {
@@ -481,90 +481,92 @@ func suppressionActionForPrimary(answers AnswerSet) Disposition {
 	}
 }
 
-type noulClassification string
+type binaryClassification string
 
 const (
-	noulFalse     noulClassification = "false"
-	noulTrue      noulClassification = "true"
-	noulUncertain noulClassification = "uncertain"
-	noulInvalid   noulClassification = "invalid"
+	binaryFalse     binaryClassification = "false"
+	binaryTrue      binaryClassification = "true"
+	binaryUncertain binaryClassification = "uncertain"
+	binaryInvalid   binaryClassification = "invalid"
 )
 
-func classifyNoul(id NoulID, action Disposition, answers AnswerSet, thresholds ThresholdSet) noulClassification {
+func classifyBinary(id BinaryID, action Disposition, answers AnswerSet, thresholds ThresholdSet) binaryClassification {
 	answer, ok := answers[id.String()]
-	if !ok || answer.Noul == nil || !finiteProbability(answer.Noul.PTrue) {
-		return noulInvalid
+	if !ok || answer.Binary == nil || !finiteProbability(answer.Binary.PTrue) {
+		return binaryInvalid
 	}
-	band, ok := thresholds.NoulBands[id]
+	band, ok := thresholds.BinaryBands[id]
 	if !ok {
-		return noulInvalid
+		return binaryInvalid
 	}
 	falseSuppress, falseOK := band.FalseSuppress[action]
 	trueSuppress, trueOK := band.TrueSuppress[action]
 	if !falseOK || !trueOK {
-		return noulInvalid
+		return binaryInvalid
 	}
-	if answer.Noul.PTrue < falseSuppress {
-		return noulFalse
+	if answer.Binary.PTrue < falseSuppress {
+		return binaryFalse
 	}
-	if answer.Noul.PTrue > trueSuppress {
-		return noulTrue
+	if answer.Binary.PTrue > trueSuppress {
+		return binaryTrue
 	}
-	return noulUncertain
+	return binaryUncertain
 }
 
 // remediationRetentionBand is the conservative interval between the
 // retention boundary and the stricter suppression boundary for
 // remediation_required_for_intent. A probability in this band must veto both
 // the model candidate and the guarded proposal. Equality with true_retain
-// remains uncertain, while classifyNoul retains the strict false-suppression
+// remains uncertain, while classifyBinary retains the strict false-suppression
 // comparison and the strict true-suppression comparison.
 func remediationRetentionBand(answers AnswerSet, thresholds ThresholdSet, action Disposition) bool {
-	answer, ok := answers[NoulRemediationRequiredForIntent.String()]
-	if !ok || answer.Noul == nil || !finiteProbability(answer.Noul.PTrue) {
+	answer, ok := answers[BinaryRemediationRequiredForIntent.String()]
+	if !ok || answer.Binary == nil || !finiteProbability(answer.Binary.PTrue) {
 		return false
 	}
-	band, ok := thresholds.NoulBands[NoulRemediationRequiredForIntent]
+	band, ok := thresholds.BinaryBands[BinaryRemediationRequiredForIntent]
 	trueSuppress, suppressOK := band.TrueSuppress[action]
 	if !ok || !suppressOK || !finiteProbability(band.TrueRetain) || !finiteProbability(trueSuppress) {
 		return false
 	}
-	return answer.Noul.PTrue > band.TrueRetain && answer.Noul.PTrue <= trueSuppress
+	return answer.Binary.PTrue > band.TrueRetain && answer.Binary.PTrue <= trueSuppress
 }
 
 func lowValueSignature(answers AnswerSet, thresholds ThresholdSet) bool {
-	if classifyNoul(NoulAdjacentImprovement, DispositionSuppressLowValue, answers, thresholds) != noulFalse {
+	if classifyBinary(BinaryAdjacentImprovement, DispositionSuppressLowValue, answers, thresholds) != binaryFalse {
 		return false
 	}
-	grounded := classifyNoul(NoulGroundedInEvidence, DispositionSuppressLowValue, answers, thresholds)
-	actionable := classifyNoul(NoulActionable, DispositionSuppressLowValue, answers, thresholds)
-	speculative := classifyNoul(NoulSpeculative, DispositionSuppressLowValue, answers, thresholds)
-	if grounded == noulInvalid || actionable == noulInvalid || speculative == noulInvalid || !definiteNoul(grounded) || !definiteNoul(actionable) || !definiteNoul(speculative) {
+	grounded := classifyBinary(BinaryGroundedInEvidence, DispositionSuppressLowValue, answers, thresholds)
+	actionable := classifyBinary(BinaryActionable, DispositionSuppressLowValue, answers, thresholds)
+	speculative := classifyBinary(BinarySpeculative, DispositionSuppressLowValue, answers, thresholds)
+	if grounded == binaryInvalid || actionable == binaryInvalid || speculative == binaryInvalid || !definiteBinary(grounded) || !definiteBinary(actionable) || !definiteBinary(speculative) {
 		return false
 	}
-	if grounded != noulFalse && actionable != noulFalse && speculative != noulTrue {
+	if grounded != binaryFalse && actionable != binaryFalse && speculative != binaryTrue {
 		return false
 	}
-	return definiteNoul(classifyNoul(NoulIntroducedOrMateriallyAffected, DispositionSuppressLowValue, answers, thresholds))
+	return definiteBinary(classifyBinary(BinaryIntroducedOrMateriallyAffected, DispositionSuppressLowValue, answers, thresholds))
 }
 
 func scopeExpansionSignature(answers AnswerSet, thresholds ThresholdSet) bool {
-	return classifyNoul(NoulGroundedInEvidence, DispositionSuppressScopeExpansion, answers, thresholds) == noulTrue &&
-		classifyNoul(NoulActionable, DispositionSuppressScopeExpansion, answers, thresholds) == noulTrue &&
-		classifyNoul(NoulAdjacentImprovement, DispositionSuppressScopeExpansion, answers, thresholds) == noulTrue &&
-		classifyNoul(NoulSpeculative, DispositionSuppressScopeExpansion, answers, thresholds) == noulFalse &&
-		classifyNoul(NoulIntroducedOrMateriallyAffected, DispositionSuppressScopeExpansion, answers, thresholds) == noulFalse
+	return classifyBinary(BinaryGroundedInEvidence, DispositionSuppressScopeExpansion, answers, thresholds) == binaryTrue &&
+		classifyBinary(BinaryActionable, DispositionSuppressScopeExpansion, answers, thresholds) == binaryTrue &&
+		classifyBinary(BinaryAdjacentImprovement, DispositionSuppressScopeExpansion, answers, thresholds) == binaryTrue &&
+		classifyBinary(BinarySpeculative, DispositionSuppressScopeExpansion, answers, thresholds) == binaryFalse &&
+		classifyBinary(BinaryIntroducedOrMateriallyAffected, DispositionSuppressScopeExpansion, answers, thresholds) == binaryFalse
 }
 
 func duplicateSignature(answers AnswerSet, thresholds ThresholdSet) bool {
-	return classifyNoul(NoulGroundedInEvidence, DispositionSuppressDuplicate, answers, thresholds) == noulTrue &&
-		classifyNoul(NoulActionable, DispositionSuppressDuplicate, answers, thresholds) == noulTrue &&
-		classifyNoul(NoulSpeculative, DispositionSuppressDuplicate, answers, thresholds) == noulFalse &&
-		definiteNoul(classifyNoul(NoulAdjacentImprovement, DispositionSuppressDuplicate, answers, thresholds)) &&
-		definiteNoul(classifyNoul(NoulIntroducedOrMateriallyAffected, DispositionSuppressDuplicate, answers, thresholds))
+	return classifyBinary(BinaryGroundedInEvidence, DispositionSuppressDuplicate, answers, thresholds) == binaryTrue &&
+		classifyBinary(BinaryActionable, DispositionSuppressDuplicate, answers, thresholds) == binaryTrue &&
+		classifyBinary(BinarySpeculative, DispositionSuppressDuplicate, answers, thresholds) == binaryFalse &&
+		definiteBinary(classifyBinary(BinaryAdjacentImprovement, DispositionSuppressDuplicate, answers, thresholds)) &&
+		definiteBinary(classifyBinary(BinaryIntroducedOrMateriallyAffected, DispositionSuppressDuplicate, answers, thresholds))
 }
 
-func definiteNoul(value noulClassification) bool { return value == noulFalse || value == noulTrue }
+func definiteBinary(value binaryClassification) bool {
+	return value == binaryFalse || value == binaryTrue
+}
 
 func scoreGuard(control Control, answers AnswerSet, thresholds ThresholdSet) string {
 	if !thresholds.IncludeUtilityScore {
@@ -697,15 +699,15 @@ func choicePassesGateWithGate(answer *ChoiceAnswer, gate ChoiceGate, choice stri
 	return true
 }
 
-func hasProtectionNoulSignal(_ Control, answers AnswerSet, thresholds ThresholdSet) bool {
-	protected := []NoulID{NoulPossibleSecurityRisk, NoulPossibleCorrectnessRisk, NoulPossibleAuthorizationRisk, NoulPossiblePrivacyRisk, NoulPossibleDataLossRisk, NoulPossibleOperationalRisk}
+func hasProtectionBinarySignal(_ Control, answers AnswerSet, thresholds ThresholdSet) bool {
+	protected := []BinaryID{BinaryPossibleSecurityRisk, BinaryPossibleCorrectnessRisk, BinaryPossibleAuthorizationRisk, BinaryPossiblePrivacyRisk, BinaryPossibleDataLossRisk, BinaryPossibleOperationalRisk}
 	for _, id := range protected {
 		answer := answers[id.String()]
-		band, ok := thresholds.NoulBands[id]
-		if !ok || answer.Noul == nil || !finiteProbability(answer.Noul.PTrue) {
+		band, ok := thresholds.BinaryBands[id]
+		if !ok || answer.Binary == nil || !finiteProbability(answer.Binary.PTrue) {
 			return true
 		}
-		if answer.Noul.PTrue >= band.FalseRetain {
+		if answer.Binary.PTrue >= band.FalseRetain {
 			return true
 		}
 	}
@@ -726,15 +728,15 @@ func validThresholdSet(thresholds ThresholdSet) bool {
 			return false
 		}
 	}
-	if len(thresholds.NoulBands) != len(allNoulIDs) {
+	if len(thresholds.BinaryBands) != len(allBinaryIDs) {
 		return false
 	}
-	for _, id := range allNoulIDs {
-		band, ok := thresholds.NoulBands[id]
+	for _, id := range allBinaryIDs {
+		band, ok := thresholds.BinaryBands[id]
 		if !ok || !finiteProbability(band.FalseRetain) || !finiteProbability(band.TrueRetain) || band.TrueRetain <= band.FalseRetain {
 			return false
 		}
-		protected := id == NoulPossibleSecurityRisk || id == NoulPossibleCorrectnessRisk || id == NoulPossibleAuthorizationRisk || id == NoulPossiblePrivacyRisk || id == NoulPossibleDataLossRisk || id == NoulPossibleOperationalRisk
+		protected := id == BinaryPossibleSecurityRisk || id == BinaryPossibleCorrectnessRisk || id == BinaryPossibleAuthorizationRisk || id == BinaryPossiblePrivacyRisk || id == BinaryPossibleDataLossRisk || id == BinaryPossibleOperationalRisk
 		if protected {
 			continue
 		}
@@ -1063,9 +1065,9 @@ func cloneAnswers(answers AnswerSet) AnswerSet {
 	out := make(AnswerSet, len(answers))
 	for key, answer := range answers {
 		clone := answer
-		if answer.Noul != nil {
-			value := *answer.Noul
-			clone.Noul = &value
+		if answer.Binary != nil {
+			value := *answer.Binary
+			clone.Binary = &value
 		}
 		if answer.Choice != nil {
 			value := *answer.Choice

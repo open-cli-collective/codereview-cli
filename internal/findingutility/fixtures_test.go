@@ -26,7 +26,7 @@ type policyFixture struct {
 	PolicyVersion         string                `json:"policy_version"`
 	ThresholdsAreTestOnly bool                  `json:"thresholds_are_test_only"`
 	Coverage              []string              `json:"coverage"`
-	NoulIDs               []string              `json:"noul_ids"`
+	BinaryIDs             []string              `json:"binary_ids"`
 	StrictThresholds      []strictThresholdCase `json:"strict_threshold_cases"`
 	Cases                 []policyCase          `json:"cases"`
 }
@@ -98,12 +98,12 @@ func TestPolicyAndGoldenFixturesExecuteAllDeclaredBranches(t *testing.T) {
 	if fixture.SchemaVersion != 1 || fixture.PolicyVersion != PolicyVersion || !fixture.ThresholdsAreTestOnly {
 		t.Fatalf("policy fixture identity = %#v", fixture)
 	}
-	if len(fixture.NoulIDs) != len(allNoulIDs) {
-		t.Fatalf("policy fixture Noul count = %d, want %d", len(fixture.NoulIDs), len(allNoulIDs))
+	if len(fixture.BinaryIDs) != len(allBinaryIDs) {
+		t.Fatalf("policy fixture Binary count = %d, want %d", len(fixture.BinaryIDs), len(allBinaryIDs))
 	}
-	for index, id := range allNoulIDs {
-		if fixture.NoulIDs[index] != id.String() {
-			t.Fatalf("policy fixture Noul[%d] = %q, want %q", index, fixture.NoulIDs[index], id)
+	for index, id := range allBinaryIDs {
+		if fixture.BinaryIDs[index] != id.String() {
+			t.Fatalf("policy fixture Binary[%d] = %q, want %q", index, fixture.BinaryIDs[index], id)
 		}
 	}
 	for _, thresholdCase := range fixture.StrictThresholds {
@@ -153,21 +153,21 @@ func executeStrictThresholdFixture(t *testing.T, testCase strictThresholdCase) {
 	t.Helper()
 	thresholds := testThresholds(false)
 	control, questions := testControl(t, false, false)
-	answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{})
+	answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{})
 	switch testCase.ID {
 	case "false_suppress_equality":
-		answers[NoulGroundedInEvidence.String()].Noul.PTrue = 0.2
-		if got := classifyNoul(NoulGroundedInEvidence, DispositionSuppressLowValue, answers, thresholds); got != noulUncertain {
+		answers[BinaryGroundedInEvidence.String()].Binary.PTrue = 0.2
+		if got := classifyBinary(BinaryGroundedInEvidence, DispositionSuppressLowValue, answers, thresholds); got != binaryUncertain {
 			t.Fatalf("false suppress equality = %s, want uncertain", got)
 		}
 	case "true_suppress_equality":
-		answers[NoulGroundedInEvidence.String()].Noul.PTrue = 0.8
-		if got := classifyNoul(NoulGroundedInEvidence, DispositionSuppressLowValue, answers, thresholds); got != noulUncertain {
+		answers[BinaryGroundedInEvidence.String()].Binary.PTrue = 0.8
+		if got := classifyBinary(BinaryGroundedInEvidence, DispositionSuppressLowValue, answers, thresholds); got != binaryUncertain {
 			t.Fatalf("true suppress equality = %s, want uncertain", got)
 		}
 	case "protected_false_retain_equality":
-		answers[NoulPossibleOperationalRisk.String()].Noul.PTrue = 0.3
-		if !hasProtectionNoulSignal(control, answers, thresholds) {
+		answers[BinaryPossibleOperationalRisk.String()].Binary.PTrue = 0.3
+		if !hasProtectionBinarySignal(control, answers, thresholds) {
 			t.Fatal("protected false-retain equality did not retain")
 		}
 	case "choice_confidence_equality":
@@ -187,7 +187,7 @@ func executeStrictThresholdFixture(t *testing.T, testCase strictThresholdCase) {
 	case "score_confidence_equality":
 		control, questions = testControl(t, true, false)
 		thresholds = testThresholds(true)
-		answers = testAnswers(questions, choiceLowValue, map[NoulID]float64{})
+		answers = testAnswers(questions, choiceLowValue, map[BinaryID]float64{})
 		score := answers[utilityScoreQuestionID]
 		score.Score.Confidence = thresholds.ScoreGate.ConfidenceSuppress
 		answers[utilityScoreQuestionID] = score
@@ -234,17 +234,17 @@ func executePolicyFixtureCase(t *testing.T, testCase policyCase) {
 		return
 	case "missing_score":
 		control, questions := testControl(t, true, false)
-		answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{})
+		answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{})
 		delete(answers, utilityScoreQuestionID)
 		decision := decideWithTestOnlyThresholds(control, answers, testThresholds(true))
 		assertFixtureDecision(t, decision, testCase)
 		return
 	case "invalid_nan":
 		control, questions := testControl(t, false, false)
-		answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{})
-		value := answers[NoulGroundedInEvidence.String()]
-		value.Noul.PTrue = math.NaN()
-		answers[NoulGroundedInEvidence.String()] = value
+		answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{})
+		value := answers[BinaryGroundedInEvidence.String()]
+		value.Binary.PTrue = math.NaN()
+		answers[BinaryGroundedInEvidence.String()] = value
 		decision := decideWithTestOnlyThresholds(control, answers, testThresholds(false))
 		assertFixtureDecision(t, decision, testCase)
 		return
@@ -255,22 +255,22 @@ func executePolicyFixtureCase(t *testing.T, testCase policyCase) {
 	if testCase.Eligibility == "unknown" {
 		control.Eligibility.Status = EligibilityUnknown
 	}
-	answers := testAnswers(questions, testCase.Primary, map[NoulID]float64{})
+	answers := testAnswers(questions, testCase.Primary, map[BinaryID]float64{})
 	if testCase.ID == "keep_required_outside_diff" {
-		answers[NoulRemediationRequiredForIntent.String()].Noul.PTrue = 0.9
+		answers[BinaryRemediationRequiredForIntent.String()].Binary.PTrue = 0.9
 	}
 	if testCase.ID == "suppress_low_value_candidate" {
-		answers = testAnswers(questions, choiceLowValue, map[NoulID]float64{NoulGroundedInEvidence: 0.1, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.1, NoulSpeculative: 0.99, NoulActionable: 0.9})
+		answers = testAnswers(questions, choiceLowValue, map[BinaryID]float64{BinaryGroundedInEvidence: 0.1, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.1, BinarySpeculative: 0.99, BinaryActionable: 0.9})
 	}
 	if testCase.ID == "suppress_scope_expansion_candidate" {
-		answers = testAnswers(questions, choiceScopeExpansion, map[NoulID]float64{NoulGroundedInEvidence: 0.9, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.9, NoulSpeculative: 0.1, NoulActionable: 0.9})
+		answers = testAnswers(questions, choiceScopeExpansion, map[BinaryID]float64{BinaryGroundedInEvidence: 0.9, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.9, BinarySpeculative: 0.1, BinaryActionable: 0.9})
 	}
 	if testCase.ID == "suppress_duplicate_candidate" {
-		answers[NoulGroundedInEvidence.String()].Noul.PTrue = 0.9
-		answers[NoulActionable.String()].Noul.PTrue = 0.9
-		answers[NoulSpeculative.String()].Noul.PTrue = 0.1
-		answers[NoulAdjacentImprovement.String()].Noul.PTrue = 0.1
-		answers[NoulIntroducedOrMateriallyAffected.String()].Noul.PTrue = 0.1
+		answers[BinaryGroundedInEvidence.String()].Binary.PTrue = 0.9
+		answers[BinaryActionable.String()].Binary.PTrue = 0.9
+		answers[BinarySpeculative.String()].Binary.PTrue = 0.1
+		answers[BinaryAdjacentImprovement.String()].Binary.PTrue = 0.1
+		answers[BinaryIntroducedOrMateriallyAffected.String()].Binary.PTrue = 0.1
 		duplicate := answers[duplicateRepresentativeID]
 		duplicate.Choice.Choice = "candidate_0"
 		for option := range duplicate.Choice.Probabilities {
@@ -306,13 +306,13 @@ func executeGoldenFixture(t *testing.T, golden goldenFixture) {
 	for _, finding := range golden.Findings {
 		control, questions := testControl(t, false, false)
 		control.OriginalSeverity = finding.Severity
-		answers := testAnswers(questions, choiceRequired, map[NoulID]float64{})
+		answers := testAnswers(questions, choiceRequired, map[BinaryID]float64{})
 		switch finding.FindingID {
 		case "F-002":
-			answers = testAnswers(questions, choiceScopeExpansion, map[NoulID]float64{NoulGroundedInEvidence: 0.9, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.9, NoulSpeculative: 0.1, NoulActionable: 0.9})
+			answers = testAnswers(questions, choiceScopeExpansion, map[BinaryID]float64{BinaryGroundedInEvidence: 0.9, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.9, BinarySpeculative: 0.1, BinaryActionable: 0.9})
 		case "F-003":
 			control.OriginalSeverity = "major"
-			answers = testAnswers(questions, choiceLowValue, map[NoulID]float64{NoulGroundedInEvidence: 0.1, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.1, NoulSpeculative: 0.99, NoulActionable: 0.9})
+			answers = testAnswers(questions, choiceLowValue, map[BinaryID]float64{BinaryGroundedInEvidence: 0.1, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.1, BinarySpeculative: 0.99, BinaryActionable: 0.9})
 		}
 		decision := decideWithTestOnlyThresholds(control, answers, testThresholds(false))
 		if decision.ProposedDecision != finding.ExpectedProposed || decision.EffectiveDecision != finding.ExpectedEffective {

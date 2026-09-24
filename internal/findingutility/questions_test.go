@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestRubricAndQuestionsFreezeThirteenNoulsAndDynamicCandidates(t *testing.T) {
+func TestRubricAndQuestionsFreezeThirteenBinariesAndDynamicCandidates(t *testing.T) {
 	rubric, err := LoadRubric()
 	if err != nil {
 		t.Fatal(err)
@@ -21,12 +21,12 @@ func TestRubricAndQuestionsFreezeThirteenNoulsAndDynamicCandidates(t *testing.T)
 	if len(questions.Questions) != 15 {
 		t.Fatalf("disabled-score question count = %d, want 15", len(questions.Questions))
 	}
-	seen := map[NoulID]bool{}
+	seen := map[BinaryID]bool{}
 	for _, question := range questions.Questions {
-		if question.Type == QuestionTypeNoul {
-			seen[NoulID(question.ID)] = true
+		if question.Type == QuestionTypeBinary {
+			seen[BinaryID(question.ID)] = true
 			if len(question.Criteria) != 2 || question.Criteria["true"] == "" || question.Criteria["false"] == "" {
-				t.Fatalf("Noul %s lacks exact true/false criteria", question.ID)
+				t.Fatalf("Binary %s lacks exact true/false criteria", question.ID)
 			}
 		}
 		if question.ID == primaryUtilityQuestionID && question.Instructions[:len(sharedInstructionPrefix)] != sharedInstructionPrefix {
@@ -38,8 +38,8 @@ func TestRubricAndQuestionsFreezeThirteenNoulsAndDynamicCandidates(t *testing.T)
 			}
 		}
 	}
-	if len(seen) != len(allNoulIDs) {
-		t.Fatalf("Noul IDs = %#v, want %d", seen, len(allNoulIDs))
+	if len(seen) != len(allBinaryIDs) {
+		t.Fatalf("Binary IDs = %#v, want %d", seen, len(allBinaryIDs))
 	}
 	if !ValidDigest(questions.Digest) {
 		t.Fatalf("question digest %q is invalid", questions.Digest)
@@ -57,16 +57,16 @@ func TestRubricAndQuestionsFreezeThirteenNoulsAndDynamicCandidates(t *testing.T)
 
 func TestValidateAnswersRejectsRepairAndAcceptsExactFixtureResponse(t *testing.T) {
 	questions := testQuestions(t, false, false)
-	answers := testAnswers(questions, choiceRequired, map[NoulID]float64{})
+	answers := testAnswers(questions, choiceRequired, map[BinaryID]float64{})
 	response := EvaluationResponse{SchemaVersion: 1, RequestedModel: "fixture:utility-v1", ResolvedModel: "fixture:utility-v1", Answers: answers}
 	if err := ValidateAnswers(questions, response, NumericTolerance{ProbabilitySum: 0, ScoreMean: 0}); err != nil {
 		t.Fatalf("exact fixture response rejected: %v", err)
 	}
 
 	bad := cloneAnswers(answers)
-	delete(bad, NoulGroundedInEvidence.String())
+	delete(bad, BinaryGroundedInEvidence.String())
 	if err := ValidateAnswers(questions, EvaluationResponse{Answers: bad}, NumericTolerance{}); err == nil {
-		t.Fatal("missing required Noul must fail")
+		t.Fatal("missing required Binary must fail")
 	}
 	bad = cloneAnswers(answers)
 	choice := bad[primaryUtilityQuestionID]
@@ -83,20 +83,20 @@ func TestValidateAnswersRejectsRepairAndAcceptsExactFixtureResponse(t *testing.T
 		t.Fatal("unrepaired probability sum must fail")
 	}
 	bad = cloneAnswers(answers)
-	bad["unknown"] = Answer{Type: QuestionTypeNoul, Noul: &NoulAnswer{PTrue: 0}}
+	bad["unknown"] = Answer{Type: QuestionTypeBinary, Binary: &BinaryAnswer{PTrue: 0}}
 	if err := ValidateAnswers(questions, EvaluationResponse{Answers: bad}, NumericTolerance{}); err == nil {
 		t.Fatal("unknown answer ID must fail")
 	}
 }
 
-func TestNoulJSONRejectsMissingAndNullProbability(t *testing.T) {
+func TestBinaryJSONRejectsMissingAndNullProbability(t *testing.T) {
 	for _, input := range []string{`{}`, `{"p_true":null}`} {
-		var answer NoulAnswer
+		var answer BinaryAnswer
 		if err := json.Unmarshal([]byte(input), &answer); err == nil {
-			t.Fatalf("Noul JSON %s unexpectedly accepted", input)
+			t.Fatalf("Binary JSON %s unexpectedly accepted", input)
 		}
 	}
-	var answer NoulAnswer
+	var answer BinaryAnswer
 	if err := json.Unmarshal([]byte(`{"p_true":0}`), &answer); err != nil {
 		t.Fatalf("zero p_true rejected: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestNoulJSONRejectsMissingAndNullProbability(t *testing.T) {
 func TestOperationalRiskWordingMatchesFrozenRubric(t *testing.T) {
 	rubric := DefaultRubric()
 	for _, question := range rubric.Questions {
-		if question.ID != string(NoulPossibleOperationalRisk) {
+		if question.ID != string(BinaryPossibleOperationalRisk) {
 			continue
 		}
 		if question.Criteria["true"] != "The claim plausibly concerns availability, latency, resource exhaustion, cost escalation, deployment, rollout, rollback, retries, observability needed for operations, or recovery behavior." || question.Criteria["false"] != "Adequate context establishes a matter without plausible operational consequence. A claim is not non-operational merely because the current load is small." {
@@ -113,12 +113,12 @@ func TestOperationalRiskWordingMatchesFrozenRubric(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("operational-risk Noul missing")
+	t.Fatal("operational-risk Binary missing")
 }
 
 func TestValidateAnswersChecksScoreLegendAndWeightedMean(t *testing.T) {
 	questions := testQuestions(t, true, false)
-	answers := testAnswers(questions, choiceRequired, map[NoulID]float64{})
+	answers := testAnswers(questions, choiceRequired, map[BinaryID]float64{})
 	if err := ValidateAnswers(questions, EvaluationResponse{Answers: answers}, NumericTolerance{}); err != nil {
 		t.Fatalf("valid score rejected: %v", err)
 	}

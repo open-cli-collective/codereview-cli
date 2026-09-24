@@ -10,7 +10,7 @@
   "questions": [
     {
       "id": "grounded_in_evidence",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does the supplied `evidence.items`, `evidence.relations`, and `pull_request.changes` support the material factual claim in `finding.title` and `finding.body`?",
       "criteria": {
         "true": "Supplied code, requirements, observed behavior, or tests substantiate the material claim and its stated trigger; necessary causal steps are supported.",
@@ -19,7 +19,7 @@
     },
     {
       "id": "introduced_or_materially_affected",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Did `pull_request.changes` introduce or materially affect the condition described in `finding.body`, comparing the supplied base and head evidence?",
       "criteria": {
         "true": "The PR introduces the condition, worsens it, makes an existing condition reachable, changes a relevant guarantee, or makes remediation necessary through a changed caller or contract.",
@@ -28,7 +28,7 @@
     },
     {
       "id": "remediation_required_for_intent",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Is remediation of the condition in `finding.body` necessary to deliver `pull_request.intent` safely and correctly, using the supplied `evidence` and `pull_request.changes`?",
       "criteria": {
         "true": "The stated intent or a safety/correctness property needed to deliver it fails without remediation, including work in unchanged code or another file.",
@@ -37,7 +37,7 @@
     },
     {
       "id": "adjacent_improvement",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Is the recommendation in `finding.body` a useful separate enhancement beyond the work needed to deliver `pull_request.intent` safely and correctly?",
       "criteria": {
         "true": "The recommendation has a concrete plausible benefit but requests independent enhancement, cleanup, generalization, or future capability that is unnecessary for the stated intent.",
@@ -46,7 +46,7 @@
     },
     {
       "id": "speculative",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does the material claim or recommendation in `finding.body` depend on a hypothetical future condition unsupported by `evidence` and `pull_request.intent`?",
       "criteria": {
         "true": "Its justification requires an unestablished future client, requirement, deployment, compatibility target, caller, scale, or failure trigger; that assumption is material to its claimed benefit or defect.",
@@ -55,7 +55,7 @@
     },
     {
       "id": "actionable",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Do `finding.body`, `finding.location`, and the supplied `evidence` identify a concrete remediation or sufficiently specific next action?",
       "criteria": {
         "true": "An engineer can locate the condition and take a bounded fix, test, reproduction, or investigation step; a complete implementation prescription is unnecessary.",
@@ -64,7 +64,7 @@
     },
     {
       "id": "missing_decision_context",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Are `pull_request.intent`, `evidence`, `related_findings`, or `input_limitations` missing or contradicting information needed for a safe utility classification of `finding.body`?",
       "criteria": {
         "true": "A necessary source, caller, requirement, revision, representative, or causal link is missing, stale, truncated, materially redacted, or contradictory; resolving it could change classification or protection.",
@@ -73,7 +73,7 @@
     },
     {
       "id": "possible_security_risk",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern a security risk?",
       "criteria": {
         "true": "The claim plausibly concerns exploitability, injection, unsafe execution, credential exposure, integrity compromise, or weakened defensive controls, even if its premise may be wrong or its severity is minor.",
@@ -82,7 +82,7 @@
     },
     {
       "id": "possible_correctness_risk",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern a correctness risk?",
       "criteria": {
         "true": "The claim plausibly concerns wrong results, broken behavior, violated invariants/contracts, missing required cases, or regressions under an evidenced or plausible trigger.",
@@ -91,7 +91,7 @@
     },
     {
       "id": "possible_authorization_risk",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern an authorization risk?",
       "criteria": {
         "true": "The claim plausibly concerns permissions, access decisions, tenant boundaries, privilege escalation, or a missing/incorrect authorization check.",
@@ -100,7 +100,7 @@
     },
     {
       "id": "possible_privacy_risk",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern a privacy risk?",
       "criteria": {
         "true": "The claim plausibly concerns unintended collection, exposure, retention, logging, use, or disclosure of sensitive or personal data.",
@@ -109,7 +109,7 @@
     },
     {
       "id": "possible_data_loss_risk",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern data loss or corruption?",
       "criteria": {
         "true": "The claim plausibly concerns deletion, overwrite, dropped writes, corruption, failed recovery, migration damage, or loss of durable records.",
@@ -118,7 +118,7 @@
     },
     {
       "id": "possible_operational_risk",
-      "type": "noul",
+      "type": "binary",
       "instructions": "Does `finding.body`, interpreted with `evidence` and `pull_request.changes`, plausibly concern operational risk?",
       "criteria": {
         "true": "The claim plausibly concerns availability, latency, resource exhaustion, cost escalation, deployment, rollout, rollback, retries, observability needed for operations, or recovery behavior.",

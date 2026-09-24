@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "jev-advisory-fixture-v1",
+  "profile_id": "evaluator-advisory-fixture-v1",
   "run_id": "run-fixture-golden-1",
   "cohort_input_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "effective_decision_invariant": "keep",

@@ -11,7 +11,7 @@
     "duplicate", "stability_unverified", "unstable_evaluation", "utility_signal",
     "duplicate_invalid_representative", "duplicate_representative_not_kept"
   ],
-  "noul_ids": [
+  "binary_ids": [
     "grounded_in_evidence", "introduced_or_materially_affected", "remediation_required_for_intent",
     "adjacent_improvement", "speculative", "actionable", "missing_decision_context",
     "possible_security_risk", "possible_correctness_risk", "possible_authorization_risk",

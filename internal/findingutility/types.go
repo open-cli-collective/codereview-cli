@@ -29,7 +29,7 @@ const (
 	FixtureProfileVersion  = 1
 	ModeAdvisory           = "advisory"
 	BackendFixture         = "fixture"
-	FixtureProfileID       = "jev-advisory-fixture-v1"
+	FixtureProfileID       = "evaluator-advisory-fixture-v1"
 	FixtureOnlyModelSource = "fixture"
 )
 
@@ -59,53 +59,53 @@ func (d Disposition) Valid() bool {
 	}
 }
 
-// NoulID identifies one atomic probability question.
-type NoulID string
+// BinaryID identifies one atomic probability question.
+type BinaryID string
 
-// NoulGroundedInEvidence and related values identify the frozen Noul questions.
+// BinaryGroundedInEvidence and related values identify the frozen Binary questions.
 const (
-	NoulGroundedInEvidence             NoulID = "grounded_in_evidence"
-	NoulIntroducedOrMateriallyAffected NoulID = "introduced_or_materially_affected"
-	NoulRemediationRequiredForIntent   NoulID = "remediation_required_for_intent"
-	NoulAdjacentImprovement            NoulID = "adjacent_improvement"
-	NoulSpeculative                    NoulID = "speculative"
-	NoulActionable                     NoulID = "actionable"
-	NoulMissingDecisionContext         NoulID = "missing_decision_context"
-	NoulPossibleSecurityRisk           NoulID = "possible_security_risk"
-	NoulPossibleCorrectnessRisk        NoulID = "possible_correctness_risk"
-	NoulPossibleAuthorizationRisk      NoulID = "possible_authorization_risk"
-	NoulPossiblePrivacyRisk            NoulID = "possible_privacy_risk"
-	NoulPossibleDataLossRisk           NoulID = "possible_data_loss_risk"
-	NoulPossibleOperationalRisk        NoulID = "possible_operational_risk"
+	BinaryGroundedInEvidence             BinaryID = "grounded_in_evidence"
+	BinaryIntroducedOrMateriallyAffected BinaryID = "introduced_or_materially_affected"
+	BinaryRemediationRequiredForIntent   BinaryID = "remediation_required_for_intent"
+	BinaryAdjacentImprovement            BinaryID = "adjacent_improvement"
+	BinarySpeculative                    BinaryID = "speculative"
+	BinaryActionable                     BinaryID = "actionable"
+	BinaryMissingDecisionContext         BinaryID = "missing_decision_context"
+	BinaryPossibleSecurityRisk           BinaryID = "possible_security_risk"
+	BinaryPossibleCorrectnessRisk        BinaryID = "possible_correctness_risk"
+	BinaryPossibleAuthorizationRisk      BinaryID = "possible_authorization_risk"
+	BinaryPossiblePrivacyRisk            BinaryID = "possible_privacy_risk"
+	BinaryPossibleDataLossRisk           BinaryID = "possible_data_loss_risk"
+	BinaryPossibleOperationalRisk        BinaryID = "possible_operational_risk"
 )
 
-var allNoulIDs = []NoulID{
-	NoulGroundedInEvidence,
-	NoulIntroducedOrMateriallyAffected,
-	NoulRemediationRequiredForIntent,
-	NoulAdjacentImprovement,
-	NoulSpeculative,
-	NoulActionable,
-	NoulMissingDecisionContext,
-	NoulPossibleSecurityRisk,
-	NoulPossibleCorrectnessRisk,
-	NoulPossibleAuthorizationRisk,
-	NoulPossiblePrivacyRisk,
-	NoulPossibleDataLossRisk,
-	NoulPossibleOperationalRisk,
+var allBinaryIDs = []BinaryID{
+	BinaryGroundedInEvidence,
+	BinaryIntroducedOrMateriallyAffected,
+	BinaryRemediationRequiredForIntent,
+	BinaryAdjacentImprovement,
+	BinarySpeculative,
+	BinaryActionable,
+	BinaryMissingDecisionContext,
+	BinaryPossibleSecurityRisk,
+	BinaryPossibleCorrectnessRisk,
+	BinaryPossibleAuthorizationRisk,
+	BinaryPossiblePrivacyRisk,
+	BinaryPossibleDataLossRisk,
+	BinaryPossibleOperationalRisk,
 }
 
-func (id NoulID) String() string { return string(id) }
+func (id BinaryID) String() string { return string(id) }
 
-// AllNoulIDs returns the frozen v1 order.
-func AllNoulIDs() []NoulID { return append([]NoulID(nil), allNoulIDs...) }
+// AllBinaryIDs returns the frozen v1 order.
+func AllBinaryIDs() []BinaryID { return append([]BinaryID(nil), allBinaryIDs...) }
 
 // QuestionType identifies the evaluator question shape.
 type QuestionType string
 
-// QuestionTypeNoul and related values identify supported question shapes.
+// QuestionTypeBinary and related values identify supported question shapes.
 const (
-	QuestionTypeNoul   QuestionType = "noul"
+	QuestionTypeBinary QuestionType = "binary"
 	QuestionTypeChoice QuestionType = "choice"
 	QuestionTypeScore  QuestionType = "score"
 )
@@ -582,8 +582,8 @@ type NumericTolerance struct {
 	ScoreMean      float64 `json:"score_mean"`
 }
 
-// NoulBand contains retain and suppress thresholds for one Noul.
-type NoulBand struct {
+// BinaryBand contains retain and suppress thresholds for one Binary.
+type BinaryBand struct {
 	FalseRetain   float64                 `json:"false_retain"`
 	TrueRetain    float64                 `json:"true_retain"`
 	FalseSuppress map[Disposition]float64 `json:"false_suppress"`
@@ -631,25 +631,25 @@ type StabilityParameters struct {
 
 // ThresholdSet is the calibrated policy threshold set.
 type ThresholdSet struct {
-	ID                        string              `json:"id"`
-	Version                   string              `json:"version"`
-	CalibrationManifestDigest Digest              `json:"calibration_manifest_digest"`
-	RubricDigest              Digest              `json:"rubric_digest"`
-	PolicyDigest              Digest              `json:"policy_digest"`
-	QuestionsDigest           Digest              `json:"questions_digest"`
-	ModelConditionDigest      Digest              `json:"model_condition_digest"`
-	BoundProfileDigest        Digest              `json:"bound_profile_digest"`
-	EligibilityRuleDigest     Digest              `json:"eligibility_rule_digest"`
-	IncludeUtilityScore       bool                `json:"include_utility_score"`
-	NoulBands                 map[NoulID]NoulBand `json:"noul_bands"`
-	ChoiceGates               ChoiceGates         `json:"choice_gates"`
-	ScoreGate                 ScoreGate           `json:"score_gate"`
-	StabilityParameters       StabilityParameters `json:"stability_parameters"`
-	Weights                   map[string]float64  `json:"weights"`
-	ApprovalIDs               []string            `json:"approval_ids"`
-	ArtifactDigest            Digest              `json:"artifact_digest"`
-	CalibrationVersion        string              `json:"calibration_version"`
-	TestOnly                  bool                `json:"test_only"`
+	ID                        string                  `json:"id"`
+	Version                   string                  `json:"version"`
+	CalibrationManifestDigest Digest                  `json:"calibration_manifest_digest"`
+	RubricDigest              Digest                  `json:"rubric_digest"`
+	PolicyDigest              Digest                  `json:"policy_digest"`
+	QuestionsDigest           Digest                  `json:"questions_digest"`
+	ModelConditionDigest      Digest                  `json:"model_condition_digest"`
+	BoundProfileDigest        Digest                  `json:"bound_profile_digest"`
+	EligibilityRuleDigest     Digest                  `json:"eligibility_rule_digest"`
+	IncludeUtilityScore       bool                    `json:"include_utility_score"`
+	BinaryBands               map[BinaryID]BinaryBand `json:"binary_bands"`
+	ChoiceGates               ChoiceGates             `json:"choice_gates"`
+	ScoreGate                 ScoreGate               `json:"score_gate"`
+	StabilityParameters       StabilityParameters     `json:"stability_parameters"`
+	Weights                   map[string]float64      `json:"weights"`
+	ApprovalIDs               []string                `json:"approval_ids"`
+	ArtifactDigest            Digest                  `json:"artifact_digest"`
+	CalibrationVersion        string                  `json:"calibration_version"`
+	TestOnly                  bool                    `json:"test_only"`
 }
 
 // AnswerStatus describes the presence and validity of an answer.
@@ -662,15 +662,15 @@ const (
 	AnswerStatusInvalid AnswerStatus = "invalid"
 )
 
-// NoulAnswer contains the probability assigned to a Noul being true.
-type NoulAnswer struct {
+// BinaryAnswer contains the probability assigned to a Binary being true.
+type BinaryAnswer struct {
 	PTrue   float64 `json:"p_true"`
 	present bool
 }
 
 // UnmarshalJSON keeps the typed contract strict at the JSON boundary. A
 // missing or null p_true must not silently become the valid probability zero.
-func (answer *NoulAnswer) UnmarshalJSON(data []byte) error {
+func (answer *BinaryAnswer) UnmarshalJSON(data []byte) error {
 	var value struct {
 		PTrue *float64 `json:"p_true"`
 	}
@@ -682,12 +682,12 @@ func (answer *NoulAnswer) UnmarshalJSON(data []byte) error {
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("findingutility: trailing Noul JSON")
+			return fmt.Errorf("findingutility: trailing Binary JSON")
 		}
 		return err
 	}
 	if value.PTrue == nil {
-		return fmt.Errorf("findingutility: Noul p_true is required and cannot be null")
+		return fmt.Errorf("findingutility: Binary p_true is required and cannot be null")
 	}
 	answer.PTrue = *value.PTrue
 	answer.present = true
@@ -712,7 +712,7 @@ type ScoreAnswer struct {
 // Answer is one typed evaluator response.
 type Answer struct {
 	Type   QuestionType  `json:"type"`
-	Noul   *NoulAnswer   `json:"noul,omitempty"`
+	Binary *BinaryAnswer `json:"binary,omitempty"`
 	Choice *ChoiceAnswer `json:"choice,omitempty"`
 	Score  *ScoreAnswer  `json:"score,omitempty"`
 	Status AnswerStatus  `json:"status,omitempty"`

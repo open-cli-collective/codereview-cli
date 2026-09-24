@@ -112,7 +112,7 @@ func TestWriteAuditRejectsEvaluatedOrMalformedRecordsBeforeWriting(t *testing.T)
 	record.RawFindingDigest = findingDigest
 	record.RawFindingsDigest = rawDigest
 	record.EvaluatorStatus = EvaluatorSucceeded
-	record.Answers = AnswerSet{"unexpected": {Type: QuestionTypeNoul, Status: AnswerStatusPresent, Noul: &NoulAnswer{PTrue: 0}}}
+	record.Answers = AnswerSet{"unexpected": {Type: QuestionTypeBinary, Status: AnswerStatusPresent, Binary: &BinaryAnswer{PTrue: 0}}}
 	cohortDigest := DigestBytes([]byte("pre-write-reject"))
 	root := t.TempDir()
 	_, err = WriteAudit(root, AuditBundle{Snapshot: snapshot, Manifest: Manifest{RunID: snapshot.RunID, CohortInputDigest: cohortDigest}, Records: []EvaluationRecord{record}, RawFindings: snapshot.Findings[:1], EffectiveFindings: snapshot.Findings[:1], VerificationInputs: testVerificationInputs(t, snapshot, cohortDigest)}, time.Unix(10, 0))

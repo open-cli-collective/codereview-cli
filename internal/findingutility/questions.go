@@ -213,22 +213,22 @@ func validateRubric(rubric Rubric) error {
 		return fmt.Errorf("findingutility: shared instruction prefix is required")
 	}
 	seen := map[string]bool{}
-	noulIndex := 0
-	nouls := 0
+	binaryIndex := 0
+	binaries := 0
 	for _, question := range rubric.Questions {
 		if seen[question.ID] {
 			return fmt.Errorf("findingutility: duplicate question %q", question.ID)
 		}
 		seen[question.ID] = true
 		switch question.Type {
-		case QuestionTypeNoul:
-			nouls++
-			if noulIndex >= len(allNoulIDs) || question.ID != allNoulIDs[noulIndex].String() {
-				return fmt.Errorf("findingutility: Noul %q is out of frozen order", question.ID)
+		case QuestionTypeBinary:
+			binaries++
+			if binaryIndex >= len(allBinaryIDs) || question.ID != allBinaryIDs[binaryIndex].String() {
+				return fmt.Errorf("findingutility: Binary %q is out of frozen order", question.ID)
 			}
-			noulIndex++
+			binaryIndex++
 			if len(question.Criteria) != 2 || question.Criteria["true"] == "" || question.Criteria["false"] == "" {
-				return fmt.Errorf("findingutility: Noul %q must have true/false criteria", question.ID)
+				return fmt.Errorf("findingutility: Binary %q must have true/false criteria", question.ID)
 			}
 		case QuestionTypeChoice:
 			if len(question.Options) == 0 {
@@ -247,8 +247,8 @@ func validateRubric(rubric Rubric) error {
 			return fmt.Errorf("findingutility: unsupported question type %q", question.Type)
 		}
 	}
-	if nouls != len(allNoulIDs) || noulIndex != len(allNoulIDs) || !seen[primaryUtilityQuestionID] || !seen[duplicateRepresentativeID] || !seen[utilityScoreQuestionID] {
-		return fmt.Errorf("findingutility: rubric must contain 13 Nouls, both Choices, and utility Score")
+	if binaries != len(allBinaryIDs) || binaryIndex != len(allBinaryIDs) || !seen[primaryUtilityQuestionID] || !seen[duplicateRepresentativeID] || !seen[utilityScoreQuestionID] {
+		return fmt.Errorf("findingutility: rubric must contain 13 Binaries, both Choices, and utility Score")
 	}
 	return nil
 }

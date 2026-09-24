@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "profile_id": "jev-advisory-fixture-v1",
+  "profile_id": "evaluator-advisory-fixture-v1",
   "mode": "advisory",
   "backend": "fixture",
   "fixture_only": true,
@@ -19,7 +19,7 @@
     "permitted": false
   },
   "bound_profile": {
-    "id": "jev-advisory-fixture-v1",
+    "id": "evaluator-advisory-fixture-v1",
     "digest": "",
     "max_state_bytes": 49152,
     "max_request_tokens": 65536,

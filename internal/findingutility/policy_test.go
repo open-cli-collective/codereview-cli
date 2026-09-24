@@ -7,12 +7,12 @@ import (
 
 func TestDecideFailsClosedForUncalibratedRuntimeThresholds(t *testing.T) {
 	control, questions := testControl(t, false, false)
-	answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{
-		NoulGroundedInEvidence:             0.1,
-		NoulIntroducedOrMateriallyAffected: 0.1,
-		NoulAdjacentImprovement:            0.1,
-		NoulSpeculative:                    0.9,
-		NoulActionable:                     0.1,
+	answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{
+		BinaryGroundedInEvidence:             0.1,
+		BinaryIntroducedOrMateriallyAffected: 0.1,
+		BinaryAdjacentImprovement:            0.1,
+		BinarySpeculative:                    0.9,
+		BinaryActionable:                     0.1,
 	})
 	thresholds := testThresholds(false)
 	decision := Decide(control, answers, thresholds)
@@ -23,12 +23,12 @@ func TestDecideFailsClosedForUncalibratedRuntimeThresholds(t *testing.T) {
 
 func TestExportedDecideCannotAuthorizeSuppression(t *testing.T) {
 	control, questions := testControl(t, false, false)
-	answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{
-		NoulGroundedInEvidence:             0.1,
-		NoulIntroducedOrMateriallyAffected: 0.1,
-		NoulAdjacentImprovement:            0.1,
-		NoulSpeculative:                    0.99,
-		NoulActionable:                     0.9,
+	answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{
+		BinaryGroundedInEvidence:             0.1,
+		BinaryIntroducedOrMateriallyAffected: 0.1,
+		BinaryAdjacentImprovement:            0.1,
+		BinarySpeculative:                    0.99,
+		BinaryActionable:                     0.9,
 	})
 	thresholds := testThresholds(false)
 	thresholds.TestOnly = false
@@ -52,11 +52,11 @@ func TestDecideExercisesThreeSuppressionSignaturesButKeepsEffectively(t *testing
 	cases := []struct {
 		name   string
 		choice string
-		values map[NoulID]float64
+		values map[BinaryID]float64
 		want   Disposition
 	}{
-		{name: "low value", choice: choiceLowValue, values: map[NoulID]float64{NoulGroundedInEvidence: 0.1, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.1, NoulSpeculative: 0.99, NoulActionable: 0.9}, want: DispositionSuppressLowValue},
-		{name: "scope expansion", choice: choiceScopeExpansion, values: map[NoulID]float64{NoulGroundedInEvidence: 0.9, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.9, NoulSpeculative: 0.1, NoulActionable: 0.9}, want: DispositionSuppressScopeExpansion},
+		{name: "low value", choice: choiceLowValue, values: map[BinaryID]float64{BinaryGroundedInEvidence: 0.1, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.1, BinarySpeculative: 0.99, BinaryActionable: 0.9}, want: DispositionSuppressLowValue},
+		{name: "scope expansion", choice: choiceScopeExpansion, values: map[BinaryID]float64{BinaryGroundedInEvidence: 0.9, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.9, BinarySpeculative: 0.1, BinaryActionable: 0.9}, want: DispositionSuppressScopeExpansion},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -70,14 +70,14 @@ func TestDecideExercisesThreeSuppressionSignaturesButKeepsEffectively(t *testing
 	}
 }
 
-func TestDecideDuplicateRequiresValidCandidateAndProtectedNoulsRetain(t *testing.T) {
+func TestDecideDuplicateRequiresValidCandidateAndProtectedBinariesRetain(t *testing.T) {
 	control, questions := testControl(t, false, true)
-	answers := testAnswers(questions, choiceDuplicate, map[NoulID]float64{
-		NoulGroundedInEvidence:             0.9,
-		NoulIntroducedOrMateriallyAffected: 0.1,
-		NoulAdjacentImprovement:            0.9,
-		NoulSpeculative:                    0.1,
-		NoulActionable:                     0.9,
+	answers := testAnswers(questions, choiceDuplicate, map[BinaryID]float64{
+		BinaryGroundedInEvidence:             0.9,
+		BinaryIntroducedOrMateriallyAffected: 0.1,
+		BinaryAdjacentImprovement:            0.9,
+		BinarySpeculative:                    0.1,
+		BinaryActionable:                     0.9,
 	})
 	duplicate := answers[duplicateRepresentativeID]
 	duplicate.Choice.Choice = "candidate_0"
@@ -91,14 +91,14 @@ func TestDecideDuplicateRequiresValidCandidateAndProtectedNoulsRetain(t *testing
 		t.Fatalf("valid duplicate decision = %#v", decision)
 	}
 
-	for _, id := range []NoulID{NoulPossibleSecurityRisk, NoulPossibleCorrectnessRisk, NoulPossibleAuthorizationRisk, NoulPossiblePrivacyRisk, NoulPossibleDataLossRisk, NoulPossibleOperationalRisk} {
+	for _, id := range []BinaryID{BinaryPossibleSecurityRisk, BinaryPossibleCorrectnessRisk, BinaryPossibleAuthorizationRisk, BinaryPossiblePrivacyRisk, BinaryPossibleDataLossRisk, BinaryPossibleOperationalRisk} {
 		protected := cloneAnswers(answers)
 		value := protected[id.String()]
-		value.Noul.PTrue = 0.3 // false_retain equality is retaining.
+		value.Binary.PTrue = 0.3 // false_retain equality is retaining.
 		protected[id.String()] = value
 		decision = decideWithTestOnlyThresholds(control, protected, testThresholds(false))
 		if decision.ProposedDecision != DispositionKeep || !hasReason(decision, ReasonModelProtectionSignal) {
-			t.Fatalf("protected Noul %s decision = %#v", id, decision)
+			t.Fatalf("protected Binary %s decision = %#v", id, decision)
 		}
 	}
 }
@@ -106,12 +106,12 @@ func TestDecideDuplicateRequiresValidCandidateAndProtectedNoulsRetain(t *testing
 func TestDecideKeepsIndependentProtectionButExposesUtilityCandidate(t *testing.T) {
 	control, questions := testControl(t, false, false)
 	control.Protection.Status = ProtectionProtected
-	answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{
-		NoulGroundedInEvidence:             0.1,
-		NoulIntroducedOrMateriallyAffected: 0.1,
-		NoulAdjacentImprovement:            0.1,
-		NoulSpeculative:                    0.99,
-		NoulActionable:                     0.9,
+	answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{
+		BinaryGroundedInEvidence:             0.1,
+		BinaryIntroducedOrMateriallyAffected: 0.1,
+		BinaryAdjacentImprovement:            0.1,
+		BinarySpeculative:                    0.99,
+		BinaryActionable:                     0.9,
 	})
 	decision := decideWithTestOnlyThresholds(control, answers, testThresholds(false))
 	if decision.ProposedDecision != DispositionKeep || decision.EffectiveDecision != DispositionKeep || !hasReason(decision, ReasonProtectedDomain) || decision.ModelCandidateDecision == nil || *decision.ModelCandidateDecision != DispositionSuppressLowValue {
@@ -122,7 +122,7 @@ func TestDecideKeepsIndependentProtectionButExposesUtilityCandidate(t *testing.T
 func TestDecideGuardsSeverityEligibilityContextAndStability(t *testing.T) {
 	baseAnswers := func(t *testing.T) AnswerSet {
 		_, questions := testControl(t, false, false)
-		return testAnswers(questions, choiceLowValue, map[NoulID]float64{NoulGroundedInEvidence: 0.1, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.1, NoulSpeculative: 0.99, NoulActionable: 0.9})
+		return testAnswers(questions, choiceLowValue, map[BinaryID]float64{BinaryGroundedInEvidence: 0.1, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.1, BinarySpeculative: 0.99, BinaryActionable: 0.9})
 	}
 	checks := []struct {
 		name   string
@@ -158,12 +158,12 @@ func TestDecideGuardsSeverityEligibilityContextAndStability(t *testing.T) {
 
 func TestCandidateGuardsApplyCompletenessAndNecessityBeforeProposal(t *testing.T) {
 	control, questions := testControl(t, false, false)
-	answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{
-		NoulGroundedInEvidence:             0.1,
-		NoulIntroducedOrMateriallyAffected: 0.1,
-		NoulAdjacentImprovement:            0.1,
-		NoulSpeculative:                    0.99,
-		NoulActionable:                     0.9,
+	answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{
+		BinaryGroundedInEvidence:             0.1,
+		BinaryIntroducedOrMateriallyAffected: 0.1,
+		BinaryAdjacentImprovement:            0.1,
+		BinarySpeculative:                    0.99,
+		BinaryActionable:                     0.9,
 	})
 	control.ContextComplete = false
 	control.Limitations = []Limitation{{ID: "context", Code: LimitationOther, Impact: ImpactDecisionRelevant}}
@@ -173,13 +173,13 @@ func TestCandidateGuardsApplyCompletenessAndNecessityBeforeProposal(t *testing.T
 	}
 
 	control, questions = testControl(t, false, false)
-	answers = testAnswers(questions, choiceLowValue, map[NoulID]float64{
-		NoulGroundedInEvidence:             0.1,
-		NoulIntroducedOrMateriallyAffected: 0.1,
-		NoulAdjacentImprovement:            0.1,
-		NoulSpeculative:                    0.99,
-		NoulActionable:                     0.9,
-		NoulRemediationRequiredForIntent:   0.9,
+	answers = testAnswers(questions, choiceLowValue, map[BinaryID]float64{
+		BinaryGroundedInEvidence:             0.1,
+		BinaryIntroducedOrMateriallyAffected: 0.1,
+		BinaryAdjacentImprovement:            0.1,
+		BinarySpeculative:                    0.99,
+		BinaryActionable:                     0.9,
+		BinaryRemediationRequiredForIntent:   0.9,
 	})
 	decision = decideWithTestOnlyThresholds(control, answers, testThresholds(false))
 	if decision.ProposedDecision != DispositionKeep || decision.EffectiveDecision != DispositionKeep || !hasReason(decision, ReasonNecessitySignal) || decision.ModelCandidateDecision == nil || *decision.ModelCandidateDecision != DispositionKeep {
@@ -190,13 +190,13 @@ func TestCandidateGuardsApplyCompletenessAndNecessityBeforeProposal(t *testing.T
 func TestRemediationRetentionBandVetoesCandidateAndProposal(t *testing.T) {
 	control, questions := testControl(t, false, false)
 	thresholds := testThresholds(false)
-	answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{
-		NoulGroundedInEvidence:             0.1,
-		NoulIntroducedOrMateriallyAffected: 0.1,
-		NoulAdjacentImprovement:            0.1,
-		NoulSpeculative:                    0.99,
-		NoulActionable:                     0.9,
-		NoulRemediationRequiredForIntent:   0.75,
+	answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{
+		BinaryGroundedInEvidence:             0.1,
+		BinaryIntroducedOrMateriallyAffected: 0.1,
+		BinaryAdjacentImprovement:            0.1,
+		BinarySpeculative:                    0.99,
+		BinaryActionable:                     0.9,
+		BinaryRemediationRequiredForIntent:   0.75,
 	})
 
 	candidate := decideUtility(control, answers, thresholds, true)
@@ -212,7 +212,7 @@ func TestRemediationRetentionBandVetoesCandidateAndProposal(t *testing.T) {
 func TestDecideScoreUsesStrictGatesAndPositiveUtilityVeto(t *testing.T) {
 	control, questions := testControl(t, true, false)
 	thresholds := testThresholds(true)
-	answers := testAnswers(questions, choiceLowValue, map[NoulID]float64{NoulGroundedInEvidence: 0.1, NoulIntroducedOrMateriallyAffected: 0.1, NoulAdjacentImprovement: 0.1, NoulSpeculative: 0.99, NoulActionable: 0.9})
+	answers := testAnswers(questions, choiceLowValue, map[BinaryID]float64{BinaryGroundedInEvidence: 0.1, BinaryIntroducedOrMateriallyAffected: 0.1, BinaryAdjacentImprovement: 0.1, BinarySpeculative: 0.99, BinaryActionable: 0.9})
 	decision := decideWithTestOnlyThresholds(control, answers, thresholds)
 	if decision.ProposedDecision != DispositionSuppressLowValue {
 		t.Fatalf("low score should permit candidate, got %#v", decision)

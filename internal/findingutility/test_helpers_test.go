@@ -76,9 +76,9 @@ func testQuestions(t *testing.T, includeScore bool, related bool) QuestionSet {
 }
 
 func testThresholds(includeScore bool) ThresholdSet {
-	bands := make(map[NoulID]NoulBand, len(allNoulIDs))
-	for _, id := range allNoulIDs {
-		bands[id] = NoulBand{
+	bands := make(map[BinaryID]BinaryBand, len(allBinaryIDs))
+	for _, id := range allBinaryIDs {
+		bands[id] = BinaryBand{
 			FalseRetain: 0.3,
 			TrueRetain:  0.7,
 			FalseSuppress: map[Disposition]float64{
@@ -97,7 +97,7 @@ func testThresholds(includeScore bool) ThresholdSet {
 		ID:                  "test-only-thresholds",
 		Version:             "test-v1",
 		IncludeUtilityScore: includeScore,
-		NoulBands:           bands,
+		BinaryBands:         bands,
 		ChoiceGates: ChoiceGates{
 			Primary: PrimaryChoiceGates{
 				Retain:         ChoiceGate{Confidence: 0.7, SelectedProbability: 0.7},
@@ -139,16 +139,16 @@ func testControl(t *testing.T, includeScore bool, related bool) (Control, Questi
 	return control, questions
 }
 
-func testAnswers(questions QuestionSet, primary string, values map[NoulID]float64) AnswerSet {
+func testAnswers(questions QuestionSet, primary string, values map[BinaryID]float64) AnswerSet {
 	answers := make(AnswerSet, len(questions.Questions))
 	for _, question := range questions.Questions {
 		switch question.Type {
-		case QuestionTypeNoul:
+		case QuestionTypeBinary:
 			value := 0.1
-			if override, ok := values[NoulID(question.ID)]; ok {
+			if override, ok := values[BinaryID(question.ID)]; ok {
 				value = override
 			}
-			answers[question.ID] = Answer{Type: QuestionTypeNoul, Status: AnswerStatusPresent, Noul: &NoulAnswer{PTrue: value}}
+			answers[question.ID] = Answer{Type: QuestionTypeBinary, Status: AnswerStatusPresent, Binary: &BinaryAnswer{PTrue: value}}
 		case QuestionTypeChoice:
 			choice := "none"
 			if question.ID == primaryUtilityQuestionID {
