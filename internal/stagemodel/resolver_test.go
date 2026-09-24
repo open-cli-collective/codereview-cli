@@ -62,8 +62,8 @@ func TestResolveStageModelAppliesEffortOverrideWithoutBypassingTier(t *testing.T
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
 	}
-	if got.Model != "gpt-5.4" {
-		t.Fatalf("Model = %q, want gpt-5.4", got.Model)
+	if got.Model != "gpt-6-sol" {
+		t.Fatalf("Model = %q, want gpt-6-sol", got.Model)
 	}
 	if got.Effort != "high" {
 		t.Fatalf("Effort = %q, want high", got.Effort)

@@ -2132,7 +2132,7 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "small: claude-haiku-4-5 (built_in)") ||
 		!strings.Contains(out.String(), "medium: claude-sonnet-5 (built_in)") ||
-		!strings.Contains(out.String(), "large: claude-opus-5 (built_in)") {
+		!strings.Contains(out.String(), "large: claude-opus-5-5 (built_in)") {
 		t.Fatalf("list stdout = %q, want effective Claude CLI defaults", out.String())
 	}
 

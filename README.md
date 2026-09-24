@@ -761,9 +761,9 @@ Built-in model maps:
 
 | Provider | Adapter | small | medium | large |
 |----------|---------|-------|--------|-------|
-| `openai` | `codex_cli` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
-| `openai` | `openai_api` | `gpt-5.4-mini` | `gpt-5.4` | `gpt-5.5` |
-| `anthropic` | `claude_cli` | `claude-haiku-4-5` | `claude-sonnet-5` | `claude-opus-5` |
+| `openai` | `codex_cli` | `gpt-6-luna` | `gpt-6-sol` | `gpt-6-sol` |
+| `openai` | `openai_api` | `gpt-6-luna` | `gpt-6-sol` | `gpt-6-sol` |
+| `anthropic` | `claude_cli` | `claude-haiku-4-5` | `claude-sonnet-5` | `claude-opus-5-5` |
 | `anthropic` | `anthropic_api` | unset | unset | unset |
 | `pi` | `pi_rpc` | unset | unset | unset |
 
@@ -1247,8 +1247,9 @@ Policy and output flags:
 Fast mode defaults off; set `fast: true` on a profile to enable it by default.
 `--fast` and `--no-fast` override the profile. Unsupported runtime/model
 combinations warn and continue at normal speed. Fast mode supports `claude_cli`
-and `anthropic_api` with `claude-opus-5` or `claude-opus-4-8`, and `codex_cli`
-with `gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`.
+and `anthropic_api` with `claude-opus-5-5`, `claude-opus-5`, or `claude-opus-4-8`,
+and `codex_cli` with `gpt-5.4`, `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`, `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`.
 Anthropic has removed Opus 4.7 fast mode. Claude CLI receives a per-session
 `fastMode` setting, Anthropic API
 requests use its fast-mode beta, and Codex CLI receives `service_tier="fast"`.
