@@ -182,9 +182,9 @@ shared workflow owns publish mechanics.
   `open-cli-collective/homebrew-tap` with `TAP_GITHUB_TOKEN`.
 - Chocolatey: the shared Chocolatey job rewrites
   `packaging/chocolatey/codereview-cli.nuspec` from version `0.0.0` to the release version
-  and replaces `CHECKSUM_AMD64_PLACEHOLDER` /
-  `CHECKSUM_ARM64_PLACEHOLDER` in `chocolateyInstall.ps1` before packing and
-  pushing.
+  and replaces `URL_AMD64_PLACEHOLDER`, `URL_ARM64_PLACEHOLDER`,
+  `CHECKSUM_AMD64_PLACEHOLDER`, and `CHECKSUM_ARM64_PLACEHOLDER` in
+  `chocolateyInstall.ps1` before packing and pushing.
 - winget: the shared winget job resolves the release asset URLs/checksums and
   submits `OpenCLICollective.codereview-cli` with `WINGET_GITHUB_TOKEN`;
   because this is a first-time package id, `packaging/identity.yml` keeps
