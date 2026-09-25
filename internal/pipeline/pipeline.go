@@ -2990,10 +2990,10 @@ func renamedPatchOldPaths(patches []FilePatch) []string {
 // mentionableExtraPaths returns paths a model may cite but is never assigned:
 // contentless files and the pre-rename sources still visible in the diff.
 func mentionableExtraPaths(patches []FilePatch) []string {
-	deleted := contentlessPatchPaths(patches)
-	seen := make(map[string]bool, len(deleted))
+	contentless := contentlessPatchPaths(patches)
+	seen := make(map[string]bool, len(contentless))
 	paths := make([]string, 0, len(patches))
-	for path := range deleted {
+	for path := range contentless {
 		seen[path] = true
 		paths = append(paths, path)
 	}

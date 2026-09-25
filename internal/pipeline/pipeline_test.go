@@ -6102,6 +6102,25 @@ func TestContentlessPatchPathsIncludeEmptyAddedFiles(t *testing.T) {
 	}
 }
 
+func TestContentlessPatchPathsKeepReconstructedPatchlessFilesReviewable(t *testing.T) {
+	// Provider REST reconstructions (GitHub's files listing, GitLab's diffs)
+	// cannot tell an empty new file from a binary or oversized one: both arrive
+	// with no patch and are written as a header-only binary entry with no mode
+	// line. That shape must stay reviewable so a large file is never exempted.
+	raw := strings.Join([]string{
+		"diff --git a/pkg/__init__.py b/pkg/__init__.py",
+		"Binary files a/pkg/__init__.py and b/pkg/__init__.py differ",
+		"",
+	}, "\n")
+	parsed, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	if got := contentlessPatchPaths(parsed.Patches); len(got) != 0 {
+		t.Fatalf("contentless paths = %#v, want none for a reconstructed patchless file", got)
+	}
+}
+
 func TestBuildReviewerCoverageExemptsEmptyAddedFiles(t *testing.T) {
 	// A PR whose only change adds an empty file selects no reviewer; the file
 	// has no content at head, so it must not surface as incomplete_unassigned.
