@@ -538,6 +538,7 @@ type LLMRuntimeSpec struct {
 	SuggestedName         string
 	DisplayName           string
 	BuiltInModelMap       ModelMap
+	BuiltInEffort         EffortMap
 	FastModeModels        []string
 	MaximumEffort         modelprefs.Effort
 	RequiresCredentialRef bool
@@ -551,10 +552,11 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName: "claude-cli",
 		DisplayName:   "Claude CLI",
 		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "claude-haiku-4-5",
+			string(ModelTierSmall):  "claude-sonnet-5",
 			string(ModelTierMedium): "claude-sonnet-5",
 			string(ModelTierLarge):  "claude-opus-5-5",
 		},
+		BuiltInEffort:  EffortMap{"small": "low", "medium": "medium", "large": "medium"},
 		FastModeModels: []string{"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"},
 		MaximumEffort:  modelprefs.EffortHigh,
 	},
@@ -580,8 +582,9 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 			string(ModelTierMedium): "gpt-6-sol",
 			string(ModelTierLarge):  "gpt-6-sol",
 		},
+		BuiltInEffort:  EffortMap{"small": "max", "medium": "low", "large": "medium"},
 		FastModeModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"},
-		MaximumEffort:  modelprefs.EffortHigh,
+		MaximumEffort:  modelprefs.EffortMax,
 	},
 	{
 		Provider:      LLMProviderOpenAI,
@@ -594,8 +597,9 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 			string(ModelTierMedium): "gpt-6-sol",
 			string(ModelTierLarge):  "gpt-6-sol",
 		},
+		BuiltInEffort:         EffortMap{"small": "max", "medium": "low", "large": "medium"},
 		RequiresCredentialRef: true,
-		MaximumEffort:         modelprefs.EffortHigh,
+		MaximumEffort:         modelprefs.EffortMax,
 	},
 	{
 		Provider:        LLMProviderPi,
@@ -613,6 +617,7 @@ func LLMRuntimeSpecs() []LLMRuntimeSpec {
 	specs := make([]LLMRuntimeSpec, len(llmRuntimeSpecs))
 	for i, spec := range llmRuntimeSpecs {
 		spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+		spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
 		spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 		specs[i] = spec
 	}
@@ -625,6 +630,7 @@ func FindLLMRuntimeSpec(provider LLMProvider, auth LLMAuth, adapter LLMAdapter) 
 	for _, spec := range llmRuntimeSpecs {
 		if spec.Provider == provider && (spec.Auth == "" || spec.Auth == auth) && spec.Adapter == adapter {
 			spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+			spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
 			spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 			return spec, true
 		}
@@ -697,6 +703,15 @@ func BuiltInModelMap(provider LLMProvider, adapter LLMAdapter) ModelMap {
 		return maps.Clone(spec.BuiltInModelMap)
 	}
 	return ModelMap{}
+}
+
+// BuiltInEffort returns the effort paired with a built-in model tier.
+func BuiltInEffort(provider LLMProvider, adapter LLMAdapter, tier ModelTier) (modelprefs.Effort, bool) {
+	if spec, ok := findLLMRuntimeSpecByProviderAdapter(provider, adapter); ok {
+		effort := modelprefs.Effort(spec.BuiltInEffort[string(tier)])
+		return effort, effort.Valid()
+	}
+	return "", false
 }
 
 // EffectiveModelMap merges built-in defaults with profile model_map overrides.

@@ -73,6 +73,33 @@ func TestResolveStageModelAppliesEffortOverrideWithoutBypassingTier(t *testing.T
 	}
 }
 
+func TestResolveStageModelUsesBuiltInModelAndEffort(t *testing.T) {
+	for _, adapter := range []config.LLMAdapter{config.LLMAdapterCodexCLI, config.LLMAdapterOpenAIAPI} {
+		profile := config.Profile{LLM: config.LLMConfig{Provider: config.LLMProviderOpenAI, Adapter: adapter}}
+		for _, tt := range []struct {
+			tier   config.ModelTier
+			model  string
+			effort string
+		}{{config.ModelTierSmall, "gpt-6-luna", "max"}, {config.ModelTierMedium, "gpt-6-sol", "low"}, {config.ModelTierLarge, "gpt-6-sol", "medium"}} {
+			got, err := ResolveStageModel(Request{Profile: profile, Stage: StageReviewer, Tier: tt.tier, DefaultEffort: "high"})
+			if err != nil || got.Model != tt.model || got.Effort != tt.effort {
+				t.Fatalf("%s/%s: result=%#v err=%v, want %s/%s", adapter, tt.tier, got, err, tt.model, tt.effort)
+			}
+		}
+	}
+	profile := config.Profile{LLM: config.LLMConfig{Provider: config.LLMProviderAnthropic, Adapter: config.LLMAdapterClaudeCLI}}
+	for _, tt := range []struct {
+		tier   config.ModelTier
+		model  string
+		effort string
+	}{{config.ModelTierSmall, "claude-sonnet-5", "low"}, {config.ModelTierMedium, "claude-sonnet-5", "medium"}, {config.ModelTierLarge, "claude-opus-5-5", "medium"}} {
+		got, err := ResolveStageModel(Request{Profile: profile, Stage: StageReviewer, Tier: tt.tier, DefaultEffort: "high"})
+		if err != nil || got.Model != tt.model || got.Effort != tt.effort {
+			t.Fatalf("anthropic/%s: result=%#v err=%v, want %s/%s", tt.tier, got, err, tt.model, tt.effort)
+		}
+	}
+}
+
 func TestResolveStageModelAppliesTierFloor(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderOpenAI,
@@ -219,7 +246,7 @@ func TestResolveStageModelMapsSmallTierForClaudeCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
 	}
-	if resolved.Model != "claude-haiku-4-5" || resolved.Source != config.ModelMapSourceBuiltIn {
+	if resolved.Model != "claude-sonnet-5" || resolved.Source != config.ModelMapSourceBuiltIn {
 		t.Fatalf("resolved = %#v, want the built-in Claude CLI small model", resolved)
 	}
 }

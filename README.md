@@ -451,8 +451,9 @@ without assigning their tests to the reviewer.
 Use `model_tier: small|medium|large` for portable shared catalogs. It means the
 minimum acceptable reviewer tier for that agent, not a direct model pick. Use
 `model_id: <provider-model-id>` only when an agent intentionally requires one
-provider-specific model. `effort` is independent and must be one of
-`low`, `medium`, or `high`.
+provider-specific model. `effort` is required and must be one of `low`,
+`medium`, `high`, `xhigh`, or `max`. Built-in tiers pair the model with an effort
+preset; configured model mappings and exact model IDs use agent effort.
 
 `applies_when` is the selector's routing contract. Keep it focused on when the
 agent should be chosen for a change. Reviewer execution instructions belong in
@@ -675,9 +676,9 @@ raise the reviewer baseline without editing shared agent catalogs.
 
 ### Model-Tier Floors and Effort Ceilings
 
-Agent catalogs declare an absolute `effort` (`low`, `medium`, `high`, `xhigh`,
-or `max`) that
-becomes the provider's reasoning-effort setting. For reviewer resolution,
+Agent catalogs declare an `effort` (`low`, `medium`, `high`, `xhigh`, or `max`).
+Built-in tiers select a model and effort preset; configured model mappings and
+exact model IDs use the agent's effort. For reviewer resolution,
 `agent.model_tier` and `llm.reviewer_model_tier` are minimum floors for model
 selection. The selected runtime's `max_effort`
 (`llm_runtimes.<name>.max_effort`) is a ceiling for default effort at the final
@@ -687,8 +688,8 @@ For reviewer resolution, `cr` applies this order:
 
 1. Resolve the effective reviewer tier as the higher of the agent tier and the
    profile reviewer-tier floor.
-2. Resolve `model_map[effective tier]`, including provider built-ins.
-3. Cap the default effort with `max_effort[effective tier]`.
+2. Resolve `model_map[effective tier]`, including provider built-ins and their effort presets.
+3. Cap the selected effort with `max_effort[effective tier]`.
 4. Apply an explicit effort override, which wins over the ceiling.
 
 Other tier-resolved internal stages use their own stage tier; `max_effort` is
@@ -712,7 +713,10 @@ profiles:
     llm_runtime: review
 ```
 
-A tier absent from `max_effort` is uncapped. The cap is a ceiling only: an agent
+A tier absent from `max_effort` is uncapped. Built-in model tiers select their
+own effort preset; configured `model_map` entries use the agent or stage effort.
+An explicit `--reviewer-effort` or `--selection-effort` overrides the preset.
+The cap is a ceiling only: an agent
 declaring `low` under a `medium` ceiling still runs at `low`. Reviewer floors
 apply only to reviewer resolution; other tier-resolved internal stages use
 their own final tier for the ceiling.
@@ -721,9 +725,9 @@ The complete precedence and bypass table is:
 
 | Input or path | Model selection | Default effort | `max_effort` on selected runtime |
 |---------------|-----------------|----------------|-----------------|
-| Reviewer resolution with no explicit override | `max(llm.reviewer_model_tier, agent.model_tier)`, then `model_map` | Agent effort | Caps the default at the final reviewer tier |
-| `--reviewer-model-tier` | Raises the reviewer baseline before the agent floor is applied | Agent effort | Caps at the final resolved tier |
-| Other tier-resolved internal stage | That stage's own tier, then `model_map` | Stage effort | Caps the default at the stage's final tier |
+| Reviewer resolution with no explicit override | `max(llm.reviewer_model_tier, agent.model_tier)`, then `model_map` | Built-in preset or agent effort for a configured mapping | Caps the selected effort at the final reviewer tier |
+| `--reviewer-model-tier` | Raises the reviewer baseline before the agent floor is applied | Built-in preset or agent effort for a configured mapping | Caps at the final resolved tier |
+| Other tier-resolved internal stage | That stage's own tier, then `model_map` | Built-in preset or stage effort for a configured mapping | Caps the selected effort at the stage's final tier |
 | `--selection-effort` or `--reviewer-effort` | Normal tier or exact-model selection | Requested effort | Explicit effort wins after the ceiling |
 | `--selection-model` | Exact requested model ID | Stage effort or explicit effort | Bypassed; selection exact-model overrides do not carry a reviewer tier |
 | `--reviewer-model` | Exact requested model ID | Agent effort or explicit effort | Inherited agent effort is capped at the effective reviewer tier; explicit effort bypasses the cap |
@@ -761,9 +765,9 @@ Built-in model maps:
 
 | Provider | Adapter | small | medium | large |
 |----------|---------|-------|--------|-------|
-| `openai` | `codex_cli` | `gpt-6-luna` | `gpt-6-sol` | `gpt-6-sol` |
-| `openai` | `openai_api` | `gpt-6-luna` | `gpt-6-sol` | `gpt-6-sol` |
-| `anthropic` | `claude_cli` | `claude-haiku-4-5` | `claude-sonnet-5` | `claude-opus-5-5` |
+| `openai` | `codex_cli` | `gpt-6-luna` at max | `gpt-6-sol` at low | `gpt-6-sol` at medium |
+| `openai` | `openai_api` | `gpt-6-luna` at max | `gpt-6-sol` at low | `gpt-6-sol` at medium |
+| `anthropic` | `claude_cli` | `claude-sonnet-5` at low | `claude-sonnet-5` at medium | `claude-opus-5-5` at medium |
 | `anthropic` | `anthropic_api` | unset | unset | unset |
 | `pi` | `pi_rpc` | unset | unset | unset |
 
