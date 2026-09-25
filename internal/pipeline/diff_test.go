@@ -181,3 +181,34 @@ func TestParseUnifiedDiffPreservesPatchlessRemovedStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestParseUnifiedDiffMarksAddedFiles(t *testing.T) {
+	raw := strings.Join([]string{
+		"diff --git a/pkg/__init__.py b/pkg/__init__.py",
+		"new file mode 100644",
+		"index 0000000..e69de29",
+		"diff --git a/pkg/mod.py b/pkg/mod.py",
+		"new file mode 100644",
+		"index 0000000..5716ca5",
+		"--- /dev/null",
+		"+++ b/pkg/mod.py",
+		"@@ -0,0 +1 @@",
+		"+x = 1",
+		"",
+	}, "\n")
+
+	parsed, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	if len(parsed.Patches) != 2 {
+		t.Fatalf("patches = %#v, want two added files", parsed.Patches)
+	}
+	empty, withContent := parsed.Patches[0], parsed.Patches[1]
+	if !empty.Added || empty.Deleted || empty.Path != "pkg/__init__.py" || len(empty.Hunks) != 0 {
+		t.Fatalf("empty added file = %#v, want Added with no hunks", empty)
+	}
+	if !withContent.Added || withContent.Path != "pkg/mod.py" || len(withContent.Hunks) != 1 {
+		t.Fatalf("added file with content = %#v, want Added with one hunk", withContent)
+	}
+}

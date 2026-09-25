@@ -6084,6 +6084,53 @@ func TestBuildReviewerCoverageExemptsDeletedFiles(t *testing.T) {
 	// coverage row that would block approval.
 }
 
+func TestContentlessPatchPathsIncludeEmptyAddedFiles(t *testing.T) {
+	patches := []FilePatch{
+		{Path: "main.go", Hunks: []reviewplan.DiffHunk{{}}},
+		{Path: "removed.go", Deleted: true},
+		{Path: "pkg/__init__.py", Added: true},
+		{Path: "pkg/mod.py", Added: true, Hunks: []reviewplan.DiffHunk{{}}},
+		{Path: "logo.png", Added: true, Binary: true},
+	}
+	got := contentlessPatchPaths(patches)
+	want := map[string]bool{"removed.go": true, "pkg/__init__.py": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("contentless paths = %#v, want %#v", got, want)
+	}
+	if reviewable := reviewablePatchPaths(patches); !reflect.DeepEqual(reviewable, []string{"logo.png", "main.go", "pkg/mod.py"}) {
+		t.Fatalf("reviewable paths = %#v, want the files with content at head", reviewable)
+	}
+}
+
+func TestContentlessPatchPathsKeepReconstructedPatchlessFilesReviewable(t *testing.T) {
+	// Provider REST reconstructions (GitHub's files listing, GitLab's diffs)
+	// cannot tell an empty new file from a binary or oversized one: both arrive
+	// with no patch and are written as a header-only binary entry with no mode
+	// line. That shape must stay reviewable so a large file is never exempted.
+	raw := strings.Join([]string{
+		"diff --git a/pkg/__init__.py b/pkg/__init__.py",
+		"Binary files a/pkg/__init__.py and b/pkg/__init__.py differ",
+		"",
+	}, "\n")
+	parsed, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	if got := contentlessPatchPaths(parsed.Patches); len(got) != 0 {
+		t.Fatalf("contentless paths = %#v, want none for a reconstructed patchless file", got)
+	}
+}
+
+func TestBuildReviewerCoverageExemptsEmptyAddedFiles(t *testing.T) {
+	// A PR whose only change adds an empty file selects no reviewer; the file
+	// has no content at head, so it must not surface as incomplete_unassigned.
+	patches := []FilePatch{{Path: "pkg/__init__.py", Added: true}}
+	got := buildReviewerCoverage(nil, nil, nil, patchPaths(patches), contentlessPatchPaths(patches))
+	if len(got) != 0 {
+		t.Fatalf("coverage = %#v, want no rows for an empty added file", got)
+	}
+}
+
 func TestEnsureSelectedGlobCoverageSkipsLockfiles(t *testing.T) {
 	// A changed lockfile that matches an agent's globs must NOT be force-assigned
 	// into that agent's scope — it is exempt from the coverage universe. Without
