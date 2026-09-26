@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   release:
-    uses: open-cli-collective/.github/.github/workflows/release.yml@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
+    uses: open-cli-collective/.github/.github/workflows/release.yml@776a11fe7a86dccb73bccb5dbf3824fe2ec8d4af # shared .github
     with:
       # tag push is live (false); workflow_dispatch honors the checkbox. Compare
       # against both true and 'true' because a workflow_dispatch boolean input
