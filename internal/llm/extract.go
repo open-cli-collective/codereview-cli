@@ -2,36 +2,25 @@ package llm
 
 import "encoding/json"
 
-// extractSingleJSONObject returns the single balanced top-level JSON object
-// found in data, if exactly one syntactically valid candidate exists. Zero or
-// multiple valid candidates return ok=false: ambiguous output must not be
-// recovered. Invalid spans are deliberately re-scanned one byte past their
+// extractJSONObjects returns every balanced, syntactically valid top-level JSON
+// object in data, in order. Invalid spans are re-scanned one byte past their
 // opening brace so prose braces wrapping a valid object cannot hide it; the
-// resulting worst case is quadratic in nesting depth, which is irrelevant at
-// LLM response sizes.
-func extractSingleJSONObject(data []byte) ([]byte, bool) {
-	var (
-		candidate []byte
-		found     bool
-	)
+// worst case is quadratic in nesting depth, which is irrelevant at LLM
+// response sizes.
+func extractJSONObjects(data []byte) [][]byte {
+	var candidates [][]byte
 	for i := 0; i < len(data); i++ {
 		if data[i] != '{' {
 			continue
 		}
 		span, end, balanced := scanBalancedObject(data, i)
 		if !balanced || !json.Valid(span) {
-			// Keep scanning inside invalid spans: prose braces wrapping a
-			// valid object must not hide it.
 			continue
 		}
-		if found {
-			return nil, false
-		}
-		candidate = span
-		found = true
+		candidates = append(candidates, span)
 		i = end
 	}
-	return candidate, found
+	return candidates
 }
 
 // scanBalancedObject scans a {...} span starting at data[start], tracking
