@@ -688,21 +688,25 @@ func TestReviewRejectsInvalidModelEffortBeforeRuntimeFactory(t *testing.T) {
 }
 
 func TestReviewPassesExtendedClaudeCLIEffortToRuntimeFactory(t *testing.T) {
-	var factoryCalled bool
-	cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
-		factoryCalled = true
-		return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
-	})
+	for _, effort := range []string{"xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			var factoryCalled bool
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
+				factoryCalled = true
+				return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false)}}, nil
+			})
 
-	err := root.Execute(cmd, []string{
-		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
-		"--dry-run", "--reviewer-effort", "xhigh",
-	})
-	if err != nil {
-		t.Fatalf("Execute error = %v", err)
-	}
-	if !factoryCalled {
-		t.Fatal("runtime factory was not called for supported effort")
+			err := root.Execute(cmd, []string{
+				"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+				"--dry-run", "--reviewer-effort", effort,
+			})
+			if err != nil {
+				t.Fatalf("Execute error = %v", err)
+			}
+			if !factoryCalled {
+				t.Fatal("runtime factory was not called for supported effort")
+			}
+		})
 	}
 }
 
