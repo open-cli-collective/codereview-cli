@@ -186,21 +186,21 @@ func TestResolveStageModelAllowsExtendedPiEffort(t *testing.T) {
 	}
 }
 
-func TestResolveStageModelRejectsExtendedEffortForUnsupportedRuntime(t *testing.T) {
+func TestResolveStageModelAllowsExtendedClaudeCLIEffort(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderAnthropic,
 		Auth:     config.LLMAuthSubscription,
 		Adapter:  config.LLMAdapterClaudeCLI,
 	}}
 
-	_, err := ResolveStageModel(Request{
+	got, err := ResolveStageModel(Request{
 		Profile:        profile,
 		Stage:          StageReviewer,
 		ModelOverride:  "claude-opus-5",
 		EffortOverride: "xhigh",
 	})
-	if err == nil || !strings.Contains(err.Error(), `stage reviewer: config: unsupported effort: effort "xhigh" is unsupported`) {
-		t.Fatalf("ResolveStageModel error = %v", err)
+	if err != nil || got.Effort != "xhigh" {
+		t.Fatalf("ResolveStageModel = (%+v, %v), want xhigh effort", got, err)
 	}
 }
 

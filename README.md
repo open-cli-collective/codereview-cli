@@ -642,7 +642,7 @@ Supported values:
 | `llm.auth` | `subscription`, `api_key` |
 | `llm.adapter` | `claude_cli`, `anthropic_api`, `openai_api`, `pi_rpc`, and `codex_cli` are usable for review. `codex_cli` requires `provider: openai` and `auth: subscription`, and is currently best-effort/beta because Codex does not yet expose an explicit all-tools-disabled flag. |
 | `llm.model_map` keys | `small`, `medium`, `large` |
-| `llm_runtimes.<name>.max_effort` keys | `small`, `medium`, `large`; values `low`, `medium`, `high`, plus `xhigh` and `max` for runtimes that support them (currently `pi_rpc`) |
+| `llm_runtimes.<name>.max_effort` keys | `small`, `medium`, `large`; values `low`, `medium`, `high`, plus `xhigh` and `max` for `claude_cli`, `codex_cli`, `openai_api`, and `pi_rpc`. `anthropic_api` supports through `high`. Effective extended-effort support depends on the selected model and, for CLI adapters, the installed CLI. |
 | `llm.reviewer_model_tier` | `small`, `medium`, `large` |
 | `review_policy.major_event` | `comment`, `request_changes` |
 | `review_policy.resolve_threads` | `auto`, `never` |

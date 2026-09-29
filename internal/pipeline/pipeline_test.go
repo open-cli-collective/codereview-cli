@@ -9207,7 +9207,7 @@ func TestReviewerRuntimeConfigCapsInheritedEffortForExactModelOverride(t *testin
 	}
 }
 
-func TestReviewerRuntimeConfigRejectsUnsupportedTierEffortOverride(t *testing.T) {
+func TestReviewerRuntimeConfigAllowsExtendedClaudeCLIEffortOverride(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderAnthropic,
 		Auth:     config.LLMAuthSubscription,
@@ -9215,12 +9215,12 @@ func TestReviewerRuntimeConfigRejectsUnsupportedTierEffortOverride(t *testing.T)
 	}}
 	agent := agents.Agent{ID: "go:implementation-tests", ModelTier: "small", Effort: "medium"}
 
-	_, err := resolveReviewerRuntimeConfig(Request{
+	got, err := resolveReviewerRuntimeConfig(Request{
 		Profile:                profile,
 		ReviewerEffortOverride: "xhigh",
 	}, agent)
-	if err == nil || !errors.Is(err, config.ErrUnsupportedEffort) {
-		t.Fatalf("resolveReviewerRuntimeConfig error = %v, want unsupported effort", err)
+	if err != nil || got.effort != "xhigh" {
+		t.Fatalf("resolveReviewerRuntimeConfig = (%+v, %v), want xhigh effort", got, err)
 	}
 }
 

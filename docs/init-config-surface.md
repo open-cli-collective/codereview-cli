@@ -189,7 +189,10 @@ The canonical ceiling path is `llm_runtimes.<name>.max_effort`, and
 `profiles.<name>.llm.max_effort` path is compatibility/projection only, not the
 canonical storage location. The map accepts `small`, `medium`, and `large`
 tier keys with `low`, `medium`, or `high` ceiling values for all runtimes;
-`pi_rpc` also accepts `xhigh` and `max`. Interactive and
+`claude_cli`, `codex_cli`, `openai_api`, and `pi_rpc` also accept `xhigh` and
+`max`. `anthropic_api` supports through `high`. Effective extended-effort
+support depends on the selected model and, for CLI adapters, the installed
+CLI. Interactive and
 non-interactive `cr init` must preserve an existing map, including when the
 profile or selected LLM runtime is staged and saved; init does not edit or
 remove it. Configure it by editing `config.yml` directly. Model-map JSON-row

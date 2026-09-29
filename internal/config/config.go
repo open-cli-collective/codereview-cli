@@ -558,7 +558,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		},
 		BuiltInEffort:  EffortMap{"small": "low", "medium": "medium", "large": "medium"},
 		FastModeModels: []string{"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"},
-		MaximumEffort:  modelprefs.EffortHigh,
+		MaximumEffort:  modelprefs.EffortMax,
 	},
 	{
 		Provider:              LLMProviderAnthropic,
