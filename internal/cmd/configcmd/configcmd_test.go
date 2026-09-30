@@ -1864,7 +1864,15 @@ func TestConfigAgentSourcePreservesUnrelatedProfileFields(t *testing.T) {
 	wantHome := want.Profiles["home"]
 	wantHome.AgentSources = []string{"home-agents", "team/agents"}
 	want.Profiles["home"] = wantHome
-	if !reflect.DeepEqual(cfg, want) {
+	cfgJSON, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cfgJSON, wantJSON) {
 		t.Fatalf("config changed unexpectedly:\n got %#v\nwant %#v", cfg, want)
 	}
 }

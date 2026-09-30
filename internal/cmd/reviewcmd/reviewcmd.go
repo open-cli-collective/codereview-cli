@@ -290,6 +290,21 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if reviewerFast && flags.retryPosts {
 		return exitcode.Usage(fmt.Errorf("fast mode cannot be used with --retry-posts"))
 	}
+	if !flags.dryRun && !flags.retryPosts {
+		if _, needed := config.UpgradeReviewDefaults(cfg, profile.LLMRuntime); needed {
+			var changed bool
+			cfg, changed, err = upgradeReviewDefaults(ctx, path, profile.LLMRuntime)
+			if err != nil {
+				return cmderr.Config(err)
+			}
+			profile.LLM = cfg.LLMRuntimes[profile.LLMRuntime]
+			if changed {
+				if _, err := fmt.Fprintf(opts.Stderr, "Updated Codex review settings: small=gpt-6-luna/max, medium=gpt-6.1-sol/low, large=gpt-6.1-sol/medium; removed old effort ceilings. Customize with cr --profile %q config llm models set <tier> <model> or cr --profile %q config llm efforts set <tier> <effort>.\n", profileName, profileName); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	keepWorkbench := cfg.Data.KeepWorkbench
 	if cmd.Flags().Changed("keep-workbench") {
 		keepWorkbench = flags.keepWorkbench

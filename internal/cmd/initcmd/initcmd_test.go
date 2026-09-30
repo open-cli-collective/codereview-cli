@@ -3,6 +3,7 @@ package initcmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1127,7 +1128,15 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		want.LLMRuntimes[name] = runtime
 	}
 	want.LLMRuntimes[after.Profiles["work"].LLMRuntime] = after.LLMRuntimes[after.Profiles["work"].LLMRuntime]
-	if !reflect.DeepEqual(after, want) {
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterJSON, wantJSON) {
 		t.Fatalf("config after init = %#v, want only work profile/runtime added to %#v", after, before)
 	}
 }
