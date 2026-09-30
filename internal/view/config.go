@@ -271,8 +271,11 @@ func renderConfigModelMap(w io.Writer, llm config.LLMConfig) error {
 			model = "<unset>"
 		}
 		suffix := ""
+		if effort := strings.TrimSpace(llm.EffortMap[row.Tier]); effort != "" {
+			suffix = fmt.Sprintf(" [effort: %s]", effort)
+		}
 		if ceiling := strings.TrimSpace(llm.MaxEffort[row.Tier]); ceiling != "" {
-			suffix = fmt.Sprintf(" [max effort: %s]", ceiling)
+			suffix += fmt.Sprintf(" [max effort: %s]", ceiling)
 		}
 		if _, err := fmt.Fprintf(w, "    %s: %s (%s)%s\n", row.Tier, model, row.Source, suffix); err != nil {
 			return err

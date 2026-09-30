@@ -42,6 +42,9 @@ func TestPathUsesCodereviewConfigScope(t *testing.T) {
 func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	want := validFile()
+	llm := want.LLMRuntimes["home-llm"]
+	llm.EffortMap = EffortMap{"small": "high", "medium": "low"}
+	want.LLMRuntimes["home-llm"] = llm
 
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save: %v", err)
