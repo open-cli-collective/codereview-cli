@@ -488,8 +488,8 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 			decodeCalls++
 			return "", errors.New("invalid")
 		})
-		if decodeCalls != 2 {
-			t.Fatalf("decode calls = %d, want strict decode only per attempt (no extracted candidate)", decodeCalls)
+		if decodeCalls != 6 {
+			t.Fatalf("decode calls = %d, want 1 strict + 2 candidate decodes per attempt", decodeCalls)
 		}
 		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
 			t.Fatalf("RunStructured error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
@@ -536,6 +536,72 @@ func TestRunStructuredProseRecovery(t *testing.T) {
 		}
 		if requests := len(adapter.Requests()); requests != 2 {
 			t.Fatalf("requests = %d, want exactly one retry", requests)
+		}
+	})
+
+	t.Run("recovers the schema-valid object when the preamble drafts another", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`<think>{"ok":false}</think>{"ok":true}`)}})
+
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if !result.Value.OK {
+			t.Fatalf("value = %#v, want recovered object", result.Value)
+		}
+		if requests := len(adapter.Requests()); requests != 1 {
+			t.Fatalf("requests = %d, want recovery without retry", requests)
+		}
+	})
+
+	t.Run("rejects two schema-valid objects", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":true} and {"ok":true}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":true} and {"ok":true}`)}})
+
+		_, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
+		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+			t.Fatalf("RunStructured error = %v, want %v", err, ErrStructuredOutputInvalidAfterRetry)
+		}
+		if requests := len(adapter.Requests()); requests != 2 {
+			t.Fatalf("requests = %d, want retry path preserved", requests)
+		}
+	})
+
+	t.Run("multiple failing candidates keep the strict error", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`<think>{"ok":false}</think>{"ok":false}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":true}`)}})
+
+		result, err := RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, decodeProbe)
+		if err != nil {
+			t.Fatalf("RunStructured: %v", err)
+		}
+		if !result.Value.OK {
+			t.Fatalf("value = %#v, want retry value", result.Value)
+		}
+		requests := adapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("requests = %d, want one retry", len(requests))
+		}
+		if !strings.Contains(requests[1].Prompt, "invalid character '<'") {
+			t.Fatalf("retry prompt = %q, want strict decode error", requests[1].Prompt)
+		}
+	})
+
+	t.Run("bare object failing schema decodes once", func(t *testing.T) {
+		adapter := &FakeAdapter{}
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":false}`)}})
+		adapter.Queue(FakeResult{Response: Response{StructuredOutput: []byte(`{"ok":false}`)}})
+
+		decodeCalls := 0
+		_, _ = RunStructuredWithSessionResume(context.Background(), adapter, "", Request{Prompt: "prompt"}, func([]byte) (probe, error) {
+			decodeCalls++
+			return probe{}, errors.New("invalid")
+		})
+		if decodeCalls != 2 {
+			t.Fatalf("decode calls = %d, want one strict decode per attempt", decodeCalls)
 		}
 	})
 }
