@@ -275,9 +275,10 @@ Unset fields are omitted. Benchmark candidate artifacts record reviewer
 `effort_source` as `inherited` or `override`, so reports can distinguish the
 two execution recipes even when the inherited effort is resolved later per
 agent. Effort values are `low`, `medium`, `high`, `xhigh`, or `max`; validation
-rejects levels unsupported by the candidate profile's runtime. Pi RPC supports
-the full range, while the other built-in runtimes currently support through
-`high`.
+rejects levels unsupported by the candidate profile's runtime. `claude_cli`,
+`codex_cli`, `openai_api`, and `pi_rpc` support the full range;
+`anthropic_api` supports through `high`. Effective extended-effort support
+depends on the selected model and, for CLI adapters, the installed CLI.
 
 Posting, retry, approval, thread-resolution, session,
 and live-review flags are never taken from the suite.

@@ -130,11 +130,11 @@ func TestValidateForRunAcceptsExtendedPiEffort(t *testing.T) {
 	}
 }
 
-func TestValidateForRunRejectsExtendedEffortForUnsupportedRuntime(t *testing.T) {
+func TestValidateForRunAcceptsExtendedClaudeCLIEffort(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: xhigh\n        agent_dirs:", 1)
 	suite := loadSuite(t, body)
 	err := ValidateForRun(suite, runtimeTestConfig(config.LLMProviderAnthropic, config.LLMAuthSubscription, config.LLMAdapterClaudeCLI))
-	if err == nil || !strings.Contains(err.Error(), `candidate "cand1" stages.reviewers.effort: config: unsupported effort: effort "xhigh" is unsupported`) {
+	if err != nil {
 		t.Fatalf("ValidateForRun error = %v", err)
 	}
 }
