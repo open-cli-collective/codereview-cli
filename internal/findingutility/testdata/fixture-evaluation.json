@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "backend": "fixture",
+  "requested_model": "fixture:utility-v1",
+  "allowed_resolved_models": ["fixture:utility-v1"],
+  "cases": [
+    {
+      "id": "golden-low-value",
+      "state_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "questions_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "requested_model": "fixture:utility-v1",
+      "resolved_model": "fixture:utility-v1",
+      "response_base64": "eyJzY2hlbWFfdmVyc2lvbiI6MSwicmVxdWVzdGVkX21vZGVsIjoiZml4dHVyZTp1dGlsaXR5LXYxIiwicmVzb2x2ZWRfbW9kZWwiOiJmaXh0dXJlOnV0aWxpdHktdjEiLCJyZXF1ZXN0X2lkIjoiZml4dHVyZS1yZXF1ZXN0LTEiLCJhbnN3ZXJzIjp7fX0=",
+      "wait_error": null,
+      "deadline": false
+    },
+    {
+      "id": "missing-case",
+      "state_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "questions_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "requested_model": "fixture:utility-v1",
+      "resolved_model": "fixture:utility-v1",
+      "response_base64": null,
+      "wait_error": "fixture_missing",
+      "deadline": false
+    },
+    {
+      "id": "deadline-case",
+      "state_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "questions_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "requested_model": "fixture:utility-v1",
+      "resolved_model": "fixture:utility-v1",
+      "response_base64": null,
+      "wait_error": null,
+      "deadline": true
+    },
+    {
+      "id": "malformed-response",
+      "state_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "questions_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "requested_model": "fixture:utility-v1",
+      "resolved_model": "fixture:utility-v1",
+      "response_base64": "eyJub3QiOiJhLXJlc3BvbnNlIn0=",
+      "wait_error": null,
+      "deadline": false
+    }
+  ]
+}
