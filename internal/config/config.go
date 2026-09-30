@@ -3,6 +3,8 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -72,6 +74,9 @@ func (e RepositoryProfileAmbiguityError) Unwrap() error {
 
 // File is the root config.yml schema.
 type File struct {
+	sourcePath   string
+	sourceDigest [sha256.Size]byte
+
 	Secrets            SecretsConfig                     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	RepositoryAccess   map[string]RepositoryAccessConfig `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
 	LLMRuntimes        map[string]LLMConfig              `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
@@ -926,10 +931,12 @@ func Load(path string) (File, error) {
 		return File{}, err
 	}
 	cfg = cfg.normalized()
+	cfg.sourcePath = path
+	cfg.sourceDigest = sha256.Sum256(body)
 	return cfg, nil
 }
 
-// Save validates and atomically writes config.yml.
+// Save validates and atomically writes config.yml, rejecting stale loaded drafts.
 func Save(path string, cfg File) error {
 	if strings.TrimSpace(path) == "" {
 		return invalid("path is required")
@@ -941,6 +948,21 @@ func Save(path string, cfg File) error {
 		return err
 	}
 	cfg = cfg.normalized()
+	lock, err := lockFile(context.Background(), path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+	if cfg.sourcePath == path {
+		// #nosec G304 -- path is the caller-selected config file.
+		body, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) || (err == nil && sha256.Sum256(body) != cfg.sourceDigest) {
+			return ErrChanged
+		}
+		if err != nil {
+			return err
+		}
+	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {

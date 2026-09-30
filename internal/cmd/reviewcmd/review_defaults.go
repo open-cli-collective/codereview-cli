@@ -35,7 +35,11 @@ func upgradeReviewDefaults(ctx context.Context, path, runtimeName string) (confi
 	if !changed {
 		return cfg, false, nil
 	}
-	if err := saveReviewDefaults(path, upgraded); err != nil {
+	if err := saveReviewDefaults(path, upgraded); errors.Is(err, config.ErrChanged) {
+		// A normal config edit won the write lock. Re-read rather than overwrite it.
+		_ = lock.Release()
+		return upgradeReviewDefaults(ctx, path, runtimeName)
+	} else if err != nil {
 		return config.File{}, false, err
 	}
 	loaded, err := config.Load(path)

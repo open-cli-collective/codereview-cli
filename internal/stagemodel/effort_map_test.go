@@ -46,3 +46,14 @@ func TestIndependentModelAndEffortMaps(t *testing.T) {
 		t.Fatalf("ceiling must cap mapped max effort: %#v, %v", got, err)
 	}
 }
+
+func TestEffortPreferenceOverridesBuiltInPreset(t *testing.T) {
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider: config.LLMProviderOpenAI, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterCodexCLI,
+		EffortMap: config.EffortMap{"small": "high"},
+	}}
+	got, err := ResolveStageModel(Request{Profile: profile, Stage: StageReviewer, Tier: config.ModelTierSmall, DefaultEffort: "low"})
+	if err != nil || got.Model != "gpt-6-luna" || got.Effort != "high" || got.Source != config.ModelMapSourceBuiltIn {
+		t.Fatalf("built-in model with configured effort: %#v, %v", got, err)
+	}
+}

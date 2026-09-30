@@ -53,6 +53,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	got.sourcePath, got.sourceDigest = "", [32]byte{}
 	if !reflect.DeepEqual(got, want.normalized()) {
 		t.Fatalf("Load = %#v, want %#v", got, want.normalized())
 	}

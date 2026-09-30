@@ -315,3 +315,5 @@ and ceilings are preserved. Other profiles using that runtime share the upgrade.
 Dry-run/no-post, posting recovery, other commands, and non-Codex runtimes do not
 trigger it. A backup or save failure stops before starting the review; the next
 invocation can retry the upgrade.
+
+Config saves serialize writes and reject stale loaded drafts with a retry message, so a concurrent edit cannot undo migration or be erased by it. The automatic migration reloads and retries when another config edit wins.

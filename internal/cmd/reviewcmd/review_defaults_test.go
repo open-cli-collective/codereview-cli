@@ -152,3 +152,40 @@ func TestFailedDefaultsSavePreservesOriginalConfig(t *testing.T) {
 		t.Fatal("failed upgrade changed the original config")
 	}
 }
+
+func TestMigrationAndOrdinaryConfigEditsRejectStaleDrafts(t *testing.T) {
+	cfg := config.Normalize(testConfig())
+	cfg.LLMRuntimes["codex"] = config.LLMConfig{Provider: config.LLMProviderOpenAI,
+		Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterCodexCLI}
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	staleEdit, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := upgradeReviewDefaults(context.Background(), path, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	staleEdit.Data.KeepWorkbench = true
+	if err := config.Save(path, staleEdit); !errors.Is(err, config.ErrChanged) {
+		t.Fatalf("stale edit must not undo migration: %v", err)
+	}
+	latest, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleMigration := latest
+	latest.Data.KeepWorkbench = true
+	if err := config.Save(path, latest); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveReviewDefaults(path, staleMigration); !errors.Is(err, config.ErrChanged) {
+		t.Fatalf("stale migration must not erase ordinary edit: %v", err)
+	}
+	final, err := config.Load(path)
+	if err != nil || !final.Data.KeepWorkbench || final.LLMRuntimes["codex"].DefaultsVersion != 1 {
+		t.Fatalf("migration and ordinary edit not preserved: %#v, %v", final, err)
+	}
+}

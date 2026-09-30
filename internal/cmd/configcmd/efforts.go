@@ -33,7 +33,7 @@ func newEffortsCommand(opts *root.Options) *cobra.Command {
 				for _, tier := range config.ModelTiers() {
 					effort := profile.LLM.EffortMap[string(tier)]
 					if effort == "" {
-						effort = "agent/stage default"
+						effort = "built-in or agent/stage default"
 					}
 					ceiling := profile.LLM.MaxEffort[string(tier)]
 					if ceiling == "" {
@@ -78,7 +78,7 @@ func newEffortsCommand(opts *root.Options) *cobra.Command {
 		},
 	}
 	unset := &cobra.Command{
-		Use: "unset <tier>", Short: "Restore agent or stage reasoning effort for a tier",
+		Use: "unset <tier>", Short: "Restore default reasoning effort for a tier",
 		Args: exitcode.ExactArgs(1, "config llm efforts unset requires <tier>"),
 		RunE: func(_ *cobra.Command, args []string) error {
 			tier, err := parseModelTierArg(args[0])
