@@ -312,6 +312,54 @@ func TestEvaluateNewerCommentedReviewDoesNotUseApprovalFastPath(t *testing.T) {
 	}
 }
 
+func TestEvaluateMarkedCommentedVerdictRemainsComplete(t *testing.T) {
+	fixture := newFixture(t)
+	submit := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-commented", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testBaseSHA,
+	})
+	setReviews(t, fixture, []gitprovider.Review{{
+		ID: "review-commented", Author: fixture.req.PostingIdentity, Body: submit,
+		State: gitprovider.ReviewStateCommented, SubmittedAt: testNow,
+	}})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusEarlyExit || result.Decision.Kind != gate.DecisionEarlyExit {
+		t.Fatalf("Evaluate = %#v, want completed comment verdict to remain idempotent", result)
+	}
+}
+
+func TestEvaluateCommentedVerdictOnOldBaseRequiresFreshReview(t *testing.T) {
+	fixture := newFixture(t)
+	current := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-approved", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testBaseSHA,
+	})
+	stale := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-commented", ActionID: "submit-2", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testOldBase,
+	})
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "review-approved", Author: fixture.req.PostingIdentity, Body: current,
+			State: gitprovider.ReviewStateApproved, SubmittedAt: testNow.Add(-time.Minute)},
+		{ID: "review-commented", Author: fixture.req.PostingIdentity, Body: stale,
+			State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+	})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review after a stale-base comment verdict", result)
+	}
+}
+
 func TestEvaluateRetryPostsIgnoresActiveApprovalAndOverride(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)

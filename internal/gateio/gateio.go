@@ -921,7 +921,11 @@ func summarizePRFromHost(host gateHostState, req Request) gate.PRSummary {
 	if summary.State == gate.PRStateCompleteReview {
 		latest, found := latestVerdictReviewByPostingIdentity(host.reviews, req.PostingIdentity)
 		if found && latest.State == gitprovider.ReviewStateCommented {
-			return gate.PRSummary{State: gate.PRStateFresh}
+			latestRecords := markerActionRecords(gateHostState{reviews: []gitprovider.Review{latest}}, req.PostingIdentity)
+			latestSummary := classifyMarkers(latestRecords, req.PR.Head.SHA, req.PR.Base.SHA)
+			if latestSummary.State != gate.PRStateCompleteReview {
+				return gate.PRSummary{State: gate.PRStateFresh}
+			}
 		}
 	}
 	return summary
