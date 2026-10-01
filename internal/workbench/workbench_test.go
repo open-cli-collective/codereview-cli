@@ -250,7 +250,7 @@ func TestReviewerWorkspaceSmokeAllowsReadAndWorkspaceWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareReviewerRequest: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 
 	type smokeResult struct {
 		ReadOK              bool `json:"read_ok"`
@@ -299,7 +299,7 @@ func TestReviewerWorkspaceAllowedFilesPreservesRealCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if workspace.RepoDir == artifacts.WorkbenchRepoDir {
 		t.Fatalf("repo dir = %q, want disposable checkout distinct from workbench repo", workspace.RepoDir)
 	}
@@ -331,7 +331,7 @@ func TestReviewerWorkspaceAllowedFilesAcceptsDeletedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if _, err := os.Stat(filepath.Join(workspace.RepoDir, "main.go")); err != nil {
 		t.Fatalf("Stat(main.go): %v", err)
 	}
@@ -353,7 +353,7 @@ func TestReviewerWorkspaceAllowedFilesResetsWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace(second): %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if _, err := os.ReadFile(filepath.Join(workspace.RepoDir, "other.go")); err != nil { // #nosec G304 -- test reads only fixture paths.
 		t.Fatalf("ReadFile(other.go): %v", err)
 	}
@@ -389,7 +389,7 @@ func TestReviewerWorkspaceAllowedFilesAcceptsSymlinkTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	info, err := os.Lstat(filepath.Join(workspace.RepoDir, "other.go"))
 	if err != nil {
 		t.Fatalf("Lstat(other.go): %v", err)
@@ -417,7 +417,7 @@ func TestReviewerWorkspaceAllowedFilesAcceptsSubmoduleTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareReviewerWorkspace: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	info, err := os.Stat(filepath.Join(workspace.RepoDir, "vendor", "shared"))
 	if err != nil {
 		t.Fatalf("Stat(vendor/shared): %v", err)
@@ -441,7 +441,7 @@ func TestReviewerWorkspaceAllowedFilesRejectsEscapePathsAndCleansUp(t *testing.T
 		if cleanup != nil {
 			t.Fatalf("prepareReviewerWorkspace(%q) cleanup = non-nil, want nil on setup failure", path)
 		}
-		encoded := statepaths.Encode(agentID)
+		encoded := ReviewerWorkspaceSegment(agentID)
 		if _, statErr := os.Stat(filepath.Join(artifacts.WorkbenchDir, "reviewers", encoded)); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("reviewer workspace for %q stat err = %v, want cleaned", path, statErr)
 		}
@@ -476,7 +476,7 @@ func TestPrepareReviewerRequestAcceptsPermissionBoundedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareReviewerRequest: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	if req.ReviewerWorkspace == nil {
 		t.Fatalf("ReviewerWorkspace = nil")
 	}
@@ -498,7 +498,7 @@ func TestPrepareReviewerRequestValidationRetryGetsFreshWorkspaceWithSameFixedDif
 	if err != nil {
 		t.Fatalf("PrepareReviewerRequest: %v", err)
 	}
-	defer cleanupForTest(t, cleanup)
+	t.Cleanup(cleanupForTest(t, cleanup))
 	firstRepo := req.ReviewerWorkspace.RepoDir
 	if err := os.WriteFile(filepath.Join(firstRepo, "untracked"), []byte("dirty"), 0o600); err != nil {
 		t.Fatalf("WriteFile(untracked): %v", err)
@@ -825,4 +825,43 @@ func gitCommandSucceeds(dir string, args ...string) bool {
 	cmd.Env = gittest.Env()
 	cmd.Dir = dir
 	return cmd.Run() == nil
+}
+
+func TestReviewerWorkspaceSegmentCarriesNoEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		agentID string
+		want    string
+	}{
+		{agentID: "plain-reviewer_1.v2", want: "plain-reviewer_1.v2"},
+		{agentID: "go:implementation-tests"},
+		{agentID: "go%3Aimplementation-tests"},
+		{agentID: "../escape"},
+		{agentID: ".."},
+		{agentID: "a/b"},
+	} {
+		got := ReviewerWorkspaceSegment(tc.agentID)
+		if tc.want != "" && got != tc.want {
+			t.Fatalf("ReviewerWorkspaceSegment(%q) = %q, want %q", tc.agentID, got, tc.want)
+		}
+		if strings.ContainsAny(got, "%:/\\") || strings.Trim(got, ".") == "" {
+			t.Fatalf("ReviewerWorkspaceSegment(%q) = %q, want a single plain path segment", tc.agentID, got)
+		}
+	}
+	if ReviewerWorkspaceSegment("go:tests") == ReviewerWorkspaceSegment("go-tests") {
+		t.Fatal("distinct agent IDs mapped to the same workspace segment")
+	}
+}
+
+func TestReviewerWorkspaceScratchPathHasNoEscapes(t *testing.T) {
+	fixture, artifacts, deps := prepareReviewerFixture(t)
+	workspace, cleanup, err := prepareReviewerWorkspace(context.Background(), deps, artifacts, fixture.headSHA, "harness:colon-id", nil, 1024)
+	if err != nil {
+		t.Fatalf("prepareReviewerWorkspace: %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+	for label, dir := range map[string]string{"repo": workspace.RepoDir, "scratch": workspace.ScratchDir} {
+		if strings.Contains(dir, "%") {
+			t.Fatalf("reviewer %s dir = %q, want no percent escapes the model could decode", label, dir)
+		}
+	}
 }

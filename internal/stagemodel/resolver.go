@@ -75,7 +75,7 @@ func ResolveStageModel(req Request) (Result, error) {
 		tier = maxModelTier(tier, floorTier)
 	}
 	if model := strings.TrimSpace(req.ModelOverride); model != "" {
-		effort := strings.TrimSpace(req.DefaultEffort)
+		effort := configuredEffort(req.Profile.LLM, tier, req.DefaultEffort)
 		if effortOverride != "" {
 			effort = effortOverride
 		} else if stage == StageReviewer && tier != "" {
@@ -98,7 +98,14 @@ func ResolveStageModel(req Request) (Result, error) {
 		llmConfig := req.Profile.LLM
 		return Result{}, fmt.Errorf("stagemodel: stage %s: model_tier %q is not mapped for provider %q adapter %q; add llm.model_map.%s to the profile's LLM runtime", stage, tier, llmConfig.Provider, llmConfig.Adapter, tier)
 	}
-	effort := applyMaxEffort(req.Profile.LLM, resolved.Tier, strings.TrimSpace(req.DefaultEffort))
+	effort := strings.TrimSpace(req.DefaultEffort)
+	if resolved.Source == config.ModelMapSourceBuiltIn {
+		if builtIn, ok := config.BuiltInEffort(req.Profile.LLM.Provider, req.Profile.LLM.Adapter, resolved.Tier); ok {
+			effort = string(builtIn)
+		}
+	}
+	effort = configuredEffort(req.Profile.LLM, resolved.Tier, effort)
+	effort = applyMaxEffort(req.Profile.LLM, resolved.Tier, effort)
 	if effortOverride != "" {
 		effort = effortOverride
 	}
@@ -112,6 +119,14 @@ func ResolveStageModel(req Request) (Result, error) {
 		Effort: effort,
 		Source: resolved.Source,
 	}, nil
+}
+
+// configuredEffort selects a runtime preference independently of the model name.
+func configuredEffort(llm config.LLMConfig, tier config.ModelTier, fallback string) string {
+	if effort := strings.TrimSpace(llm.EffortMap[string(tier)]); effort != "" {
+		return effort
+	}
+	return strings.TrimSpace(fallback)
 }
 
 // applyMaxEffort clamps effort to the tier's configured ceiling. Tiers without a

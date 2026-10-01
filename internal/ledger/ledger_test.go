@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -81,6 +82,41 @@ func TestOpenAppliesPerConnectionPragmasFromDSN(t *testing.T) {
 	// Open must expose the same values on the connection it uses.
 	store := openStoreAt(t, path)
 	assertSQLitePragmas(t, store.db)
+}
+
+func TestOpenReappliesPragmasAfterCanceledQuery(t *testing.T) {
+	name := "ledger #&%.db"
+	if runtime.GOOS != "windows" {
+		name = "ledger #?&%.db"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	store := openStoreAt(t, path)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("ledger file at requested path: %v", err)
+	}
+	run := allocateRun(t, store, validAllocateRunParams())
+	session := validSession(run.RunID)
+	insertSession(t, store, session)
+	insertFinding(t, store, validFinding(run.RunID, session.SessionRowID))
+	insertPlannedAction(t, store, validPlannedAction(run.RunID))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := store.db.ExecContext(ctx, `WITH RECURSIVE cnt(x) AS (
+		VALUES(0) UNION ALL SELECT x+1 FROM cnt WHERE x < 1000000000
+	) SELECT sum(x) FROM cnt`); err == nil {
+		t.Fatal("canceled query error = nil, want cancellation")
+	}
+
+	assertSQLitePragmas(t, store.db)
+	if err := store.DeleteRun(context.Background(), run.RunID); err != nil {
+		t.Fatalf("DeleteRun after cancellation: %v", err)
+	}
+	for _, table := range []string{"sessions", "findings", "planned_actions"} {
+		if count := queryInt(t, store.db, "SELECT COUNT(*) FROM "+table); count != 0 {
+			t.Fatalf("%s count after cascade = %d, want 0", table, count)
+		}
+	}
 }
 
 func TestOpenConcurrentOnSamePathSucceeds(t *testing.T) {
@@ -1999,14 +2035,17 @@ func TestSQLiteDataSourceName(t *testing.T) {
 	// the driver splits the query string at the first '?'. A data root
 	// containing any of these characters would otherwise produce a DSN whose
 	// parameters are truncated or whose path is wrong.
-	for _, name := range []string{
+	names := []string{
 		"ledger.db",
 		"with space.db",
-		"question?.db",
 		"hash#.db",
 		"percent%41.db",
 		"amp&eq=.db",
-	} {
+	}
+	if runtime.GOOS != "windows" {
+		names = append(names, "question?.db")
+	}
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), name)
 			dsn, err := sqliteDataSourceName(path)
@@ -2069,7 +2108,11 @@ func TestSQLiteDataSourceName(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse dsn %q: %v", dsn, err)
 		}
-		if want := filepath.ToSlash(filepath.Join(cwd, "ledger.db")); parsed.Path != want {
+		want := filepath.ToSlash(filepath.Join(cwd, "ledger.db"))
+		if runtime.GOOS == "windows" && !strings.HasPrefix(want, "/") {
+			want = "/" + want
+		}
+		if parsed.Path != want {
 			t.Fatalf("dsn path = %q, want %q", parsed.Path, want)
 		}
 	})
@@ -2099,7 +2142,18 @@ func busyError(t *testing.T) error {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "busy.db")
-	dsn := "file://localhost" + filepath.ToSlash(path) + "?_pragma=busy_timeout(0)&_txlock=immediate"
+	dsn, err := sqliteDataSourceName(path)
+	if err != nil {
+		t.Fatalf("sqliteDataSourceName: %v", err)
+	}
+	parsedDSN, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn %q: %v", dsn, err)
+	}
+	query := parsedDSN.Query()
+	query.Set("_pragma", "busy_timeout(0)")
+	parsedDSN.RawQuery = query.Encode()
+	dsn = parsedDSN.String()
 	holder := openRawSQLite(t, dsn)
 	contender := openRawSQLite(t, dsn)
 

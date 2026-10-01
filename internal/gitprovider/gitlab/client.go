@@ -7,13 +7,19 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
-const credentialTypePAT = "pat"
+const (
+	credentialTypePAT = "pat"
+	// defaultHTTPTimeout bounds every REST request made with the default
+	// client, so an abandoned connection cannot park a review indefinitely.
+	defaultHTTPTimeout = 2 * time.Minute
+)
 
 // ErrValidation identifies non-retryable adapter input or GitLab validation failures.
 var ErrValidation = errors.New("gitlab: validation error")
@@ -100,7 +106,7 @@ func New(opts Options) (*Client, error) {
 	}
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = defaultBoundedHTTPClient()
 	}
 	return &Client{
 		host:       normalizedHost,
@@ -108,6 +114,10 @@ func New(opts Options) (*Client, error) {
 		httpClient: httpClient,
 		baseURL:    baseURL,
 	}, nil
+}
+
+func defaultBoundedHTTPClient() *http.Client {
+	return &http.Client{Timeout: defaultHTTPTimeout}
 }
 
 // Host returns the normalized host this client is bound to.

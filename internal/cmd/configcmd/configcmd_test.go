@@ -15,7 +15,7 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdtest"
@@ -1864,7 +1864,15 @@ func TestConfigAgentSourcePreservesUnrelatedProfileFields(t *testing.T) {
 	wantHome := want.Profiles["home"]
 	wantHome.AgentSources = []string{"home-agents", "team/agents"}
 	want.Profiles["home"] = wantHome
-	if !reflect.DeepEqual(cfg, want) {
+	cfgJSON, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cfgJSON, wantJSON) {
 		t.Fatalf("config changed unexpectedly:\n got %#v\nwant %#v", cfg, want)
 	}
 }
@@ -2130,9 +2138,9 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "list"}); err != nil {
 		t.Fatalf("Execute list: %v", err)
 	}
-	if !strings.Contains(out.String(), "small: claude-haiku-4-5 (built_in)") ||
+	if !strings.Contains(out.String(), "small: claude-sonnet-5 (built_in)") ||
 		!strings.Contains(out.String(), "medium: claude-sonnet-5 (built_in)") ||
-		!strings.Contains(out.String(), "large: claude-opus-5 (built_in)") {
+		!strings.Contains(out.String(), "large: claude-opus-5-5 (built_in)") {
 		t.Fatalf("list stdout = %q, want effective Claude CLI defaults", out.String())
 	}
 

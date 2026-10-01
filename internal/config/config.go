@@ -3,6 +3,8 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +19,7 @@ import (
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedir"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 )
@@ -72,6 +74,9 @@ func (e RepositoryProfileAmbiguityError) Unwrap() error {
 
 // File is the root config.yml schema.
 type File struct {
+	sourcePath   string
+	sourceDigest [sha256.Size]byte
+
 	Secrets            SecretsConfig                     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	RepositoryAccess   map[string]RepositoryAccessConfig `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
 	LLMRuntimes        map[string]LLMConfig              `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
@@ -361,15 +366,17 @@ type LLMConfig struct {
 	Adapter           LLMAdapter         `yaml:"adapter" json:"adapter"`
 	Credential        CredentialLocation `yaml:"credential,omitempty" json:"credential,omitempty"`
 	ModelMap          ModelMap           `yaml:"model_map,omitempty" json:"model_map,omitempty"`
+	EffortMap         EffortMap          `yaml:"effort_map,omitempty" json:"effort_map,omitempty"`
 	MaxEffort         EffortMap          `yaml:"max_effort,omitempty" json:"max_effort,omitempty"`
 	ReviewerModelTier ModelTier          `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
+	DefaultsVersion   int                `yaml:"review_defaults_version,omitempty" json:"review_defaults_version,omitempty"`
 }
 
 // ModelMap maps portable model tiers to provider-specific model identifiers.
 type ModelMap map[string]string
 
-// EffortMap caps reasoning effort per model tier. A tier absent from the map is
-// uncapped, so the agent-declared or stage-default effort applies unchanged.
+// EffortMap maps portable tiers to reasoning effort values. Missing entries
+// preserve the agent-declared or stage-default effort.
 type EffortMap map[string]string
 
 // ModelTier is a provider-neutral model slot.
@@ -538,6 +545,7 @@ type LLMRuntimeSpec struct {
 	SuggestedName         string
 	DisplayName           string
 	BuiltInModelMap       ModelMap
+	BuiltInEffort         EffortMap
 	FastModeModels        []string
 	MaximumEffort         modelprefs.Effort
 	RequiresCredentialRef bool
@@ -551,12 +559,13 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName: "claude-cli",
 		DisplayName:   "Claude CLI",
 		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "claude-haiku-4-5",
+			string(ModelTierSmall):  "claude-sonnet-5",
 			string(ModelTierMedium): "claude-sonnet-5",
-			string(ModelTierLarge):  "claude-opus-5",
+			string(ModelTierLarge):  "claude-opus-5-5",
 		},
-		FastModeModels: []string{"claude-opus-5", "claude-opus-4-8"},
-		MaximumEffort:  modelprefs.EffortHigh,
+		BuiltInEffort:  EffortMap{"small": "low", "medium": "medium", "large": "medium"},
+		FastModeModels: []string{"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"},
+		MaximumEffort:  modelprefs.EffortMax,
 	},
 	{
 		Provider:              LLMProviderAnthropic,
@@ -565,7 +574,7 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName:         "anthropic-api-key",
 		DisplayName:           "Anthropic API",
 		BuiltInModelMap:       ModelMap{},
-		FastModeModels:        []string{"claude-opus-5", "claude-opus-4-8"},
+		FastModeModels:        []string{"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"},
 		MaximumEffort:         modelprefs.EffortHigh,
 		RequiresCredentialRef: true,
 	},
@@ -576,12 +585,13 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName: "codex-cli",
 		DisplayName:   "Codex CLI",
 		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "gpt-5.4-mini",
-			string(ModelTierMedium): "gpt-5.4",
-			string(ModelTierLarge):  "gpt-5.5",
+			string(ModelTierSmall):  "gpt-6-luna",
+			string(ModelTierMedium): "gpt-6-sol",
+			string(ModelTierLarge):  "gpt-6-sol",
 		},
-		FastModeModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"},
-		MaximumEffort:  modelprefs.EffortHigh,
+		BuiltInEffort:  EffortMap{"small": "max", "medium": "low", "large": "medium"},
+		FastModeModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"},
+		MaximumEffort:  modelprefs.EffortMax,
 	},
 	{
 		Provider:      LLMProviderOpenAI,
@@ -590,12 +600,13 @@ var llmRuntimeSpecs = []LLMRuntimeSpec{
 		SuggestedName: "openai-api-key",
 		DisplayName:   "OpenAI API",
 		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "gpt-5.4-mini",
-			string(ModelTierMedium): "gpt-5.4",
-			string(ModelTierLarge):  "gpt-5.5",
+			string(ModelTierSmall):  "gpt-6-luna",
+			string(ModelTierMedium): "gpt-6-sol",
+			string(ModelTierLarge):  "gpt-6-sol",
 		},
+		BuiltInEffort:         EffortMap{"small": "max", "medium": "low", "large": "medium"},
 		RequiresCredentialRef: true,
-		MaximumEffort:         modelprefs.EffortHigh,
+		MaximumEffort:         modelprefs.EffortMax,
 	},
 	{
 		Provider:        LLMProviderPi,
@@ -613,6 +624,7 @@ func LLMRuntimeSpecs() []LLMRuntimeSpec {
 	specs := make([]LLMRuntimeSpec, len(llmRuntimeSpecs))
 	for i, spec := range llmRuntimeSpecs {
 		spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+		spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
 		spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 		specs[i] = spec
 	}
@@ -625,6 +637,7 @@ func FindLLMRuntimeSpec(provider LLMProvider, auth LLMAuth, adapter LLMAdapter) 
 	for _, spec := range llmRuntimeSpecs {
 		if spec.Provider == provider && (spec.Auth == "" || spec.Auth == auth) && spec.Adapter == adapter {
 			spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+			spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
 			spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 			return spec, true
 		}
@@ -697,6 +710,15 @@ func BuiltInModelMap(provider LLMProvider, adapter LLMAdapter) ModelMap {
 		return maps.Clone(spec.BuiltInModelMap)
 	}
 	return ModelMap{}
+}
+
+// BuiltInEffort returns the effort paired with a built-in model tier.
+func BuiltInEffort(provider LLMProvider, adapter LLMAdapter, tier ModelTier) (modelprefs.Effort, bool) {
+	if spec, ok := findLLMRuntimeSpecByProviderAdapter(provider, adapter); ok {
+		effort := modelprefs.Effort(spec.BuiltInEffort[string(tier)])
+		return effort, effort.Valid()
+	}
+	return "", false
 }
 
 // EffectiveModelMap merges built-in defaults with profile model_map overrides.
@@ -909,10 +931,12 @@ func Load(path string) (File, error) {
 		return File{}, err
 	}
 	cfg = cfg.normalized()
+	cfg.sourcePath = path
+	cfg.sourceDigest = sha256.Sum256(body)
 	return cfg, nil
 }
 
-// Save validates and atomically writes config.yml.
+// Save validates and atomically writes config.yml, rejecting stale loaded drafts.
 func Save(path string, cfg File) error {
 	if strings.TrimSpace(path) == "" {
 		return invalid("path is required")
@@ -924,6 +948,21 @@ func Save(path string, cfg File) error {
 		return err
 	}
 	cfg = cfg.normalized()
+	lock, err := lockFile(context.Background(), path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+	if cfg.sourcePath == path {
+		// #nosec G304 -- path is the caller-selected config file.
+		body, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) || (err == nil && sha256.Sum256(body) != cfg.sourceDigest) {
+			return ErrChanged
+		}
+		if err != nil {
+			return err
+		}
+	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -1479,17 +1518,22 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 			return invalid("%s.model_map.%s is required", field, tier)
 		}
 	}
-	for tier, ceiling := range llm.MaxEffort {
-		modelTier := ModelTier(tier)
-		if !modelTier.Valid() {
-			return invalid("%s.max_effort tier %q is invalid", field, tier)
+	for name, efforts := range map[string]EffortMap{"effort_map": llm.EffortMap, "max_effort": llm.MaxEffort} {
+		for tier, ceiling := range efforts {
+			modelTier := ModelTier(tier)
+			if !modelTier.Valid() {
+				return invalid("%s.%s tier %q is invalid", field, name, tier)
+			}
+			if strings.TrimSpace(ceiling) == "" {
+				return invalid("%s.%s.%s is required", field, name, tier)
+			}
+			if err := ValidateEffortForRuntime(llm, ceiling); err != nil {
+				return invalid("%s.%s.%s: %v", field, name, tier, err)
+			}
 		}
-		if strings.TrimSpace(ceiling) == "" {
-			return invalid("%s.max_effort.%s is required", field, tier)
-		}
-		if err := ValidateEffortForRuntime(llm, ceiling); err != nil {
-			return invalid("%s.max_effort.%s: %v", field, tier, err)
-		}
+	}
+	if llm.DefaultsVersion < 0 {
+		return invalid("%s.review_defaults_version must be non-negative", field)
 	}
 	if llm.ReviewerModelTier != "" && !llm.ReviewerModelTier.Valid() {
 		return invalid("%s.reviewer_model_tier %q is invalid; must be one of small, medium, large", field, llm.ReviewerModelTier)
@@ -2026,6 +2070,15 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 	for _, tier := range effortKeys {
 		efforts = append(efforts, tier+"="+strings.TrimSpace(llm.MaxEffort[tier]))
 	}
+	preferenceKeys := make([]string, 0, len(llm.EffortMap))
+	for tier := range llm.EffortMap {
+		preferenceKeys = append(preferenceKeys, tier)
+	}
+	sort.Strings(preferenceKeys)
+	preferences := make([]string, 0, len(preferenceKeys))
+	for _, tier := range preferenceKeys {
+		preferences = append(preferences, tier+"="+strings.TrimSpace(llm.EffortMap[tier]))
+	}
 	return strings.Join([]string{
 		string(llm.Provider),
 		string(llm.Auth),
@@ -2034,7 +2087,9 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 		llm.Credential.Name,
 		strings.Join(models, "\x1f"),
 		strings.Join(efforts, "\x1f"),
+		strings.Join(preferences, "\x1f"),
 		string(llm.ReviewerModelTier),
+		strconv.Itoa(llm.DefaultsVersion),
 	}, "\x00")
 }
 
@@ -2337,6 +2392,13 @@ func (l LLMConfig) normalized() LLMConfig {
 		}
 		l.MaxEffort = maxEffort
 	}
+	if len(l.EffortMap) > 0 {
+		effortMap := make(EffortMap, len(l.EffortMap))
+		for tier, effort := range l.EffortMap {
+			effortMap[strings.TrimSpace(tier)] = strings.TrimSpace(effort)
+		}
+		l.EffortMap = effortMap
+	}
 	return l
 }
 
@@ -2347,6 +2409,8 @@ func (l LLMConfig) empty() bool {
 		l.Credential.empty() &&
 		len(l.ModelMap) == 0 &&
 		len(l.MaxEffort) == 0 &&
+		len(l.EffortMap) == 0 &&
+		l.DefaultsVersion == 0 &&
 		strings.TrimSpace(string(l.ReviewerModelTier)) == ""
 }
 

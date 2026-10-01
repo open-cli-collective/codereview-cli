@@ -7,7 +7,6 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
@@ -23,8 +22,6 @@ type bubbleTeaInitProfileV2Prompter struct {
 }
 
 type initProfileV2EditorRunner func(initProfileV2Editor) (initProfileV2EditorResult, error)
-
-var initProfileV2Theme = initLinearTheme
 
 func (p bubbleTeaInitProfileV2Prompter) Run(ctx initPromptContext) (initDraft, error) {
 	if initProfileV2ShouldCreateDirectly(ctx) {
@@ -172,47 +169,45 @@ func initProfileV2InventoryRows(ctx initPromptContext) []initInventoryRow {
 }
 
 type initProfileV2ReadOnlyModel struct {
-	viewport                   viewport.Model
-	draft                      initDraft
-	gitScopes                  map[string]initGitScopeDraft
-	reviewerEntities           map[string]initReviewerEntityDraft
-	llmRuntimes                map[string]initLLMRuntimeDraft
-	credentialStoreOptions     []huh.Option[string]
-	selectedGitScope           string
-	initialGitStorageLabel     string
-	gitStorageLabelUsesDefault bool
-	document                   initProfileV2Document
-	layout                     initProfileV2Layout
-	focused                    int
-	quitting                   bool
-	requestLLMRuntimeBootstrap bool
-	result                     initProfileV2EditorResult
+	initLinearEditorModel
+	*initProfileV2ReadOnlyState
+}
+
+type initProfileV2ReadOnlyState struct {
+	draft                  initDraft
+	gitScopes              map[string]initGitScopeDraft
+	reviewerEntities       map[string]initReviewerEntityDraft
+	llmRuntimes            map[string]initLLMRuntimeDraft
+	credentialStoreOptions []huh.Option[string]
+	selectedGitScope       string
+	result                 initProfileV2EditorResult
 }
 
 func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int) initProfileV2ReadOnlyModel {
-	if width <= 0 {
-		width = 100
-	}
-	if height <= 0 {
-		height = 28
-	}
 	selectedGitScope := editor.SelectedGitScope
 	if selectedGitScope == "" {
 		selectedGitScope = firstInitGitScopeName(editor.GitScopes)
 	}
-	vp := viewport.New(width, max(height-2, 1))
+	state := &initProfileV2ReadOnlyState{
+		draft:                  editor.Draft,
+		gitScopes:              maps.Clone(editor.GitScopes),
+		reviewerEntities:       maps.Clone(editor.ReviewerEntities),
+		llmRuntimes:            maps.Clone(editor.LLMRuntimes),
+		credentialStoreOptions: append([]huh.Option[string](nil), editor.CredentialStoreOptions...),
+		selectedGitScope:       selectedGitScope,
+	}
+	linearEditor := initLinearEditor{
+		Document: editor.Document,
+		OnEnter: func(linear *initLinearEditorModel) (bool, tea.Cmd) {
+			return initProfileV2HandleEnter(linear, state)
+		},
+		OnFieldChange: func(linear *initLinearEditorModel, index int) {
+			initProfileV2AfterFieldChange(linear, state, index)
+		},
+	}
 	model := initProfileV2ReadOnlyModel{
-		viewport:                   vp,
-		draft:                      editor.Draft,
-		gitScopes:                  maps.Clone(editor.GitScopes),
-		reviewerEntities:           maps.Clone(editor.ReviewerEntities),
-		llmRuntimes:                maps.Clone(editor.LLMRuntimes),
-		credentialStoreOptions:     append([]huh.Option[string](nil), editor.CredentialStoreOptions...),
-		selectedGitScope:           selectedGitScope,
-		initialGitStorageLabel:     editor.InitialGitStorageLabel,
-		gitStorageLabelUsesDefault: editor.GitStorageLabelUsesDefault,
-		document:                   editor.Document,
-		focused:                    editor.Document.firstFocusableField(),
+		initLinearEditorModel:      newInitLinearEditorModel(linearEditor, width, height),
+		initProfileV2ReadOnlyState: state,
 	}
 	model.syncGitScopeFields()
 	model.syncReviewerGitHubAppInstallationFields(false)
@@ -224,88 +219,45 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 	return model
 }
 
+func initProfileV2AfterFieldChange(linear *initLinearEditorModel, state *initProfileV2ReadOnlyState, index int) {
+	model := initProfileV2ReadOnlyModel{
+		initLinearEditorModel:      *linear,
+		initProfileV2ReadOnlyState: state,
+	}
+	model.afterFieldChange(index)
+	*linear = model.initLinearEditorModel
+}
+
+func initProfileV2HandleEnter(linear *initLinearEditorModel, state *initProfileV2ReadOnlyState) (bool, tea.Cmd) {
+	model := initProfileV2ReadOnlyModel{
+		initLinearEditorModel:      *linear,
+		initProfileV2ReadOnlyState: state,
+	}
+	if model.handleLLMRuntimeBootstrapKey(tea.KeyMsg{Type: tea.KeyEnter}) {
+		state.result = initProfileV2EditorResult{BootstrapLLMRuntime: true}
+		return true, tea.Quit
+	}
+	next, handled, cmd := model.handleProfileActionKey(tea.KeyMsg{Type: tea.KeyEnter})
+	*linear = next.initLinearEditorModel
+	return handled, cmd
+}
+
 func (m initProfileV2ReadOnlyModel) Init() tea.Cmd {
-	return nil
+	return m.initLinearEditorModel.Init()
 }
 
 func (m initProfileV2ReadOnlyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.viewport.Width = max(msg.Width, 1)
-		m.viewport.Height = max(msg.Height-2, 1)
-		m.relayout()
-		m.ensureFocusedVisible()
-		return m, nil
-	case tea.KeyMsg:
-		if m.handleFocusedInputKey(msg) {
-			m.relayout()
-			m.ensureFocusedVisible()
-			return m, nil
-		}
-		if m.handleFocusedSelectKey(msg) {
-			m.relayout()
-			m.ensureFocusedVisible()
-			return m, nil
-		}
-		if m.handleLLMRuntimeBootstrapKey(msg) {
-			m.requestLLMRuntimeBootstrap = true
-			m.result = initProfileV2EditorResult{BootstrapLLMRuntime: true}
-			m.quitting = true
-			return m, tea.Quit
-		}
-		if next, handled, cmd := m.handleProfileActionKey(msg); handled {
-			return next, cmd
-		}
-		switch msg.String() {
-		case "ctrl+c", "q", "esc":
-			m.quitting = true
-			return m, tea.Quit
-		case "shift+tab":
-			m.focused = m.document.previousFocusableField(m.focused)
-			m.relayout()
-			m.ensureFocusedVisible()
-			return m, nil
-		case "tab", "enter":
-			m.focused = m.document.nextFocusableField(m.focused)
-			m.relayout()
-			m.ensureFocusedVisible()
-			return m, nil
-		case "pgup", "b":
-			m.viewport.HalfPageUp()
-			return m, nil
-		case "pgdown", "f", " ":
-			m.viewport.HalfPageDown()
-			return m, nil
-		case "up", "down", "j", "k":
-			// Up/Down only changes the focused select. Inputs should not leak
-			// these keys to the viewport and scroll the whole form.
-			return m, nil
-		case "home", "g":
-			m.focused = m.document.firstFocusableField()
-			m.relayout()
-			m.ensureFocusedVisible()
-			return m, nil
-		case "end", "G":
-			m.focused = m.document.lastFocusableField()
-			m.relayout()
-			m.ensureFocusedVisible()
-			return m, nil
-		}
+	updated, cmd := m.initLinearEditorModel.Update(msg)
+	linear, ok := updated.(initLinearEditorModel)
+	if !ok {
+		return m, cmd
 	}
-	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
+	m.initLinearEditorModel = linear
 	return m, cmd
 }
 
 func (m initProfileV2ReadOnlyModel) View() string {
-	if m.quitting {
-		return ""
-	}
-	help := "tab/enter next - shift+tab previous - up/down change select - esc back"
-	if m.focused >= 0 && m.focused < len(m.document) && m.document[m.focused].Kind == initProfileV2FieldTextarea {
-		help = "tab/enter next - shift+tab previous - ctrl+j newline - esc back"
-	}
-	return m.styleVisibleViewport() + "\n\n" + initProfileV2Theme.help.Render(help)
+	return m.initLinearEditorModel.View()
 }
 
 func initProfileV2ReadOnlyContent(ctx initPromptContext, selection string) (string, error) {
@@ -313,7 +265,7 @@ func initProfileV2ReadOnlyContent(ctx initPromptContext, selection string) (stri
 	if err != nil {
 		return "", err
 	}
-	return initProfileV2LayoutDocument(document, 100, document.firstFocusableField()).Content, nil
+	return initLinearLayoutDocument(document, 100, document.firstFocusableField()).Content, nil
 }
 
 func initProfileV2ReadOnlyDocument(ctx initPromptContext, selection string) (initProfileV2Document, error) {
@@ -430,15 +382,7 @@ func initProfileV2Selection(ctx initPromptContext, selection string) (string, *c
 	return selection, &profileCopy, ctx.RequestedProfileName
 }
 
-type initProfileV2FieldKind = initLinearFieldKind
 type initProfileV2FieldID = initLinearFieldID
-
-const (
-	initProfileV2FieldSection  initProfileV2FieldKind = initLinearFieldSection
-	initProfileV2FieldInput    initProfileV2FieldKind = initLinearFieldInput
-	initProfileV2FieldSelect   initProfileV2FieldKind = initLinearFieldSelect
-	initProfileV2FieldTextarea initProfileV2FieldKind = initLinearFieldTextarea
-)
 
 const (
 	initProfileV2FieldProfileName                          initProfileV2FieldID = "profile_name"
@@ -470,22 +414,17 @@ func initProfileV2FieldModelMap(tier config.ModelTier) initProfileV2FieldID {
 }
 
 type initProfileV2Editor struct {
-	Draft                      initDraft
-	GitScopes                  map[string]initGitScopeDraft
-	ReviewerEntities           map[string]initReviewerEntityDraft
-	LLMRuntimes                map[string]initLLMRuntimeDraft
-	CredentialStoreOptions     []huh.Option[string]
-	SelectedGitScope           string
-	InitialGitStorageLabel     string
-	GitStorageLabelUsesDefault bool
-	Document                   initProfileV2Document
+	Draft                  initDraft
+	GitScopes              map[string]initGitScopeDraft
+	ReviewerEntities       map[string]initReviewerEntityDraft
+	LLMRuntimes            map[string]initLLMRuntimeDraft
+	CredentialStoreOptions []huh.Option[string]
+	SelectedGitScope       string
+	Document               initProfileV2Document
 }
 
 type initProfileV2Document = initLinearDocument
-type initProfileV2Field = initLinearField
 type initProfileV2FieldOptions = initLinearFieldOptions
-type initProfileV2Layout = initLinearLayout
-type initProfileV2FieldBounds = initLinearFieldBounds
 
 func initProfileV2AppendRouteSection(document *initProfileV2Document, routeText string) {
 	document.addSection("Automatic profile selection", "Routes tell cr when to use this profile automatically. Routes may be shared by multiple profiles; ambiguous matches require explicit --profile.")
@@ -634,81 +573,6 @@ func initProfileV2AddSelect[T comparable](document *initProfileV2Document, title
 	initLinearAddSelect(document, title, description, options, selected)
 }
 
-func (m *initProfileV2ReadOnlyModel) handleFocusedInputKey(msg tea.KeyMsg) bool {
-	if m.focused < 0 || m.focused >= len(m.document) {
-		return false
-	}
-	field := &m.document[m.focused]
-	if (field.Kind != initProfileV2FieldInput && field.Kind != initProfileV2FieldTextarea) || !field.Editable {
-		return false
-	}
-	if field.Kind == initProfileV2FieldTextarea && (msg.String() == "ctrl+j" || msg.String() == "alt+enter") {
-		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, []rune{'\n'})
-		field.Cursor++
-		m.afterFieldChange(m.focused)
-		return true
-	}
-	key := tea.Key(msg)
-	//nolint:exhaustive // The text input consumes only editing keys; all other keys fall through to form navigation.
-	switch key.Type {
-	case tea.KeyRunes:
-		if msg.Alt {
-			return false
-		}
-		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, key.Runes)
-		field.Cursor += len(key.Runes)
-	case tea.KeySpace:
-		if msg.Alt {
-			return false
-		}
-		field.Value = initProfileV2InsertRunes(field.Value, field.Cursor, []rune{' '})
-		field.Cursor++
-	case tea.KeyBackspace, tea.KeyCtrlH:
-		field.Value, field.Cursor = initProfileV2DeleteBeforeCursor(field.Value, field.Cursor)
-	case tea.KeyDelete, tea.KeyCtrlD:
-		field.Value = initProfileV2DeleteAtCursor(field.Value, field.Cursor)
-	case tea.KeyLeft, tea.KeyCtrlB:
-		field.Cursor = max(field.Cursor-1, 0)
-	case tea.KeyRight, tea.KeyCtrlF:
-		field.Cursor = min(field.Cursor+1, len([]rune(field.Value)))
-	case tea.KeyCtrlA:
-		field.Cursor = 0
-	case tea.KeyCtrlE:
-		field.Cursor = len([]rune(field.Value))
-	case tea.KeyCtrlU:
-		field.Value = ""
-		field.Cursor = 0
-	case tea.KeyCtrlW:
-		field.Value, field.Cursor = initLinearDeleteWordBeforeCursor(field.Value, field.Cursor)
-	case tea.KeyCtrlK:
-		field.Value = initProfileV2DeleteAfterCursor(field.Value, field.Cursor)
-	default:
-		return false
-	}
-	m.afterFieldChange(m.focused)
-	return true
-}
-
-func (m *initProfileV2ReadOnlyModel) handleFocusedSelectKey(msg tea.KeyMsg) bool {
-	if m.focused < 0 || m.focused >= len(m.document) {
-		return false
-	}
-	field := &m.document[m.focused]
-	if field.Kind != initProfileV2FieldSelect || !field.Editable || len(field.Options) == 0 {
-		return false
-	}
-	switch msg.String() {
-	case "up", "k":
-		initProfileV2MoveSelection(field, -1)
-	case "down", "j", " ":
-		initProfileV2MoveSelection(field, 1)
-	default:
-		return false
-	}
-	m.afterFieldChange(m.focused)
-	return true
-}
-
 func (m initProfileV2ReadOnlyModel) handleLLMRuntimeBootstrapKey(msg tea.KeyMsg) bool {
 	if msg.String() != "enter" || m.focused < 0 || m.focused >= len(m.document) {
 		return false
@@ -747,26 +611,6 @@ func (m initProfileV2ReadOnlyModel) handleProfileActionKey(msg tea.KeyMsg) (init
 	}
 }
 
-func initProfileV2MoveSelection(field *initProfileV2Field, offset int) {
-	if len(field.Options) == 0 {
-		return
-	}
-	selectedIndex := 0
-	for index, option := range field.Options {
-		if option.Selected {
-			selectedIndex = index
-			break
-		}
-	}
-	next := (selectedIndex + offset) % len(field.Options)
-	if next < 0 {
-		next += len(field.Options)
-	}
-	for index := range field.Options {
-		field.Options[index].Selected = index == next
-	}
-}
-
 func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 	m.validateField(index)
 	if index < 0 || index >= len(m.document) {
@@ -799,26 +643,6 @@ func (m *initProfileV2ReadOnlyModel) afterFieldChange(index int) {
 	if id == initProfileV2FieldLLMRuntime {
 		m.syncLLMCredentialFields(true)
 		m.syncModelMapFields()
-	}
-}
-
-func (m *initProfileV2ReadOnlyModel) validateAll() {
-	for index := range m.document {
-		m.validateField(index)
-	}
-}
-
-func (m *initProfileV2ReadOnlyModel) validateField(index int) {
-	if index < 0 || index >= len(m.document) {
-		return
-	}
-	field := &m.document[index]
-	field.Error = ""
-	if field.Validate == nil {
-		return
-	}
-	if err := field.Validate(field.Value); err != nil {
-		field.Error = err.Error()
 	}
 }
 
@@ -895,9 +719,6 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 		draft.LLMCredentialStore = initCredentialStoreDefaultID()
 		draft.LLMCredentialRef = ""
 	}
-	if err := m.normalizeStorageLabels(&draft, selectedGitScope, selectedReviewerEntity, selectedLLMRuntime); err != nil {
-		return draft, err
-	}
 	if m.document.fieldIndexByID(initProfileV2FieldReviewerModelTier) >= 0 {
 		draft.LLMReviewerModelTier = m.document.selectedValue(initProfileV2FieldReviewerModelTier)
 	}
@@ -929,10 +750,6 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 	draft.RoutesSet = true
 	draft.Routes = routes
 	return draft, nil
-}
-
-func (m initProfileV2ReadOnlyModel) normalizeStorageLabels(*initDraft, string, string, string) error {
-	return nil
 }
 
 func (m *initProfileV2ReadOnlyModel) syncProfileNameDerivedCredentialFields() {
@@ -1068,8 +885,7 @@ func (m *initProfileV2ReadOnlyModel) syncModelMapFields() {
 			continue
 		}
 		value := initEffectiveModelMapInputValue(effective, tier)
-		m.document[index].Value = value
-		m.document[index].Cursor = len([]rune(value))
+		m.setFieldValue(initProfileV2FieldModelMap(tier), value)
 		m.document[index].Description = initModelMapInputDescription(tier, strings.TrimSpace(existing[string(tier)]), strings.TrimSpace(builtIns[string(tier)]))
 		m.validateField(index)
 	}
@@ -1125,242 +941,7 @@ func initProfileV2ReviewPolicyFromDocument(document initProfileV2Document) (conf
 	}, nil
 }
 
-func (m *initProfileV2ReadOnlyModel) setFieldValue(id initProfileV2FieldID, value string) {
-	index := m.document.fieldIndexByID(id)
-	if index < 0 {
-		return
-	}
-	m.document[index].Value = value
-	m.document[index].Cursor = len([]rune(value))
-}
-
-func (m *initProfileV2ReadOnlyModel) selectFieldValue(id initProfileV2FieldID, value string) {
-	index := m.document.fieldIndexByID(id)
-	if index < 0 {
-		return
-	}
-	for optionIndex := range m.document[index].Options {
-		m.document[index].Options[optionIndex].Selected = m.document[index].Options[optionIndex].Value == value
-	}
-}
-
-func (m *initProfileV2ReadOnlyModel) setFieldHidden(id initProfileV2FieldID, hidden bool) {
-	index := m.document.fieldIndexByID(id)
-	if index < 0 {
-		return
-	}
-	m.document[index].Hidden = hidden
-}
-
-func (m *initProfileV2ReadOnlyModel) relayout() {
-	m.layout = initProfileV2LayoutDocument(m.document, m.viewport.Width, m.focused)
-	m.viewport.SetContent(m.layout.Content)
-}
-
-func (m *initProfileV2ReadOnlyModel) ensureFocusedVisible() {
-	if m.focused < 0 || m.focused >= len(m.layout.Bounds) {
-		return
-	}
-	bounds := m.layout.Bounds[m.focused]
-	height := max(m.viewport.Height, 1)
-	top := m.viewport.YOffset
-	bottom := top + height
-	switch {
-	case bounds.Start < top:
-		m.viewport.SetYOffset(bounds.Start)
-	case bounds.Start >= bottom:
-		m.viewport.SetYOffset(bounds.Start)
-	case bounds.End > bottom:
-		if bounds.End-bounds.Start >= height {
-			m.viewport.SetYOffset(bounds.Start)
-			return
-		}
-		m.viewport.SetYOffset(max(bounds.End-height, 0))
-	}
-}
-
-func initProfileV2LayoutDocument(document initProfileV2Document, width int, focused int) initProfileV2Layout {
-	width = max(width, 20)
-	lines := []string{}
-	bounds := make([]initProfileV2FieldBounds, len(document))
-	for index, field := range document {
-		if field.Hidden {
-			bounds[index] = initProfileV2FieldBounds{Start: len(lines), End: len(lines)}
-			continue
-		}
-		if len(lines) > 0 {
-			lines = append(lines, "")
-		}
-		start := len(lines)
-		initProfileV2AppendFieldLines(&lines, field, index == focused, width)
-		bounds[index] = initProfileV2FieldBounds{Start: start, End: len(lines)}
-	}
-	return initProfileV2Layout{
-		Content: strings.TrimRight(strings.Join(lines, "\n"), "\n"),
-		Bounds:  bounds,
-		Lines:   len(lines),
-	}
-}
-
-func initProfileV2AppendFieldLines(lines *[]string, field initProfileV2Field, focused bool, width int) {
-	titlePrefix := ""
-	initProfileV2AppendWrappedWithPrefix(lines, titlePrefix, field.Title, width)
-	initProfileV2AppendWrappedWithPrefix(lines, titlePrefix, field.Description, width)
-	if strings.TrimSpace(field.Error) != "" {
-		initProfileV2AppendWrappedWithPrefix(lines, titlePrefix+"! ", field.Error, width)
-	}
-	switch field.Kind {
-	case initProfileV2FieldSection:
-	case initProfileV2FieldInput, initProfileV2FieldTextarea:
-		value := field.Value
-		if focused && field.Editable {
-			value = initProfileV2ValueWithCursor(value, field.Cursor)
-		}
-		valueLines := strings.Split(value, "\n")
-		if len(valueLines) == 0 {
-			valueLines = []string{""}
-		}
-		for index, line := range valueLines {
-			prefix := "  "
-			if focused && index == 0 {
-				prefix = "> "
-			}
-			initProfileV2AppendWrappedWithPrefix(lines, prefix, line, width)
-		}
-	case initProfileV2FieldSelect:
-		for _, option := range field.Options {
-			prefix := initSelectOptionPrefix(focused, option.Selected)
-			initProfileV2AppendWrappedWithPrefix(lines, prefix, option.Label, width)
-		}
-	}
-}
-
-func initProfileV2AppendWrappedWithPrefix(lines *[]string, prefix string, text string, width int) {
-	initLinearAppendWrappedWithPrefix(lines, prefix, text, width)
-}
-
-func (m initProfileV2ReadOnlyModel) styleVisibleViewport() string {
-	lines := strings.Split(m.viewport.View(), "\n")
-	activeStart := -1
-	activeEnd := -1
-	if m.focused >= 0 && m.focused < len(m.layout.Bounds) {
-		bounds := m.layout.Bounds[m.focused]
-		activeStart = bounds.Start - m.viewport.YOffset
-		activeEnd = bounds.End - m.viewport.YOffset
-	}
-	for index, line := range lines {
-		active := index >= activeStart && index < activeEnd
-		lines[index] = initProfileV2StyleViewportLine(line, active)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func initProfileV2StyleViewportLine(line string, active bool) string {
-	trimmed := strings.TrimSpace(line)
-	switch {
-	case trimmed == "":
-		return line
-	case strings.HasPrefix(trimmed, "! "):
-		return initProfileV2Theme.error.Render(line)
-	case strings.HasPrefix(trimmed, "> "):
-		return initLinearStyleSelectedLine(line)
-	case active && initProfileV2LooksLikeHeading(trimmed):
-		return initProfileV2Theme.activeTitle.Render(line)
-	case initProfileV2LooksLikeHeading(trimmed):
-		return initProfileV2Theme.title.Render(line)
-	default:
-		return line
-	}
-}
-
-var initProfileV2HeadingSet = func() map[string]bool {
-	headings := map[string]bool{
-		"Review profile":              true,
-		"Profile name":                true,
-		"Automatic profile selection": true,
-		"Route entries":               true,
-		"Git scope":                   true,
-		"Git scope host":              true,
-		"Git scope auth mode":         true,
-		"Reviewer entity":             true,
-		"LLM runtime":                 true,
-		"Minimum reviewer model tier": true,
-		"Model tier mapping":          true,
-		"Additional reviewer-agent directories (optional)": true,
-		"Additional trusted reviewer-agent directories":    true,
-		"Review policy":           true,
-		"Major findings event":    true,
-		"Allow self-approve":      true,
-		"Resolve threads":         true,
-		"Git credentials":         true,
-		"Git credential store":    true,
-		"Git credential name":     true,
-		"LLM API key credentials": true,
-		"LLM credential store":    true,
-		"LLM credential name":     true,
-		"Profile action":          true,
-	}
-	for _, tier := range config.ModelTiers() {
-		headings[fmt.Sprintf("%s model", tier)] = true
-	}
-	return headings
-}()
-
-func initProfileV2LooksLikeHeading(line string) bool {
-	return initProfileV2HeadingSet[line]
-}
-
 func validateInitProfileV2RouteText(value string) error {
 	_, err := parseInitRouteSpecs(value)
 	return err
-}
-
-func initProfileV2InsertRunes(value string, cursor int, runes []rune) string {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	next := make([]rune, 0, len(existing)+len(runes))
-	next = append(next, existing[:cursor]...)
-	next = append(next, runes...)
-	next = append(next, existing[cursor:]...)
-	return string(next)
-}
-
-func initProfileV2DeleteBeforeCursor(value string, cursor int) (string, int) {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	if cursor == 0 {
-		return value, cursor
-	}
-	next := make([]rune, 0, len(existing)-1)
-	next = append(next, existing[:cursor-1]...)
-	next = append(next, existing[cursor:]...)
-	return string(next), cursor - 1
-}
-
-func initProfileV2DeleteAtCursor(value string, cursor int) string {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	if cursor >= len(existing) {
-		return value
-	}
-	next := make([]rune, 0, len(existing)-1)
-	next = append(next, existing[:cursor]...)
-	next = append(next, existing[cursor+1:]...)
-	return string(next)
-}
-
-func initProfileV2DeleteAfterCursor(value string, cursor int) string {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	return string(existing[:cursor])
-}
-
-func initProfileV2ValueWithCursor(value string, cursor int) string {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	next := make([]rune, 0, len(existing)+1)
-	next = append(next, existing[:cursor]...)
-	next = append(next, '|')
-	next = append(next, existing[cursor:]...)
-	return string(next)
 }

@@ -46,14 +46,45 @@ func TestValidateRejectsUnknownMaxEffortValue(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsMaxEffortUnsupportedByRuntime(t *testing.T) {
+func TestValidateAcceptsExtendedMaxEffortForClaudeCLI(t *testing.T) {
 	cfg := validFile()
 	runtime := cfg.LLMRuntimes["home-llm"]
-	runtime.MaxEffort = EffortMap{"large": "xhigh"}
+	runtime.Provider = LLMProviderAnthropic
+	runtime.Adapter = LLMAdapterClaudeCLI
+	runtime.MaxEffort = EffortMap{"large": "max"}
 	cfg.LLMRuntimes["home-llm"] = runtime
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestValidateRejectsMaxEffortUnsupportedByRuntime(t *testing.T) {
+	cfg := validFile()
+	runtime := cfg.LLMRuntimes["work-llm"]
+	runtime.MaxEffort = EffortMap{"large": "xhigh"}
+	cfg.LLMRuntimes["work-llm"] = runtime
 	err := Validate(cfg)
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `effort "xhigh" is unsupported`) {
 		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestBuiltInEffort(t *testing.T) {
+	for _, tt := range []struct {
+		provider LLMProvider
+		adapter  LLMAdapter
+		tier     ModelTier
+		want     modelprefs.Effort
+	}{{LLMProviderAnthropic, LLMAdapterClaudeCLI, ModelTierSmall, modelprefs.EffortLow},
+		{LLMProviderAnthropic, LLMAdapterClaudeCLI, ModelTierMedium, modelprefs.EffortMedium},
+		{LLMProviderAnthropic, LLMAdapterClaudeCLI, ModelTierLarge, modelprefs.EffortMedium},
+		{LLMProviderOpenAI, LLMAdapterCodexCLI, ModelTierSmall, modelprefs.EffortMax},
+		{LLMProviderOpenAI, LLMAdapterCodexCLI, ModelTierMedium, modelprefs.EffortLow},
+		{LLMProviderOpenAI, LLMAdapterCodexCLI, ModelTierLarge, modelprefs.EffortMedium}} {
+		got, ok := BuiltInEffort(tt.provider, tt.adapter, tt.tier)
+		if !ok || got != tt.want {
+			t.Fatalf("%s/%s/%s: effort=%s ok=%t, want %s,true", tt.provider, tt.adapter, tt.tier, got, ok, tt.want)
+		}
 	}
 }
 

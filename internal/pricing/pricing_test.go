@@ -112,6 +112,36 @@ func TestEstimateUsageUSDPricesCacheTTLAndObservedSpeed(t *testing.T) {
 	}
 }
 
+func TestEstimateUsageUSDPricesOpus55ReducedCacheReadAndFastMode(t *testing.T) {
+	// Opus 5.5 reads cache at 0.05x input, not the usual 0.1x, and fast mode
+	// doubles every bucket: 4 + 20 + 0.20 + 5 + 8 = 37.2 standard.
+	usage := Usage{
+		TokensIn:      p(1_000_000),
+		TokensOut:     p(1_000_000),
+		CacheRead:     p(1_000_000),
+		CacheCreate5m: p(1_000_000),
+		CacheCreate1h: p(1_000_000),
+		Speed:         "standard",
+	}
+
+	standard, ok := EstimateUsageUSD("claude-opus-5-5", usage)
+	if !ok {
+		t.Fatal("expected standard Opus 5.5 usage to be priced")
+	}
+	if want := 37.2; math.Abs(standard-want) > 1e-9 {
+		t.Fatalf("standard cost = %v, want %v", standard, want)
+	}
+
+	usage.Speed = "fast"
+	fast, ok := EstimateUsageUSD("claude-opus-5-5", usage)
+	if !ok {
+		t.Fatal("expected fast Opus 5.5 usage to be priced")
+	}
+	if want := 74.4; math.Abs(fast-want) > 1e-9 {
+		t.Fatalf("fast cost = %v, want %v", fast, want)
+	}
+}
+
 func TestEstimateUsageUSDPricesEachSonnetBucketIndependently(t *testing.T) {
 	tests := []struct {
 		name  string

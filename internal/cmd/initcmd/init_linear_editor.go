@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"unicode"
 
+	"github.com/charmbracelet/bubbles/cursor"
+	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type initLinearFieldKind string
@@ -60,6 +63,7 @@ type initLinearEditor struct {
 type initLinearEditorModel struct {
 	viewport      viewport.Model
 	document      initLinearDocument
+	fieldEditors  []initLinearFieldEditor
 	layout        initLinearLayout
 	focused       int
 	quitting      bool
@@ -69,6 +73,14 @@ type initLinearEditorModel struct {
 	onDelete      initLinearDeleteHandler
 	help          string
 	textareaHelp  string
+}
+
+// initLinearFieldEditor keeps the framework editor state alongside the
+// document state. The outer editor owns form layout and masking; Bubbles owns
+// text editing, cursor movement, and paste messages.
+type initLinearFieldEditor struct {
+	input    textinput.Model
+	textarea textarea.Model
 }
 
 type initLinearDocument []initLinearField
@@ -179,6 +191,107 @@ func initLinearSetSelectionOptions(model *initLinearEditorModel, fieldID initLin
 	model.document[index].Options = linearOptions
 }
 
+func newInitLinearFieldEditors(document initLinearDocument) []initLinearFieldEditor {
+	editors := make([]initLinearFieldEditor, len(document))
+	for index, field := range document {
+		if !field.Editable {
+			continue
+		}
+		switch field.Kind {
+		case initLinearFieldInput:
+			input := textinput.New()
+			input.Prompt = ""
+			input.CharLimit = 0
+			input.Width = 0
+			input.KeyMap.Paste.SetEnabled(false)
+			input.Cursor.SetMode(cursor.CursorStatic)
+			if field.Secret {
+				input.EchoMode = textinput.EchoPassword
+			}
+			input.SetValue(field.Value)
+			input.SetCursor(field.Cursor)
+			input.Blur()
+			editors[index].input = input
+		case initLinearFieldTextarea:
+			textareaModel := textarea.New()
+			textareaModel.Prompt = ""
+			textareaModel.ShowLineNumbers = false
+			textareaModel.MaxHeight = 0
+			textareaModel.MaxWidth = 0
+			textareaModel.KeyMap.Paste.SetEnabled(false)
+			textareaModel.Cursor.SetMode(cursor.CursorStatic)
+			textareaModel.SetWidth(initLinearTextareaWidth(field.Value))
+			textareaModel.SetHeight(max(len(strings.Split(field.Value, "\n")), 1))
+			textareaModel.SetValue(field.Value)
+			initLinearSetTextareaCursor(&textareaModel, field.Cursor)
+			textareaModel.Blur()
+			editors[index].textarea = textareaModel
+		case initLinearFieldSection, initLinearFieldSelect:
+			continue
+		}
+	}
+	return editors
+}
+
+func initLinearTextareaWidth(value string) int {
+	width := 1
+	for _, line := range strings.Split(value, "\n") {
+		width = max(width, ansi.StringWidth(line)+1)
+	}
+	return width
+}
+
+func initLinearSetTextareaCursor(model *textarea.Model, cursor int) {
+	if model == nil {
+		return
+	}
+	lines := strings.Split(model.Value(), "\n")
+	cursor = min(max(cursor, 0), len([]rune(model.Value())))
+	row := 0
+	column := cursor
+	for row < len(lines)-1 && column > len([]rune(lines[row])) {
+		column -= len([]rune(lines[row])) + 1
+		row++
+	}
+	for model.Line() > 0 {
+		model.CursorUp()
+	}
+	model.CursorStart()
+	for index := 0; index < row; index++ {
+		model.CursorDown()
+	}
+	model.SetCursor(column)
+}
+
+func (m *initLinearEditorModel) syncFieldEditor(index int) {
+	if index < 0 || index >= len(m.document) || index >= len(m.fieldEditors) {
+		return
+	}
+	field := m.document[index]
+	switch field.Kind {
+	case initLinearFieldInput:
+		input := &m.fieldEditors[index].input
+		if input.Value() != field.Value {
+			input.SetValue(field.Value)
+		}
+		if input.Position() != field.Cursor {
+			input.SetCursor(field.Cursor)
+		}
+	case initLinearFieldTextarea:
+		textareaModel := &m.fieldEditors[index].textarea
+		if textareaModel.Value() != field.Value {
+			textareaModel.SetWidth(initLinearTextareaWidth(field.Value))
+			textareaModel.SetHeight(max(len(strings.Split(field.Value, "\n")), 1))
+			textareaModel.SetValue(field.Value)
+			initLinearSetTextareaCursor(textareaModel, field.Cursor)
+		} else if initLinearTextareaCursor(*textareaModel) != field.Cursor {
+			initLinearSetTextareaCursor(textareaModel, field.Cursor)
+		}
+	case initLinearFieldSection, initLinearFieldSelect:
+		return
+	}
+}
+
 func newInitLinearEditorModel(editor initLinearEditor, width, height int) initLinearEditorModel {
 	if width <= 0 {
 		width = 100
@@ -197,6 +310,7 @@ func newInitLinearEditorModel(editor initLinearEditor, width, height int) initLi
 	model := initLinearEditorModel{
 		viewport:      viewport.New(width, max(height-2, 1)),
 		document:      editor.Document,
+		fieldEditors:  newInitLinearFieldEditors(editor.Document),
 		focused:       editor.Document.firstFocusableField(),
 		onEnter:       editor.OnEnter,
 		onFieldChange: editor.OnFieldChange,
@@ -207,6 +321,7 @@ func newInitLinearEditorModel(editor initLinearEditor, width, height int) initLi
 	model.validateAll()
 	model.relayout()
 	model.ensureFocusedVisible()
+	model.focusField(model.focused)
 	return model
 }
 
@@ -223,10 +338,10 @@ func (m initLinearEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureFocusedVisible()
 		return m, nil
 	case tea.KeyMsg:
-		if m.handleFocusedInputKey(msg) {
+		if handled, cmd := m.handleFocusedInput(msg); handled {
 			m.relayout()
 			m.ensureFocusedVisible()
-			return m, nil
+			return m, cmd
 		}
 		if handled, cmd := m.handleFocusedSelectKey(msg); handled {
 			m.relayout()
@@ -253,12 +368,12 @@ func (m initLinearEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focused = m.document.previousFocusableField(m.focused)
 			m.relayout()
 			m.ensureFocusedVisible()
-			return m, nil
+			return m, m.focusField(m.focused)
 		case "tab", "enter":
 			m.focused = m.document.nextFocusableField(m.focused)
 			m.relayout()
 			m.ensureFocusedVisible()
-			return m, nil
+			return m, m.focusField(m.focused)
 		case "pgup", "b":
 			m.setYOffset(m.viewport.YOffset - max(m.viewport.Height/2, 1))
 			return m, nil
@@ -273,13 +388,18 @@ func (m initLinearEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.focused = m.document.firstFocusableField()
 			m.relayout()
 			m.ensureFocusedVisible()
-			return m, nil
+			return m, m.focusField(m.focused)
 		case "end", "G":
 			m.focused = m.document.lastFocusableField()
 			m.relayout()
 			m.ensureFocusedVisible()
-			return m, nil
+			return m, m.focusField(m.focused)
 		}
+	}
+	if handled, cmd := m.handleFocusedInput(msg); handled {
+		m.relayout()
+		m.ensureFocusedVisible()
+		return m, cmd
 	}
 	return m, nil
 }
@@ -483,59 +603,148 @@ func (d initLinearDocument) selectedValue(id initLinearFieldID) string {
 	return ""
 }
 
-func (m *initLinearEditorModel) handleFocusedInputKey(msg tea.KeyMsg) bool {
+func (m *initLinearEditorModel) handleFocusedInput(msg tea.Msg) (bool, tea.Cmd) {
 	if m.focused < 0 || m.focused >= len(m.document) {
-		return false
+		return false, nil
 	}
 	field := &m.document[m.focused]
 	if (field.Kind != initLinearFieldInput && field.Kind != initLinearFieldTextarea) || !field.Editable {
-		return false
+		return false, nil
 	}
-	if field.Kind == initLinearFieldTextarea && (msg.String() == "ctrl+j" || msg.String() == "alt+enter") {
-		field.Value = initLinearInsertRunes(field.Value, field.Cursor, []rune{'\n'})
-		field.Cursor++
-		m.afterFieldChange(m.focused)
-		return true
+	if m.focused >= len(m.fieldEditors) {
+		m.fieldEditors = newInitLinearFieldEditors(m.document)
 	}
-	key := tea.Key(msg)
-	//nolint:exhaustive // The text input consumes only editing keys; all other keys fall through to form navigation.
-	switch key.Type {
-	case tea.KeyRunes:
-		if msg.Alt {
-			return false
+	focusCmd := m.focusField(m.focused)
+	index := m.focused
+	previousValue := field.Value
+	previousCursor := field.Cursor
+
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		//nolint:exhaustive // These form-level keys must bypass text editing; all other keys belong to the focused component.
+		switch keyMsg.Type {
+		case tea.KeyEnter, tea.KeyTab, tea.KeyShiftTab, tea.KeyCtrlC, tea.KeyEsc, tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+			return false, nil
 		}
-		field.Value = initLinearInsertRunes(field.Value, field.Cursor, key.Runes)
-		field.Cursor += len(key.Runes)
-	case tea.KeySpace:
-		if msg.Alt {
-			return false
+		switch keyMsg.String() {
+		case "ctrl+u":
+			m.setFocusedInputValue("")
+			m.afterFieldChange(index)
+			return true, focusCmd
+		case "ctrl+j", "alt+enter":
+			if field.Kind != initLinearFieldTextarea {
+				return false, nil
+			}
+			m.insertFocusedTextareaRune('\n')
+			m.afterFieldChange(index)
+			return true, focusCmd
+		case " ":
+			if keyMsg.Alt {
+				return false, nil
+			}
+			m.insertFocusedInputRune(' ')
+			m.afterFieldChange(index)
+			return true, focusCmd
 		}
-		field.Value = initLinearInsertRunes(field.Value, field.Cursor, []rune{' '})
-		field.Cursor++
-	case tea.KeyBackspace, tea.KeyCtrlH:
-		field.Value, field.Cursor = initLinearDeleteBeforeCursor(field.Value, field.Cursor)
-	case tea.KeyDelete, tea.KeyCtrlD:
-		field.Value = initLinearDeleteAtCursor(field.Value, field.Cursor)
-	case tea.KeyLeft, tea.KeyCtrlB:
-		field.Cursor = max(field.Cursor-1, 0)
-	case tea.KeyRight, tea.KeyCtrlF:
-		field.Cursor = min(field.Cursor+1, len([]rune(field.Value)))
-	case tea.KeyCtrlA:
-		field.Cursor = 0
-	case tea.KeyCtrlE:
-		field.Cursor = len([]rune(field.Value))
-	case tea.KeyCtrlU:
-		field.Value = ""
-		field.Cursor = 0
-	case tea.KeyCtrlW:
-		field.Value, field.Cursor = initLinearDeleteWordBeforeCursor(field.Value, field.Cursor)
-	case tea.KeyCtrlK:
-		field.Value = initLinearDeleteAfterCursor(field.Value, field.Cursor)
-	default:
-		return false
 	}
-	m.afterFieldChange(m.focused)
-	return true
+
+	var cmd tea.Cmd
+	switch field.Kind {
+	case initLinearFieldInput:
+		var next textinput.Model
+		next, cmd = m.fieldEditors[index].input.Update(msg)
+		m.fieldEditors[index].input = next
+		field.Value = next.Value()
+		field.Cursor = next.Position()
+	case initLinearFieldTextarea:
+		var next textarea.Model
+		next, cmd = m.fieldEditors[index].textarea.Update(msg)
+		m.fieldEditors[index].textarea = next
+		field.Value = next.Value()
+		field.Cursor = initLinearTextareaCursor(next)
+	case initLinearFieldSection, initLinearFieldSelect:
+		return false, nil
+	}
+	changed := field.Value != previousValue || field.Cursor != previousCursor
+	if changed {
+		m.afterFieldChange(index)
+	}
+	return changed || cmd != nil, tea.Batch(focusCmd, cmd)
+}
+
+func (m *initLinearEditorModel) setFocusedInputValue(value string) {
+	if m.focused < 0 || m.focused >= len(m.document) || m.focused >= len(m.fieldEditors) {
+		return
+	}
+	field := &m.document[m.focused]
+	field.Value = value
+	field.Cursor = 0
+	m.syncFieldEditor(m.focused)
+}
+
+func (m *initLinearEditorModel) insertFocusedInputRune(value rune) {
+	if m.focused < 0 || m.focused >= len(m.document) || m.focused >= len(m.fieldEditors) {
+		return
+	}
+	index := m.focused
+	switch m.document[index].Kind {
+	case initLinearFieldInput:
+		next, _ := m.fieldEditors[index].input.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{value}})
+		m.fieldEditors[index].input = next
+		m.document[index].Value = next.Value()
+		m.document[index].Cursor = next.Position()
+	case initLinearFieldTextarea:
+		m.fieldEditors[index].textarea.InsertRune(value)
+		m.document[index].Value = m.fieldEditors[index].textarea.Value()
+		m.document[index].Cursor = initLinearTextareaCursor(m.fieldEditors[index].textarea)
+	case initLinearFieldSection, initLinearFieldSelect:
+		return
+	}
+}
+
+func (m *initLinearEditorModel) insertFocusedTextareaRune(value rune) {
+	if m.focused < 0 || m.focused >= len(m.document) || m.document[m.focused].Kind != initLinearFieldTextarea {
+		return
+	}
+	m.insertFocusedInputRune(value)
+}
+
+func initLinearTextareaCursor(model textarea.Model) int {
+	lines := strings.Split(model.Value(), "\n")
+	row := min(max(model.Line(), 0), len(lines)-1)
+	column := model.LineInfo().StartColumn + model.LineInfo().ColumnOffset
+	cursor := 0
+	for index := 0; index < row; index++ {
+		cursor += len([]rune(lines[index])) + 1
+	}
+	return cursor + min(max(column, 0), len([]rune(lines[row])))
+}
+
+func (m *initLinearEditorModel) focusField(index int) tea.Cmd {
+	if len(m.fieldEditors) == 0 {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for editorIndex := range m.fieldEditors {
+		if editorIndex == index && editorIndex < len(m.document) && m.document[editorIndex].Editable {
+			m.syncFieldEditor(editorIndex)
+			switch m.document[editorIndex].Kind {
+			case initLinearFieldInput:
+				if !m.fieldEditors[editorIndex].input.Focused() {
+					cmds = append(cmds, m.fieldEditors[editorIndex].input.Focus())
+				}
+			case initLinearFieldTextarea:
+				if !m.fieldEditors[editorIndex].textarea.Focused() {
+					cmds = append(cmds, m.fieldEditors[editorIndex].textarea.Focus())
+				}
+			case initLinearFieldSection, initLinearFieldSelect:
+				continue
+			}
+			continue
+		}
+		m.fieldEditors[editorIndex].input.Blur()
+		m.fieldEditors[editorIndex].textarea.Blur()
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *initLinearEditorModel) handleFocusedSelectKey(msg tea.KeyMsg) (bool, tea.Cmd) {
@@ -641,6 +850,7 @@ func (m *initLinearEditorModel) setFieldValue(id initLinearFieldID, value string
 	}
 	m.document[index].Value = value
 	m.document[index].Cursor = len([]rune(value))
+	m.syncFieldEditor(index)
 }
 
 func (m *initLinearEditorModel) setFieldDescription(id initLinearFieldID, description string) {
@@ -679,6 +889,7 @@ func (m *initLinearEditorModel) setFieldHidden(id initLinearFieldID, hidden bool
 
 func (m *initLinearEditorModel) relayout() {
 	m.layout = initLinearLayoutDocument(m.document, m.viewport.Width, m.focused)
+	m.viewport.SetContent(m.layout.Content)
 	m.setYOffset(m.viewport.YOffset)
 }
 
@@ -829,47 +1040,21 @@ func initLinearAppendWrappedWithPrefixMarked(lines *[]string, selectedLines map[
 }
 
 func initLinearAppendWrappedLineWithPrefix(lines *[]string, prefix string, text string, width int) {
-	remaining := trimInitLinearSpaceRunes([]rune(text))
-	if len(remaining) == 0 {
+	text = strings.TrimSpace(text)
+	if text == "" {
 		*lines = append(*lines, prefix)
 		return
 	}
-	linePrefix := prefix
-	for len(remaining) > 0 {
-		available := max(width-len([]rune(linePrefix)), 1)
-		cut := len(remaining)
-		if cut > available {
-			cut = available
-			for index := cut - 1; index > 0; index-- {
-				if remaining[index] == ' ' {
-					cut = index
-					break
-				}
-			}
+	available := max(width-ansi.StringWidth(prefix), 1)
+	wrapped := ansi.Wrap(text, available, "")
+	continuationPrefix := strings.Repeat(" ", ansi.StringWidth(prefix))
+	for index, line := range strings.Split(wrapped, "\n") {
+		if index == 0 {
+			*lines = append(*lines, prefix+line)
+			continue
 		}
-		if cut <= 0 {
-			cut = min(available, len(remaining))
-		}
-		segmentRunes := trimInitLinearSpaceRunes(remaining[:cut])
-		if len(segmentRunes) == 0 {
-			segmentRunes = remaining[:cut]
-		}
-		*lines = append(*lines, linePrefix+string(segmentRunes))
-		remaining = trimInitLinearSpaceRunes(remaining[cut:])
-		linePrefix = strings.Repeat(" ", len([]rune(prefix)))
+		*lines = append(*lines, continuationPrefix+line)
 	}
-}
-
-func trimInitLinearSpaceRunes(value []rune) []rune {
-	start := 0
-	for start < len(value) && unicode.IsSpace(value[start]) {
-		start++
-	}
-	end := len(value)
-	for end > start && unicode.IsSpace(value[end-1]) {
-		end--
-	}
-	return value[start:end]
 }
 
 func markInitLinearSelectedLines(selectedLines map[int]bool, selected bool, start int, end int) {
@@ -945,62 +1130,6 @@ func (m initLinearEditorModel) looksLikeHeading(line string) bool {
 		}
 	}
 	return false
-}
-
-func initLinearInsertRunes(value string, cursor int, runes []rune) string {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	next := make([]rune, 0, len(existing)+len(runes))
-	next = append(next, existing[:cursor]...)
-	next = append(next, runes...)
-	next = append(next, existing[cursor:]...)
-	return string(next)
-}
-
-func initLinearDeleteBeforeCursor(value string, cursor int) (string, int) {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	if cursor == 0 {
-		return value, cursor
-	}
-	next := make([]rune, 0, len(existing)-1)
-	next = append(next, existing[:cursor-1]...)
-	next = append(next, existing[cursor:]...)
-	return string(next), cursor - 1
-}
-
-func initLinearDeleteWordBeforeCursor(value string, cursor int) (string, int) {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	index := cursor
-	for index > 0 && existing[index-1] == ' ' {
-		index--
-	}
-	for index > 0 && existing[index-1] != ' ' {
-		index--
-	}
-	next := make([]rune, 0, len(existing)-(cursor-index))
-	next = append(next, existing[:index]...)
-	next = append(next, existing[cursor:]...)
-	return string(next), index
-}
-
-func initLinearDeleteAtCursor(value string, cursor int) string {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	if cursor >= len(existing) {
-		return value
-	}
-	next := make([]rune, 0, len(existing)-1)
-	next = append(next, existing[:cursor]...)
-	next = append(next, existing[cursor+1:]...)
-	return string(next)
-}
-
-func initLinearDeleteAfterCursor(value string, cursor int) string {
-	existing := []rune(value)
-	cursor = min(max(cursor, 0), len(existing))
-	return string(existing[:cursor])
 }
 
 func initLinearValueWithCursor(value string, cursor int) string {

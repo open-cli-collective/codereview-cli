@@ -37,6 +37,20 @@ func TestCapabilities(t *testing.T) {
 	}
 }
 
+func TestDefaultHTTPClientIsBounded(t *testing.T) {
+	fallback := defaultBoundedHTTPClient()
+	if fallback.Timeout <= 0 {
+		t.Fatal("default HTTP client has no timeout")
+	}
+	if fallback == http.DefaultClient {
+		t.Fatal("default HTTP client must not be http.DefaultClient")
+	}
+	client := mustClient(t, Options{Token: "token"})
+	if client.httpClient.Timeout <= 0 {
+		t.Fatal("New without an explicit HTTPClient must use the bounded fallback")
+	}
+}
+
 func TestNewFromGitConfigBuildsPATClientAndCredential(t *testing.T) {
 	store := tokenStore{"work": {credentials.GitTokenKey: "token"}}
 	client, credential, err := NewFromGitConfig(config.GitConfig{

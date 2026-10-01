@@ -9,7 +9,7 @@
 package pricing
 
 // TableVersion identifies the public list-price snapshot used by estimates.
-const TableVersion = "anthropic-public-2026-09-02"
+const TableVersion = "anthropic-public-2026-09-23"
 
 // rate is the USD list price per 1,000,000 tokens for each billable category.
 type rate struct {
@@ -24,6 +24,7 @@ type rate struct {
 // models; absent models simply return no estimate.
 var rates = map[string]rate{
 	"claude-fable-5-1":          {in: 10, out: 50, cacheRead: 0.25, cacheWrite5: 12.5, cacheWrite1: 20},
+	"claude-opus-5-5":           {in: 4, out: 20, cacheRead: 0.2, cacheWrite5: 5, cacheWrite1: 8},
 	"claude-opus-5":             {in: 5, out: 25, cacheRead: 0.5, cacheWrite5: 6.25, cacheWrite1: 10},
 	"claude-opus-4-8":           {in: 5, out: 25, cacheRead: 0.5, cacheWrite5: 6.25, cacheWrite1: 10},
 	"claude-sonnet-5":           {in: 2, out: 10, cacheRead: 0.2, cacheWrite5: 2.5, cacheWrite1: 4},
@@ -33,6 +34,7 @@ var rates = map[string]rate{
 }
 
 var fastRates = map[string]rate{
+	"claude-opus-5-5": {in: 8, out: 40, cacheRead: 0.4, cacheWrite5: 10, cacheWrite1: 16},
 	"claude-opus-5":   {in: 10, out: 50, cacheRead: 1, cacheWrite5: 12.5, cacheWrite1: 20},
 	"claude-opus-4-8": {in: 10, out: 50, cacheRead: 1, cacheWrite5: 12.5, cacheWrite1: 20},
 }

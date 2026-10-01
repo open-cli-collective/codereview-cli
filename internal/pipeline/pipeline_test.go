@@ -1450,7 +1450,7 @@ func TestDryRunCoverageRepairWorkspaceFailurePreservesPrimaryReview(t *testing.T
 		GitCommand: func(gitCtx context.Context, dir string, args ...string) ([]byte, error) {
 			// Fail only the repair pass's clone, as a transient git or disk error would.
 			for _, arg := range args {
-				if strings.Contains(arg, statepaths.Encode(reviewerCoverageRepairIdentity("harness:reviewer"))) {
+				if strings.Contains(arg, workbench.ReviewerWorkspaceSegment(reviewerCoverageRepairIdentity("harness:reviewer"))) {
 					return nil, errors.New("disk full")
 				}
 			}
@@ -1680,7 +1680,7 @@ func TestRunReviewerRecordsPrimarySessionOnEveryCoverageRepairPath(t *testing.T)
 				gitCommand := opts.GitCommand
 				opts.GitCommand = func(gitCtx context.Context, dir string, args ...string) ([]byte, error) {
 					for _, arg := range args {
-						if strings.Contains(arg, statepaths.Encode(reviewerCoverageRepairIdentity("harness:reviewer"))) {
+						if strings.Contains(arg, workbench.ReviewerWorkspaceSegment(reviewerCoverageRepairIdentity("harness:reviewer"))) {
 							return nil, errors.New("disk full")
 						}
 					}
@@ -3144,7 +3144,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 		t.Fatalf("reviewer starts = %d, want all three reviewers to start before release", got)
 	}
 	for _, agentID := range []string{"harness:alpha", "harness:beta", "harness:gamma"} {
-		encoded := statepaths.Encode(agentID)
+		encoded := workbench.ReviewerWorkspaceSegment(agentID)
 		if _, err := os.Stat(filepath.Join(result.Artifacts.WorkbenchDir, "reviewers", encoded)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("reviewer workspace %s stat err = %v, want cleaned", agentID, err)
 		}
@@ -3760,7 +3760,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 		FloorTier:      "large",
 		BaselineTier:   "small",
 		EffectiveTier:  "large",
-		ResolvedModel:  "claude-opus-5",
+		ResolvedModel:  "claude-opus-5-5",
 		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	}) {
@@ -6082,6 +6082,53 @@ func TestBuildReviewerCoverageExemptsDeletedFiles(t *testing.T) {
 	}
 	// gone.go (deleted, unassigned) must not surface as an incomplete_unassigned
 	// coverage row that would block approval.
+}
+
+func TestContentlessPatchPathsIncludeEmptyAddedFiles(t *testing.T) {
+	patches := []FilePatch{
+		{Path: "main.go", Hunks: []reviewplan.DiffHunk{{}}},
+		{Path: "removed.go", Deleted: true},
+		{Path: "pkg/__init__.py", Added: true},
+		{Path: "pkg/mod.py", Added: true, Hunks: []reviewplan.DiffHunk{{}}},
+		{Path: "logo.png", Added: true, Binary: true},
+	}
+	got := contentlessPatchPaths(patches)
+	want := map[string]bool{"removed.go": true, "pkg/__init__.py": true}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("contentless paths = %#v, want %#v", got, want)
+	}
+	if reviewable := reviewablePatchPaths(patches); !reflect.DeepEqual(reviewable, []string{"logo.png", "main.go", "pkg/mod.py"}) {
+		t.Fatalf("reviewable paths = %#v, want the files with content at head", reviewable)
+	}
+}
+
+func TestContentlessPatchPathsKeepReconstructedPatchlessFilesReviewable(t *testing.T) {
+	// Provider REST reconstructions (GitHub's files listing, GitLab's diffs)
+	// cannot tell an empty new file from a binary or oversized one: both arrive
+	// with no patch and are written as a header-only binary entry with no mode
+	// line. That shape must stay reviewable so a large file is never exempted.
+	raw := strings.Join([]string{
+		"diff --git a/pkg/__init__.py b/pkg/__init__.py",
+		"Binary files a/pkg/__init__.py and b/pkg/__init__.py differ",
+		"",
+	}, "\n")
+	parsed, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	if got := contentlessPatchPaths(parsed.Patches); len(got) != 0 {
+		t.Fatalf("contentless paths = %#v, want none for a reconstructed patchless file", got)
+	}
+}
+
+func TestBuildReviewerCoverageExemptsEmptyAddedFiles(t *testing.T) {
+	// A PR whose only change adds an empty file selects no reviewer; the file
+	// has no content at head, so it must not surface as incomplete_unassigned.
+	patches := []FilePatch{{Path: "pkg/__init__.py", Added: true}}
+	got := buildReviewerCoverage(nil, nil, nil, patchPaths(patches), contentlessPatchPaths(patches))
+	if len(got) != 0 {
+		t.Fatalf("coverage = %#v, want no rows for an empty added file", got)
+	}
 }
 
 func TestEnsureSelectedGlobCoverageSkipsLockfiles(t *testing.T) {
@@ -9160,7 +9207,7 @@ func TestReviewerRuntimeConfigCapsInheritedEffortForExactModelOverride(t *testin
 	}
 }
 
-func TestReviewerRuntimeConfigRejectsUnsupportedTierEffortOverride(t *testing.T) {
+func TestReviewerRuntimeConfigAllowsExtendedClaudeCLIEffortOverride(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderAnthropic,
 		Auth:     config.LLMAuthSubscription,
@@ -9168,12 +9215,12 @@ func TestReviewerRuntimeConfigRejectsUnsupportedTierEffortOverride(t *testing.T)
 	}}
 	agent := agents.Agent{ID: "go:implementation-tests", ModelTier: "small", Effort: "medium"}
 
-	_, err := resolveReviewerRuntimeConfig(Request{
+	got, err := resolveReviewerRuntimeConfig(Request{
 		Profile:                profile,
 		ReviewerEffortOverride: "xhigh",
 	}, agent)
-	if err == nil || !errors.Is(err, config.ErrUnsupportedEffort) {
-		t.Fatalf("resolveReviewerRuntimeConfig error = %v, want unsupported effort", err)
+	if err != nil || got.effort != "xhigh" {
+		t.Fatalf("resolveReviewerRuntimeConfig = (%+v, %v), want xhigh effort", got, err)
 	}
 }
 
