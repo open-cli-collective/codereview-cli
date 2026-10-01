@@ -35,7 +35,9 @@ const reviewLong = `Run an automated pull-request review.
 Live review checks local and host state before starting the reviewer loop. By
 default, if the posting identity has already approved the PR, cr exits before
 any LLM classifier or reviewer work, even if newer commits made that approval
-stale. Use --rerun to bypass these local gates and force a new live review.
+stale. A newer COMMENTED review from the posting identity supersedes that fast
+path so thread-response activity can be followed by a fresh verdict. Use
+--rerun to bypass these local gates and force a new live review.
 
 Session reuse is independent of local review gates. Plain follow-up reviews and
 --rerun reuse the PR's original reviewer cohort and each reviewer's provider

@@ -917,7 +917,20 @@ func readGateHostStateWithReviews(ctx context.Context, provider outbox.LiveProvi
 
 func summarizePRFromHost(host gateHostState, req Request) gate.PRSummary {
 	records := markerActionRecords(host, req.PostingIdentity)
-	return classifyMarkers(records, req.PR.Head.SHA, req.PR.Base.SHA)
+	summary := classifyMarkers(records, req.PR.Head.SHA, req.PR.Base.SHA)
+	if summary.State == gate.PRStateCompleteReview {
+		for _, latest := range latestVerdictReviewsByPostingIdentity(host.reviews, req.PostingIdentity) {
+			if latest.State != gitprovider.ReviewStateCommented {
+				continue
+			}
+			latestRecords := markerActionRecords(gateHostState{reviews: []gitprovider.Review{latest}}, req.PostingIdentity)
+			latestSummary := classifyMarkers(latestRecords, req.PR.Head.SHA, req.PR.Base.SHA)
+			if latestSummary.State != gate.PRStateCompleteReview {
+				return gate.PRSummary{State: gate.PRStateFresh}
+			}
+		}
+	}
+	return summary
 }
 
 func markerActionRecords(host gateHostState, posting gitprovider.Identity) []markerRecord {
@@ -990,30 +1003,44 @@ func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) 
 }
 
 func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) bool {
+	latest := latestVerdictReviewsByPostingIdentity(reviews, posting)
+	if len(latest) == 0 {
+		return false
+	}
+	for _, review := range latest {
+		if review.State != gitprovider.ReviewStateApproved {
+			return false
+		}
+	}
+	return true
+}
+
+// Review IDs are opaque, and tied timestamps do not establish chronology.
+// Keep every latest verdict so both fast paths handle ambiguity conservatively.
+func latestVerdictReviewsByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) []gitprovider.Review {
 	var (
-		selected gitprovider.Review
-		found    bool
+		latest []gitprovider.Review
+		when   time.Time
 	)
 	for _, review := range reviews {
 		if !review.Author.Same(posting) {
 			continue
 		}
 		switch review.State {
-		case gitprovider.ReviewStateApproved, gitprovider.ReviewStateChangesRequested:
-		case gitprovider.ReviewStateCommented, gitprovider.ReviewStateDismissed, gitprovider.ReviewStatePending:
+		case gitprovider.ReviewStateApproved, gitprovider.ReviewStateChangesRequested, gitprovider.ReviewStateCommented:
+		case gitprovider.ReviewStateDismissed, gitprovider.ReviewStatePending:
 			continue
 		default:
 			continue
 		}
-		if !found || review.SubmittedAt.After(selected.SubmittedAt) ||
-			(review.SubmittedAt.Equal(selected.SubmittedAt) &&
-				selected.State == gitprovider.ReviewStateApproved &&
-				review.State == gitprovider.ReviewStateChangesRequested) {
-			selected = review
-			found = true
+		if len(latest) == 0 || review.SubmittedAt.After(when) {
+			latest = []gitprovider.Review{review}
+			when = review.SubmittedAt
+		} else if review.SubmittedAt.Equal(when) {
+			latest = append(latest, review)
 		}
 	}
-	return found && selected.State == gitprovider.ReviewStateApproved
+	return latest
 }
 
 func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request, host *gateHostState) (Result, bool, error) {
