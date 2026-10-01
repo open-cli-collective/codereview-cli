@@ -334,6 +334,45 @@ func TestEvaluateMarkedCommentedVerdictRemainsComplete(t *testing.T) {
 	}
 }
 
+func TestEvaluateNewerMarkedCommentCompletesReplyRecovery(t *testing.T) {
+	fixture := newFixture(t)
+	submit := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-recovered", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testBaseSHA,
+	})
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "99", Author: fixture.req.PostingIdentity,
+			State: gitprovider.ReviewStateCommented, SubmittedAt: testNow.Add(-time.Minute)},
+		{ID: "100", Author: fixture.req.PostingIdentity, Body: submit,
+			State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+	})
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusEarlyExit || result.Decision.Kind != gate.DecisionEarlyExit {
+		t.Fatalf("Evaluate = %#v, want newer completed verdict to end reply recovery", result)
+	}
+}
+
+func TestEvaluateTiedApprovalsRemainIdempotent(t *testing.T) {
+	fixture := newFixture(t)
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "99", Author: fixture.req.PostingIdentity,
+			State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+		{ID: "100", Author: fixture.req.PostingIdentity,
+			State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+	})
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusEarlyExit || result.Decision.Kind != gate.DecisionEarlyExit {
+		t.Fatalf("Evaluate = %#v, want unanimous tied approvals to remain idempotent", result)
+	}
+}
+
 func TestEvaluateTiedEmptyCommentPreventsMarkedCommentCompletion(t *testing.T) {
 	for _, reverse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reverse=%t", reverse), func(t *testing.T) {
