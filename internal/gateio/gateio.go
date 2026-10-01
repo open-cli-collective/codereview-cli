@@ -919,8 +919,10 @@ func summarizePRFromHost(host gateHostState, req Request) gate.PRSummary {
 	records := markerActionRecords(host, req.PostingIdentity)
 	summary := classifyMarkers(records, req.PR.Head.SHA, req.PR.Base.SHA)
 	if summary.State == gate.PRStateCompleteReview {
-		latest, found := latestVerdictReviewByPostingIdentity(host.reviews, req.PostingIdentity)
-		if found && latest.State == gitprovider.ReviewStateCommented {
+		for _, latest := range latestVerdictReviewsByPostingIdentity(host.reviews, req.PostingIdentity) {
+			if latest.State != gitprovider.ReviewStateCommented {
+				continue
+			}
 			latestRecords := markerActionRecords(gateHostState{reviews: []gitprovider.Review{latest}}, req.PostingIdentity)
 			latestSummary := classifyMarkers(latestRecords, req.PR.Head.SHA, req.PR.Base.SHA)
 			if latestSummary.State != gate.PRStateCompleteReview {
@@ -1001,14 +1003,24 @@ func latestCodereviewMarkerAt(host gateHostState, posting gitprovider.Identity) 
 }
 
 func activeApprovalByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) bool {
-	selected, found := latestVerdictReviewByPostingIdentity(reviews, posting)
-	return found && selected.State == gitprovider.ReviewStateApproved
+	latest := latestVerdictReviewsByPostingIdentity(reviews, posting)
+	if len(latest) == 0 {
+		return false
+	}
+	for _, review := range latest {
+		if review.State != gitprovider.ReviewStateApproved {
+			return false
+		}
+	}
+	return true
 }
 
-func latestVerdictReviewByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) (gitprovider.Review, bool) {
+// Review IDs are opaque, and tied timestamps do not establish chronology.
+// Keep every latest verdict so both fast paths handle ambiguity conservatively.
+func latestVerdictReviewsByPostingIdentity(reviews []gitprovider.Review, posting gitprovider.Identity) []gitprovider.Review {
 	var (
-		selected gitprovider.Review
-		found    bool
+		latest []gitprovider.Review
+		when   time.Time
 	)
 	for _, review := range reviews {
 		if !review.Author.Same(posting) {
@@ -1021,13 +1033,14 @@ func latestVerdictReviewByPostingIdentity(reviews []gitprovider.Review, posting 
 		default:
 			continue
 		}
-		if !found || review.SubmittedAt.After(selected.SubmittedAt) ||
-			(review.SubmittedAt.Equal(selected.SubmittedAt) && string(review.ID) > string(selected.ID)) {
-			selected = review
-			found = true
+		if len(latest) == 0 || review.SubmittedAt.After(when) {
+			latest = []gitprovider.Review{review}
+			when = review.SubmittedAt
+		} else if review.SubmittedAt.Equal(when) {
+			latest = append(latest, review)
 		}
 	}
-	return selected, found
+	return latest
 }
 
 func maybeExecuteApprovalOverride(ctx context.Context, opts Options, req Request, host *gateHostState) (Result, bool, error) {

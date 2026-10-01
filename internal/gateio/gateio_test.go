@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -333,6 +334,36 @@ func TestEvaluateMarkedCommentedVerdictRemainsComplete(t *testing.T) {
 	}
 }
 
+func TestEvaluateTiedEmptyCommentPreventsMarkedCommentCompletion(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%t", reverse), func(t *testing.T) {
+			fixture := newFixture(t)
+			submit := mustRenderAction(t, marker.ActionMarker{
+				RunID: "run-commented", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+				SHA: testHeadSHA, BaseSHA: testBaseSHA,
+			})
+			reviews := []gitprovider.Review{
+				{ID: "99", Author: fixture.req.PostingIdentity, Body: submit,
+					State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+				{ID: "100", Author: fixture.req.PostingIdentity,
+					State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+			}
+			if reverse {
+				reviews[0], reviews[1] = reviews[1], reviews[0]
+			}
+			setReviews(t, fixture, reviews)
+			result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer releaseResultLock(t, result)
+			if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+				t.Fatalf("Evaluate = %#v, want fresh review after an ambiguous empty comment", result)
+			}
+		})
+	}
+}
+
 func TestEvaluateCommentedVerdictOnOldBaseRequiresFreshReview(t *testing.T) {
 	fixture := newFixture(t)
 	current := mustRenderAction(t, marker.ActionMarker{
@@ -526,6 +557,32 @@ func TestEvaluateSameTimestampChangesRequestedPreventsActiveApprovalExit(t *test
 				t.Fatalf("Evaluate = %#v, want fresh review when tied active verdict requests changes", result)
 			}
 		})
+	}
+}
+
+func TestEvaluateTiedNumericReviewIDsDoNotEstablishApproval(t *testing.T) {
+	for _, state := range []gitprovider.ReviewState{gitprovider.ReviewStateChangesRequested, gitprovider.ReviewStateCommented} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reverse=%t", state, reverse), func(t *testing.T) {
+				fixture := newFixture(t)
+				reviews := []gitprovider.Review{
+					{ID: "99", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+					{ID: "100", Author: fixture.req.PostingIdentity, State: state, SubmittedAt: testNow},
+				}
+				if reverse {
+					reviews[0], reviews[1] = reviews[1], reviews[0]
+				}
+				setReviews(t, fixture, reviews)
+				result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer releaseResultLock(t, result)
+				if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+					t.Fatalf("Evaluate = %#v, want fresh review for ambiguous tied verdicts", result)
+				}
+			})
+		}
 	}
 }
 
