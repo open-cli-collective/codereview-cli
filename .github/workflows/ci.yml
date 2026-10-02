@@ -70,6 +70,20 @@ jobs:
           go-version-file: go.mod
           target: test-static-smoke
 
+  pi-runtime:                              # installed Pi RPC runtime gate — not a required check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.22.3            # Pi 1.0 requires Node >= 22.19.0
+      # The Makefile owns the Pi version; test-pi-runtime fails if it differs.
+      - run: npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@$(make -s pi-runtime-version)"
+      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
+        with:
+          go-version-file: go.mod
+          target: test-pi-runtime
+
   lint:
     runs-on: ubuntu-latest
     steps:

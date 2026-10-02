@@ -95,9 +95,41 @@ make tidy    # go mod tidy and verify go.mod is unchanged
 make deps    # download and verify Go modules
 make check   # tidy + fmt + lint + test + build
 make clean   # remove build artifacts
+make test-pi-runtime  # installed Pi runtime gate (see Pi Runtime Gate)
 ```
 
 `make snapshot` runs a local GoReleaser snapshot build without publishing.
+
+## Pi Runtime Gate
+
+`make test-pi-runtime` runs the `pi_rpc` adapter against the installed Pi on
+`PATH` instead of the fake Pi the ordinary adapter tests use. It sets
+`CR_PI_RUNTIME_VERSION` to the Makefile's `PI_RUNTIME_VERSION` (currently
+`1.0.0`, printed by `make -s pi-runtime-version`). When that variable is set,
+the runtime tests fail if Pi is missing or `pi --version` reports any other
+version. Without it, as in `make test`, they skip. To install the pinned
+runtime:
+
+```bash
+npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@$(make -s pi-runtime-version)"
+make test-pi-runtime
+```
+
+The tests make no paid or external calls:
+
+- Each test gives Pi a fresh `PI_CODING_AGENT_DIR` and `HOME` with
+  `PI_OFFLINE=1`.
+- The only model is a scripted OpenAI-compatible endpoint on loopback, with a
+  dummy key.
+- Reviewer tool calls run the real `__pi-review-tool` helper, dispatched to the
+  test binary by `TestMain`.
+- Hostile instructions, extensions, MCP servers, and skills are planted at Pi's
+  default global location and in the reviewer checkout. The tests fail if any
+  of them reaches a provider request or runs.
+
+The CI `pi-runtime` job installs the Makefile version on the Node release it
+pins and runs the same target. It is not a required check. To move to a new Pi
+release, change `PI_RUNTIME_VERSION` and run the target locally first.
 
 ## Repo-Local Shape
 
