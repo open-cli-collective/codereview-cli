@@ -105,13 +105,15 @@ make test-pi-runtime  # installed Pi runtime gate (see Pi Runtime Gate)
 `make test-pi-runtime` runs the `pi_rpc` adapter against the installed Pi on
 `PATH` instead of the fake Pi the ordinary adapter tests use. It sets
 `CR_PI_RUNTIME_VERSION` to the Makefile's `PI_RUNTIME_VERSION` (currently
-`1.0.0`, printed by `make -s pi-runtime-version`). When that variable is set,
-the runtime tests fail if Pi is missing or `pi --version` reports any other
-version. Without it, as in `make test`, they skip. To install the pinned
-runtime:
+`1.0.0`, printed by `make -s pi-runtime-version`). Both targets fail when
+`PI_RUNTIME_VERSION` is blank or holds more than one version. When
+`CR_PI_RUNTIME_VERSION` is set, the runtime tests fail if it is blank, if Pi is
+missing, or if `pi --version` reports any other version. When it is unset, as in
+`make test`, they skip. To install the pinned runtime:
 
 ```bash
-npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@$(make -s pi-runtime-version)"
+pi_version="$(make -s pi-runtime-version)"
+npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${pi_version}"
 make test-pi-runtime
 ```
 
@@ -123,9 +125,15 @@ The tests make no paid or external calls:
   dummy key.
 - Reviewer tool calls run the real `__pi-review-tool` helper, dispatched to the
   test binary by `TestMain`.
-- Hostile instructions, extensions, MCP servers, and skills are planted at Pi's
-  default global location and in the reviewer checkout. The tests fail if any
-  of them reaches a provider request or runs.
+- Hostile instructions, extensions, MCP servers, and skills are planted under
+  the fixture `HOME`'s default `.pi/agent` location and in the reviewer
+  checkout, while Pi reads the fresh agent directory. The tests fail if any of
+  them reaches a provider request or runs.
+
+This shows that the fixture is isolated, not that production runs are. CR does
+not replace the developer's own Pi agent directory, so its global instructions
+can still reach prompts
+([#642](https://github.com/open-cli-collective/codereview-cli/issues/642)).
 
 The CI `pi-runtime` job installs the Makefile version on the Node release it
 pins and runs the same target. It is not a required check. To move to a new Pi
