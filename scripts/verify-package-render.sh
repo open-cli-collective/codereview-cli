@@ -53,10 +53,8 @@ for kind in deb rpm; do
   done
 done
 
-# Winget and Chocolatey keep version/checksum placeholders in source; the shared
-# release workflow substitutes them from the real release assets before publish.
-# The generated windows archives above prove the archive naming those templates
-# reference is rendered by GoReleaser.
+# Winget keeps version/checksum placeholders; Chocolatey keeps URL/checksum
+# placeholders. The shared release workflow substitutes them before publish.
 require_grep "winget: { id: OpenCLICollective.codereview-cli, bootstrap: true }" "packaging/identity.yml"
 require_grep "chocolatey: { id: codereview-cli }" "packaging/identity.yml"
 
@@ -81,8 +79,8 @@ require_grep "cr_v0.0.0_windows_arm64.zip" "$winget_installer"
 require_file "packaging/chocolatey/codereview-cli.nuspec"
 require_file "packaging/chocolatey/tools/chocolateyInstall.ps1"
 require_grep "<id>codereview-cli</id>" "packaging/chocolatey/codereview-cli.nuspec"
-require_grep 'releases/download/v${version}' "packaging/chocolatey/tools/chocolateyInstall.ps1"
-require_grep 'cr_v${version}_windows_${arch}.zip' "packaging/chocolatey/tools/chocolateyInstall.ps1"
+require_grep 'URL_AMD64_PLACEHOLDER' "packaging/chocolatey/tools/chocolateyInstall.ps1"
+require_grep 'URL_ARM64_PLACEHOLDER' "packaging/chocolatey/tools/chocolateyInstall.ps1"
 
 require_grep 'homebrew-tap-token: ${{ secrets.TAP_GITHUB_TOKEN }}' ".github/workflows/release.yml"
 require_grep 'chocolatey-api-key: ${{ secrets.CHOCOLATEY_API_KEY }}' ".github/workflows/release.yml"
