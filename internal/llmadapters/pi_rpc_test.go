@@ -1298,6 +1298,31 @@ func TestPiRPCSettlementContract(t *testing.T) {
 			wantUsage:  Usage{TokensIn: piRPCTestPtr(300), TokensOut: piRPCTestPtr(30), CacheRead: piRPCTestPtr(3), CostUSD: piRPCTestPtr(0.75)},
 		},
 		{
+			name: "one-hour cache writes sum once per completed assistant message",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: "Checking the diff.", toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(100, 10, map[string]any{"cacheWrite": 5, "cacheWrite1h": 1}, 0.25)}.end(),
+				`{"type":"message_update","usage":{"input":200,"output":20,"cacheWrite":7,"cacheWrite1h":2,"cost":{"total":0.5}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"{"}}`,
+				piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(200, 20, map[string]any{"cacheWrite": 7, "cacheWrite1h": 2}, 0.5)}.end(),
+				`{"type":"agent_end","messages":[{"role":"assistant","content":[],"usage":{"input":100,"output":10,"cacheWrite":5,"cacheWrite1h":1},"stopReason":"toolUse"},{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":200,"output":20,"cacheWrite":7,"cacheWrite1h":2},"stopReason":"stop"}],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantOutput: answer,
+			wantUsage:  Usage{TokensIn: piRPCTestPtr(300), TokensOut: piRPCTestPtr(30), CacheCreate: piRPCTestPtr(12), CacheCreate1h: piRPCTestPtr(3), CostUSD: piRPCTestPtr(0.75)},
+		},
+		{
+			name: "one-hour cache split reported by only some messages sums the reported values",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: "Checking the diff.", toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(100, 10, map[string]any{"cacheWrite": 5}, 0.25)}.end(),
+				piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(200, 20, map[string]any{"cacheWrite": 7, "cacheWrite1h": 2}, 0.5)}.end(),
+				piRPCTestAgentEnd(false),
+				`{"type":"agent_settled"}`,
+			},
+			wantOutput: answer,
+			wantUsage:  Usage{TokensIn: piRPCTestPtr(300), TokensOut: piRPCTestPtr(30), CacheCreate: piRPCTestPtr(12), CacheCreate1h: piRPCTestPtr(2), CostUSD: piRPCTestPtr(0.75)},
+		},
+		{
 			name: "provider error after exhausted retries fails with diagnostic",
 			script: []string{
 				piRPCTestPromptStarted,
@@ -1404,6 +1429,37 @@ func TestPiRPCSettlementContract(t *testing.T) {
 			}
 			if !reflect.DeepEqual(response.Usage, tt.wantUsage) {
 				t.Fatalf("Usage = %s, want %s", formatPiRPCTestUsage(response.Usage), formatPiRPCTestUsage(tt.wantUsage))
+			}
+		})
+	}
+}
+
+func TestParsePiRPCUsageCacheWriteRetention(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		usage string
+		want  Usage
+	}{
+		{
+			name:  "one-hour subset is kept beside the aggregate",
+			usage: `{"input":10,"output":2,"cacheRead":3,"cacheWrite":7,"cacheWrite1h":4,"cost":{"total":0.5}}`,
+			want:  Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CacheRead: piRPCTestPtr(3), CacheCreate: piRPCTestPtr(7), CacheCreate1h: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.5)},
+		},
+		{
+			name:  "zero one-hour subset is a reported zero",
+			usage: `{"input":10,"output":2,"cacheRead":0,"cacheWrite":7,"cacheWrite1h":0,"cost":{"total":0.5}}`,
+			want:  Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CacheRead: piRPCTestPtr(0), CacheCreate: piRPCTestPtr(7), CacheCreate1h: piRPCTestPtr(0), CostUSD: piRPCTestPtr(0.5)},
+		},
+		{
+			name:  "absent one-hour subset stays unknown",
+			usage: `{"input":10,"output":2,"cacheRead":0,"cacheWrite":7,"cost":{"total":0.5}}`,
+			want:  Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CacheRead: piRPCTestPtr(0), CacheCreate: piRPCTestPtr(7), CostUSD: piRPCTestPtr(0.5)},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parsePiRPCUsage(map[string]json.RawMessage{"usage": json.RawMessage(tt.usage)})
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parsePiRPCUsage = %s, want %s", formatPiRPCTestUsage(got), formatPiRPCTestUsage(tt.want))
 			}
 		})
 	}

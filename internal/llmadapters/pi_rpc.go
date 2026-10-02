@@ -1223,7 +1223,11 @@ func parsePiRPCUsage(raw map[string]json.RawMessage) Usage {
 		TokensOut:   firstRawIntPtr(usageRaw, "tokens_out", "tokensOut", "output", "outputTokens", "completionTokens"),
 		CacheRead:   firstRawIntPtr(usageRaw, "cache_read", "cacheRead"),
 		CacheCreate: firstRawIntPtr(usageRaw, "cache_create", "cacheCreate", "cache_write", "cacheWrite"),
-		CostUSD:     firstRawFloatPtr(usageRaw, "cost_usd", "costUSD", "totalCost", "totalCostUSD"),
+		// Pi reports cacheWrite1h as the one-hour subset of cacheWrite. The
+		// remainder is not labeled with a retention, so no five-minute value
+		// is derived from it.
+		CacheCreate1h: rawIntPtr(usageRaw, "cacheWrite1h"),
+		CostUSD:       firstRawFloatPtr(usageRaw, "cost_usd", "costUSD", "totalCost", "totalCostUSD"),
 	}
 	if usage.CostUSD == nil {
 		usage.CostUSD = nestedRawFloatPtr(usageRaw, "cost", "total")
