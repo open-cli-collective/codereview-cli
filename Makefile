@@ -1,4 +1,4 @@
-.PHONY: all build test test-cover test-static-smoke test-pi-runtime pi-runtime-version lint fmt tidy deps check install snapshot package-render-check release clean
+.PHONY: all build test test-cover test-static-smoke test-pi-runtime pi-runtime-version check-pi-runtime-version lint fmt tidy deps check install snapshot package-render-check release clean
 
 # Standard keyring tags: enable 1Password support, keep passage disabled.
 GOFLAGS ?= -tags=keyring_nopassage
@@ -23,11 +23,19 @@ test-static-smoke:
 # reports anything else or Pi is missing.
 PI_RUNTIME_VERSION ?= 1.0.0
 
-test-pi-runtime:
-	CR_PI_RUNTIME_VERSION=$(PI_RUNTIME_VERSION) go test -v -race -count=1 -run 'TestPiRPCRuntime|TestPiRPCReviewerExtensionLoadsInInstalledPi' ./internal/llmadapters
+# A blank pin would make the runtime tests skip and let npm install the latest
+# Pi, so both targets below require exactly one version.
+check-pi-runtime-version:
+	@if [ "$(words $(PI_RUNTIME_VERSION))" != 1 ]; then \
+		echo "PI_RUNTIME_VERSION must be exactly one Pi version" >&2; \
+		exit 1; \
+	fi
 
-pi-runtime-version:
-	@echo $(PI_RUNTIME_VERSION)
+test-pi-runtime: check-pi-runtime-version
+	CR_PI_RUNTIME_VERSION=$(strip $(PI_RUNTIME_VERSION)) go test -v -race -count=1 -run 'TestPiRPCRuntime|TestPiRPCReviewerExtensionLoadsInInstalledPi' ./internal/llmadapters
+
+pi-runtime-version: check-pi-runtime-version
+	@echo $(strip $(PI_RUNTIME_VERSION))
 
 lint:
 	golangci-lint run

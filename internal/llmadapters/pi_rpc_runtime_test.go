@@ -241,12 +241,16 @@ func TestPiRPCRuntimeReviewerRejectsUnlistedTool(t *testing.T) {
 }
 
 // requirePiRuntime returns the installed Pi path when runtime tests are
-// enabled. It skips only when the opt-in is unset.
+// enabled. It skips only when the opt-in is unset; a set but blank version
+// fails so a broken pin cannot pass by skipping.
 func requirePiRuntime(t *testing.T) string {
 	t.Helper()
-	want := os.Getenv(piRuntimeVersionEnv)
-	if want == "" {
+	want, set := os.LookupEnv(piRuntimeVersionEnv)
+	if !set {
 		t.Skipf("set %s to the required Pi version (make test-pi-runtime) to run installed Pi runtime tests", piRuntimeVersionEnv)
+	}
+	if strings.TrimSpace(want) == "" {
+		t.Fatalf("%s is set but blank; it must name the exact required Pi version", piRuntimeVersionEnv)
 	}
 	install := installedPiRuntime()
 	if install.err != nil {

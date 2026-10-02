@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -102,4 +103,66 @@ func readPiRuntimePID(t *testing.T, path string) int {
 		t.Fatalf("Pi PID file = %q: %v", data, err)
 	}
 	return pid
+}
+
+// A blank Pi pin must stop both Make targets: it would make the runtime tests
+// skip and report ok, and it would let npm install the latest Pi. A fake go on
+// PATH records any dispatch instead of running the suite.
+func TestPiRuntimeMakeTargetsRejectBlankPin(t *testing.T) {
+	makePath, err := exec.LookPath("make")
+	if err != nil {
+		t.Skip("make is not installed")
+	}
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("Abs(repo root): %v", err)
+	}
+	binDir := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "go-dispatch")
+	fakeGo := "#!/bin/sh\nprintf '%s' \"$CR_PI_RUNTIME_VERSION\" > " + strconv.Quote(recordPath) + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "go"), []byte(fakeGo), 0o700); err != nil { // #nosec G306 -- fake go must be executable and is rooted in t.TempDir.
+		t.Fatalf("WriteFile(fake go): %v", err)
+	}
+	env := []string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+	for _, entry := range os.Environ() {
+		switch key, _, _ := strings.Cut(entry, "="); key {
+		case "PATH", "MAKEFLAGS", "MFLAGS", "MAKELEVEL", "PI_RUNTIME_VERSION", piRuntimeVersionEnv:
+		default:
+			env = append(env, entry)
+		}
+	}
+	runMake := func(args ...string) (string, bool, error) {
+		t.Helper()
+		_ = os.Remove(recordPath)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, makePath, append([]string{"-s", "--no-print-directory", "-C", repoRoot}, args...)...) // #nosec G204 -- test runs make with fixed targets.
+		cmd.Env = env
+		output, err := cmd.Output()
+		recorded, readErr := os.ReadFile(recordPath) // #nosec G304 -- recordPath is rooted in t.TempDir.
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("ReadFile(go dispatch record): %v", readErr)
+		}
+		if readErr == nil {
+			return string(recorded), true, err
+		}
+		return string(output), false, err
+	}
+
+	pin, dispatched, err := runMake("pi-runtime-version")
+	pin = strings.TrimSpace(pin)
+	if err != nil || dispatched || pin == "" || strings.ContainsAny(pin, " \t") {
+		t.Fatalf("make pi-runtime-version = %q (err %v), want one default version", pin, err)
+	}
+	if got, dispatched, err := runMake("test-pi-runtime"); err != nil || !dispatched || got != pin {
+		t.Fatalf("make test-pi-runtime dispatched=%v with %s=%q (err %v), want go test with %q", dispatched, piRuntimeVersionEnv, got, err, pin)
+	}
+	for _, bad := range []string{"", " ", "\t", pin + " " + pin} {
+		if got, dispatched, err := runMake("pi-runtime-version", "PI_RUNTIME_VERSION="+bad); err == nil || dispatched || strings.TrimSpace(got) != "" {
+			t.Errorf("make pi-runtime-version PI_RUNTIME_VERSION=%q printed %q (err %v), want failure without output", bad, got, err)
+		}
+		if got, dispatched, err := runMake("test-pi-runtime", "PI_RUNTIME_VERSION="+bad); err == nil || dispatched {
+			t.Errorf("make test-pi-runtime PI_RUNTIME_VERSION=%q dispatched=%v with %q (err %v), want failure before go test", bad, dispatched, got, err)
+		}
+	}
 }
