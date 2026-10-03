@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/cli-common/statedirtest"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 )
 
@@ -119,6 +121,148 @@ func TestRunConfigShowJSON(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"active_profile": "home"`) {
 		t.Fatalf("stdout = %q, want active profile JSON", stdout.String())
 	}
+}
+
+func TestRunCatalogShowAndUpdate(t *testing.T) {
+	statedirtest.Hermetic(t)
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourceDir := filepath.Join(filepath.Dir(testFile), "..", "..", "internal", "modelcatalog", "data")
+	targetDir, err := modelcatalog.InstalledDir()
+	if err != nil {
+		t.Fatalf("catalog InstalledDir: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"catalog", "update", sourceDir, "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("catalog update exit code = %d, stderr = %q", code, stderr.String())
+	}
+	var update map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &update); err != nil {
+		t.Fatalf("catalog update JSON: %v\n%s", err, stdout.String())
+	}
+	source, sourceOK := update["source"].(map[string]any)
+	revision, revisionOK := update["revision"].(string)
+	if !sourceOK || source["kind"] != "installed" || !revisionOK || strings.TrimSpace(revision) == "" {
+		t.Fatalf("catalog update JSON = %#v, want installed source and revision", update)
+	}
+	pointerBefore, err := os.ReadFile(filepath.Join(targetDir, "catalog.current")) // #nosec G304 -- targetDir is the hermetic test data directory.
+	if err != nil {
+		t.Fatalf("read catalog pointer: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"catalog", "show", "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("catalog show exit code = %d, stderr = %q", code, stderr.String())
+	}
+	var show map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &show); err != nil {
+		t.Fatalf("catalog show JSON: %v\n%s", err, stdout.String())
+	}
+	manifest, ok := show["manifest"].(map[string]any)
+	if !ok || manifest["schema_version"] == nil || manifest["revision"] == nil {
+		t.Fatalf("catalog show manifest = %#v, want snake_case metadata", show["manifest"])
+	}
+	defaults, ok := show["defaults"].([]any)
+	if !ok || len(defaults) == 0 {
+		t.Fatalf("catalog show defaults = %#v, want rows", show["defaults"])
+	}
+	if _, ok := defaults[0].(map[string]any)["runtime_id"]; !ok {
+		t.Fatalf("catalog show default = %#v, want runtime_id", defaults[0])
+	}
+
+	badSource := filepath.Join(t.TempDir(), "bad")
+	if err := copyCatalogFiles(sourceDir, badSource); err != nil {
+		t.Fatalf("copy bad catalog: %v", err)
+	}
+	modelsPath := filepath.Join(badSource, "models.csv")
+	models, err := os.ReadFile(modelsPath) // #nosec G304 -- test path is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read bad models: %v", err)
+	}
+	if err := os.WriteFile(modelsPath, append(models, '\n'), 0o600); err != nil { // #nosec G703 -- test path is under t.TempDir.
+		t.Fatalf("write bad models: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"catalog", "update", badSource}, strings.NewReader(""), &stdout, &stderr)
+	if code == 0 || !strings.Contains(stderr.String(), "checksum") {
+		t.Fatalf("failed catalog update code=%d stderr=%q, want checksum failure", code, stderr.String())
+	}
+	pointerAfter, err := os.ReadFile(filepath.Join(targetDir, "catalog.current")) // #nosec G304 -- targetDir is the hermetic test data directory.
+	if err != nil {
+		t.Fatalf("read catalog pointer after failure: %v", err)
+	}
+	if string(pointerAfter) != string(pointerBefore) {
+		t.Fatalf("catalog pointer changed after failed update: before %q after %q", pointerBefore, pointerAfter)
+	}
+}
+
+func TestRunCatalogShowUsesExplicitCatalogCapabilities(t *testing.T) {
+	statedirtest.Hermetic(t)
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourceDir := filepath.Join(filepath.Dir(testFile), "..", "..", "internal", "modelcatalog", "data")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--catalog", sourceDir, "catalog", "show", "--json"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("catalog show exit code = %d, stderr = %q", code, stderr.String())
+	}
+	var show struct {
+		Source struct {
+			Kind     string `json:"kind"`
+			Revision string `json:"revision"`
+		} `json:"source"`
+		Models []struct {
+			RuntimeID  string `json:"runtime_id"`
+			ModelID    string `json:"model_id"`
+			Fast       bool   `json:"fast"`
+			FastKnown  bool   `json:"fast_known"`
+			Ultrafast  bool   `json:"ultrafast"`
+			UltraKnown bool   `json:"ultrafast_known"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &show); err != nil {
+		t.Fatalf("catalog show JSON: %v\n%s", err, stdout.String())
+	}
+	if show.Source.Kind != "local" || show.Source.Revision == "" {
+		t.Fatalf("source = %#v, want local revision", show.Source)
+	}
+	var foundFast, foundUnknown bool
+	for _, model := range show.Models {
+		if model.RuntimeID == "openai-api-key" && model.ModelID == "gpt-6.1-sol" {
+			foundFast = model.Fast && model.FastKnown
+		}
+		if model.RuntimeID == "anthropic-api-key" && model.ModelID == "claude-haiku-4-5" {
+			foundUnknown = !model.Fast && !model.FastKnown && !model.Ultrafast && !model.UltraKnown
+		}
+	}
+	if !foundFast || !foundUnknown {
+		t.Fatalf("catalog capability rows missing expected states: foundFast=%v foundUnknown=%v", foundFast, foundUnknown)
+	}
+}
+
+func copyCatalogFiles(sourceDir, targetDir string) error {
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		return err
+	}
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(sourceDir, name)) // #nosec G304 -- sourceDir is the repository's bundled test catalog.
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(targetDir, name), body, 0o600); err != nil { // #nosec G703 -- test path is under t.TempDir.
+			return err
+		}
+	}
+	return nil
 }
 
 func TestRunBenchmarkCommands(t *testing.T) {

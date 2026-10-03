@@ -3,12 +3,16 @@ package root
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 )
 
@@ -74,6 +78,50 @@ func TestPersistentQuietFlagPopulatesOptions(t *testing.T) {
 	}
 	if !opts.Quiet {
 		t.Fatal("Quiet = false, want true")
+	}
+}
+
+func TestCatalogSnapshotIsCachedForOneCommand(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := t.TempDir()
+	dataDir := filepath.Join(filepath.Dir(testFile), "..", "..", "modelcatalog", "data")
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository's bundled fixture.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+
+	opts := &Options{CatalogPath: source}
+	first, err := opts.CatalogSnapshot()
+	if err != nil {
+		t.Fatalf("first CatalogSnapshot: %v", err)
+	}
+	if first.Source().Kind != "local" {
+		t.Fatalf("first source kind = %q, want local", first.Source().Kind)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatalf("remove source after first load: %v", err)
+	}
+	second, err := opts.CatalogSnapshot()
+	if err != nil {
+		t.Fatalf("second CatalogSnapshot: %v", err)
+	}
+	if second != first {
+		t.Fatalf("second snapshot pointer = %p, want cached %p", second, first)
+	}
+	if second.Revision() != first.Revision() {
+		t.Fatalf("second revision = %q, want %q", second.Revision(), first.Revision())
+	}
+
+	if _, err := modelcatalog.LoadPath(source); err == nil {
+		t.Fatal("removed source unexpectedly loaded")
 	}
 }
 

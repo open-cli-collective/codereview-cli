@@ -25,6 +25,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
@@ -154,6 +155,7 @@ type ContextBudget struct {
 type Options struct {
 	Provider         ReadProvider
 	Adapter          llm.Adapter
+	Catalog          *modelcatalog.Catalog
 	Store            Store
 	NamedSessions    NamedSessionStore
 	Layout           statepaths.Layout
@@ -434,6 +436,7 @@ type reviewPRContext struct {
 
 // DryRun executes the dry-run review pipeline.
 func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
 	}
@@ -448,6 +451,7 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 
 // Live executes the review planning phases into a gate-allocated live run.
 func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if hasDryRunStageOverrides(req) {
 		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review"))
 	}
@@ -472,6 +476,7 @@ func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Resul
 
 // SelectionOnly executes only the selection phase using caller-owned artifacts.
 func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (SelectionResult, error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if err := validateSelectionOnly(opts, req); err != nil {
 		return SelectionResult{}, err
 	}
@@ -560,7 +565,15 @@ func selectionMaxAgents(requested, fallback int) int {
 	return fallback
 }
 
+func profileWithCatalog(opts Options, profile config.Profile) config.Profile {
+	if opts.Catalog != nil {
+		profile.LLM = profile.LLM.WithCatalog(opts.Catalog)
+	}
+	return profile
+}
+
 func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if err := validate(opts, req); err != nil {
 		if mode.live {
 			return Result{}, Failure(FailureTerminal, err)
@@ -646,13 +659,6 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	prepared.fastRequested = req.ReviewerFast
-	effectiveFast, warning, err := resolveReviewerFastMode(req, prepared.catalog)
-	if err != nil {
-		return Result{}, err
-	}
-	prepared.fastIgnored = req.ReviewerFast && !effectiveFast
-	req.ReviewerFast = effectiveFast
-	opts.emitWarning(warning)
 
 	result := prepared.reviewResult()
 	run := mode.run
@@ -712,7 +718,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 
-	findingSessions, blockingFailure, err := executePlanPhases(ctx, opts, req, mode, run, prepared, now, maxAgents, maxConcurrency, &result)
+	findingSessions, blockingFailure, err := executePlanPhases(ctx, opts, req, mode, run, &prepared, now, maxAgents, maxConcurrency, &result)
 	if err != nil {
 		if blockingFailure {
 			failureOutcome = ledger.OutcomeIncomplete
@@ -742,7 +748,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	return result, nil
 }
 
-func executePlanPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
+func executePlanPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared *preparedSelectionContext, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
 	repoSources := append([]agents.SourceInfo(nil), prepared.catalog.Sources...)
 	if len(prepared.parsed.Patches) == 0 {
 		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
@@ -775,7 +781,7 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 	return executeLLMPhases(ctx, opts, req, mode, run, prepared, repoSources, now, maxAgents, maxConcurrency, result)
 }
 
-func executeLLMPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, repoSources []agents.SourceInfo, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
+func executeLLMPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared *preparedSelectionContext, repoSources []agents.SourceInfo, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
@@ -834,16 +840,27 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		if err != nil {
 			return executionPhaseFailure(err)
 		}
-		if !reusedCohort {
-			if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
-				return nil, false, err
-			}
-		}
 	} else {
 		opts.emitReviewerSelection(prepared.catalog, selection)
 	}
 	result.Selection = selection
 	result.Sessions = appendSessionIfPresent(result.Sessions, selectionLedgerSession)
+
+	// Fast capability is a property of the resolved reviewers that were
+	// selected for this run. Check after selection so an unsupported offer that
+	// was not selected cannot disable fast mode for the whole review.
+	effectiveFast, warning, err := resolveReviewerFastMode(req, selection, prepared.catalog)
+	if err != nil {
+		return nil, false, err
+	}
+	prepared.fastIgnored = req.ReviewerFast && !effectiveFast
+	req.ReviewerFast = effectiveFast
+	opts.emitWarning(warning)
+	if !reusedCohort {
+		if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
+			return nil, false, err
+		}
+	}
 
 	selectionTaskIDs := []string{orchestratorSelectionStage}
 	if reusedCohort && !selectionInRun {
@@ -978,7 +995,7 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 		return err
 	}
 	result.PlannedActions = plannedActions
-	return writeArtifacts(prepared.artifacts, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored))
+	return writeArtifacts(prepared.artifacts, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored), opts.Catalog)
 }
 
 func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitprovider.PR) (ledger.Run, bool, error) {
@@ -1711,7 +1728,7 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 		if err != nil {
 			return llm.Selection{}, nil, err
 		}
-		if runtimeConfig.model != member.Model || runtimeConfig.effort != member.Effort || req.ReviewerFast != member.Fast {
+		if runtimeConfig.model != member.Model || runtimeConfig.effort != member.Effort {
 			return freshError("saved reviewer %q runtime is incompatible with the current runtime", member.AgentID)
 		}
 		fileGlobs, err := agents.CompileFileGlobs(agent.FileGlobs)
@@ -1780,6 +1797,15 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 	selectedIDs := map[string]bool{}
 	for _, selected := range selection.SelectedAgents {
 		selectedIDs[selected.AgentID] = true
+	}
+	effectiveFast, _, err := resolveReviewerFastMode(req, selection, catalog)
+	if err != nil {
+		return llm.Selection{}, nil, err
+	}
+	for _, candidate := range candidates {
+		if selectedIDs[candidate.member.AgentID] && candidate.member.Fast != effectiveFast {
+			return freshError("saved reviewer %q fast-mode setting is incompatible with the current reviewer selection", candidate.member.AgentID)
+		}
 	}
 	for agentID := range resumes {
 		if !selectedIDs[agentID] {
@@ -2691,17 +2717,17 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 
 	workstreams := make([]reviewplan.WorkstreamUsage, 0, len(inputs.reviewers)+2)
 	if sessionDraftExecuted(inputs.selection) {
-		workstreams = append(workstreams, workstreamUsage(orchestratorSelectionStage, inputs.selection))
+		workstreams = append(workstreams, opts.workstreamUsage(orchestratorSelectionStage, inputs.selection))
 	}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
 		if drafts := reviewerByAgent[selected.AgentID]; slices.ContainsFunc(drafts, sessionDraftExecuted) {
-			workstreams = append(workstreams, workstreamUsageFromTotals(selected.AgentID, combineReviewerWorkstreamTotals(drafts)))
+			workstreams = append(workstreams, opts.workstreamUsageFromTotals(selected.AgentID, combineReviewerWorkstreamTotals(drafts)))
 		}
 	}
 	if sessionDraftExecuted(inputs.rollup) {
-		workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
+		workstreams = append(workstreams, opts.workstreamUsage(orchestratorRollupStage, inputs.rollup))
 	}
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
@@ -3266,6 +3292,18 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 }
 
 func workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.WorkstreamUsage {
+	return workstreamUsageFromTotalsForCatalog(name, totals, nil)
+}
+
+func (opts Options) workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
+	return workstreamUsageFromTotalsForCatalog(name, draftWorkstreamTotals(draft), opts.Catalog)
+}
+
+func (opts Options) workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.WorkstreamUsage {
+	return workstreamUsageFromTotalsForCatalog(name, totals, opts.Catalog)
+}
+
+func workstreamUsageFromTotalsForCatalog(name string, totals workstreamTotals, catalog *modelcatalog.Catalog) reviewplan.WorkstreamUsage {
 	usage := totals.usage
 	workstream := reviewplan.WorkstreamUsage{
 		Name:          name,
@@ -3282,14 +3320,25 @@ func workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.
 	// tokens at public list prices — only for models the price table knows, so an
 	// agent's unpriced model leaves cost unavailable rather than wrong.
 	if workstream.CostUSD == nil {
-		if est, ok := pricing.EstimateUsageUSD(totals.model, pricing.Usage{
+		priceUsage := pricing.Usage{
 			TokensIn: usage.TokensIn, TokensOut: usage.TokensOut, CacheRead: usage.CacheRead,
 			CacheCreate5m: usage.CacheCreate5m, CacheCreate1h: usage.CacheCreate1h,
 			CacheCreateTotal: usage.CacheCreate, Speed: usage.Speed,
-		}); ok {
+		}
+		var est float64
+		var ok bool
+		if catalog == nil {
+			est, ok = pricing.EstimateUsageUSD(totals.model, priceUsage)
+		} else {
+			est, ok = pricing.EstimateUsageUSDFor(catalog, totals.model, priceUsage)
+		}
+		if ok {
 			workstream.CostUSD = &est
 			workstream.CostEstimated = true
-			workstream.CostEstimateBasis = pricing.TableVersion
+			workstream.CostEstimateBasis = pricing.EstimateBasis(catalog)
+			if catalog == nil {
+				workstream.CostEstimateBasis = pricing.TableVersion
+			}
 		}
 	}
 	// Zero means the adapter never reported a duration; fall back to the
@@ -3823,22 +3872,26 @@ func resolveReviewerRuntime(req Request, agent agents.Agent) (reviewerRuntimeRes
 	return resolved, nil
 }
 
-func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string, error) {
+func resolveReviewerFastMode(req Request, selection llm.Selection, catalog agents.Catalog) (bool, string, error) {
 	if !req.ReviewerFast {
 		return false, "", nil
 	}
-	spec, ok := config.FindLLMRuntimeSpec(req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
+	spec, runtimeKnown := config.FindLLMRuntimeSpecFor(req.Profile.LLM.Catalog(), req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	runtimeName := fmt.Sprintf("%s/%s/%s", req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	warning := ""
-	if !ok || len(spec.FastModeModels) == 0 {
+	if !runtimeKnown || len(spec.FastModeModels) == 0 {
 		warning = fmt.Sprintf("warning: fast mode is unsupported for %s; continuing at normal speed", runtimeName)
 	}
-	for _, agent := range catalog.Agents {
+	for _, selected := range selection.SelectedAgents {
+		agent, found := catalog.Find(selected.AgentID)
+		if !found {
+			return false, "", fmt.Errorf("pipeline: selected reviewer %q is missing from the current catalog", selected.AgentID)
+		}
 		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 		if err != nil {
 			return false, "", err
 		}
-		if warning == "" && (!ok || !spec.SupportsFastMode(runtimeConfig.model)) {
+		if warning == "" && (!runtimeKnown || !spec.SupportsFastMode(runtimeConfig.model)) {
 			warning = fmt.Sprintf("warning: fast mode is unsupported for %s model %s; continuing at normal speed", runtimeName, runtimeConfig.model)
 		}
 	}

@@ -166,11 +166,7 @@ func loadConfigAndSuiteWithValidator(opts *root.Options, suitePath string, valid
 	if err != nil {
 		return benchmark.SuiteFile{}, config.File{}, mapBenchmarkError(err)
 	}
-	path, err := cmdruntime.ConfigPath(opts)
-	if err != nil {
-		return benchmark.SuiteFile{}, config.File{}, exitcode.AuthConfig(err)
-	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if err != nil {
 		return benchmark.SuiteFile{}, config.File{}, cmderr.Config(err)
 	}

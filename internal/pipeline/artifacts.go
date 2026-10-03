@@ -9,6 +9,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
@@ -22,14 +23,14 @@ func writeReviewerInputArtifacts(paths ArtifactPaths, rawDiff string) error {
 	return nil
 }
 
-func writeArtifacts(paths ArtifactPaths, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string, reviewerRuntime map[string]reviewerRuntimeResolution) error {
+func writeArtifacts(paths ArtifactPaths, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string, reviewerRuntime map[string]reviewerRuntimeResolution, modelCatalog *modelcatalog.Catalog) error {
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create artifact dir: %w", err)
 	}
 	if err := os.MkdirAll(paths.SlicesDir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create slices dir: %w", err)
 	}
-	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog, reviewerRuntime), "", "  ")
+	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog, reviewerRuntime, modelCatalog), "", "  ")
 	if err != nil {
 		return err
 	}
@@ -106,10 +107,14 @@ type workbenchFingerprintInputs struct {
 	SourceRepoRoot string              `json:"source_repo_root"`
 }
 
-func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map[string]reviewerRuntimeResolution) agentSourcesArtifact {
+func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map[string]reviewerRuntimeResolution, modelCatalog *modelcatalog.Catalog) agentSourcesArtifact {
 	artifact := agentSourcesArtifact{
 		Sources: append([]agents.SourceInfo(nil), catalog.Sources...),
 		Agents:  make([]agentProvenanceArtifact, 0, len(catalog.Agents)),
+	}
+	if modelCatalog != nil {
+		artifact.CatalogRevision = modelCatalog.Revision()
+		artifact.CatalogSource = modelCatalog.Source().Kind
 	}
 	for i := range artifact.Sources {
 		artifact.Sources[i].Warnings = append([]string(nil), catalog.Sources[i].Warnings...)

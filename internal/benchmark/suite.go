@@ -14,6 +14,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
+	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 )
 
 var (
@@ -452,6 +453,30 @@ func validateCandidateEfforts(candidate Candidate, profile config.Profile) error
 			continue
 		}
 		if err := config.ValidateEffortForRuntime(profile.LLM, stage.effort); err != nil {
+			return fmt.Errorf("%w: candidate %q stages.%s.effort: %w", ErrInvalid, candidate.ID, stage.name, err)
+		}
+		model := ""
+		switch stage.name {
+		case "selection":
+			model = candidate.Stages.Selection.Model
+		case "reviewers":
+			model = candidate.Stages.Reviewers.Model
+			if strings.TrimSpace(model) == "" && candidate.Stages.Reviewers.ModelTier != "" {
+				resolved, err := stagemodel.ResolveStageModel(stagemodel.Request{
+					Profile:        profile,
+					Stage:          stagemodel.StageReviewer,
+					Tier:           config.ModelTier(candidate.Stages.Reviewers.ModelTier),
+					EffortOverride: stage.effort,
+				})
+				if err != nil {
+					return fmt.Errorf("%w: candidate %q stages.%s model_tier %q effort %q: %w", ErrInvalid, candidate.ID, stage.name, candidate.Stages.Reviewers.ModelTier, stage.effort, err)
+				}
+				model = resolved.Model
+			}
+		case "synthesis":
+			model = candidate.Stages.Synthesis.Model
+		}
+		if err := config.ValidateEffortForModel(profile.LLM, model, stage.effort); err != nil {
 			return fmt.Errorf("%w: candidate %q stages.%s.effort: %w", ErrInvalid, candidate.ID, stage.name, err)
 		}
 	}

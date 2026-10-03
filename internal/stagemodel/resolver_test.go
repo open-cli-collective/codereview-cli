@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 func TestResolveStageModelUsesConfiguredTierMapping(t *testing.T) {
@@ -62,8 +63,8 @@ func TestResolveStageModelAppliesEffortOverrideWithoutBypassingTier(t *testing.T
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
 	}
-	if got.Model != "gpt-6-sol" {
-		t.Fatalf("Model = %q, want gpt-6-sol", got.Model)
+	if got.Model != "gpt-6.1-sol" {
+		t.Fatalf("Model = %q, want gpt-6.1-sol", got.Model)
 	}
 	if got.Effort != "high" {
 		t.Fatalf("Effort = %q, want high", got.Effort)
@@ -80,7 +81,7 @@ func TestResolveStageModelUsesBuiltInModelAndEffort(t *testing.T) {
 			tier   config.ModelTier
 			model  string
 			effort string
-		}{{config.ModelTierSmall, "gpt-6-luna", "max"}, {config.ModelTierMedium, "gpt-6-sol", "low"}, {config.ModelTierLarge, "gpt-6-sol", "medium"}} {
+		}{{config.ModelTierSmall, "gpt-6-luna", "max"}, {config.ModelTierMedium, "gpt-6.1-sol", "low"}, {config.ModelTierLarge, "gpt-6.1-sol", "medium"}} {
 			got, err := ResolveStageModel(Request{Profile: profile, Stage: StageReviewer, Tier: tt.tier, DefaultEffort: "high"})
 			if err != nil || got.Model != tt.model || got.Effort != tt.effort {
 				t.Fatalf("%s/%s: result=%#v err=%v, want %s/%s", adapter, tt.tier, got, err, tt.model, tt.effort)
@@ -92,7 +93,7 @@ func TestResolveStageModelUsesBuiltInModelAndEffort(t *testing.T) {
 		tier   config.ModelTier
 		model  string
 		effort string
-	}{{config.ModelTierSmall, "claude-sonnet-5", "low"}, {config.ModelTierMedium, "claude-sonnet-5", "medium"}, {config.ModelTierLarge, "claude-opus-5-5", "medium"}} {
+	}{{config.ModelTierSmall, "claude-sonnet-5-5", "low"}, {config.ModelTierMedium, "claude-sonnet-5-5", "medium"}, {config.ModelTierLarge, "claude-opus-5-5", "medium"}} {
 		got, err := ResolveStageModel(Request{Profile: profile, Stage: StageReviewer, Tier: tt.tier, DefaultEffort: "high"})
 		if err != nil || got.Model != tt.model || got.Effort != tt.effort {
 			t.Fatalf("anthropic/%s: result=%#v err=%v, want %s/%s", tt.tier, got, err, tt.model, tt.effort)
@@ -162,6 +163,41 @@ func TestResolveStageModelBypassesTierForExplicitOverride(t *testing.T) {
 	}
 	if got.Source != "" {
 		t.Fatalf("Source = %q, want empty source for explicit override", got.Source)
+	}
+}
+
+func TestResolveStageModelUsesCatalogEffortsForKnownModelsAndAllowsUnknownExplicitModels(t *testing.T) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatalf("LoadBundled: %v", err)
+	}
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthAPIKey,
+		Adapter:  config.LLMAdapterOpenAIAPI,
+	}.WithCatalog(catalog)}
+
+	unknown, err := ResolveStageModel(Request{
+		Profile:        profile,
+		Stage:          StageReviewer,
+		ModelOverride:  "operator-model-not-in-catalog",
+		EffortOverride: "high",
+	})
+	if err != nil {
+		t.Fatalf("unknown explicit model: %v", err)
+	}
+	if unknown.Model != "operator-model-not-in-catalog" || unknown.Effort != "high" {
+		t.Fatalf("unknown explicit result = %#v, want model and standard usable effort", unknown)
+	}
+
+	_, err = ResolveStageModel(Request{
+		Profile:        profile,
+		Stage:          StageReviewer,
+		ModelOverride:  "gpt-5.4",
+		EffortOverride: "max",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not verified for model gpt-5.4") {
+		t.Fatalf("known model effort error = %v, want catalog restriction", err)
 	}
 }
 
@@ -246,7 +282,7 @@ func TestResolveStageModelMapsSmallTierForClaudeCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
 	}
-	if resolved.Model != "claude-sonnet-5" || resolved.Source != config.ModelMapSourceBuiltIn {
+	if resolved.Model != "claude-sonnet-5-5" || resolved.Source != config.ModelMapSourceBuiltIn {
 		t.Fatalf("resolved = %#v, want the built-in Claude CLI small model", resolved)
 	}
 }
