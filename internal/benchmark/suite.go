@@ -468,9 +468,10 @@ func validateCandidateEfforts(candidate Candidate, profile config.Profile) error
 					Tier:           config.ModelTier(candidate.Stages.Reviewers.ModelTier),
 					EffortOverride: stage.effort,
 				})
-				if err == nil {
-					model = resolved.Model
+				if err != nil {
+					return fmt.Errorf("%w: candidate %q stages.%s model_tier %q effort %q: %w", ErrInvalid, candidate.ID, stage.name, candidate.Stages.Reviewers.ModelTier, stage.effort, err)
 				}
+				model = resolved.Model
 			}
 		case "synthesis":
 			model = candidate.Stages.Synthesis.Model

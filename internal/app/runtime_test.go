@@ -3,10 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -25,10 +29,12 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gittest"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -64,6 +70,164 @@ func TestOpenCanInstantiateWithoutCobra(t *testing.T) {
 	}
 	if runtime.Runner == nil || runtime.Responder == nil || runtime.PostingIdentity != identity {
 		t.Fatalf("runtime = %#v, want runner, responder, and posting identity", runtime)
+	}
+}
+
+func TestOpenRunsPipelineWithOneCatalogSnapshot(t *testing.T) {
+	catalog, catalogDir := runtimeCatalogFixture(t)
+	repoDir, baseSHA, headSHA := runtimeGitFixture(t)
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
+	agentDir := runtimeAgentFixture(t, repoDir)
+	ref := testPRRef()
+	pr := testPR()
+	pr.Base.SHA = baseSHA
+	pr.Head.SHA = headSHA
+	pr.Base.Ref = "refs/heads/main"
+	pr.Head.Ref = "refs/heads/feature"
+	diff := runtimeGitOutput(t, repoDir, "diff", baseSHA, headSHA)
+	provider := &gitprovider.Fake{}
+	if err := provider.SetPR(ref, pr); err != nil {
+		t.Fatalf("SetPR: %v", err)
+	}
+	if err := provider.SetDiff(ref, gitprovider.UnifiedDiff{Raw: diff}); err != nil {
+		t.Fatalf("SetDiff: %v", err)
+	}
+	provider.SetCapabilities(gitprovider.ProviderCaps{NativeFileLevelComments: true, ThreadResolution: true})
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	adapter := &llm.FakeAdapter{
+		NameValue:                  "fake-openai",
+		ReviewerWorkspaceModeSet:   true,
+		ReviewerWorkspaceModeValue: llm.ReviewerWorkspaceWrite,
+	}
+	adapter.Queue(runtimeFakeResult("selection", `{
+		"schema_version": 1,
+		"selected_agents": [{"agent_id": "harness:reviewer", "rationale": "changed Go file", "files": ["main.go"]}],
+		"thread_actions": [],
+		"reasoning": "use the changed catalog-backed reviewer"
+	}`, 1_000_000, 1_000_000, "fast"))
+	adapter.Queue(runtimeFakeResult("reviewer", `{
+		"schema_version": 1,
+		"agent_id": "harness:reviewer",
+		"inspected_files": ["main.go"],
+		"skipped_files": [],
+		"constraints": [],
+		"findings": []
+	}`, 1_000_000, 1_000_000, "fast"))
+	adapter.Queue(runtimeFakeResult("rollup", `{
+		"schema_version": 1,
+		"review_event": "approve",
+		"review_event_rationale": "no findings",
+		"dedupe_log": [],
+		"ordered_findings": []
+	}`, 1_000_000, 1_000_000, "fast"))
+
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.AgentSources = []string{agentDir}
+	profile.LLM = config.LLMConfig{
+		Provider:   config.LLMProviderOpenAI,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterOpenAIAPI,
+		Credential: profile.Git.Credential,
+	}.WithCatalog(catalog)
+	profile.Fast = false
+	cfg.Profiles["home"] = profile
+	cfg = cfg.WithCatalog(catalog)
+	profile = cfg.Profiles["home"]
+
+	deps := testDependencies(t,
+		func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
+			return adapter, nil
+		},
+	)
+	deps.ResolveRepoRoot = func(context.Context) (string, error) { return repoDir, nil }
+	deps.NewGitCommand = func(_ string, _ gitexec.TokenSource, _ string) (func(context.Context, string, ...string) ([]byte, error), error) {
+		return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+			cmdArgs := append([]string(nil), args...)
+			if len(cmdArgs) >= 3 && cmdArgs[0] == "fetch" {
+				cmdArgs[2] = repoDir
+			}
+			cmd := exec.CommandContext(ctx, "git", cmdArgs...) // #nosec G204 -- test uses fixed git command and structured arguments.
+			cmd.Env = gittest.Env()
+			cmd.Dir = dir
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return nil, errors.New(strings.TrimSpace(string(output)))
+			}
+			return output, nil
+		}, nil
+	}
+
+	runtime, err := Open(context.Background(), OpenRequest{
+		Config:       cfg,
+		Profile:      profile,
+		ProfileName:  "home",
+		PRRef:        ref,
+		Dependencies: deps,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer runtime.Cleanup()
+	if err := os.RemoveAll(catalogDir); err != nil {
+		t.Fatalf("remove catalog source after runtime assembly: %v", err)
+	}
+
+	// Deliberately omit the catalog from the request profile. The runtime's
+	// pipeline.Options snapshot must restore it; otherwise model resolution,
+	// fast capability, pricing, and artifact provenance fall back to bundled data.
+	requestProfile := profile
+	requestProfile.LLM = requestProfile.LLM.WithCatalog(nil)
+	result, err := runtime.Runner.DryRun(context.Background(), pipeline.Request{
+		PRRef:           ref,
+		PRURL:           pr.URL,
+		ProfileName:     "home",
+		Profile:         requestProfile,
+		PostingIdentity: identity,
+		ReviewerFast:    true,
+	})
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("adapter requests = %d, want selection/reviewer/rollup: %#v", len(requests), requests)
+	}
+	if requests[1].Model != "custom-review-model" || requests[1].Effort != "medium" || !requests[1].Fast {
+		t.Fatalf("reviewer request = %#v, want catalog default model/effort with effective fast", requests[1])
+	}
+	if result.Plan.Summary.Run.ReviewerCoverage == nil || len(result.Plan.Summary.Run.ReviewerCoverage) != 1 {
+		t.Fatalf("reviewer coverage = %#v, want one executed reviewer", result.Plan.Summary.Run.ReviewerCoverage)
+	}
+	var reviewerUsage reviewplan.WorkstreamUsage
+	foundReviewer := false
+	for _, workstream := range result.Plan.Summary.Run.Workstreams {
+		if workstream.Name == "harness:reviewer" {
+			reviewerUsage = workstream
+			foundReviewer = true
+			break
+		}
+	}
+	if !foundReviewer || reviewerUsage.Model != "custom-review-model" || !reviewerUsage.CostEstimated || reviewerUsage.CostUSD == nil || reviewerUsage.CostEstimateBasis != "app-runtime-custom/pricing" {
+		t.Fatalf("reviewer usage = %#v, want catalog model, estimated cost, and selected pricing basis", reviewerUsage)
+	}
+	if *reviewerUsage.CostUSD != 12 {
+		t.Fatalf("reviewer cost = %v, want $12 from custom fast pricing", *reviewerUsage.CostUSD)
+	}
+	artifact, err := os.ReadFile(result.Artifacts.AgentSourcesJSON) // #nosec G304 -- pipeline returned test artifact path.
+	if err != nil {
+		t.Fatalf("ReadFile agent sources: %v", err)
+	}
+	artifactText := string(artifact)
+	if !strings.Contains(artifactText, `"catalog_revision": "app-runtime-custom"`) || !strings.Contains(artifactText, `"catalog_source": "local"`) || !strings.Contains(artifactText, `"resolved_model": "custom-review-model"`) || !strings.Contains(artifactText, `"fast": true`) {
+		t.Fatalf("agent sources artifact = %s, want selected catalog revision/source/model", artifactText)
 	}
 }
 
@@ -977,6 +1141,138 @@ func TestAdapterConstructorsCoverLLMRuntimeSpecs(t *testing.T) {
 			t.Errorf("adapter constructor %q has no runtime spec", adapter)
 		}
 	}
+}
+
+func runtimeFakeResult(sessionID, output string, tokensIn, tokensOut int, speed string) llm.FakeResult {
+	return llm.FakeResult{
+		SessionID: sessionID,
+		Response: llm.Response{
+			StructuredOutput: []byte(output),
+			Usage: llm.Usage{
+				TokensIn:  &tokensIn,
+				TokensOut: &tokensOut,
+				Speed:     speed,
+			},
+			DurationMS: 1,
+		},
+	}
+}
+
+func runtimeCatalogFixture(t *testing.T) (*modelcatalog.Catalog, string) {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := t.TempDir()
+	dataDir := filepath.Join(filepath.Dir(testFile), "..", "modelcatalog", "data")
+	files := map[string][]byte{}
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository fixture.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		files[name] = body
+	}
+	files["models.csv"] = append(files["models.csv"], []byte("openai-api-key,custom-review-model,low|medium,Y,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
+	files["defaults.csv"] = []byte(strings.Replace(string(files["defaults.csv"]), "openai-api-key,medium,gpt-6.1-sol,low,", "openai-api-key,medium,custom-review-model,medium,", 1))
+	files["pricing.csv"] = append(files["pricing.csv"], []byte("custom-review-model,standard,all,3,7,1,0.5,,,https://example.invalid/custom-review-model,2026-10-03\ncustom-review-model,fast,all,4,8,1,0.5,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+	manifestPath := filepath.Join(source, "manifest.json")
+	var manifest modelcatalog.Manifest
+	manifestBody, err := os.ReadFile(manifestPath) // #nosec G304 -- manifestPath is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	manifest.Revision = "app-runtime-custom"
+	for _, name := range []string{"models.csv", "defaults.csv", "pricing.csv"} {
+		manifest.Files[name] = fmt.Sprintf("%x", sha256.Sum256(files[name]))
+	}
+	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, append(manifestBody, '\n'), 0o600); err != nil { // #nosec G703 -- manifestPath is under t.TempDir.
+		t.Fatalf("write manifest: %v", err)
+	}
+	catalog, err := modelcatalog.LoadPath(source)
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	return catalog, source
+}
+
+func runtimeGitFixture(t *testing.T) (string, string, string) {
+	t.Helper()
+	repoDir := t.TempDir()
+	runtimeGitOutput(t, "", "init", "-b", "main", repoDir)
+	runtimeGitOutput(t, repoDir, "config", "user.name", "Runtime Test")
+	runtimeGitOutput(t, repoDir, "config", "user.email", "runtime@example.test")
+	if err := os.MkdirAll(filepath.Join(repoDir, ".codereview", "agents", "harness", "reviewer"), 0o700); err != nil {
+		t.Fatalf("MkdirAll agent source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatalf("write base file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", "harness", "index.yaml"), []byte("name: harness\ndescription: runtime test agents\nowner: test\n"), 0o600); err != nil {
+		t.Fatalf("write category index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", "harness", "reviewer", "index.yaml"), []byte("name: reviewer\ndescription: runtime test reviewer\nmodel_tier: medium\n"), 0o600); err != nil {
+		t.Fatalf("write agent index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, ".codereview", "agents", "harness", "reviewer", "prompt.md"), []byte("Review the changed Go file.\n"), 0o600); err != nil {
+		t.Fatalf("write agent prompt: %v", err)
+	}
+	runtimeGitOutput(t, repoDir, "add", ".")
+	runtimeGitOutput(t, repoDir, "commit", "-m", "base")
+	baseSHA := strings.TrimSpace(runtimeGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	runtimeGitOutput(t, repoDir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(repoDir, "main.go"), []byte("package main\n\nfunc main() { println(\"changed\") }\n"), 0o600); err != nil {
+		t.Fatalf("write head file: %v", err)
+	}
+	runtimeGitOutput(t, repoDir, "commit", "-am", "change")
+	headSHA := strings.TrimSpace(runtimeGitOutput(t, repoDir, "rev-parse", "HEAD"))
+	return repoDir, baseSHA, headSHA
+}
+
+func runtimeAgentFixture(t *testing.T, repoDir string) string {
+	t.Helper()
+	root := filepath.Join(filepath.Dir(repoDir), "catalog-agents")
+	agentDir := filepath.Join(root, "harness", "reviewer")
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll external agent source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "harness", "index.yaml"), []byte("name: harness\ndescription: runtime test agents\nowner: test\n"), 0o600); err != nil {
+		t.Fatalf("write external category index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "index.yaml"), []byte("name: reviewer\ndescription: runtime test reviewer\nmodel_tier: medium\neffort: medium\n"), 0o600); err != nil {
+		t.Fatalf("write external agent index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "prompt.md"), []byte("Review the changed Go file.\n"), 0o600); err != nil {
+		t.Fatalf("write external agent prompt: %v", err)
+	}
+	return root
+}
+
+func runtimeGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...) // #nosec G204 -- test uses fixed git command and structured arguments.
+	cmd.Env = gittest.Env()
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
 
 func testDependencies(t *testing.T, provider GitProviderFactory, identity PostingIdentityResolver, adapter AdapterFactory) Dependencies {
