@@ -110,6 +110,7 @@ func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, 
 			llmRuntimePrompter := huhInitLLMRuntimePrompter{
 				stdin:           p.stdin,
 				stderr:          p.stderr,
+				catalog:         editorCtx.ExistingConfig.Catalog(),
 				checker:         defaultInitLLMRuntimeAvailabilityNote,
 				inventoryRunner: p.inventoryRunner,
 			}
@@ -492,7 +493,7 @@ func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm con
 	document.addSection("Model tier mapping", "")
 	existing := copyModelMap(modelMap)
 	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, existing))
-	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	builtIns := config.BuiltInModelMapFor(llm.Catalog(), llm.Provider, llm.Adapter)
 	for _, tier := range config.ModelTiers() {
 		value := initEffectiveModelMapInputValue(effective, tier)
 		description := initModelMapInputDescription(tier, strings.TrimSpace(existing[string(tier)]), strings.TrimSpace(builtIns[string(tier)]))
@@ -878,7 +879,7 @@ func (m *initProfileV2ReadOnlyModel) syncModelMapFields() {
 	llm := initProfileEditorModelMapLLM(m.draft, selectedLLMRuntime, m.llmRuntimes)
 	existing := copyModelMap(m.draft.ModelMap)
 	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, existing))
-	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	builtIns := config.BuiltInModelMapFor(llm.Catalog(), llm.Provider, llm.Adapter)
 	for _, tier := range config.ModelTiers() {
 		index := m.document.fieldIndexByID(initProfileV2FieldModelMap(tier))
 		if index < 0 {

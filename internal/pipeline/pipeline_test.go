@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/marker"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
@@ -54,6 +56,69 @@ func selectionOnlyForTest(ctx context.Context, opts Options, req SelectionReques
 func liveForTest(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
 	configureWorkbenchFixtureForTest(ctx, &opts, req.PRRef)
 	return Live(ctx, opts, req, run)
+}
+
+func TestWorkstreamUsageUsesInjectedCatalogPricingBasis(t *testing.T) {
+	catalog := pipelineCatalogWithRevision(t, "pipeline-pricing-revision")
+	in := 1_000_000
+	out := 1_000_000
+	workstream := workstreamUsageFromTotalsForCatalog("reviewer", workstreamTotals{
+		model: "claude-sonnet-5",
+		usage: llm.Usage{TokensIn: &in, TokensOut: &out, Speed: "standard"},
+	}, catalog)
+	if workstream.CostUSD == nil {
+		t.Fatal("workstream cost is nil, want estimate from injected catalog")
+	}
+	if want := 12.0; *workstream.CostUSD != want {
+		t.Fatalf("workstream cost = %v, want %v", *workstream.CostUSD, want)
+	}
+	if !workstream.CostEstimated {
+		t.Fatal("workstream cost is not marked estimated")
+	}
+	if want := "pipeline-pricing-revision/pricing"; workstream.CostEstimateBasis != want {
+		t.Fatalf("cost basis = %q, want %q", workstream.CostEstimateBasis, want)
+	}
+}
+
+func pipelineCatalogWithRevision(t *testing.T, revision string) *modelcatalog.Catalog {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := t.TempDir()
+	dataDir := filepath.Join(filepath.Dir(testFile), "..", "modelcatalog", "data")
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository's bundled fixture.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+	manifestPath := filepath.Join(source, "manifest.json")
+	manifestBody, err := os.ReadFile(manifestPath) // #nosec G304 -- manifestPath is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest modelcatalog.Manifest
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	manifest.Revision = revision
+	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, append(manifestBody, '\n'), 0o600); err != nil { // #nosec G703 -- manifestPath is under t.TempDir.
+		t.Fatalf("write manifest: %v", err)
+	}
+	catalog, err := modelcatalog.LoadPath(source)
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	return catalog
 }
 
 func TestResolveInvocationRootForSafetyTreatsUnavailableAsUnknownAndOtherErrorsAsFatal(t *testing.T) {
@@ -370,16 +435,16 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunAllowsDossie
 	}
 	assertPromptContains(t, requests[3].Prompt, "finding-1", "harness:reviewer", "main.go")
 	for _, request := range requests {
-		if request.Model != "claude-sonnet-5" || request.Effort != "medium" {
-			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-5/medium from agent config", request.Model, request.Effort)
+		if request.Model != "claude-sonnet-5-5" || request.Effort != "medium" {
+			t.Fatalf("request = model:%q effort:%q, want claude-sonnet-5-5/medium from agent config", request.Model, request.Effort)
 		}
 		if request.Fast {
 			t.Fatalf("request = %#v, want fast omitted by default", request)
 		}
 	}
 	for _, session := range result.Sessions {
-		if session.Model != "claude-sonnet-5" || session.Effort == nil || *session.Effort != "medium" {
-			t.Fatalf("session = model:%q effort:%v, want claude-sonnet-5/medium from agent config", session.Model, session.Effort)
+		if session.Model != "claude-sonnet-5-5" || session.Effort == nil || *session.Effort != "medium" {
+			t.Fatalf("session = model:%q effort:%v, want claude-sonnet-5-5/medium from agent config", session.Model, session.Effort)
 		}
 	}
 	reviewerSession, ok := sessionWithProviderID(result.Sessions, "reviewer-session")
@@ -621,6 +686,7 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	req.ReviewerFast = true
 	layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
 	run := allocateDryRunForProvider(t, store, layout, provider, req, "run-task-resume", fixedNow().Add(-time.Minute))
 
@@ -699,8 +765,22 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 		t.Fatalf("second adapter resumes = %#v, want only failed rollup retry session", resumes)
 	}
 	resumeReq := resumes[0].Request
-	if resumeReq.Model != "claude-sonnet-5" || resumeReq.Effort != "medium" {
-		t.Fatalf("resume request = model:%q effort:%q, want claude-sonnet-5/medium", resumeReq.Model, resumeReq.Effort)
+	if resumeReq.Model != "claude-sonnet-5-5" || resumeReq.Effort != "medium" {
+		t.Fatalf("resume request = model:%q effort:%q, want claude-sonnet-5-5/medium", resumeReq.Model, resumeReq.Effort)
+	}
+	if resumeReq.Fast {
+		t.Fatalf("resume request = %#v, want normal-speed fallback after saved unsupported fast mode", resumeReq)
+	}
+	cohort, err := store.GetReviewerCohort(ctx, ledger.ReviewerCohortScope{
+		PRKey:           run.PRKey,
+		Profile:         req.ProfileName,
+		PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity),
+	})
+	if err != nil {
+		t.Fatalf("GetReviewerCohort after resume: %v", err)
+	}
+	if len(cohort.Members) != 1 || cohort.Members[0].Fast {
+		t.Fatalf("resumed reviewer cohort = %#v, want saved effective normal-speed member", cohort)
 	}
 	assertPromptContains(t, resumeReq.Prompt, "finding-1", "harness:reviewer", "main.go")
 	if len(result.Findings) != 1 || result.Findings[0].ID != "finding-1" {
@@ -2089,8 +2169,8 @@ func TestSelectionOnlyRunsSingleSelectionPhaseWithoutReviewArtifacts(t *testing.
 		result.ReviewBaseSHA != provider.pr.Base.SHA || result.ReviewHeadSHA != provider.pr.Head.SHA {
 		t.Fatalf("result SHAs = current %s/%s review %s/%s, want provider PR SHAs", result.CurrentBaseSHA, result.CurrentHeadSHA, result.ReviewBaseSHA, result.ReviewHeadSHA)
 	}
-	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "claude-sonnet-5" || result.SelectionSession.Effort != "medium" {
-		t.Fatalf("selection session = %#v, want selection-session claude-sonnet-5/medium", result.SelectionSession)
+	if result.SelectionSession.ProviderSessionID != "selection-session" || result.SelectionSession.Model != "claude-sonnet-5-5" || result.SelectionSession.Effort != "medium" {
+		t.Fatalf("selection session = %#v, want selection-session claude-sonnet-5-5/medium", result.SelectionSession)
 	}
 	assertDossierIndexArtifact(t, result.Artifacts.DossierDir, "final/change-map.md")
 	expectedLog, err := expectedArtifacts.AgentLog("orchestrator-selection")
@@ -2553,7 +2633,7 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 		Now:      fixedNow,
 		Budget:   ContextBudget{MaxPromptBytes: 100},
 	}, selectionRequestFromReview(req, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection model claude-sonnet-5") {
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection model claude-sonnet-5-5") {
 		t.Fatalf("SelectionOnly error = %v, want selection budget failure", err)
 	}
 	if len(adapter.Requests()) != 0 {
@@ -2737,7 +2817,7 @@ func TestDryRunReviewerBaselineTierRaisesReviewerModelFloor(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-5", "profile-large-model", "claude-sonnet-5"}
+	wantModels := []string{"claude-sonnet-5-5", "profile-large-model", "claude-sonnet-5-5"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] {
 			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
@@ -2944,19 +3024,19 @@ func TestDryRunSelectionOverridesApplyOnlyToSelection(t *testing.T) {
 			name:           "model and effort",
 			modelOverride:  "bench-model",
 			effortOverride: "high",
-			wantModels:     []string{"bench-model", "claude-sonnet-5", "claude-sonnet-5"},
+			wantModels:     []string{"bench-model", "claude-sonnet-5-5", "claude-sonnet-5-5"},
 			wantEfforts:    []string{"high", "low", "low"},
 		},
 		{
 			name:          "model only",
 			modelOverride: "bench-model",
-			wantModels:    []string{"bench-model", "claude-sonnet-5", "claude-sonnet-5"},
+			wantModels:    []string{"bench-model", "claude-sonnet-5-5", "claude-sonnet-5-5"},
 			wantEfforts:   []string{"medium", "low", "low"},
 		},
 		{
 			name:           "effort only",
 			effortOverride: "high",
-			wantModels:     []string{"claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5"},
+			wantModels:     []string{"claude-sonnet-5-5", "claude-sonnet-5-5", "claude-sonnet-5-5"},
 			wantEfforts:    []string{"high", "low", "low"},
 		},
 	}
@@ -3051,7 +3131,7 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-5", "claude-sonnet-5", "claude-sonnet-5"}
+	wantModels := []string{"claude-sonnet-5-5", "claude-sonnet-5-5", "claude-sonnet-5-5"}
 	wantEfforts := []string{"low", "high", "low"}
 	requests := adapter.Requests()
 	for i, request := range requests {
@@ -3073,7 +3153,7 @@ func TestDryRunReviewerOverridesApplyOnlyToReviewers(t *testing.T) {
 		FloorTier:      "medium",
 		BaselineTier:   "small",
 		EffectiveTier:  "medium",
-		ResolvedModel:  "claude-sonnet-5",
+		ResolvedModel:  "claude-sonnet-5-5",
 		ResolvedEffort: "high",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	})
@@ -3612,7 +3692,7 @@ func TestDryRunReviewerModelTierOverrideAppliesOnlyToReviewers(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-5", "profile-large-model", "claude-sonnet-5"}
+	wantModels := []string{"claude-sonnet-5-5", "profile-large-model", "claude-sonnet-5-5"}
 	wantEfforts := []string{"medium", "low", "medium"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] || request.Effort != wantEfforts[i] {
@@ -3661,7 +3741,7 @@ func TestDryRunAgentModelIDBypassesModelMapForReviewer(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("requests len = %d, want selection/reviewer/rollup", len(requests))
 	}
-	wantModels := []string{"claude-sonnet-5", "agent-provider-model", "claude-sonnet-5"}
+	wantModels := []string{"claude-sonnet-5-5", "agent-provider-model", "claude-sonnet-5-5"}
 	for i, request := range requests {
 		if request.Model != wantModels[i] || request.Effort != "medium" {
 			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
@@ -3712,7 +3792,7 @@ func TestDryRunReviewerBaselineDoesNotAffectAgentModelID(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-5", "agent-provider-model", "claude-sonnet-5"}
+	wantModels := []string{"claude-sonnet-5-5", "agent-provider-model", "claude-sonnet-5-5"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] {
 			t.Fatalf("request[%d].Model = %q, want %q", i, request.Model, wantModels[i])
@@ -3749,7 +3829,7 @@ func TestDryRunReviewerFloorsResolveIndependentlyPerAgent(t *testing.T) {
 		FloorTier:      "medium",
 		BaselineTier:   "small",
 		EffectiveTier:  "medium",
-		ResolvedModel:  "claude-sonnet-5",
+		ResolvedModel:  "claude-sonnet-5-5",
 		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 	}) {
@@ -3796,7 +3876,7 @@ func TestDryRunReviewerModelOverrideBypassesAgentModelID(t *testing.T) {
 		t.Fatalf("DryRun: %v", err)
 	}
 
-	wantModels := []string{"claude-sonnet-5", "override-model", "claude-sonnet-5"}
+	wantModels := []string{"claude-sonnet-5-5", "override-model", "claude-sonnet-5-5"}
 	for i, request := range adapter.Requests() {
 		if request.Model != wantModels[i] || request.Effort != "medium" {
 			t.Fatalf("request[%d] = model:%q effort:%q, want %s/medium", i, request.Model, request.Effort, wantModels[i])
@@ -3964,7 +4044,7 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
-	wantWarning := "warning: fast mode is unsupported for anthropic/subscription/claude_cli model claude-sonnet-5; continuing at normal speed\n"
+	wantWarning := "warning: fast mode is unsupported for anthropic/subscription/claude_cli model claude-sonnet-5-5; continuing at normal speed\n"
 	if warnings.String() != wantWarning {
 		t.Fatalf("warnings = %q, want %q", warnings.String(), wantWarning)
 	}
@@ -3977,7 +4057,7 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 		FloorTier:      "medium",
 		BaselineTier:   "small",
 		EffectiveTier:  "medium",
-		ResolvedModel:  "claude-sonnet-5",
+		ResolvedModel:  "claude-sonnet-5-5",
 		ResolvedEffort: "medium",
 		ModelMapSource: config.ModelMapSourceBuiltIn,
 		Fast:           true,
@@ -4066,7 +4146,7 @@ func TestDryRunFastFallsBackForUnsupportedRuntime(t *testing.T) {
 	})
 }
 
-func TestDryRunFastPreflightResolvesEveryReviewerBeforeLLM(t *testing.T) {
+func TestDryRunFastResolvesEverySelectedReviewerBeforeReviewerLLM(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
@@ -4082,6 +4162,7 @@ func TestDryRunFastPreflightResolvesEveryReviewerBeforeLLM(t *testing.T) {
 	writeAgentWithModelTier(t, req.Profile.AgentSources[0], "harness", "unmapped", "small")
 	req.ReviewerFast = true
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:unmapped", "main.go"), 10, 2))
 
 	_, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
@@ -4098,8 +4179,8 @@ func TestDryRunFastPreflightResolvesEveryReviewerBeforeLLM(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `model_tier "small" is not mapped`) {
 		t.Fatalf("DryRun error = %v, want later reviewer model resolution failure", err)
 	}
-	if len(adapter.Requests()) != 0 {
-		t.Fatalf("LLM requests = %#v, want preflight failure before selection", adapter.Requests())
+	if len(adapter.Requests()) != 1 {
+		t.Fatalf("LLM requests = %#v, want selection before reviewer resolution", adapter.Requests())
 	}
 }
 
@@ -4107,7 +4188,7 @@ func TestResolveReviewerFastModeRejectsUnsupportedRuntimeWithoutAgents(t *testin
 	_, req := dryRunHarness(t)
 	req.ReviewerFast = true
 	req.Profile.LLM = config.LLMConfig{Provider: config.LLMProviderPi, Auth: config.LLMAuthSubscription, Adapter: config.LLMAdapterPiRPC}
-	effective, warning, err := resolveReviewerFastMode(req, agents.Catalog{})
+	effective, warning, err := resolveReviewerFastMode(req, llm.Selection{}, agents.Catalog{})
 	if err != nil || effective || warning != "warning: fast mode is unsupported for pi/subscription/pi_rpc; continuing at normal speed" {
 		t.Fatalf("resolveReviewerFastMode = (%t, %q, %v), want unsupported runtime fallback", effective, warning, err)
 	}
@@ -4490,7 +4571,7 @@ func TestFreshSessionSkipsStoredDefaultWithoutChangingItsKey(t *testing.T) {
 	if err := store.ReplaceReviewerCohort(ctx, ledger.ReviewerCohort{
 		Scope:   ledger.ReviewerCohortScope{PRKey: run.PRKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)},
 		Adapter: "fake-llm", CreatedAt: fixedNow().Add(-time.Hour), Members: []ledger.ReviewerCohortMember{{
-			AgentID: "harness:reviewer", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"main.go"}, Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: "old-reviewer-session",
+			AgentID: "harness:reviewer", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"main.go"}, Model: "claude-sonnet-5-5", Effort: "medium", ProviderSessionID: "old-reviewer-session",
 		}},
 	}); err != nil {
 		t.Fatalf("ReplaceReviewerCohort: %v", err)
@@ -4550,7 +4631,7 @@ func TestFreshSessionSkipsStoredNamedSession(t *testing.T) {
 	state, err := prepareNamedSession(ctx, Options{
 		Adapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
 		NamedSessions: store,
-	}, req, true, "claude-sonnet-5", fixedNow())
+	}, req, true, "claude-sonnet-5-5", fixedNow())
 	if err != nil {
 		t.Fatalf("prepareNamedSession: %v", err)
 	}
@@ -4563,7 +4644,7 @@ func TestFreshSessionSkipsStoredNamedSession(t *testing.T) {
 	if _, err := prepareNamedSession(ctx, Options{
 		Adapter:       &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true},
 		NamedSessions: store,
-	}, req, true, "claude-sonnet-5", fixedNow()); err != nil {
+	}, req, true, "claude-sonnet-5-5", fixedNow()); err != nil {
 		t.Fatalf("prepareNamedSession missing fresh row: %v", err)
 	}
 }
@@ -5658,7 +5739,7 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 
 	// Known model, adapter reported no cost → estimate is filled and marked.
 	draft := sessionDraft{
-		Model:    "claude-sonnet-5",
+		Model:    "claude-sonnet-5-5",
 		Response: llm.Response{Usage: llm.Usage{TokensIn: &in, TokensOut: &out, Speed: "standard"}},
 	}
 	w := workstreamUsage("policies:conventions", draft)
@@ -5707,7 +5788,7 @@ func TestWorkstreamUsageEstimatesCostWhenAdapterReportsNone(t *testing.T) {
 
 	// Adapter reported a real cost → passes through, not marked estimated.
 	realCost := 9.99
-	draft.Model = "claude-sonnet-5"
+	draft.Model = "claude-sonnet-5-5"
 	draft.Response.Usage.CostUSD = &realCost
 	w = workstreamUsage("z:w", draft)
 	if w.CostUSD == nil || *w.CostUSD != realCost || w.CostEstimated {
@@ -6475,7 +6556,7 @@ func TestRebaseReviewerCohortWithReviewablePathsExcludesDeletedFiles(t *testing.
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
 		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad,
-		Model: "claude-sonnet-5", Effort: "medium",
+		Model: "claude-sonnet-5-5", Effort: "medium",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:general", ModelTier: "medium", Effort: "medium"}}}
 	changed := reviewablePatchPaths([]FilePatch{
@@ -6610,8 +6691,8 @@ func TestRebaseReviewerCohortKeepsOrderAndDropsEmptyScopeCalls(t *testing.T) {
 		{ID: "repo:docs", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"docs/**"}},
 	}}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{
-		{AgentID: "repo:docs", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"docs/old.md"}, AllowedFiles: []string{"docs/old.md"}, Model: "claude-sonnet-5", Effort: "medium"},
-		{AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"old.go"}, AllowedFiles: []string{"old.go"}, Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: "go-session"},
+		{AgentID: "repo:docs", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"docs/old.md"}, AllowedFiles: []string{"docs/old.md"}, Model: "claude-sonnet-5-5", Effort: "medium"},
+		{AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"old.go"}, AllowedFiles: []string{"old.go"}, Model: "claude-sonnet-5-5", Effort: "medium", ProviderSessionID: "go-session"},
 	}}
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 
@@ -6640,7 +6721,7 @@ func TestRebaseReviewerCohortRemovesPersistedExcludedFiles(t *testing.T) {
 		AssignmentMode:    ledger.ReviewerAssignmentScoped,
 		Files:             []string{"components/Button.tsx", "components/Button.test.tsx"},
 		AllowedFiles:      []string{"components/Button.tsx", "components/Button.test.tsx"},
-		Model:             "claude-sonnet-5",
+		Model:             "claude-sonnet-5-5",
 		Effort:            "medium",
 		ProviderSessionID: "accessibility-session",
 	}}}
@@ -6672,7 +6753,7 @@ func TestRebaseReviewerCohortMaterializesBroadScopeWithExclusions(t *testing.T) 
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
 		AgentID:        "frontend:accessibility",
 		AssignmentMode: ledger.ReviewerAssignmentBroad,
-		Model:          "claude-sonnet-5",
+		Model:          "claude-sonnet-5-5",
 		Effort:         "medium",
 	}}}
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
@@ -6709,13 +6790,13 @@ func TestRebaseReviewerCohortRoutesBroadExclusionsToScopedReviewer(t *testing.T)
 		{
 			AgentID:        "frontend:accessibility",
 			AssignmentMode: ledger.ReviewerAssignmentBroad,
-			Model:          "claude-sonnet-5",
+			Model:          "claude-sonnet-5-5",
 			Effort:         "medium",
 		},
 		{
 			AgentID:        "frontend:tests",
 			AssignmentMode: ledger.ReviewerAssignmentScoped,
-			Model:          "claude-sonnet-5",
+			Model:          "claude-sonnet-5-5",
 			Effort:         "medium",
 		},
 	}}
@@ -6748,7 +6829,7 @@ func TestRebaseReviewerCohortRoutesBroadExclusionsToScopedReviewer(t *testing.T)
 func TestRebaseReviewerCohortAssignsNewFilesToPersistedBroadMember(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
-		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad, Files: []string{"old.go"}, Model: "claude-sonnet-5", Effort: "medium",
+		AgentID: "shared:general", AssignmentMode: ledger.ReviewerAssignmentBroad, Files: []string{"old.go"}, Model: "claude-sonnet-5-5", Effort: "medium",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "shared:general", ModelTier: "medium", Effort: "medium"}}}
 
@@ -6767,7 +6848,7 @@ func TestRebaseReviewerCohortLeavesInherentlyUnmatchedFilesUnassigned(t *testing
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
 		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
 		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
-		Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: "go-session",
+		Model: "claude-sonnet-5-5", Effort: "medium", ProviderSessionID: "go-session",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{{
 		ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"},
@@ -6805,7 +6886,7 @@ func TestRebaseReviewerCohortRejectsFileCoveredByBroadCatalogAgent(t *testing.T)
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
 		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
 		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
-		Model: "claude-sonnet-5", Effort: "medium",
+		Model: "claude-sonnet-5-5", Effort: "medium",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{
 		{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}},
@@ -6823,7 +6904,7 @@ func TestRebaseReviewerCohortOnlyInherentlyUnmatchedFileRemainsUnassigned(t *tes
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
 		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
 		Files: []string{"main.go"}, AllowedFiles: []string{"main.go"},
-		Model: "claude-sonnet-5", Effort: "medium",
+		Model: "claude-sonnet-5-5", Effort: "medium",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{{
 		ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"},
@@ -6944,7 +7025,7 @@ func TestRestoreOrchestratorSessionFromInterruptedRunUsesLatestChainSession(t *t
 func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "old-adapter", Members: []ledger.ReviewerCohortMember{{
-		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Model: "claude-sonnet-5", Effort: "medium",
+		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Model: "claude-sonnet-5-5", Effort: "medium",
 	}}}
 	catalog := agents.Catalog{Agents: []agents.Agent{{ID: "repo:go", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}}}}
 
@@ -6968,7 +7049,7 @@ func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 				})
 			}
 			if tc.name == "max agents" {
-				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-5", Effort: "medium"})
+				candidate.Members = append(candidate.Members, ledger.ReviewerCohortMember{AgentID: "repo:other", AssignmentMode: ledger.ReviewerAssignmentBroad, Model: "claude-sonnet-5-5", Effort: "medium"})
 				candidateCatalog.Agents = append(candidateCatalog.Agents, agents.Agent{ID: "repo:other", ModelTier: "medium", Effort: "medium"})
 				tc.maxAgents = 1
 				tc.wantDetail = "--max-agents"
@@ -7046,7 +7127,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				trustCurrentTempFixtures(t)
 				req.Profile.AgentSources = []string{dir}
 			},
-			want:  "context budget exceeded for selection model claude-sonnet-5",
+			want:  "context budget exceeded for selection model claude-sonnet-5-5",
 			runID: "run-budget-selection-default",
 		},
 		{
@@ -7764,7 +7845,7 @@ func namedSessionForRequest(req Request, providerSessionID string) ledger.NamedS
 		Profile:           req.ProfileName,
 		Provider:          string(req.Profile.LLM.Provider),
 		Adapter:           "fake-llm",
-		Model:             "claude-sonnet-5",
+		Model:             "claude-sonnet-5-5",
 		Host:              req.PRRef.Host,
 		ProviderSessionID: providerSessionID,
 		DurableSession:    true,

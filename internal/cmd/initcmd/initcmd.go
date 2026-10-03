@@ -28,6 +28,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 )
 
@@ -618,7 +619,15 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 }
 
 func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
-	return runInitWithDeps(cmd, opts, flags, defaultInitDeps())
+	catalog, err := opts.CatalogSnapshot()
+	if err != nil {
+		return cmderr.Config(err)
+	}
+	deps := defaultInitDeps()
+	deps.loadConfig = func(path string) (config.File, bool, error) {
+		return loadConfigForInitWithCatalog(path, catalog)
+	}
+	return runInitWithDeps(cmd, opts, flags, deps)
 }
 
 func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
@@ -724,6 +733,7 @@ type huhInitMenuPrompter struct {
 type huhInitLLMRuntimePrompter struct {
 	stdin           io.Reader
 	stderr          io.Writer
+	catalog         *modelcatalog.Catalog
 	checker         func(initLLMRuntimePreset) string
 	inventoryRunner initInventoryRunner
 	editorRunner    initEditorRunner
@@ -753,6 +763,7 @@ func newHuhInitPrompters(opts *root.Options, mode initSecretsBackendDiscoveryMod
 	llmRuntime := huhInitLLMRuntimePrompter{
 		stdin:           opts.Stdin,
 		stderr:          opts.Stderr,
+		catalog:         func() *modelcatalog.Catalog { catalog, _ := opts.CatalogSnapshot(); return catalog }(),
 		inventoryRunner: runInitInventory,
 		checker:         defaultInitLLMRuntimeAvailabilityNote,
 	}
@@ -835,6 +846,11 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 	if err != nil {
 		return initSessionDraft{}, cmderr.Config(err)
 	}
+	catalog, err := opts.CatalogSnapshot()
+	if err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	cfg = cfg.WithCatalog(catalog)
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
@@ -3249,6 +3265,11 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
+	catalog, err := opts.CatalogSnapshot()
+	if err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	cfg = cfg.WithCatalog(catalog)
 	if exists {
 		if err := config.Validate(cfg); err != nil {
 			return initPlan{}, cmderr.Config(err)
@@ -4589,7 +4610,7 @@ func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 		ReviewerModelTier: llm.ReviewerModelTier,
 		DefaultsVersion:   llm.DefaultsVersion,
 	}
-	if spec, ok := config.FindLLMRuntimeSpec(runtime.Provider, runtime.Auth, runtime.Adapter); ok &&
+	if spec, ok := config.FindLLMRuntimeSpecFor(llm.Catalog(), runtime.Provider, runtime.Auth, runtime.Adapter); ok &&
 		(spec.Auth == runtime.Auth || spec.Auth == "" && runtime.Auth == config.LLMAuthSubscription) {
 		runtime.Preset = initLLMRuntimePresetByAdapter[spec.Adapter]
 	}
@@ -6068,7 +6089,7 @@ func normalizeInitModelMap(llm config.LLMConfig, modelMap config.ModelMap) confi
 	if len(modelMap) == 0 {
 		return nil
 	}
-	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	builtIns := config.BuiltInModelMapFor(llm.Catalog(), llm.Provider, llm.Adapter)
 	normalized := config.ModelMap{}
 	for _, tier := range config.ModelTiers() {
 		model, ok := modelMap[string(tier)]
@@ -6638,7 +6659,17 @@ func initSecretPasteDescription(prompt initSecretValuePrompt) string {
 }
 
 func loadConfigForInit(path string) (config.File, bool, error) {
-	cfg, err := config.Load(path)
+	return loadConfigForInitWithCatalog(path, nil)
+}
+
+func loadConfigForInitWithCatalog(path string, catalog *modelcatalog.Catalog) (config.File, bool, error) {
+	var cfg config.File
+	var err error
+	if catalog == nil {
+		cfg, err = config.Load(path)
+	} else {
+		cfg, err = config.LoadWithCatalog(path, catalog)
+	}
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{Profiles: map[string]config.Profile{}}, false, nil
 	}
@@ -6647,7 +6678,7 @@ func loadConfigForInit(path string) (config.File, bool, error) {
 		if recoverErr != nil {
 			return config.File{}, true, recoverErr
 		}
-		return recovered, true, nil
+		return recovered.WithCatalog(catalog), true, nil
 	}
 	return cfg, true, err
 }

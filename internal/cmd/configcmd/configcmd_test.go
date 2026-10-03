@@ -41,7 +41,7 @@ func TestConfigShowText(t *testing.T) {
 	if !strings.Contains(out.String(), "adapter-managed; not stored by cr") {
 		t.Fatalf("stdout = %q, want adapter-managed LLM note", out.String())
 	}
-	if !strings.Contains(out.String(), "medium: claude-sonnet-5 (built_in)") {
+	if !strings.Contains(out.String(), "medium: claude-sonnet-5-5 (built_in)") {
 		t.Fatalf("stdout = %q, want built-in model map", out.String())
 	}
 }
@@ -1984,7 +1984,8 @@ func TestConfigRetentionSetMutatesAndPreservesUnrelatedConfig(t *testing.T) {
 	if saved.Data.Retention.MaxAgeDaysValue() != 30 || saved.Data.Retention.Enforcement != config.RetentionManualOnly {
 		t.Fatalf("retention = %#v, want 30/manual_only", saved.Data.Retention)
 	}
-	if !reflect.DeepEqual(saved.Profiles, config.Normalize(cfg).Profiles) {
+	wantProfiles := config.Normalize(cfg).WithCatalog(saved.Catalog()).Profiles
+	if !reflect.DeepEqual(saved.Profiles, wantProfiles) {
 		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
 	}
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
@@ -2123,7 +2124,8 @@ func TestConfigRetentionResetRestoresDefaultsAndPreservesConfig(t *testing.T) {
 	if saved.Data.Retention.MaxAgeDaysValue() != 90 || saved.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 90/at_write", saved.Data.Retention)
 	}
-	if !reflect.DeepEqual(saved.Profiles, config.Normalize(cfg).Profiles) {
+	wantProfiles := config.Normalize(cfg).WithCatalog(saved.Catalog()).Profiles
+	if !reflect.DeepEqual(saved.Profiles, wantProfiles) {
 		t.Fatalf("profiles = %#v, want preserved", saved.Profiles)
 	}
 	if !reflect.DeepEqual(saved.RepositoryProfiles, cfg.RepositoryProfiles) {
@@ -2138,8 +2140,8 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := root.Execute(cmd, []string{"--profile", "home", "config", "llm", "models", "list"}); err != nil {
 		t.Fatalf("Execute list: %v", err)
 	}
-	if !strings.Contains(out.String(), "small: claude-sonnet-5 (built_in)") ||
-		!strings.Contains(out.String(), "medium: claude-sonnet-5 (built_in)") ||
+	if !strings.Contains(out.String(), "small: claude-sonnet-5-5 (built_in)") ||
+		!strings.Contains(out.String(), "medium: claude-sonnet-5-5 (built_in)") ||
 		!strings.Contains(out.String(), "large: claude-opus-5-5 (built_in)") {
 		t.Fatalf("list stdout = %q, want effective Claude CLI defaults", out.String())
 	}
@@ -2152,7 +2154,7 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &listed); err != nil {
 		t.Fatalf("Unmarshal list JSON: %v\n%s", err, out.String())
 	}
-	if listed.ActiveProfile != "home" || len(listed.Models) != 3 || listed.Models[1].Model != "claude-sonnet-5" || listed.Models[1].Source != "built_in" {
+	if listed.ActiveProfile != "home" || len(listed.Models) != 3 || listed.Models[1].Model != "claude-sonnet-5-5" || listed.Models[1].Source != "built_in" {
 		t.Fatalf("list JSON = %#v, want home built-in medium", listed)
 	}
 
@@ -2164,8 +2166,8 @@ func TestConfigLLMModelsListAndResolve(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &resolved); err != nil {
 		t.Fatalf("Unmarshal resolve JSON: %v\n%s", err, out.String())
 	}
-	if resolved.Model != "claude-sonnet-5" || resolved.Source != "built_in" || resolved.Tier != "medium" {
-		t.Fatalf("resolve JSON = %#v, want built-in medium claude-sonnet-5", resolved)
+	if resolved.Model != "claude-sonnet-5-5" || resolved.Source != "built_in" || resolved.Tier != "medium" {
+		t.Fatalf("resolve JSON = %#v, want built-in medium claude-sonnet-5-5", resolved)
 	}
 }
 

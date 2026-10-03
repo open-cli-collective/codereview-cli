@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/version"
 )
@@ -19,13 +21,17 @@ type RegisterFunc func(rootCmd *cobra.Command, opts *Options)
 
 // Options carries root-level command dependencies and persistent options.
 type Options struct {
-	Profile    string
-	Backend    string
-	ConfigPath string
-	Quiet      bool
-	Stdin      io.Reader
-	Stdout     io.Writer
-	Stderr     io.Writer
+	Profile       string
+	Backend       string
+	ConfigPath    string
+	Quiet         bool
+	Stdin         io.Reader
+	Stdout        io.Writer
+	Stderr        io.Writer
+	Catalog       *modelcatalog.Catalog
+	CatalogPath   string
+	catalogLoaded bool
+	catalogErr    error
 }
 
 const profileFlagName = "profile"
@@ -72,9 +78,26 @@ func NewCommandWithOptions(opts *Options) (*cobra.Command, *Options) {
 	cmd.PersistentFlags().StringVar(&opts.Profile, profileFlagName, "", "Profile name")
 	cmd.PersistentFlags().StringVar(&opts.Backend, credstore.BackendFlagName, "", credstore.BackendFlagUsage())
 	cmd.PersistentFlags().BoolVar(&opts.Quiet, "quiet", opts.Quiet, "Suppress progress logs")
+	cmd.PersistentFlags().StringVar(&opts.CatalogPath, "catalog", opts.CatalogPath, "Use a local model catalog directory")
 	cmd.AddCommand(newVersionCommand(opts))
 
 	return cmd, opts
+}
+
+// CatalogSnapshot loads one immutable catalog for this command tree.
+func (o *Options) CatalogSnapshot() (*modelcatalog.Catalog, error) {
+	if o == nil {
+		return modelcatalog.LoadBundled()
+	}
+	if o.Catalog != nil {
+		return o.Catalog, nil
+	}
+	if o.catalogLoaded {
+		return nil, o.catalogErr
+	}
+	o.catalogLoaded = true
+	o.Catalog, o.catalogErr = modelcatalog.LoadConfigured(strings.TrimSpace(o.CatalogPath))
+	return o.Catalog, o.catalogErr
 }
 
 // ProfileFlagChanged reports whether the inherited --profile flag was supplied.

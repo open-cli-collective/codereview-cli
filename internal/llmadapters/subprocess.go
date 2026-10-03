@@ -2051,7 +2051,7 @@ func ensureClaudeBGWorkingDir(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(abs, 0o700); err != nil {
+	if err := os.MkdirAll(abs, 0o700); err != nil { // #nosec G703 -- path is an intentional user-configured private cache directory.
 		return "", err
 	}
 	return abs, nil

@@ -244,7 +244,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if err != nil {
 		return exitcode.AuthConfig(configSpan.End(err))
 	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if err != nil {
 		return cmderr.Config(configSpan.End(err))
 	}
@@ -293,7 +293,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	if !flags.dryRun && !flags.retryPosts {
 		if _, needed := config.UpgradeReviewDefaults(cfg, profile.LLMRuntime); needed {
 			var changed bool
-			cfg, changed, err = upgradeReviewDefaults(ctx, path, profile.LLMRuntime)
+			cfg, changed, err = upgradeReviewDefaults(ctx, path, profile.LLMRuntime, cfg.Catalog())
 			if err != nil {
 				return cmderr.Config(err)
 			}

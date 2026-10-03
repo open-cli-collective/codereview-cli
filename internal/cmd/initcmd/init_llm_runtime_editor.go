@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 const (
@@ -49,7 +50,7 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeLinear(prompt initLLMRuntimePro
 }
 
 func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetailsLinear(seed initDraft) (initDraft, bool, error) {
-	editor := initLLMRuntimeDetailsEditor(seed, p.runtimeAvailabilityNote)
+	editor := initLLMRuntimeDetailsEditor(seed, p.runtimeAvailabilityNote, p.catalog)
 	model, err := runInitEditor(editor, p.stdin, p.stderr, p.editorRunner, "LLM runtime")
 	if err != nil {
 		return initDraft{}, false, err
@@ -62,7 +63,7 @@ func (p huhInitLLMRuntimePrompter) editLLMRuntimeDetailsLinear(seed initDraft) (
 	}
 }
 
-func initLLMRuntimeDetailsEditor(seed initDraft, availabilityNote func(initLLMRuntimePreset) string) initLinearEditor {
+func initLLMRuntimeDetailsEditor(seed initDraft, availabilityNote func(initLLMRuntimePreset) string, catalogs ...*modelcatalog.Catalog) initLinearEditor {
 	runtime := initLLMRuntimeDraftFromSeedDraft(seed)
 	description := initLLMRuntimeSelectionDescription(runtime, availabilityNote(runtime.Preset))
 	var document initLinearDocument
@@ -76,7 +77,7 @@ func initLLMRuntimeDetailsEditor(seed initDraft, availabilityNote func(initLLMRu
 		huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
 		huh.NewOption("API key", string(config.LLMAuthAPIKey)),
 	}, seed.LLMAuth)
-	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", initLLMRuntimeAdapterOptions(), seed.LLMAdapter)
+	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", initLLMRuntimeAdapterOptions(catalogs...), seed.LLMAdapter)
 	document.addEditableSelect(initLLMRuntimeFieldAction, "Runtime detail action", "", []huh.Option[string]{
 		huh.NewOption("Stage these runtime details", initDetailActionEdit),
 		huh.NewOption("Back without staging", initDetailActionBack),
@@ -114,7 +115,7 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 		huh.NewOption("Subscription", string(config.LLMAuthSubscription)),
 		huh.NewOption("API key", string(config.LLMAuthAPIKey)),
 	}, seed.LLMAuth)
-	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", initLLMRuntimeAdapterOptions(), seed.LLMAdapter)
+	document.addEditableSelect(initLLMRuntimeFieldAdapter, "LLM adapter", "", initLLMRuntimeAdapterOptions(ctx.ExistingConfig.Catalog()), seed.LLMAdapter)
 	document.addEditableSelect(
 		initLLMRuntimeFieldCredentialStore,
 		"LLM credential store",
@@ -207,8 +208,12 @@ func initLLMRuntimeLinearEditor(ctx initPromptContext, seed initDraft, availabil
 	return editor
 }
 
-func initLLMRuntimeAdapterOptions() []huh.Option[string] {
-	specs := config.LLMRuntimeSpecs()
+func initLLMRuntimeAdapterOptions(catalogs ...*modelcatalog.Catalog) []huh.Option[string] {
+	var catalog *modelcatalog.Catalog
+	if len(catalogs) > 0 {
+		catalog = catalogs[0]
+	}
+	specs := config.LLMRuntimeSpecsFor(catalog)
 	options := make([]huh.Option[string], 0, len(specs))
 	for _, spec := range specs {
 		options = append(options, huh.NewOption(spec.DisplayName, string(spec.Adapter)))
