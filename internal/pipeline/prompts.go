@@ -611,8 +611,10 @@ func rollupFindingsPrompt(findings []review.Finding) []rollupFindingPrompt {
 }
 
 type agentSourcesArtifact struct {
-	Sources []agents.SourceInfo       `json:"sources"`
-	Agents  []agentProvenanceArtifact `json:"agents"`
+	CatalogRevision string                    `json:"catalog_revision,omitempty"`
+	CatalogSource   string                    `json:"catalog_source,omitempty"`
+	Sources         []agents.SourceInfo       `json:"sources"`
+	Agents          []agentProvenanceArtifact `json:"agents"`
 }
 
 type agentProvenanceArtifact struct {

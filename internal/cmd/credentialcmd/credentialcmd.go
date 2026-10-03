@@ -131,11 +131,7 @@ func runSetCredential(cmd *cobra.Command, opts *root.Options, flags setCredentia
 }
 
 func loadOptionalConfig(opts *root.Options) (config.File, error) {
-	path, err := cmdruntime.ConfigPath(opts)
-	if err != nil {
-		return config.File{}, err
-	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{}, nil
 	}

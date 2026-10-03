@@ -76,11 +76,7 @@ func run(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory Ru
 	if retryRunID != "" && flags.rerun {
 		return exitcode.Usage(fmt.Errorf("--retry-posts cannot be used with --rerun"))
 	}
-	path, err := cmdruntime.ConfigPath(opts)
-	if err != nil {
-		return exitcode.AuthConfig(err)
-	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if err != nil {
 		return cmderr.Config(err)
 	}
