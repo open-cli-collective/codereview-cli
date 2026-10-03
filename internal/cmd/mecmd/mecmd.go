@@ -66,9 +66,9 @@ func runMe(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory 
 func runMeWithSaver(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory IdentityResolverFactory, all bool, saveConfig func(string, config.File) error) (view.MeResult, error) {
 	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
-		return view.MeResult{}, exitcode.AuthConfig(err)
+		return view.MeResult{}, cmderr.Config(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if err != nil {
 		return view.MeResult{}, cmderr.Config(err)
 	}

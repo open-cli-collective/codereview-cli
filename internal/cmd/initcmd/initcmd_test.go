@@ -913,6 +913,7 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 	expected := existing
 	expected.ReviewerCredentials = nil
 	expected = normalizeTestProfileNamed("work", expected)
+	expected.LLM = expected.LLM.WithCatalog(got.Catalog())
 	if !reflect.DeepEqual(got.Profiles["work"], expected) {
 		t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 	}
@@ -1030,6 +1031,7 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 		expected := existing
 		expected.LLM.ReviewerModelTier = ""
 		expected = normalizeTestProfileNamed("work", expected)
+		expected.LLM = expected.LLM.WithCatalog(got.Catalog())
 		if !reflect.DeepEqual(got.Profiles["work"], expected) {
 			t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 		}
@@ -10265,10 +10267,10 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap("monit", "github.com/SignalFT", llmRuntimes, "claude-work"), 160, 24)
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-sonnet-5" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-sonnet-5-5" {
 		t.Fatalf("initial small model = %q, want Claude built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5-5" {
 		t.Fatalf("initial medium model = %q, want Claude built-in", got)
 	}
 
@@ -10277,7 +10279,7 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-6-luna" {
 		t.Fatalf("small model after runtime change = %q, want OpenAI built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6-sol" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6.1-sol" {
 		t.Fatalf("medium model after runtime change = %q, want OpenAI built-in", got)
 	}
 	smallIndex := model.document.fieldIndexByID(initProfileV2FieldModelMap(config.ModelTierSmall))
@@ -12617,6 +12619,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 14/at_write", cfg.Data.Retention)
 	}
+	wantProfile.LLM = wantProfile.LLM.WithCatalog(cfg.Catalog())
 	if !reflect.DeepEqual(cfg.Profiles["work"], wantProfile) {
 		t.Fatalf("profile = %#v, want unchanged %#v", cfg.Profiles["work"], wantProfile)
 	}
