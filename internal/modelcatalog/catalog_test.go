@@ -269,6 +269,50 @@ func TestUpdateLocalPublishesRevisionAtomically(t *testing.T) {
 	}
 }
 
+func TestUpdateRejectsDefaultAboveRuntimeMaximumAndPreservesActiveRevision(t *testing.T) {
+	source := copyBundledCatalog(t)
+	setManifestRevision(t, source, "runtime-ceiling-baseline")
+	target := t.TempDir()
+	if _, err := Update(context.Background(), UpdateOptions{SourceDir: source, InstallDir: target}); err != nil {
+		t.Fatalf("baseline Update: %v", err)
+	}
+	wantPointer := activeRevision(t, target)
+
+	invalid := copyBundledCatalog(t)
+	setManifestRevision(t, invalid, "runtime-ceiling-invalid")
+	runtimesPath := filepath.Join(invalid, "runtimes.csv")
+	runtimes, err := os.ReadFile(runtimesPath) // #nosec G304 -- runtimesPath is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read runtimes: %v", err)
+	}
+	old := "openai-api-key,openai,api_key,openai_api,openai_api,openai-api-key,OpenAI API,max,Y"
+	updated := strings.Replace(string(runtimes), old, "openai-api-key,openai,api_key,openai_api,openai_api,openai-api-key,OpenAI API,high,Y", 1)
+	if updated == string(runtimes) {
+		t.Fatal("runtime fixture did not change maximum effort")
+	}
+	runtimes = []byte(updated)
+	if err := os.WriteFile(runtimesPath, runtimes, 0o600); err != nil { // #nosec G703 -- runtimesPath is under t.TempDir.
+		t.Fatalf("write runtimes: %v", err)
+	}
+	manifest := readManifest(t, invalid)
+	manifest.Files["runtimes.csv"] = digest(runtimes)
+	writeManifest(t, invalid, manifest)
+
+	if _, err := Update(context.Background(), UpdateOptions{SourceDir: invalid, InstallDir: target}); err == nil || !strings.Contains(err.Error(), "exceeds runtime maximum") {
+		t.Fatalf("inconsistent Update error = %v, want runtime ceiling rejection", err)
+	}
+	if got := activeRevision(t, target); got != wantPointer {
+		t.Fatalf("active pointer after inconsistent update = %q, want %q", got, wantPointer)
+	}
+	active, err := LoadPath(filepath.Join(target, wantPointer))
+	if err != nil {
+		t.Fatalf("load previous active revision: %v", err)
+	}
+	if active.Revision() != "runtime-ceiling-baseline" {
+		t.Fatalf("previous active revision = %q, want runtime-ceiling-baseline", active.Revision())
+	}
+}
+
 func TestUpdateHTTPRequiresChecksumsAndPreservesActiveRevision(t *testing.T) {
 	source := copyBundledCatalog(t)
 	setManifestRevision(t, source, "http-revision-one")

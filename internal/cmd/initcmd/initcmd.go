@@ -2368,7 +2368,7 @@ func initReviewerModelTierOptions() []huh.Option[string] {
 	}
 }
 
-func initProfileEditorModelMapLLM(draft initDraft, selectedLLMRuntime string, runtimes map[string]initLLMRuntimeDraft) config.LLMConfig {
+func initProfileEditorModelMapLLM(draft initDraft, selectedLLMRuntime string, runtimes map[string]initLLMRuntimeDraft, catalog *modelcatalog.Catalog) config.LLMConfig {
 	llm := config.LLMConfig{
 		Provider:  config.LLMProvider(draft.LLMProvider),
 		Auth:      config.LLMAuth(draft.LLMAuth),
@@ -2376,7 +2376,7 @@ func initProfileEditorModelMapLLM(draft initDraft, selectedLLMRuntime string, ru
 		ModelMap:  copyModelMap(draft.ModelMap),
 		MaxEffort: copyEffortMap(draft.MaxEffort),
 		EffortMap: copyEffortMap(draft.EffortMap),
-	}
+	}.WithCatalog(catalog)
 	if runtime, ok := runtimes[selectedLLMRuntime]; ok {
 		llm.Provider = runtime.Provider
 		llm.Auth = runtime.Auth

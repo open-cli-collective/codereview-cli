@@ -852,10 +852,12 @@ func parsePricing(fsys fsLike, root string) ([]Price, error) {
 
 func validateRelations(runtimes []Runtime, models []Model, defaults []Default, pricing []Price) error {
 	runtimeSet := map[string]bool{}
+	runtimesByID := map[string]Runtime{}
 	modelSet := map[string]bool{}
 	modelsByRuntime := map[string]map[string]Model{}
 	for _, runtime := range runtimes {
 		runtimeSet[runtime.ID] = true
+		runtimesByID[runtime.ID] = runtime
 	}
 	for _, model := range models {
 		if !runtimeSet[model.RuntimeID] {
@@ -890,6 +892,13 @@ func validateRelations(runtimes []Runtime, models []Model, defaults []Default, p
 		}
 		if value.MaxEffort != "" && !contains(model.SupportedEfforts, value.MaxEffort) {
 			return fmt.Errorf("model catalog: default %s/%s max_effort %q is not supported by model %q", value.RuntimeID, value.Tier, value.MaxEffort, value.ModelID)
+		}
+		runtime := runtimesByID[value.RuntimeID]
+		if !effortAtMost(value.Effort, runtime.MaximumEffort) {
+			return fmt.Errorf("model catalog: default %s/%s effort %q exceeds runtime maximum %q", value.RuntimeID, value.Tier, value.Effort, runtime.MaximumEffort)
+		}
+		if value.MaxEffort != "" && !effortAtMost(value.MaxEffort, runtime.MaximumEffort) {
+			return fmt.Errorf("model catalog: default %s/%s max_effort %q exceeds runtime maximum %q", value.RuntimeID, value.Tier, value.MaxEffort, runtime.MaximumEffort)
 		}
 	}
 	for _, value := range pricing {
@@ -934,5 +943,26 @@ func validEffort(value string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func effortAtMost(value, maximum string) bool {
+	return effortRank(value) <= effortRank(maximum)
+}
+
+func effortRank(value string) int {
+	switch value {
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	case "xhigh":
+		return 4
+	case "max":
+		return 5
+	default:
+		return 0
 	}
 }

@@ -3,11 +3,13 @@ package reviewcmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,9 +29,11 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
+	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
@@ -94,6 +98,101 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	if text := out.String(); !strings.Contains(text, "Post mode: dry_run") || !strings.Contains(text, "Planned actions:") {
 		t.Fatalf("stdout = %q, want dry-run render", text)
 	}
+}
+
+func TestReviewCarriesChangedCatalogSnapshotThroughRuntimeAndFakeReview(t *testing.T) {
+	catalog, catalogDir := reviewTestCatalog(t)
+	cfg := testConfig()
+	cfg.LLMRuntimes = map[string]config.LLMConfig{}
+	cfg.LLMRuntimes["custom-openai"] = config.LLMConfig{
+		Provider:   config.LLMProviderOpenAI,
+		Auth:       config.LLMAuthAPIKey,
+		Adapter:    config.LLMAdapterOpenAIAPI,
+		Credential: config.CredentialLocation{Store: "test-memory", Name: "codereview/home-llm"},
+		ModelMap:   config.ModelMap{string(config.ModelTierMedium): "custom-review-model"},
+		EffortMap:  config.EffortMap{string(config.ModelTierMedium): "low"},
+	}
+	profile := cfg.Profiles["home"]
+	profile.LLMRuntime = "custom-openai"
+	profile.Fast = false
+	cfg.Profiles["home"] = profile
+
+	in, outTokens := 1_000_000, 1_000_000
+	cost := 10.0
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	runner.result.Plan.Summary.Run.Workstreams = []reviewplan.WorkstreamUsage{{
+		Name: "reviewer", Model: "custom-review-model", TokensIn: &in, TokensOut: &outTokens,
+		CostUSD: &cost, CostEstimated: true, CostEstimateBasis: "review-command-custom/pricing",
+	}}
+	runner.result.Plan.Summary.Totals = reviewplan.AggregateUsage{
+		TokensIn: &in, TokensOut: &outTokens, CostUSD: &cost,
+		CostEstimated: true, CostEstimateBasis: "review-command-custom/pricing",
+	}
+	var runtimeRequest app.OpenRequest
+	cmd, out := newTestCommandWithCatalog(t, cfg, catalogDir, func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
+		runtimeRequest = req
+		// The command has already selected and loaded its catalog. Removing the
+		// source now proves later runtime and runner stages use that snapshot.
+		if err := os.RemoveAll(catalogDir); err != nil {
+			t.Fatalf("remove catalog source after selection: %v", err)
+		}
+		return app.Runtime{
+			Runner:          runner,
+			PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"},
+		}, nil
+	})
+
+	if err := root.Execute(cmd, []string{
+		"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+		"--dry-run", "--json", "--fast",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	configRevision, profileRevision := "", ""
+	if selected := runtimeRequest.Config.Catalog(); selected != nil {
+		configRevision = selected.Revision()
+	}
+	if selected := runtimeRequest.Profile.LLM.Catalog(); selected != nil {
+		profileRevision = selected.Revision()
+	}
+	if configRevision != catalog.Revision() || profileRevision != catalog.Revision() {
+		t.Fatalf("runtime catalog revisions = config:%q profile:%q want selected:%q", configRevision, profileRevision, catalog.Revision())
+	}
+	reviewRequest := runner.requests[0]
+	runnerRevision := ""
+	if selected := reviewRequest.Profile.LLM.Catalog(); selected != nil {
+		runnerRevision = selected.Revision()
+	}
+	if runnerRevision != catalog.Revision() {
+		t.Fatalf("runner catalog revision = %q, want selected %q", runnerRevision, catalog.Revision())
+	}
+	if got := reviewRequest.Profile.LLM.ModelMap[string(config.ModelTierMedium)]; got != "custom-review-model" {
+		t.Fatalf("runner medium model = %q, want custom catalog-backed config", got)
+	}
+	if got := reviewRequest.Profile.LLM.EffortMap[string(config.ModelTierMedium)]; got != "low" {
+		t.Fatalf("runner medium effort = %q, want explicit config override", got)
+	}
+	if !reviewRequest.ReviewerFast {
+		t.Fatal("runner fast request = false, want --fast override over profile default")
+	}
+	cost, ok := pricing.EstimateUsageUSDFor(reviewRequest.Profile.LLM.Catalog(), "custom-review-model", pricing.Usage{
+		TokensIn: &in, TokensOut: &outTokens, Speed: "standard",
+	})
+	if !ok || cost != 10 {
+		t.Fatalf("custom catalog pricing = (%v,%t), want ($10,true)", cost, ok)
+	}
+	if got := pricing.EstimateBasis(reviewRequest.Profile.LLM.Catalog()); got != "review-command-custom/pricing" {
+		t.Fatalf("pricing basis = %q, want cached selected revision", got)
+	}
+	var rendered map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rendered); err != nil {
+		t.Fatalf("decode review JSON: %v\n%s", err, out.String())
+	}
+	assertJSONPath(t, rendered, "artifacts", "dir", "/tmp/run-1")
+	assertJSONPath(t, rendered, "summary", "run", "workstreams", 0, "model", "custom-review-model")
 }
 
 func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
@@ -1590,6 +1689,25 @@ func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cob
 	return cmd, out
 }
 
+func newTestCommandWithCatalog(t *testing.T, cfg config.File, catalogDir string, factory RuntimeFactory) (*cobra.Command, *bytes.Buffer) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	opts := &root.Options{
+		ConfigPath:  path,
+		CatalogPath: catalogDir,
+		Quiet:       true,
+		Stdin:       strings.NewReader(""),
+	}
+	cmd, out, _ := cmdtest.New(opts, func(cmd *cobra.Command, opts *root.Options) {
+		RegisterWithFactory(cmd, opts, factory)
+	})
+	opts.Stderr = out
+	return cmd, out
+}
+
 func newTestCommandWithStderr(t *testing.T, cfg config.File, factory RuntimeFactory, quiet bool) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yml")
@@ -1608,6 +1726,56 @@ func newTestCommandWithStderr(t *testing.T, cfg config.File, factory RuntimeFact
 
 func testConfig() config.File {
 	return configtest.File()
+}
+
+func reviewTestCatalog(t *testing.T) (*modelcatalog.Catalog, string) {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := t.TempDir()
+	dataDir := filepath.Join(filepath.Dir(testFile), "..", "..", "modelcatalog", "data")
+	files := map[string][]byte{}
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository fixture.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		files[name] = body
+	}
+	files["models.csv"] = append(files["models.csv"], []byte("openai-api-key,custom-review-model,low|medium,Y,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
+	files["defaults.csv"] = []byte(strings.Replace(string(files["defaults.csv"]), "openai-api-key,medium,gpt-6.1-sol,low,", "openai-api-key,medium,custom-review-model,medium,", 1))
+	files["pricing.csv"] = append(files["pricing.csv"], []byte("custom-review-model,standard,all,3,7,1,0.5,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+	manifestBody, err := os.ReadFile(filepath.Join(source, "manifest.json")) // #nosec G304 -- source is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest modelcatalog.Manifest
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	manifest.Revision = "review-command-custom"
+	for _, name := range []string{"models.csv", "defaults.csv", "pricing.csv"} {
+		manifest.Files[name] = fmt.Sprintf("%x", sha256.Sum256(files[name]))
+	}
+	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "manifest.json"), append(manifestBody, '\n'), 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+		t.Fatalf("write manifest: %v", err)
+	}
+	catalog, err := modelcatalog.LoadPath(source)
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	return catalog, source
 }
 
 func testPipelineResult(failOnTriggered bool) pipeline.Result {
