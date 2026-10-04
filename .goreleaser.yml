@@ -94,6 +94,7 @@ nfpms:
     formats:
       - deb
       - rpm
+      - archlinux
     bindir: /usr/bin
     contents:
       - src: LICENSE
