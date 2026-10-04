@@ -242,6 +242,34 @@ func TestPrepareReusesValidV1WorkbenchWithoutRewritingMetadata(t *testing.T) {
 	}
 }
 
+// A transport clone copies reachable Git objects rather than the source's
+// object directory. Besides avoiding races with automatic repacking, this
+// keeps private/unreachable source objects out of each disposable workspace.
+func TestReviewerWorkspaceDoesNotCopyUnreachableObjects(t *testing.T) {
+	fixture, artifacts, deps := prepareReviewerFixture(t)
+	payload := filepath.Join(t.TempDir(), "unreachable")
+	if err := os.WriteFile(payload, []byte("canonical-only object"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	object := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "hash-object", "-w", payload))
+	if !gitCommandSucceeds(artifacts.WorkbenchRepoDir, "cat-file", "-e", object) {
+		t.Fatal("fixture object missing from canonical workbench")
+	}
+	adapter := &reviewerWorkspaceSmokeAdapter{}
+	req, cleanup, err := PrepareReviewerRequest(context.Background(), deps, adapter, artifacts, fixture.headSHA, "harness:transport", nil, "gpt-5.5", "medium", "transport", filepath.Join(t.TempDir(), "transport.jsonl"))
+	if err != nil {
+		t.Fatalf("PrepareReviewerRequest: %v", err)
+	}
+	t.Cleanup(cleanupForTest(t, cleanup))
+	repo := req.ReviewerWorkspace.RepoDir
+	if gitCommandSucceeds(repo, "cat-file", "-e", object) {
+		t.Fatal("reviewer clone copied an unreachable canonical object")
+	}
+	if got := strings.TrimSpace(gitCommandOutput(t, repo, "rev-parse", "HEAD")); got != fixture.headSHA {
+		t.Fatalf("reviewer HEAD = %q, want %q", got, fixture.headSHA)
+	}
+}
+
 func TestReviewerWorkspaceSmokeAllowsReadAndWorkspaceWrites(t *testing.T) {
 	ctx := context.Background()
 	fixture, artifacts, deps := prepareReviewerFixture(t)
@@ -811,7 +839,7 @@ func TestPrepareRestoresHeadRefOnReuse(t *testing.T) {
 // tests assert the property rather than a proxy for it.
 func cloneWorkbench(t *testing.T, src, dest string) {
 	t.Helper()
-	cmd := exec.Command("git", "clone", "--no-hardlinks", src, dest) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd := exec.Command("git", "clone", "--no-local", src, dest) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
 	cmd.Env = gittest.Env()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone workbench: %v: %s", err, out)
