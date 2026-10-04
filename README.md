@@ -42,6 +42,10 @@ choco install codereview-cli
 [open-cli-collective/linux-packages](https://github.com/open-cli-collective/linux-packages)
 repository.
 
+### Arch Linux / Omarchy
+
+Add the signed [Open CLI Collective pacman repository](https://github.com/open-cli-collective/linux-packages#arch-linux-pacman) once. Native Arch packages are published with new releases and updated by `sudo pacman -Syu`. Package names are listed in that repository; executable names remain unchanged.
+
 ### Binary Download
 
 Download a release archive from the
@@ -1608,7 +1612,3 @@ between `internal/pipeline`, `internal/reviewrun`, `internal/reviewplan`, and
 `internal/outbox`.
 
 See [docs/development.md](docs/development.md) for local development notes.
-
-### Arch Linux / Omarchy
-
-Add the signed [Open CLI Collective pacman repository](https://github.com/open-cli-collective/linux-packages#arch-linux-pacman) once. Native Arch packages are published with new releases and updated by `sudo pacman -Syu`. Package names are listed in that repository; executable names remain unchanged.
