@@ -94,7 +94,10 @@ nfpms:
     formats:
       - deb
       - rpm
+      - archlinux
     bindir: /usr/bin
+    # Whole-second timestamps keep tar entries and pacman MTREE checks aligned.
+    mtime: "{{ .CommitDate }}"
     contents:
       - src: LICENSE
         dst: /usr/share/licenses/cr/LICENSE

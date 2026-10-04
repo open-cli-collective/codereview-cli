@@ -189,12 +189,12 @@ shared workflow owns publish mechanics.
   submits `OpenCLICollective.codereview-cli` with `WINGET_GITHUB_TOKEN`;
   because this is a first-time package id, `packaging/identity.yml` keeps
   `packages.winget.bootstrap: true` until the package exists upstream.
-- Linux packages: GoReleaser renders `.deb` and `.rpm` artifacts named `cr`;
+- Linux packages: GoReleaser renders `.deb`, `.rpm`, and Arch `.pkg.tar.zst` artifacts named `cr`;
   the shared workflow dispatches `package-release` to
   `open-cli-collective/linux-packages` with `LINUX_PACKAGES_DISPATCH_TOKEN`.
 
 `make snapshot` runs a local GoReleaser snapshot and then
-`scripts/verify-package-render.sh`, which asserts the rendered cask, deb/rpm
+`scripts/verify-package-render.sh`, which asserts the rendered cask, deb/rpm/Arch
 artifacts, native package templates, and release secret wiring match the
 declared package IDs.
 

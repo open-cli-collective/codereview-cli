@@ -101,7 +101,7 @@ raise "failure path did not keep refresh warning-only" unless failure.calls.last
 puts "rendered package hook behavior check OK"
 RUBY
 
-for kind in deb rpm; do
+for kind in deb rpm pkg.tar.zst; do
   for arch in amd64 arm64; do
     jq -e --arg kind "$kind" --arg dotted ".$kind" --arg arch "$arch" '
       .[] | select(
