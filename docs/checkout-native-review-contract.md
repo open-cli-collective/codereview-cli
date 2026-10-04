@@ -91,6 +91,10 @@ Notes:
   SHA inside the workspace. That is a decision, not an oversight -- add
   `refs/heads/cr-review-base` if a reviewer ever needs `git log base..HEAD`.
 - `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
+  Clone it through Git transport (`--no-local`) rather than copying the
+  canonical object directory: background repacking can replace pack files
+  during a local-copy clone. Each checkout has its own object database and
+  receives only history reachable from the canonical refs.
 - `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
   cache roots.
 - A coverage-repair pass runs under the derived identity

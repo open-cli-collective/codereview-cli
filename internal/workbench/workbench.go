@@ -455,7 +455,9 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		}
 		return cleanupErr
 	}
-	if _, err := deps.gitCommand(ctx, "", "clone", "--no-hardlinks", artifacts.WorkbenchRepoDir, workspaceRepo); err != nil {
+	// Use Git transport instead of copying the source object directory. A
+	// background repack can remove a pack while local-copy cloning reads it.
+	if _, err := deps.gitCommand(ctx, "", "clone", "--no-local", artifacts.WorkbenchRepoDir, workspaceRepo); err != nil {
 		_ = cleanup()
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: clone reviewer workspace: %w", err)
 	}
