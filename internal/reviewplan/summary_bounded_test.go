@@ -112,12 +112,10 @@ func TestApprovalWithheldBoundsMissingPathExamples(t *testing.T) {
 	}
 	req.RunSummary = RunSummary{
 		ReviewerCoverage: []ReviewerCoverageSummary{{
-			AgentID:                 "unassigned",
-			Status:                  "incomplete_unassigned",
-			Scope:                   missing,
-			MissingFiles:            append([]string(nil), missing...),
-			ContextFiles:            append([]string(nil), missing...),
-			RelocationReviewedFiles: append([]string(nil), missing...),
+			AgentID:      "unassigned",
+			Status:       "incomplete_unassigned",
+			Scope:        missing,
+			MissingFiles: append([]string(nil), missing...),
 		}},
 	}
 

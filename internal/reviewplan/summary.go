@@ -306,7 +306,7 @@ func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFa
 	}
 	out.WriteString("### Reviewer Diagnostics\n\n")
 	for _, failure := range failures {
-		fmt.Fprintf(out, "- %s — failed: %s\n", codeSpan(failure.AgentID), escapeCell(failure.Error))
+		fmt.Fprintf(out, "- %s — failed: %s\n", codeSpan(failure.AgentID), escapeCell(samplePublicDiagnostic(failure.Error)))
 	}
 	out.WriteString("\n")
 }
@@ -320,6 +320,7 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		return
 	}
 	out.WriteString("### Reviewer Coverage\n\n")
+	out.WriteString("Complete coverage details are retained in the local `coverage.json` artifact.\n\n")
 	for _, entry := range coverage {
 		fmt.Fprintf(out, "- %s — %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status))
 		var notes []string
@@ -346,7 +347,7 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 		if len(entry.Constraints) > 0 {
 			// Constraints are independent sentences of reviewer prose; a
 			// space joins them without stacking punctuation.
-			notes = append(notes, "constraints: "+escapeCell(strings.Join(entry.Constraints, " ")))
+			notes = append(notes, "constraints: "+escapeCell(samplePublicDiagnostic(strings.Join(entry.Constraints, " "))))
 		} else if coverageResultProduced(entry.Status) {
 			notes = append(notes, "constraints: none")
 		}
@@ -610,7 +611,7 @@ func formatPathExamples(files []string) string {
 func samplePublicDiagnostic(value string) string {
 	const maxPublicDiagnosticRunes = 500
 	value = strings.ToValidUTF8(value, "�")
-	value = redactAbsolutePaths(sanitize(value))
+	value = sanitize(value)
 	runes := []rune(value)
 	if len(runes) <= maxPublicDiagnosticRunes {
 		return value
