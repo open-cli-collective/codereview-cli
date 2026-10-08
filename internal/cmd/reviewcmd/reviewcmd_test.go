@@ -1746,7 +1746,7 @@ func reviewTestCatalog(t *testing.T) (*modelcatalog.Catalog, string) {
 	}
 	files["models.csv"] = append(files["models.csv"], []byte("openai-api-key,custom-review-model,low|medium,Y,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
 	files["defaults.csv"] = []byte(strings.Replace(string(files["defaults.csv"]), "openai-api-key,medium,gpt-6.1-sol,low,", "openai-api-key,medium,custom-review-model,medium,", 1))
-	files["pricing.csv"] = append(files["pricing.csv"], []byte("custom-review-model,standard,all,3,7,1,0.5,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
+	files["pricing.csv"] = append(files["pricing.csv"], []byte("custom-review-model,standard,all,3,7,1,0.5,,,https://example.invalid/custom-review-model,2026-10-03,,,,,\n")...)
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
 			t.Fatalf("write catalog %s: %v", name, err)

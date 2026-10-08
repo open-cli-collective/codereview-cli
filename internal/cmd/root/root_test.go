@@ -2,9 +2,13 @@ package root
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -106,6 +110,36 @@ func TestCatalogSnapshotIsCachedForOneCommand(t *testing.T) {
 	if first.Source().Kind != "local" {
 		t.Fatalf("first source kind = %q, want local", first.Source().Kind)
 	}
+	beforeSelection, reason := first.PriceForRequest("openai-api-key", "gpt-6.1-sol", "default", 200000)
+	if reason != "" || beforeSelection.Price.ContextBand != "short" {
+		t.Fatalf("original selection = %#v, %q", beforeSelection, reason)
+	}
+	pricingPath := filepath.Join(source, "pricing.csv")
+	body, err := os.ReadFile(pricingPath) // #nosec G304 -- under t.TempDir.
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = bytes.ReplaceAll(body, []byte("272001"), []byte("100001"))
+	if err := os.WriteFile(pricingPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := first.Manifest()
+	manifest.Files["pricing.csv"] = fmt.Sprintf("%x", sha256.Sum256(body))
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "manifest.json"), manifestBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := modelcatalog.LoadPath(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshSelection, reason := fresh.PriceForRequest("openai-api-key", "gpt-6.1-sol", "default", 200000)
+	if reason != "" || freshSelection.Price.ContextBand != "long" || fresh.Digest() == first.Digest() || fresh.Revision() != first.Revision() {
+		t.Fatal("changed on-disk metadata did not produce a different exact snapshot")
+	}
 	if err := os.RemoveAll(source); err != nil {
 		t.Fatalf("remove source after first load: %v", err)
 	}
@@ -115,6 +149,10 @@ func TestCatalogSnapshotIsCachedForOneCommand(t *testing.T) {
 	}
 	if second != first {
 		t.Fatalf("second snapshot pointer = %p, want cached %p", second, first)
+	}
+	afterSelection, reason := second.PriceForRequest("openai-api-key", "gpt-6.1-sol", "default", 200000)
+	if reason != "" || !reflect.DeepEqual(afterSelection, beforeSelection) {
+		t.Fatal("command cached selection changed after on-disk metadata mutation")
 	}
 	if second.Revision() != first.Revision() {
 		t.Fatalf("second revision = %q, want %q", second.Revision(), first.Revision())
