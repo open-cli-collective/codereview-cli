@@ -40,6 +40,14 @@ the run.
 That means a PR which changes `.codereview/agents/` does not change its own
 review behavior unless the same guidance is already present on the base branch.
 
+## Reviewer Selection And File Assignment
+
+The selector evaluates each changed file against reviewer applicability metadata. A PR description that emphasizes styling, refactoring, or performance does not establish that its source changes preserve behavior. Selected specialists should receive all relevant changed production files, including small edits and mirrored implementations. When supplied context cannot establish that a matching source file is irrelevant, the default guidance favors including it in that specialist's assignment.
+
+This can increase review scope and cost for mixed changes. Reviewer budgets, globs, required-agent rules, and output validation still apply. The selector receives applicability metadata rather than reviewer prompt bodies; reviewers remain responsible for tracing runtime contracts and diagnosing defects.
+
+For dry-run experiments, `--selection-prompt` replaces these default instructions. It does not append to them or change reviewer prompts.
+
 ## Guidance Provenance In The Dossier
 
 Checkout-native review writes reviewer-facing dossier artifacts under the run
