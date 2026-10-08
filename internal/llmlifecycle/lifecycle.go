@@ -202,31 +202,34 @@ func (d SessionDraft) ToLedger(runID string) ledger.Session {
 
 // Metadata is the durable descriptor for one structured LLM task.
 type Metadata struct {
-	SchemaVersion        int                       `json:"schema_version"`
-	TaskID               string                    `json:"task_id"`
-	Phase                string                    `json:"phase"`
-	DependencyTaskIDs    []string                  `json:"dependency_task_ids,omitempty"`
-	InputFingerprint     string                    `json:"input_fingerprint"`
-	AgentID              string                    `json:"agent_id,omitempty"`
-	Status               Status                    `json:"status"`
-	SessionRowID         string                    `json:"session_row_id,omitempty"`
-	ProviderSessionID    string                    `json:"provider_session_id,omitempty"`
-	Adapter              string                    `json:"adapter"`
-	Model                string                    `json:"model"`
-	Effort               string                    `json:"effort,omitempty"`
-	LogPath              string                    `json:"log_path,omitempty"`
-	ValidatedOutputPath  string                    `json:"validated_output_path,omitempty"`
-	Error                string                    `json:"error,omitempty"`
-	TokensIn             *int                      `json:"tokens_in,omitempty"`
-	TokensOut            *int                      `json:"tokens_out,omitempty"`
-	CacheRead            *int                      `json:"cache_read,omitempty"`
-	CacheCreate          *int                      `json:"cache_create,omitempty"`
-	CacheCreate5m        *int                      `json:"cache_create_5m,omitempty"`
-	CacheCreate1h        *int                      `json:"cache_create_1h,omitempty"`
-	CostUSD              *float64                  `json:"cost_usd,omitempty"`
-	Speed                string                    `json:"speed,omitempty"`
-	ReviewerToolEvidence *llm.ReviewerToolEvidence `json:"reviewer_tool_evidence,omitempty"`
-	Attempts             []AttemptMetadata         `json:"attempts,omitempty"`
+	requestCostScopeValid bool
+	SchemaVersion         int                           `json:"schema_version"`
+	TaskID                string                        `json:"task_id"`
+	Phase                 string                        `json:"phase"`
+	DependencyTaskIDs     []string                      `json:"dependency_task_ids,omitempty"`
+	InputFingerprint      string                        `json:"input_fingerprint"`
+	AgentID               string                        `json:"agent_id,omitempty"`
+	Status                Status                        `json:"status"`
+	SessionRowID          string                        `json:"session_row_id,omitempty"`
+	ProviderSessionID     string                        `json:"provider_session_id,omitempty"`
+	Adapter               string                        `json:"adapter"`
+	Model                 string                        `json:"model"`
+	Effort                string                        `json:"effort,omitempty"`
+	LogPath               string                        `json:"log_path,omitempty"`
+	ValidatedOutputPath   string                        `json:"validated_output_path,omitempty"`
+	Error                 string                        `json:"error,omitempty"`
+	TokensIn              *int                          `json:"tokens_in,omitempty"`
+	TokensOut             *int                          `json:"tokens_out,omitempty"`
+	CacheRead             *int                          `json:"cache_read,omitempty"`
+	CacheCreate           *int                          `json:"cache_create,omitempty"`
+	CacheCreate5m         *int                          `json:"cache_create_5m,omitempty"`
+	CacheCreate1h         *int                          `json:"cache_create_1h,omitempty"`
+	CostUSD               *float64                      `json:"cost_usd,omitempty"`
+	Speed                 string                        `json:"speed,omitempty"`
+	ReviewerToolEvidence  *llm.ReviewerToolEvidence     `json:"reviewer_tool_evidence,omitempty"`
+	RequestCostEvidence   *llm.RequestCostEvidence      `json:"request_cost_evidence,omitempty"`
+	RequestCostCheckpoint *RequestCostCheckpointBinding `json:"request_cost_checkpoint,omitempty"`
+	Attempts              []AttemptMetadata             `json:"attempts,omitempty"`
 }
 
 // AttemptMetadata records one invalid structured-output attempt.
@@ -268,7 +271,23 @@ func (e *TaskError) Status() Status {
 }
 
 // RunStructured executes or loads one durable structured LLM task.
-func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T]) (Result[T], error) {
+func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T]) (result Result[T], resultErr error) {
+	if err := validateRequest(req, decode); err != nil {
+		return result, err
+	}
+	lock, err := taskCostLock(req.Paths, req.TaskID)
+	if err != nil {
+		return result, err
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			resultErr = errors.Join(resultErr, releaseErr)
+		}
+	}()
+	return runStructuredLocked(ctx, req, decode)
+}
+
+func runStructuredLocked[T any](ctx context.Context, req Request, decode llm.Decoder[T]) (Result[T], error) {
 	var zero Result[T]
 	if err := validateRequest(req, decode); err != nil {
 		return zero, err
@@ -276,7 +295,7 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	if strings.TrimSpace(req.RunID) == "" && !req.AllowNoRunCache {
 		return zero, fmt.Errorf("llmlifecycle: structured task %q requires a persisted run", req.TaskID)
 	}
-	if loaded, ok, err := LoadStructured(ctx, req, decode); err != nil || ok {
+	if loaded, ok, err := loadStructuredLocked(ctx, req, decode); err != nil || ok {
 		return loaded, err
 	}
 
@@ -286,6 +305,15 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	} else if ok && meta.Status == StatusFailedBlocking {
 		if taskSessionID := ResumeSessionID(meta); strings.TrimSpace(taskSessionID) != "" {
 			resumeSessionID = taskSessionID
+		}
+	}
+	rowID := req.NewSessionRowID()
+	var checkpoint *costCheckpoint
+	if llm.RequestCostSource(req.Adapter) != "" {
+		var err error
+		checkpoint, err = beginCostGeneration(req, rowID)
+		if err != nil {
+			return zero, err
 		}
 	}
 	progressEvent := NewProgressEvent(req, resumeSessionID)
@@ -302,7 +330,7 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 	structured, runErr := llm.RunStructuredWithSessionResume(ctx, req.Adapter, resumeSessionID, request, decode)
 	completed := now()
 	draft := SessionDraft{
-		RowID:                     req.NewSessionRowID(),
+		RowID:                     rowID,
 		ProviderReportedSessionID: structured.SessionID,
 		ProviderSessionID:         structured.SessionID,
 		Role:                      req.Role,
@@ -325,9 +353,21 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 		role = ledger.SessionRoleOrchestrator
 	}
 	draft.Role = role
+	if checkpoint != nil {
+		finalErr := finishCostGeneration(req.Paths, checkpoint, structured.Response.RequestCostEvidence)
+		if finalErr != nil {
+			costGap(checkpoint, llm.CostGapCheckpoint)
+		}
+		draft.Response.RequestCostEvidence = llm.CloneRequestCostEvidence(checkpoint.Evidence)
+		if finalErr != nil {
+			endProgress(progressSpan, finalErr, ProgressResult{Usage: draft.Response.Usage})
+			return Result[T]{Draft: draft}, errors.Join(runErr, fmt.Errorf("llmlifecycle: finalize request-cost checkpoint: %w", finalErr))
+		}
+	}
 
 	hasRun := strings.TrimSpace(req.RunID) != ""
 	meta := BaseMetadata(req, draft)
+	meta.RequestCostCheckpoint = checkpointBinding(checkpoint)
 	if !hasRun {
 		meta.SessionRowID = ""
 	}
@@ -336,14 +376,14 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 		if req.Store == nil {
 			err := fmt.Errorf("llmlifecycle: store is required")
 			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
-			return zero, err
+			return Result[T]{Draft: draft, Session: session}, err
 		}
 		session = draft.ToLedger(req.RunID)
 		if err := req.Store.InsertSession(ctx, session); err != nil {
 			meta.Status = StatusFailedBlocking
 			meta.ProviderSessionID = draft.ProviderSessionID
 			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
-			return zero, err
+			return Result[T]{Draft: draft, Session: session}, err
 		}
 	}
 
@@ -353,7 +393,7 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 		meta.ProviderSessionID = draft.ProviderSessionID
 		if err := WriteSuccess(req.Paths, &meta, structured.AcceptedOutput); err != nil {
 			endProgress(progressSpan, err, progressResult(meta, structured, false, structured.Response.Usage))
-			return zero, err
+			return Result[T]{Draft: draft, Session: session}, err
 		}
 		endProgress(progressSpan, nil, progressResult(meta, structured, false, structured.Response.Usage))
 		return Result[T]{Value: structured.Value, Draft: draft, Session: session}, nil
@@ -372,7 +412,20 @@ func RunStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T
 }
 
 // LoadStructured loads a reusable task result without calling the provider.
-func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T]) (Result[T], bool, error) {
+func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[T]) (result Result[T], loaded bool, resultErr error) {
+	lock, err := taskCostLock(req.Paths, req.TaskID)
+	if err != nil {
+		return result, false, err
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			resultErr = errors.Join(resultErr, releaseErr)
+		}
+	}()
+	return loadStructuredLocked(ctx, req, decode)
+}
+
+func loadStructuredLocked[T any](ctx context.Context, req Request, decode llm.Decoder[T]) (Result[T], bool, error) {
 	var zero Result[T]
 	meta, ok, err := ReadMetadata(req.Paths, req.TaskID)
 	if err != nil || !ok {
@@ -380,6 +433,9 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 	}
 	if err := ValidateMetadata(meta, req, adapterName(req.Adapter)); err != nil {
 		return zero, true, err
+	}
+	if llm.RequestCostSource(req.Adapter) != "" || meta.RequestCostEvidence != nil || meta.Adapter == "openai_api" {
+		overlayCostMetadata(req.Paths, req.TaskID, req.RunID, &meta)
 	}
 	switch meta.Status {
 	case StatusSucceeded:
@@ -417,6 +473,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		draft := SessionDraftFromLedger(session)
 		draft.Response.Usage.Speed = meta.Speed
 		draft.Response.ReviewerToolEvidence = llm.CloneReviewerToolEvidence(meta.ReviewerToolEvidence)
+		draft.Response.RequestCostEvidence = llm.CloneRequestCostEvidence(meta.RequestCostEvidence)
 		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
@@ -572,7 +629,7 @@ func ListMetadata(paths Paths) ([]Metadata, error) {
 			return nil, fmt.Errorf("llmlifecycle: read task metadata %q: %w", entry.Name(), err)
 		}
 		var meta Metadata
-		if err := json.Unmarshal(data, &meta); err != nil {
+		if err := decodeMetadata(data, &meta); err != nil {
 			return nil, fmt.Errorf("llmlifecycle: decode task metadata %q: %w", entry.Name(), err)
 		}
 		metadata = append(metadata, meta)
@@ -593,14 +650,23 @@ func readMetadata(paths Paths, taskID, readError, decodeError string) (Metadata,
 		return Metadata{}, false, fmt.Errorf(readError, taskID, err)
 	}
 	var meta Metadata
-	if err := json.Unmarshal(data, &meta); err != nil {
+	if err := decodeMetadata(data, &meta); err != nil {
 		return Metadata{}, false, fmt.Errorf(decodeError, taskID, err)
 	}
 	return meta, true, nil
 }
 
 // ResetIfInputFingerprintChanged removes stale task artifacts when inputs change.
-func ResetIfInputFingerprintChanged(paths Paths, taskID, fingerprint string) error {
+func ResetIfInputFingerprintChanged(paths Paths, taskID, fingerprint string) (resultErr error) {
+	lock, err := taskCostLock(paths, taskID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil {
+			resultErr = errors.Join(resultErr, releaseErr)
+		}
+	}()
 	meta, ok, err := readMetadata(paths, taskID,
 		"pipeline: read LLM task %q metadata: %w",
 		"pipeline: decode LLM task %q metadata: %w",
@@ -610,6 +676,13 @@ func ResetIfInputFingerprintChanged(paths Paths, taskID, fingerprint string) err
 	}
 	if strings.TrimSpace(meta.InputFingerprint) == strings.TrimSpace(fingerprint) {
 		return nil
+	}
+	checkpoint, err := reconcileCostCheckpoint(paths, taskID, "", &meta, true)
+	if err != nil {
+		return err
+	}
+	if err := writeCostCheckpoint(paths, checkpoint); err != nil {
+		return fmt.Errorf("llmlifecycle: preserve request-cost observations before reset: %w", err)
 	}
 	taskDir, err := paths.TaskDir(taskID)
 	if err != nil {
@@ -664,6 +737,12 @@ func WriteMetadata(paths Paths, meta Metadata) error {
 		return err
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
+	if meta.RequestCostEvidence != nil {
+		// Admission and the bounded optional-envelope reader use compact JSON.
+		// Pretty-printing a near-cap cost prefix would inflate it past that
+		// bound and lose observations when the sidecar is unavailable.
+		data, err = json.Marshal(meta)
+	}
 	if err != nil {
 		return err
 	}
@@ -702,6 +781,7 @@ func BaseMetadata(req Request, draft SessionDraft) Metadata {
 		CostUSD:              draft.Response.Usage.CostUSD,
 		Speed:                draft.Response.Usage.Speed,
 		ReviewerToolEvidence: llm.CloneReviewerToolEvidence(draft.Response.ReviewerToolEvidence),
+		RequestCostEvidence:  llm.CloneRequestCostEvidence(draft.Response.RequestCostEvidence),
 	}
 }
 
@@ -832,6 +912,7 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 		Effort:                    meta.Effort,
 		Response: llm.Response{
 			ReviewerToolEvidence: llm.CloneReviewerToolEvidence(meta.ReviewerToolEvidence),
+			RequestCostEvidence:  llm.CloneRequestCostEvidence(meta.RequestCostEvidence),
 			Usage: llm.Usage{
 				TokensIn:      meta.TokensIn,
 				TokensOut:     meta.TokensOut,
@@ -871,6 +952,7 @@ func loadOptionalTaskSession(ctx context.Context, store Store, runID string, met
 	draft := SessionDraftFromLedger(session)
 	draft.Response.Usage.Speed = meta.Speed
 	draft.Response.ReviewerToolEvidence = llm.CloneReviewerToolEvidence(meta.ReviewerToolEvidence)
+	draft.Response.RequestCostEvidence = llm.CloneRequestCostEvidence(meta.RequestCostEvidence)
 	return session, draft, nil
 }
 

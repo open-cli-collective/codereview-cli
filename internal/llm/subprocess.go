@@ -206,6 +206,7 @@ func (s *BaseStream) Wait(ctx context.Context) (Response, error) {
 
 	s.mu.Lock()
 	result := s.result
+	result.response = cloneResponse(result.response)
 	if result.err == nil && ctx.Err() != nil {
 		result.err = ctx.Err()
 	}
@@ -281,7 +282,7 @@ func (s *BaseStream) Cleanup() {
 // Finish publishes a stream result and wakes waiters.
 func (s *BaseStream) Finish(response Response, err error) {
 	s.mu.Lock()
-	s.result = streamResult{response: response, err: err}
+	s.result = streamResult{response: cloneResponse(response), err: err}
 	s.mu.Unlock()
 	close(s.done)
 }

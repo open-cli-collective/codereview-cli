@@ -22,6 +22,8 @@ import (
 // ErrAPIAdapterConfig reports invalid direct API adapter configuration.
 var ErrAPIAdapterConfig = errors.New("llm api: invalid configuration")
 
+var errAPIResponseOverLimit = errors.New("llm api: response body exceeds limit")
+
 const (
 	defaultAnthropicBaseURL = "https://api.anthropic.com/"
 	defaultOpenAIBaseURL    = "https://api.openai.com/"
@@ -50,13 +52,14 @@ type APIOptions struct {
 
 // APIAdapter calls a direct provider HTTP API as an LLM adapter.
 type APIAdapter struct {
-	kind             apiKind
-	apiKey           string
-	httpClient       *http.Client
-	baseURL          *url.URL
-	maxTokens        int
-	anthropicVersion string
-	fastModeModels   []string
+	kind              apiKind
+	apiKey            string
+	httpClient        *http.Client
+	ownedOpenAIClient *http.Client
+	baseURL           *url.URL
+	maxTokens         int
+	anthropicVersion  string
+	fastModeModels    []string
 }
 
 var _ llm.Adapter = (*APIAdapter)(nil)
@@ -132,21 +135,28 @@ func newAPIAdapter(kind apiKind, opts APIOptions) (*APIAdapter, error) {
 		return nil, err
 	}
 	httpClient := opts.HTTPClient
+	var ownedOpenAIClient *http.Client
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultAPIClientTimeout}
+		if kind == apiOpenAI {
+			ownedOpenAIClient = newSingleSendOpenAIClient()
+			httpClient = ownedOpenAIClient
+		} else {
+			httpClient = &http.Client{Timeout: defaultAPIClientTimeout}
+		}
 	}
 	version := strings.TrimSpace(opts.AnthropicVersion)
 	if version == "" {
 		version = defaultAnthropicVersion
 	}
 	return &APIAdapter{
-		kind:             kind,
-		apiKey:           opts.APIKey,
-		httpClient:       httpClient,
-		baseURL:          baseURL,
-		maxTokens:        maxTokens,
-		anthropicVersion: version,
-		fastModeModels:   append([]string(nil), opts.FastModeModels...),
+		kind:              kind,
+		apiKey:            opts.APIKey,
+		httpClient:        httpClient,
+		ownedOpenAIClient: ownedOpenAIClient,
+		baseURL:           baseURL,
+		maxTokens:         maxTokens,
+		anthropicVersion:  version,
+		fastModeModels:    append([]string(nil), opts.FastModeModels...),
 	}, nil
 }
 
@@ -229,18 +239,35 @@ func (s *apiStream) run(ctx context.Context, adapter *APIAdapter, req Request) {
 	s.Finish(response, err)
 }
 
-func (a *APIAdapter) execute(ctx context.Context, req Request) (string, Response, error) {
+func (a *APIAdapter) execute(ctx context.Context, req Request) (sessionID string, response Response, resultErr error) {
+	cost := a.newCostAttempt(req)
+	defer func() { response.RequestCostEvidence = singleCostEvidence(cost) }()
 	endpoint, requestBody, err := a.buildProviderRequest(req)
 	if err != nil {
 		return "", Response{}, err
+	}
+	if cost != nil && officialResponsesEndpoint(endpoint) {
+		cost.EndpointKind = "official_global"
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(requestBody))
 	if err != nil {
 		return "", Response{}, err
 	}
 	a.applyHeaders(httpReq, req)
-
+	if cost != nil {
+		// Clearing GetBody blocks consumed-body transport/redirect replay for
+		// the owned client. Injected clients remain explicitly opaque.
+		httpReq.GetBody = nil
+		if err := ctx.Err(); err != nil {
+			return "", Response{}, err
+		}
+		cost.Dispatch = "possibly_dispatched"
+	}
 	httpResp, err := a.httpClient.Do(httpReq)
+	if cost != nil && httpResp != nil {
+		status := httpResp.StatusCode
+		cost.HTTPStatus = &status
+	}
 	if err != nil {
 		if isTransientTransportError(err) {
 			return "", Response{}, fmt.Errorf("%w: %w", ErrTransient, err)
@@ -248,9 +275,23 @@ func (a *APIAdapter) execute(ctx context.Context, req Request) (string, Response
 		return "", Response{}, err
 	}
 	defer httpResp.Body.Close()
+	if cost != nil {
+		status := httpResp.StatusCode
+		cost.HTTPStatus = &status
+	}
 	responseBody, err := readAPIResponseBody(httpResp.Body)
 	if err != nil {
+		if cost != nil {
+			cost.BodyState = "read_error"
+			if errors.Is(err, errAPIResponseOverLimit) {
+				cost.BodyState = "over_limit"
+			}
+		}
 		return "", Response{}, err
+	}
+	if cost != nil {
+		cost.BodyState = "complete"
+		observeCostEnvelope(cost, responseBody)
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode > 299 {
 		statusErr := fmt.Errorf("llm api %s: provider returned %s", a.kind, httpResp.Status)
@@ -449,7 +490,8 @@ type openAIUsage struct {
 }
 
 type openAIInputTokensDetails struct {
-	CachedTokens *int `json:"cached_tokens"`
+	CachedTokens     *int `json:"cached_tokens"`
+	CacheWriteTokens *int `json:"cache_write_tokens"`
 }
 
 func parseOpenAIResponse(body []byte) (string, Response, error) {
@@ -468,9 +510,6 @@ func parseOpenAIResponse(body []byte) (string, Response, error) {
 	if text.Len() == 0 && payload.OutputText != "" {
 		text.WriteString(payload.OutputText)
 	}
-	if text.Len() == 0 {
-		return payload.ID, Response{}, errors.New("llm api openai_api: no text output")
-	}
 	speed := ""
 	switch strings.ToLower(strings.TrimSpace(payload.ServiceTier)) {
 	case "fast", "priority":
@@ -478,15 +517,22 @@ func parseOpenAIResponse(body []byte) (string, Response, error) {
 	case "standard", "default":
 		speed = "standard"
 	}
-	return payload.ID, Response{
+	// OpenAI's input total includes cache reads and writes. Keep that total
+	// intact rather than treating cache writes as an additional input bucket.
+	response := Response{
 		StructuredOutput: []byte(text.String()),
 		Usage: Usage{
-			TokensIn:  payload.Usage.InputTokens,
-			TokensOut: payload.Usage.OutputTokens,
-			CacheRead: payload.Usage.InputTokensDetails.CachedTokens,
-			Speed:     speed,
+			TokensIn:    payload.Usage.InputTokens,
+			TokensOut:   payload.Usage.OutputTokens,
+			CacheRead:   payload.Usage.InputTokensDetails.CachedTokens,
+			CacheCreate: payload.Usage.InputTokensDetails.CacheWriteTokens,
+			Speed:       speed,
 		},
-	}, nil
+	}
+	if text.Len() == 0 {
+		return payload.ID, response, errors.New("llm api openai_api: no text output")
+	}
+	return payload.ID, response, nil
 }
 
 func readAPIResponseBody(reader io.Reader) ([]byte, error) {
@@ -495,7 +541,7 @@ func readAPIResponseBody(reader io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	if len(body) > apiResponseLogLimit {
-		return nil, errors.New("llm api: response body exceeds limit")
+		return nil, errAPIResponseOverLimit
 	}
 	return body, nil
 }

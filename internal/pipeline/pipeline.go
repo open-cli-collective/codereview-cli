@@ -2869,20 +2869,26 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 // several provider sessions, so they are deliberately not a sessionDraft: there
 // is no single session they could be written back to.
 type workstreamTotals struct {
-	model       string
-	usage       llm.Usage
-	durationMS  int64
-	startedAt   time.Time
-	completedAt time.Time
+	requestHistories    []*llm.RequestCostEvidence
+	blockLegacyEstimate bool
+	unknownRequestCost  bool
+	model               string
+	usage               llm.Usage
+	durationMS          int64
+	startedAt           time.Time
+	completedAt         time.Time
 }
 
 func draftWorkstreamTotals(draft sessionDraft) workstreamTotals {
 	return workstreamTotals{
-		model:       draft.Model,
-		usage:       draft.Response.Usage,
-		durationMS:  draft.Response.DurationMS,
-		startedAt:   draft.StartedAt,
-		completedAt: draft.CompletedAt,
+		requestHistories:    []*llm.RequestCostEvidence{llm.CloneRequestCostEvidence(draft.Response.RequestCostEvidence)},
+		blockLegacyEstimate: draft.Adapter == "openai_api" || draft.Adapter == "codex_cli" || draft.Response.RequestCostEvidence != nil,
+		unknownRequestCost:  draft.Adapter == "openai_api" || draft.Response.RequestCostEvidence != nil,
+		model:               draft.Model,
+		usage:               draft.Response.Usage,
+		durationMS:          draft.Response.DurationMS,
+		startedAt:           draft.StartedAt,
+		completedAt:         draft.CompletedAt,
 	}
 }
 
@@ -2904,6 +2910,10 @@ func combineReviewerWorkstreamTotals(drafts []sessionDraft) workstreamTotals {
 	allStandard := true
 	anySpeed := false
 	for _, draft := range drafts {
+		provenance := draftWorkstreamTotals(draft)
+		combined.requestHistories = append(combined.requestHistories, provenance.requestHistories...)
+		combined.blockLegacyEstimate = combined.blockLegacyEstimate || provenance.blockLegacyEstimate
+		combined.unknownRequestCost = combined.unknownRequestCost || provenance.unknownRequestCost
 		combined.durationMS += draft.Response.DurationMS
 		if combined.startedAt.IsZero() || !draft.StartedAt.IsZero() && draft.StartedAt.Before(combined.startedAt) {
 			combined.startedAt = draft.StartedAt
@@ -3444,10 +3454,16 @@ func workstreamUsageFromTotalsForCatalog(name string, totals workstreamTotals, c
 		CacheCreate1h: usage.CacheCreate1h,
 		CostUSD:       usage.CostUSD,
 	}
+	// Collection-only: direct OpenAI history and legacy totals remain unpriced.
+	// A custom all-band price row cannot bypass request evidence gates. Codex
+	// retains reported costs but cannot borrow a direct-API estimate.
+	if totals.unknownRequestCost {
+		workstream.CostUSD = nil
+	}
 	// When the adapter reports no cost (e.g. subscription auth), estimate it from
 	// tokens at public list prices — only for models the price table knows, so an
 	// agent's unpriced model leaves cost unavailable rather than wrong.
-	if workstream.CostUSD == nil {
+	if workstream.CostUSD == nil && !totals.blockLegacyEstimate {
 		priceUsage := pricing.Usage{
 			TokensIn: usage.TokensIn, TokensOut: usage.TokensOut, CacheRead: usage.CacheRead,
 			CacheCreate5m: usage.CacheCreate5m, CacheCreate1h: usage.CacheCreate1h,

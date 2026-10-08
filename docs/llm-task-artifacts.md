@@ -433,3 +433,73 @@ no-run lifecycle mode. Classifier failures are non-blocking: the gate warns and
 continues with normal review. Successful and failed classifier task metadata
 still lives under the prospective run artifact root so provider-session resume
 and local artifact inspection use the same lifecycle shape.
+
+## Request-Cost Observations (Collection Only)
+
+Optional `request_cost_evidence` and `request_cost_checkpoint` fields supplement
+schema 4 without changing output reuse or reviewer-tool coverage semantics. Only
+the concrete direct OpenAI Responses adapter produces v1 request observations.
+Unknown or malformed optional cost data is isolated in both metadata readers;
+valid output and reviewer-tool evidence remain available. Schemas 1/2/3 retain
+the existing rejection behavior. This change does not enable cost estimation.
+
+Each observed adapter attempt, including transient retries and structured-output
+corrections, gets a distinct ordinal. Usage and observed response identity are
+captured independently of accepted output, including no-text, incomplete,
+non-2xx and cancellation paths. Missing/null values remain unknown. Requested
+and observed model/service tier are separate. Invalid counters are diagnostic
+only. No prompt, raw output, refusal/error body, URL, header or credential is
+copied into these observations.
+
+The adapter-owned OpenAI client uses a fresh pinned standard HTTP transport,
+disables redirects and clears the replay body. Caller-supplied clients remain
+opaque. Only the actual canonical global Responses destination qualifies as
+`official_global`; gateway/custom routes remain unverified. Entering `Client.Do`
+means `possibly_dispatched`, including network errors; it does not prove a free
+request. A pre-dispatch failure is recorded separately.
+
+The lifecycle holds the same fail-fast advisory task lock across cache checking,
+checkpoint updates, invocation and metadata, including no-run mode. Reset uses
+that lock too. The bounded sidecar lives at
+`llm-tasks/.request-cost/<trimmed-task-id-sha256>.json`, outside the task directory removed
+by fingerprint resets and inside the same root covered by retention/purge.
+Before dispatch it atomically records a pending generation. After return it
+writes the final checkpoint before ledger insertion or task output/metadata.
+If the pending write fails, no adapter call starts. A failed final write leaves
+the on-disk pending marker as unknown. Cache loads never create generations or
+ledger rows. Reset reconciles metadata observations with the sidecar before
+removing metadata, retaining a known prefix even if the sidecar was lost.
+
+Histories retain at most 64 attempts and 64 finalized generation descriptors,
+16 fixed gap reasons and 256 KiB encoded checkpoints. A 4 KiB reserve keeps room
+for pending/unknown state even at capacity. Prefixes, saturating omission counts
+and gaps survive later success. The whole legacy metadata read is still
+unbounded; only its isolated cost envelope and the sidecar reads are bounded.
+
+Task-history completeness remains false: this slice does not establish a fresh
+artifact-root accounting origin. An absent directory, empty ledger, new session
+ID or successful latest request cannot establish it. Interrupted, legacy,
+opaque, conflicting, missing and overflowing observations remain unknown.
+Primary and repair histories remain separate detached values. Direct OpenAI
+costs are not passed to the old aggregate estimator; Codex cannot borrow direct
+API pricing. Existing compatibility token counters and reported-cost semantics
+are not redefined as sums of the new request history.
+
+Evidence and checkpoints have fixed-order, map-free compact JSON SHA-256
+projections with explicit nulls, normalized empty arrays, sorted gap enums and
+separate versioned digest domains. They bind scope, ordered attempts, generation
+fingerprints, pending state and omission counts. Prices are excluded.
+
+Two writes per generation do not preserve every pre-crash observation: a crash
+during an invocation may lose that generation's already observed prefix. Its
+pending marker makes the missing history explicit. The repository's atomic
+writer uses rename without file/directory fsync; no power-loss durability or
+provider-invoice completeness is claimed. Per-attempt durable checkpoints,
+fresh-origin initialization, request-local pricing and pricing receipts require
+separate implementation and verification before estimate activation.
+
+Cost-bearing metadata uses compact JSON so its durable nested-envelope size
+matches the collector/reader admission budget; unrelated legacy metadata keeps
+its existing formatting. Recovered metadata-only generations contribute a known
+lower-bound count, with missing finalized descriptors recorded as omissions and
+gaps. Their fingerprints are not reconstructed by guessing.

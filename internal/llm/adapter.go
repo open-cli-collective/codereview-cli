@@ -135,6 +135,7 @@ type Response struct {
 	Usage                Usage
 	DurationMS           int64
 	ReviewerToolEvidence *ReviewerToolEvidence
+	RequestCostEvidence  *RequestCostEvidence
 }
 
 // DiffToolStatus records the terminal state of the required reviewer diff tool.
@@ -224,9 +225,25 @@ func (e *StructuredValidationError) Is(target error) bool {
 // conversation no longer exists is retried once as a fresh conversation
 // instead of failing; callers that store the session for later reuse must
 // persist the returned SessionID, which replaces a dangling stored one.
-func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter, resumeSessionID string, req Request, decode Decoder[T]) (StructuredResult[T], error) {
+func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter, resumeSessionID string, req Request, decode Decoder[T]) (result StructuredResult[T], resultErr error) {
+	collector := newRequestCostCollector(adapter)
+	defer func() {
+		result.Response = cloneResponse(result.Response)
+		result.Response.RequestCostEvidence = collector.snapshot()
+		// Validation error payload and returned snapshots must not share mutable
+		// response evidence with each other or with the adapter.
+		var copied []StructuredValidationAttempt
+		if result.ValidationAttempts != nil {
+			copied = make([]StructuredValidationAttempt, len(result.ValidationAttempts))
+		}
+		for i, attempt := range result.ValidationAttempts {
+			attempt.Response = cloneResponse(attempt.Response)
+			copied[i] = attempt
+		}
+		result.ValidationAttempts = copied
+	}()
 	var zero T
-	sessionID, response, err := runOnceWithSession(ctx, adapter, resumeSessionID, req)
+	sessionID, response, err := runOnceWithSession(ctx, adapter, resumeSessionID, req, collector, "initial")
 	if err != nil {
 		return StructuredResult[T]{Response: response, SessionID: sessionID}, err
 	}
@@ -255,7 +272,7 @@ func RunStructuredWithSessionResume[T any](ctx context.Context, adapter Adapter,
 	if strings.TrimSpace(retryResumeSessionID) == "" && !retryReq.FreshValidationRetrySession {
 		retryResumeSessionID = resumeSessionID
 	}
-	retrySessionID, retryResponse, err := runOnceWithSession(ctx, adapter, retryResumeSessionID, retryReq)
+	retrySessionID, retryResponse, err := runOnceWithSession(ctx, adapter, retryResumeSessionID, retryReq, collector, "correction")
 	if err != nil {
 		return StructuredResult[T]{Response: retryResponse, SessionID: retrySessionID, ValidationAttempts: attempts}, err
 	}
@@ -306,10 +323,15 @@ func decodeStructuredAccepted[T any](decode Decoder[T], data []byte) (T, []byte,
 // prior context, neither of which the review depends on. Without the fallback a
 // dangling session ID fails the task outright, and a whole round of reviewers
 // can fail before doing any work while still reporting zero findings.
-func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID string, req Request) (string, Response, error) {
+func runOnceWithSession(ctx context.Context, adapter Adapter, resumeSessionID string, req Request, collector *requestCostCollector, phase string) (string, Response, error) {
+	var adapterAttempt uint32
 	sessionDropped := false
 	for attempt := 0; ; attempt++ {
+		if adapterAttempt < ^uint32(0) {
+			adapterAttempt++
+		}
 		sid, resp, err := runOnceAttempt(ctx, adapter, resumeSessionID, req)
+		collector.observe(resp, phase, adapterAttempt)
 		if err == nil {
 			return sid, resp, nil
 		}
@@ -339,15 +361,19 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 	)
 	if req.ReviewerWorkspace != nil {
 		if err := RequireReviewerWorkspace(adapter); err != nil {
-			return "", Response{}, err
+			return "", nonDispatchedCostResponse(adapter, req), err
 		}
 	}
-	if strings.TrimSpace(resumeSessionID) != "" && adapter.SupportsResume() {
+	resuming := strings.TrimSpace(resumeSessionID) != "" && adapter.SupportsResume()
+	if resuming {
 		stream, err = adapter.Resume(ctx, resumeSessionID, req)
 	} else {
 		stream, err = adapter.Start(ctx, req)
 	}
 	if err != nil {
+		if stream == nil && !resuming {
+			return "", nonDispatchedCostResponse(adapter, req), err
+		}
 		return "", Response{}, err
 	}
 	response, err := stream.Wait(ctx)
@@ -356,7 +382,15 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 
 func cloneResponse(response Response) Response {
 	response.StructuredOutput = append([]byte(nil), response.StructuredOutput...)
+	response.Usage.TokensIn = costCopy(response.Usage.TokensIn)
+	response.Usage.TokensOut = costCopy(response.Usage.TokensOut)
+	response.Usage.CacheRead = costCopy(response.Usage.CacheRead)
+	response.Usage.CacheCreate = costCopy(response.Usage.CacheCreate)
+	response.Usage.CacheCreate5m = costCopy(response.Usage.CacheCreate5m)
+	response.Usage.CacheCreate1h = costCopy(response.Usage.CacheCreate1h)
+	response.Usage.CostUSD = costCopy(response.Usage.CostUSD)
 	response.ReviewerToolEvidence = CloneReviewerToolEvidence(response.ReviewerToolEvidence)
+	response.RequestCostEvidence = CloneRequestCostEvidence(response.RequestCostEvidence)
 	return response
 }
 
