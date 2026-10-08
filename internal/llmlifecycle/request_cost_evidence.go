@@ -413,7 +413,7 @@ func boundCostCheckpoint(c *costCheckpoint) {
 		c.Generations = []costGeneration{}
 	}
 	if len(c.Generations) > maxCostGenerations {
-		c.OmittedGenerations = llm.SaturatingCostAdd(c.OmittedGenerations, uint64(len(c.Generations)-maxCostGenerations))
+		c.OmittedGenerations = llm.SaturatingCostAdd(c.OmittedGenerations, uint64(len(c.Generations[maxCostGenerations:])))
 		c.Generations = c.Generations[:maxCostGenerations]
 		costGap(c, llm.CostGapOverflow)
 	}

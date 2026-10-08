@@ -196,7 +196,7 @@ func ownedCostTestAdapter(t *testing.T, handler http.Handler) (*APIAdapter, *htt
 	pool := x509.NewCertPool()
 	pool.AddCert(server.Certificate())
 	transport.TLSClientConfig = &tls.Config{RootCAs: pool, ServerName: server.Certificate().DNSNames[0], MinVersion: tls.VersionTLS12}
-	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
 	}
 	t.Cleanup(transport.CloseIdleConnections)
@@ -205,7 +205,7 @@ func ownedCostTestAdapter(t *testing.T, handler http.Handler) (*APIAdapter, *htt
 func TestOpenAIOwnedClientStopsRedirectsAndHasNoReplayBody(t *testing.T) {
 	for _, status := range []int{301, 302, 303, 307, 308} {
 		var calls atomic.Int32
-		a, _ := ownedCostTestAdapter(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a, _ := ownedCostTestAdapter(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			calls.Add(1)
 			w.Header().Set("Location", "https://api.openai.com/again")
 			w.WriteHeader(status)
@@ -300,7 +300,7 @@ func TestOpenAIRequestCostEachMissingOrNullCounterRemainsUnknown(t *testing.T) {
 }
 func TestOpenAIRequestCostConstructionAndUnknownDeliveredTier(t *testing.T) {
 	a := costBodyAdapter(t, 200, io.NopCloser(strings.NewReader(costWire)))
-	_, response, err := a.execute(nil, Request{Model: "request"})
+	_, response, err := a.execute(nil, Request{Model: "request"}) //nolint:staticcheck // SA1012: nil deliberately tests request-construction failure before dispatch.
 	if err == nil || oneCostAttempt(t, response).Dispatch != "not_dispatched" {
 		t.Fatal("construction failure dispatched")
 	}
@@ -317,7 +317,7 @@ func TestOpenAIRequestCostConstructionAndUnknownDeliveredTier(t *testing.T) {
 }
 func TestOpenAIOwnedExplicitRetryProducesIndependentReceipts(t *testing.T) {
 	var calls atomic.Int32
-	a, _ := ownedCostTestAdapter(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	a, _ := ownedCostTestAdapter(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) == 1 {
 			w.WriteHeader(429)
 			_, _ = io.WriteString(w, `{"error":{"message":"synthetic transient"}}`)

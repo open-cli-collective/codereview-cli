@@ -25,6 +25,7 @@ const (
 // CostEvidenceGap is a finite allow-listed reason for incomplete evidence.
 type CostEvidenceGap string
 
+// Cost evidence gaps describe why observations are incomplete or untrusted.
 const (
 	CostGapMissing     CostEvidenceGap = "missing_evidence"
 	CostGapInvalid     CostEvidenceGap = "invalid_evidence"
@@ -215,7 +216,7 @@ func NormalizeRequestCostEvidence(e *RequestCostEvidence) *RequestCostEvidence {
 	}
 	for i, raw := range e.Attempts {
 		if i >= MaxRequestCostAttempts {
-			c.DroppedAttempts = SaturatingCostAdd(c.DroppedAttempts, uint64(len(e.Attempts)-i))
+			c.DroppedAttempts = SaturatingCostAdd(c.DroppedAttempts, uint64(len(e.Attempts[i:])))
 			c.Truncated = true
 			break
 		}

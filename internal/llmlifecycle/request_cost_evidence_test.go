@@ -622,7 +622,12 @@ func TestRequestCostResetInvalidMetadataRunIDKeepsNewerValidSidecar(t *testing.T
 			t.Fatal(err)
 		}
 		metadataPath, _ := req.Paths.Metadata(req.TaskID)
-		data, err := os.ReadFile(metadataPath)
+		metadataRoot, err := os.OpenRoot(filepath.Dir(metadataPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := metadataRoot.ReadFile(filepath.Base(metadataPath))
+		_ = metadataRoot.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -683,7 +688,12 @@ func TestRequestCostResetUntrustedBindingCannotDisplaceNewerSidecar(t *testing.T
 						t.Fatal(err)
 					}
 					metadataPath, _ := req.Paths.Metadata(req.TaskID)
-					data, err := os.ReadFile(metadataPath)
+					metadataRoot, err := os.OpenRoot(filepath.Dir(metadataPath))
+					if err != nil {
+						t.Fatal(err)
+					}
+					data, err := metadataRoot.ReadFile(filepath.Base(metadataPath))
+					_ = metadataRoot.Close()
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -68,7 +68,7 @@ func TestRequestCostCollectorValidationAndTerminalPaths(t *testing.T) {
 		name         string
 		second       FakeResult
 		callback     bool
-		wantAttempts int
+		wantAttempts uint64
 		wantErr      bool
 	}{
 		{"correction success", FakeResult{Response: costResponse("B", `{"ok":true}`)}, false, 2, false},
@@ -91,7 +91,7 @@ func TestRequestCostCollectorValidationAndTerminalPaths(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 			e := got.Response.RequestCostEvidence
-			if e == nil || len(e.Attempts) != tc.wantAttempts || e.AttemptsObserved != uint64(tc.wantAttempts) {
+			if e == nil || uint64(len(e.Attempts)) != tc.wantAttempts || e.AttemptsObserved != tc.wantAttempts {
 				t.Fatalf("history = %#v", e)
 			}
 			if !tc.wantErr && string(got.AcceptedOutput) != `{"ok":true}` {
@@ -178,10 +178,10 @@ func TestRequestCostBoundsCounterSaturationAndDetachedToolTrace(t *testing.T) {
 	}
 	original := costResponse("clone", "")
 	original.ReviewerToolEvidence = &ReviewerToolEvidence{DiffStatus: DiffToolStatusSucceeded}
-	copy := cloneResponse(original)
-	copy.RequestCostEvidence.Attempts[0].Issues = append(copy.RequestCostEvidence.Attempts[0].Issues, CostGapInvalid)
-	*copy.RequestCostEvidence.Attempts[0].Usage.CacheWriteTokens = 9
-	copy.ReviewerToolEvidence.DiffStatus = DiffToolStatusFailed
+	cloned := cloneResponse(original)
+	cloned.RequestCostEvidence.Attempts[0].Issues = append(cloned.RequestCostEvidence.Attempts[0].Issues, CostGapInvalid)
+	*cloned.RequestCostEvidence.Attempts[0].Usage.CacheWriteTokens = 9
+	cloned.ReviewerToolEvidence.DiffStatus = DiffToolStatusFailed
 	if *original.RequestCostEvidence.Attempts[0].Usage.CacheWriteTokens != 0 || original.ReviewerToolEvidence.DiffStatus != DiffToolStatusSucceeded {
 		t.Fatal("response ownership regression")
 	}
