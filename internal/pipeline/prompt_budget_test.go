@@ -40,6 +40,7 @@ func TestPromptBudgetRejectionReceiptIsSafePrivateAndReconciles(t *testing.T) {
 	if got := fileMode(t, path); got != 0o600 {
 		t.Fatalf("receipt file mode = %#o, want 0600", got)
 	}
+	// #nosec G304 -- receipt path is under the test's t.TempDir root.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read receipt: %v", err)
@@ -135,6 +136,7 @@ func readPromptBudgetReceiptForTest(t *testing.T, root, taskID string) (promptBu
 	if got := fileMode(t, path); got != 0o600 {
 		t.Fatalf("receipt file mode = %#o, want 0600", got)
 	}
+	// #nosec G304 -- callers provide artifact roots from test-owned temporary directories.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read budget receipt: %v", err)

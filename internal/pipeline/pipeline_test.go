@@ -7013,7 +7013,7 @@ func (a *metadataHeavyAdapter) Start(ctx context.Context, req llm.Request) (llm.
 		return nil, fmt.Errorf("decode fake metadata-heavy prompt: %w", err)
 	}
 	var output string
-	sessionID := "metadata-heavy"
+	var sessionID string
 	switch payload.Schema {
 	case "selection":
 		rows := make([]map[string]any, 0, len(payload.Agents))
@@ -7049,7 +7049,7 @@ func (a *metadataHeavyAdapter) Start(ctx context.Context, req llm.Request) (llm.
 		output = discussionSummaryJSON(nil, nil)
 		sessionID = "metadata-heavy-dossier"
 	}
-	a.FakeAdapter.Queue(fakeLLMResult(sessionID, output, 8, 1))
+	a.Queue(fakeLLMResult(sessionID, output, 8, 1))
 	return a.FakeAdapter.Start(ctx, req)
 }
 

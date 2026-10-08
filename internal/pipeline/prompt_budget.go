@@ -113,6 +113,7 @@ func (opts Options) checkAndPersistPromptBudget(paths ArtifactPaths, taskID, pha
 	if mkdirErr := os.MkdirAll(root, 0o700); mkdirErr != nil {
 		return fmt.Errorf("%w (diagnostic persistence failed)", budgetErr)
 	}
+	// #nosec G302 -- directory requires owner-only traversal.
 	if chmodErr := os.Chmod(root, 0o700); chmodErr != nil {
 		return fmt.Errorf("%w (diagnostic persistence failed)", budgetErr)
 	}
