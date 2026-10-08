@@ -61,6 +61,18 @@ type Request struct {
 	// pull-request heads (gitprovider.ProviderCaps.HeadRefNamespace). Empty
 	// means the GitHub "pull" namespace.
 	HeadRefNamespace string
+	// Offline removes the checkout's remotes once the review commits are
+	// fetched, so nothing cloned from it points back at the git host.
+	Offline bool
+}
+
+// ReviewerOptions adjusts one reviewer workspace.
+type ReviewerOptions struct {
+	// SymlinkMetadata carries the pinned metadata identity into the workspace.
+	SymlinkMetadata symlinkmetadata.Artifact
+	// Offline removes the workspace clone's remotes and asks the adapter to
+	// deny reviewer tools that reach the network.
+	Offline bool
 }
 
 type metadataArtifact struct {
@@ -107,6 +119,16 @@ func Prepare(ctx context.Context, deps Deps, req Request) error {
 
 // Prepare creates or reuses a clean checkout pinned to the requested commits.
 func (p *RunPreparer) Prepare(ctx context.Context, req Request) error {
+	if err := p.prepare(ctx, req); err != nil {
+		return err
+	}
+	if req.Offline {
+		return removeRemotes(ctx, p.deps, req.Artifacts.WorkbenchRepoDir)
+	}
+	return nil
+}
+
+func (p *RunPreparer) prepare(ctx context.Context, req Request) error {
 	if reusable, err := p.reusable(ctx, req); err != nil {
 		return err
 	} else if reusable {
@@ -238,6 +260,21 @@ func (p *RunPreparer) reusable(ctx context.Context, req Request) (bool, error) {
 	return true, nil
 }
 
+// removeRemotes deletes every configured remote. Fetches in Prepare pass the
+// remote URL directly, so nothing after the fetch depends on a named remote.
+func removeRemotes(ctx context.Context, deps Deps, repoDir string) error {
+	out, err := deps.gitCommand(ctx, repoDir, "remote")
+	if err != nil {
+		return fmt.Errorf("pipeline: list workbench remotes: %w", err)
+	}
+	for _, name := range strings.Fields(string(out)) {
+		if _, err := deps.gitCommand(ctx, repoDir, "remote", "remove", name); err != nil {
+			return fmt.Errorf("pipeline: remove workbench remote %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // refPresent reports whether ref resolves to a commit in repoDir.
 func refPresent(ctx context.Context, deps Deps, repoDir, ref string) bool {
 	_, err := deps.gitCommand(ctx, repoDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
@@ -360,11 +397,11 @@ func verifyClean(ctx context.Context, deps Deps, repoDir string, headSHA string)
 }
 
 // PrepareReviewerRequest creates a disposable reviewer workspace and LLM request.
-func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, model, effort, prompt, logPath string, symlinkMetadata ...symlinkmetadata.Artifact) (llm.Request, func() error, error) {
+func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, model, effort, prompt, logPath string, options ...ReviewerOptions) (llm.Request, func() error, error) {
 	if err := llm.RequireReviewerWorkspace(adapter); err != nil {
 		return llm.Request{}, nil, fmt.Errorf("pipeline: %w", err)
 	}
-	workspace, cleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, symlinkMetadata...)
+	workspace, cleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, options...)
 	if err != nil {
 		return llm.Request{}, nil, err
 	}
@@ -387,7 +424,7 @@ func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter,
 			if err := cleanupCurrent(); err != nil {
 				return fmt.Errorf("pipeline: cleanup reviewer workspace before retry: %w", err)
 			}
-			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, symlinkMetadata...)
+			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, options...)
 			if err != nil {
 				return err
 			}
@@ -423,7 +460,11 @@ func ReviewerWorkspaceSegment(agentID string) string {
 	return segment + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
-func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int, symlinkMetadata ...symlinkmetadata.Artifact) (llm.ReviewerWorkspaceRequest, func() error, error) {
+func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int, options ...ReviewerOptions) (llm.ReviewerWorkspaceRequest, func() error, error) {
+	offline := false
+	for _, option := range options {
+		offline = offline || option.Offline
+	}
 	if strings.TrimSpace(artifacts.WorkbenchRepoDir) == "" {
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: workbench repo dir is required for reviewer workspace")
 	}
@@ -470,6 +511,12 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		_ = cleanup()
 		return llm.ReviewerWorkspaceRequest{}, nil, err
 	}
+	if offline {
+		if err := removeRemotes(ctx, deps, workspaceRepo); err != nil {
+			_ = cleanup()
+			return llm.ReviewerWorkspaceRequest{}, nil, err
+		}
+	}
 	if len(allowedFiles) > 0 {
 		for _, path := range allowedFiles {
 			clean := filepath.Clean(strings.TrimSpace(path))
@@ -485,9 +532,10 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		DiffPath:           artifacts.DiffPatch,
 		AllowedFiles:       append([]string(nil), allowedFiles...),
 		MaxToolOutputBytes: maxToolOutputBytes,
+		NoNetwork:          offline,
 	}
-	if len(symlinkMetadata) > 0 {
-		metadata := symlinkMetadata[0]
+	if len(options) > 0 {
+		metadata := options[0].SymlinkMetadata
 		if metadata.Digest != "" || metadata.BaseSHA != "" || metadata.HeadSHA != "" || len(metadata.Links) > 0 {
 			if strings.TrimSpace(artifacts.SymlinkMetadataJSON) == "" || metadata.Digest == "" || metadata.BaseSHA == "" || metadata.HeadSHA == "" {
 				_ = cleanup()

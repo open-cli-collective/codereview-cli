@@ -591,6 +591,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--dry-run", "--json",
 		"--review-base-sha", "1111111",
 		"--review-head-sha", "2222222",
+		"--without-discussion",
 		"--selection-model", "claude-sonnet-4-6",
 		"--selection-effort", "high",
 		"--selection-prompt", got.SelectedCandidates[0].Stages.Selection.Prompt.Resolved,
@@ -603,7 +604,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 	if strings.Join(invocations[1].args, "\x00") != strings.Join(wantSecondArgs, "\x00") {
 		t.Fatalf("second args = %#v, want %#v", invocations[1].args, wantSecondArgs)
 	}
-	if len(got.SelectedCases) != 2 || got.SelectedCases[1].ReviewBaseSHA != "1111111" || got.SelectedCases[1].ReviewHeadSHA != "2222222" {
+	if len(got.SelectedCases) != 2 || got.SelectedCases[0].WithoutDiscussion || !got.SelectedCases[1].WithoutDiscussion || got.SelectedCases[1].ReviewBaseSHA != "1111111" || got.SelectedCases[1].ReviewHeadSHA != "2222222" {
 		t.Fatalf("selected cases = %#v, want review SHAs on case_two", got.SelectedCases)
 	}
 	wantThirdArgs := []string{
@@ -628,6 +629,7 @@ func TestRunExecutesSelectedMatrixAndWritesArtifacts(t *testing.T) {
 		"--dry-run", "--json",
 		"--review-base-sha", "1111111",
 		"--review-head-sha", "2222222",
+		"--without-discussion",
 		"--selection-model", "kimi",
 		"--selection-effort", "low",
 		"--reviewer-model", "kimi",
@@ -1234,14 +1236,15 @@ func reviewDryRunJSONWithArtifact(t *testing.T, runID, artifactPath string, seve
 	}
 	data, err := json.Marshal(view.ReviewDryRun{
 		Run: view.ReviewRun{
-			RunID:        runID,
-			PRURL:        "https://github.com/open-cli-collective/codereview-cli/pull/1",
-			PRKey:        "github.com_open-cli-collective_codereview-cli_1",
-			PostMode:     "dry_run",
-			Outcome:      "dry_run",
-			ArtifactPath: artifactPath,
-			BaseSHA:      "review-base",
-			HeadSHA:      "review-head",
+			RunID:             runID,
+			PRURL:             "https://github.com/open-cli-collective/codereview-cli/pull/1",
+			PRKey:             "github.com_open-cli-collective_codereview-cli_1",
+			PostMode:          "dry_run",
+			Outcome:           "dry_run",
+			ArtifactPath:      artifactPath,
+			WithoutDiscussion: true,
+			BaseSHA:           "review-base",
+			HeadSHA:           "review-head",
 		},
 		Findings: findings,
 		Artifacts: view.ReviewArtifacts{

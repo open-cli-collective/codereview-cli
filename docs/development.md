@@ -90,14 +90,90 @@ progress interface rather than importing Cobra or root options.
 ```bash
 make build   # compile the binary
 make test    # go test ./...
+make test-race # repeated race checks for ledger/dbmig
 make lint    # golangci-lint run
 make tidy    # go mod tidy and verify go.mod is unchanged
 make deps    # download and verify Go modules
 make check   # tidy + fmt + lint + test + build
 make clean   # remove build artifacts
+make test-pi-runtime  # installed Pi runtime gate (see Pi Runtime Gate)
 ```
 
 `make snapshot` runs a local GoReleaser snapshot build without publishing.
+
+### Concurrency checks
+
+`make test-race` runs all tests in `internal/ledger` and `internal/dbmig` under
+the Go race detector with 25 repetitions. This includes concurrent ledger
+startup and allocation, the immediate transaction-lock DSN contract, and
+migration version re-checks. Repeating the existing contention tests makes
+timing-dependent failures more likely to surface without applying race
+detection to the entire suite.
+
+The target sets test `GOMAXPROCS` to four with `-cpu=4` and caps tests using
+`t.Parallel` at four with `-parallel=4`. Contention-test worker goroutines
+remain bounded by their own fixture counts. Packages run serially, with a
+five-minute timeout per package. The target requires
+`CGO_ENABLED=1` and a C compiler, even though the SQLite driver itself is
+pure Go. CI runs the same target in the separate `test-race` job on pull
+requests and pushes to `main`, with a 20-minute job timeout. The job uses the
+same pinned shared test action as `test`, including Go version selection from
+`go.mod` and the action's default dependency/build caching. Existing required
+check names and branch-protection settings are unchanged; requiring the new
+check is a separate maintainer decision after it has run successfully.
+
+## Pi Runtime Gate
+
+`make test-pi-runtime` runs the `pi_rpc` adapter against the installed Pi on
+`PATH` instead of the fake Pi the ordinary adapter tests use. It sets
+`CR_PI_RUNTIME_VERSION` to the Makefile's `PI_RUNTIME_VERSION` (currently
+`1.0.0`, printed by `make -s pi-runtime-version`). Both targets fail when
+`PI_RUNTIME_VERSION` is blank or holds more than one version. When
+`CR_PI_RUNTIME_VERSION` is set, the runtime tests fail if it is blank, if Pi is
+missing, or if `pi --version` reports any other version. When it is unset, as in
+`make test`, they skip. To install the pinned runtime:
+
+```bash
+pi_version="$(make -s pi-runtime-version)"
+npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${pi_version}"
+make test-pi-runtime
+```
+
+The tests make no paid or external calls:
+
+- Each test gives Pi a fresh `PI_CODING_AGENT_DIR` and `HOME` with
+  `PI_OFFLINE=1`.
+- The only model is a scripted OpenAI-compatible endpoint on loopback, with a
+  dummy key stored in the selected directory's `auth.json`.
+- Reviewer tool calls run the real `__pi-review-tool` helper, dispatched to the
+  test binary by `TestMain`.
+- Hostile instructions, extensions, and MCP servers are planted in the
+  actually selected agent directory as well as under the fixture `HOME`'s
+  default `.pi/agent` location and in the reviewer checkout. Hostile skills
+  are also planted under the fixture home and checkout. The tests fail if any
+  resource reaches a provider request or runs.
+- Both structured and reviewer cases plant each selected `AGENTS.md`,
+  `CLAUDE.md`, `AGENTS.override.md`, `SYSTEM.md`, and `APPEND_SYSTEM.md`
+  independently, so context-file precedence cannot hide an uncovered input.
+
+The Pi 1.0 prompt-resource contract is explicit: `--no-context-files` disables
+context discovery, CR's `--system-prompt` suppresses `SYSTEM.md` discovery,
+and `--append-system-prompt` with an empty argument supplies an explicit CLI
+source list that suppresses `APPEND_SYSTEM.md` discovery while contributing no
+text. See Pi's pinned [argument parser](https://github.com/earendil-works/pi/blob/v1.0.0/packages/coding-agent/src/cli/args.ts)
+and [resource loader](https://github.com/earendil-works/pi/blob/v1.0.0/packages/coding-agent/src/core/resource-loader.ts).
+
+CR does not redirect `PI_CODING_AGENT_DIR`, `HOME`, or Pi's credential store to
+achieve isolation. Authentication, model configuration, and OAuth refresh
+persistence continue to use the selected directory. The ordinary subprocess
+test verifies that a synthetic auth-state update remains in the selected store
+after scratch cleanup; it does not exercise a real OAuth provider or refresh.
+All installed-runtime evidence is local/mock-provider evidence, not deployed
+validation or an operating-system sandbox claim.
+
+The CI `pi-runtime` job installs the Makefile version on the Node release it
+pins and runs the same target. It is not a required check. To move to a new Pi
+release, change `PI_RUNTIME_VERSION` and run the target locally first.
 
 ## Repo-Local Shape
 

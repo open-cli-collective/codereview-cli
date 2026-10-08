@@ -119,15 +119,32 @@ cr init --non-interactive \
 ```
 
 Setup with Pi's local RPC runtime. Install Pi's coding agent and make sure the
-`pi` binary is available on `PATH` before running `cr review`. New installs
-should use the current npm package (`@earendil-works/pi-coding-agent`); existing
-installs from the previous npm scope can also work when CR's compatibility
-preflight confirms the reviewer controls it requires: RPC/system-prompt mode;
-`--no-builtin-tools` with an exact `--tools` allowlist; explicit `--extension` loading while
-`--no-extensions` disables discovery; and `--no-context-files`, `--no-approve`,
-`--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-session`.
-CR preflights these capabilities before starting a Pi reviewer and returns an
+`pi` binary is available on `PATH` before running `cr review`. Use Pi 1.0 or
+newer from the current npm package (`@earendil-works/pi-coding-agent`). CR
+relies on Pi 1.0's RPC completion contract: it keeps reading events through
+automatic retries and compaction recovery until `agent_settled`, takes the
+answer only from the final completed assistant message, and sums usage from
+each completed assistant message and compaction summary. A final provider
+error or abort fails the task with Pi's diagnostic. Older runtimes, including
+installs from the previous npm scope, that end a run without `agent_settled`
+fail with an incompatible-runtime error after a short grace period instead of
+returning a result.
+
+CR also preflights the reviewer controls it requires before starting a Pi
+reviewer: RPC/system-prompt mode; `--no-builtin-tools` with an exact `--tools`
+allowlist; explicit `--extension` loading while `--no-extensions` disables
+discovery; and `--no-context-files`, `--no-approve`, `--no-skills`,
+`--no-prompt-templates`, `--no-themes`, and `--no-session`. It returns an
 incompatible-runtime error when any control is unavailable.
+
+Every CR-owned Pi request disables `AGENTS.md`/`CLAUDE.md` context discovery,
+supplies its own system prompt, and passes an explicit empty
+`--append-system-prompt` source. This also suppresses ambient `SYSTEM.md` and
+`APPEND_SYSTEM.md` inputs, including those in the selected agent directory.
+CR leaves Pi's selected agent directory and authentication storage in place;
+credentials are never copied into disposable scratch state, so Pi can persist
+OAuth refresh updates to its original store. Resource discovery remains
+disabled, and only reviewers load the CR-owned read-only tool extension.
 
 ```bash
 cr init --non-interactive \
@@ -1235,6 +1252,7 @@ Review selection and execution flags:
 | `--reviewer-effort <effort>` | Override reviewer-stage effort with `low`, `medium`, `high`, `xhigh`, or `max`, subject to runtime support. Available for dry-run, no-post, and live reviews. |
 | `--review-base-sha <sha>` | Review this base commit SHA instead of the PR's current base SHA. Requires `--review-head-sha` and `--dry-run` or `--no-post`. |
 | `--review-head-sha <sha>` | Review this head commit SHA instead of the PR's current head SHA. Requires `--review-base-sha` and `--dry-run` or `--no-post`. |
+| `--without-discussion` | Replay the pinned review as a first pass. cr reads no review threads, thread outcomes, issue comments, or prior reviews, and neither resumes nor updates the PR's orchestrator session or reviewer cohort sessions, so the discussion is not in any selection, reviewer, or rollup prompt; the PR title, description, and diff still are. Reviewers also get a narrower tool surface: the review checkouts have no git remotes, `claude_cli` reviewers are denied WebFetch, WebSearch, and Bash commands such as `gh`, `curl`, `wget`, and `git fetch`/`pull`/`ls-remote`, and `codex_cli` reviewers run with web search and sandbox network access off. That blocks the obvious lookups but is not a network sandbox, so a reviewer with a shell could still reach the network another way. The run marker (`review-run.json`), dossier discussion artifacts, and `--json` run output record `without_discussion: true`, and such a run never resumes an incomplete run made with discussion (or the reverse). Requires `--review-base-sha`, `--review-head-sha`, and `--dry-run` or `--no-post`; cannot be combined with `--fresh-session`. |
 | `--session <name>` | Override the PR's default orchestrator session with a named live-review session. Reviewer cohorts remain PR-scoped. Not allowed with `--dry-run`, `--no-post`, or `--retry-posts`. |
 
 Review progress on stderr reports the merged reviewer catalog, final selected

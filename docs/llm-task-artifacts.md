@@ -42,12 +42,16 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 ## Schema Version
 
-`schema_version` is currently `3`. Version 2 added the relocation/context
-coverage contract. Version 3 adds the pinned symlink metadata digest and
+`schema_version` is currently `4`. Version 2 added the relocation/context
+coverage contract. Version 3 added the pinned symlink metadata digest and
 inspection-contract version to reviewer, coverage-repair, and rollup resume
-inputs. Schema versions 1 and 2 are rejected for reuse and require rerunning
-the task; old metadata is never treated as safe merely because the prompt or
-assignment count appears unchanged.
+inputs. Version 4 adds bounded per-call reviewer tool telemetry, including the
+explicit distinction between regular-file and symlink-metadata read views.
+Schema versions 1, 2, and 3 are rejected for reuse and require rerunning the task,
+so old successful Pi tasks cannot silently reuse output without this collection
+contract. The schema version participates in the input fingerprint. Old
+metadata is never treated as safe merely because the prompt or assignment
+count appears unchanged.
 
 Bump it when changing any load-bearing field, status value, fingerprint input,
 task identity, or resume rule in a way that could make an in-flight run unsafe
@@ -112,8 +116,9 @@ differ.
 reuse the output only when the metadata schema and input fingerprint still match
 the current task.
 
-`failed_isolated` is for reviewer-local LLM failures while the caller context is
-still valid. This includes structured validation failures and provider failures
+`failed_isolated` is for reviewer-local LLM failures and review-time thread
+analysis failures while the caller context is still valid. This includes
+structured validation failures and provider failures
 after a task provider session has started. Provider start failures with no
 session are treated as blocking because they can indicate auth, quota, or other
 systemic adapter problems. The failed reviewer is treated as
@@ -121,6 +126,37 @@ dependency-satisfied for downstream rollup, and the rollup receives a
 diagnostic. Sibling reviewers continue to run. A review with any isolated
 reviewer failure must not approve; the final event is clamped to at least
 `comment`.
+
+Review-time thread analysis uses the same isolation boundary. An isolated thread
+failure leaves that thread untouched, emits a warning, and appears under
+**Unanalyzed Threads** in the posted rollup. Public diagnostics report total
+counts and at most five deterministic examples, with each ID and diagnostic
+sampled to 500 Unicode runes. The complete `thread_analysis_failures` collection
+remains in the dry-run JSON summary, and every failure remains in the local
+per-thread task artifacts. Successful sibling analyses still produce replies and
+resolutions, and reviewer execution continues. Proposed selection actions for a
+failed thread are suppressed. Any unanalyzed thread withholds an otherwise
+approving review, even when the reviewers inspected every changed file.
+
+Matching isolated thread failures are reused when resuming an interrupted run;
+resume does not spend another provider call on them. Use `--rerun` to retry in a
+fresh run. Existing `failed_blocking` thread tasks still retry on resume, and
+matching successful analyses remain cached. Public diagnostics do not echo
+rejected model values or provider error text; detailed errors remain in the local
+task artifacts. Cancellation, provider failures without execution evidence,
+stale or corrupt artifacts, and persistence or checkpoint errors remain
+blocking. Response-only `cr respond` retains its blocking thread-analysis
+behavior.
+
+The synthesis prompt includes bounded failure counts and examples plus a digest
+of the complete typed thread failure evidence when present. Its fingerprint
+therefore changes even when an omitted failure changes. The existing coverage
+artifact, relocation manifest, context contract, and pinned symlink metadata
+inspection dependencies remain intact. Prompts without thread failures remain
+unchanged, preserving reuse of existing successful synthesis tasks. This change
+requires no additional task-metadata schema bump: existing blocking tasks retain
+their retry semantics, and new isolated thread tasks use the existing status
+contract.
 
 `failed_blocking` means the task prevents dependent phases from safely running.
 Selection and rollup failures are blocking. `reviewrun` is the sole owner of
@@ -174,12 +210,80 @@ The lifecycle persists this evidence in metadata and restores it when loading
 a cached task, so reusing successful output preserves the tool state used to
 assess coverage and approval.
 
-In schema version `2`, an absent `reviewer_tool_evidence` field means no
+In schema version `4`, an absent `reviewer_tool_evidence` field means no
 adapter-provided evidence is available. It is distinct from explicit
 `not_invoked` evidence: absence does not trigger the tool-evidence coverage
 check, but the normal coverage checks for skipped, missing, and unassigned
-files still apply. Version 1 metadata fails the schema check before any task
+files still apply. Version 1, 2, or 3 metadata fails the schema check before any task
 output can be reused.
+
+### Bounded execution trace
+
+Pi reviewer invocations also persist `reviewer_tool_evidence.trace`, version
+`1`, source `pi_rpc`. This trace records only actual `tool_execution_start` and
+`tool_execution_end` events for `cr_read` and `cr_diff`. Model tool-call text,
+`inspected_files` claims, searches, and directory listings do not create file
+read evidence. Other adapters, including subprocess adapters, leave evidence
+absent; an absent trace means this per-call contract is unsupported/unavailable,
+not that no calls happened. A present empty `calls` array means no supported
+execution events were observed during that invocation.
+
+Each call retains its exact bounded `call_id`, tool, observed start/end flags,
+requested byte offset/limit, and `succeeded`, `failed`, or `incomplete` outcome.
+Success requires matching start/end call identity and an explicit non-error
+execution outcome. An unmatched end, missing end/identity/outcome, duplicate
+identity, or mismatched tool cannot establish success. A stable
+`provenance_issue` explains missing or ambiguous observations without copying
+raw arguments, tool output, or failure text into the trace.
+
+For `cr_read`, `path` is the unchanged canonical repository-relative argument.
+Absolute, traversing, VCS metadata, noncanonical, or unavailable paths are
+omitted with a provenance issue rather than normalized into another file's
+evidence. This collection is independent of reviewer assignments: context
+reads can be recorded without receiving assignment coverage. `read_view` is
+`file` for an ordinary read or `symlink` for an explicit `view="symlink"`
+request. Unavailable arguments or an invalid explicit view leave `read_view`
+absent rather than assuming a file-body read. Symlink-view ranges cover pinned
+metadata only: they do not read a destination body or a head regular-file body for a base-only
+symlink transition. The trace does not duplicate pinned link payloads, digests,
+target resolution, or payload-omission evidence from the symlink artifact.
+Tool success alone does not establish that a non-omitted link payload was read.
+`cr_diff` reads the fixed pinned diff and has no path parameter, so its entries are always
+unattributed to individual files. Its success never fabricates a per-file read.
+
+`output`, when present, is CR-extension-reported transport byte count and
+truncation state. Absence means unknown. `output.truncated: false` does not mean
+a complete file/diff was returned: the helper may have selected a bounded
+range. Range headers in returned text are not parsed as provenance, because
+repository content itself can contain those strings. Zero requested offset and
+limit select the helper's default bounded read, not unbounded/full inspection.
+
+The collector retains at most 256 calls and 64 KiB of combined identity/path
+bytes. IDs are limited to 256 bytes and paths to 4096 bytes. Identity/path
+strings are omitted instead of shortened into misleading identities.
+`truncated` records collection limits, and `dropped_events` counts events
+discarded at the record/identity budget. End events for already retained calls
+can still complete those calls after the cap. `stream_complete` requires a
+successful `agent_settled` result, clean parse/process exit, and an uncanceled
+task context; a complete stream can still contain incomplete calls. The trace
+has its own bound and survives RPC/stderr log caps.
+
+Lifecycle metadata preserves the terminal invocation's trace for success,
+isolated failure, and cache reload. Each provider invocation/validation retry
+owns a separate trace; a fresh or resumed call does not inherit or union tool
+evidence from an earlier invocation. Pi itself still does not support provider
+session resume. Mutable trace snapshots are copied at response and lifecycle
+boundaries.
+
+This is collection-only telemetry. A successful call is not proof that the
+reviewer read the entire file, understood it, or meaningfully inspected it.
+The existing diff gate, symlink inspection contract, and coverage/approval
+behavior are unchanged. The separate structured model-output schema remains
+version `1`; only durable task metadata advances to version `4`. Per-file
+reconciliation remains a separate opt-in follow-up; it must account for missing
+or truncated evidence and distinguish assigned body inspection, relocation
+impact assessment, and supporting context. `coverage.json` remains the existing
+coverage artifact; the trace does not create a competing coverage format.
 
 ## Relocation and Context Coverage
 
@@ -362,3 +466,73 @@ no-run lifecycle mode. Classifier failures are non-blocking: the gate warns and
 continues with normal review. Successful and failed classifier task metadata
 still lives under the prospective run artifact root so provider-session resume
 and local artifact inspection use the same lifecycle shape.
+
+## Request-Cost Observations (Collection Only)
+
+Optional `request_cost_evidence` and `request_cost_checkpoint` fields supplement
+schema 4 without changing output reuse or reviewer-tool coverage semantics. Only
+the concrete direct OpenAI Responses adapter produces v1 request observations.
+Unknown or malformed optional cost data is isolated in both metadata readers;
+valid output and reviewer-tool evidence remain available. Schemas 1/2/3 retain
+the existing rejection behavior. This change does not enable cost estimation.
+
+Each observed adapter attempt, including transient retries and structured-output
+corrections, gets a distinct ordinal. Usage and observed response identity are
+captured independently of accepted output, including no-text, incomplete,
+non-2xx and cancellation paths. Missing/null values remain unknown. Requested
+and observed model/service tier are separate. Invalid counters are diagnostic
+only. No prompt, raw output, refusal/error body, URL, header or credential is
+copied into these observations.
+
+The adapter-owned OpenAI client uses a fresh pinned standard HTTP transport,
+disables redirects and clears the replay body. Caller-supplied clients remain
+opaque. Only the actual canonical global Responses destination qualifies as
+`official_global`; gateway/custom routes remain unverified. Entering `Client.Do`
+means `possibly_dispatched`, including network errors; it does not prove a free
+request. A pre-dispatch failure is recorded separately.
+
+The lifecycle holds the same fail-fast advisory task lock across cache checking,
+checkpoint updates, invocation and metadata, including no-run mode. Reset uses
+that lock too. The bounded sidecar lives at
+`llm-tasks/.request-cost/<trimmed-task-id-sha256>.json`, outside the task directory removed
+by fingerprint resets and inside the same root covered by retention/purge.
+Before dispatch it atomically records a pending generation. After return it
+writes the final checkpoint before ledger insertion or task output/metadata.
+If the pending write fails, no adapter call starts. A failed final write leaves
+the on-disk pending marker as unknown. Cache loads never create generations or
+ledger rows. Reset reconciles metadata observations with the sidecar before
+removing metadata, retaining a known prefix even if the sidecar was lost.
+
+Histories retain at most 64 attempts and 64 finalized generation descriptors,
+16 fixed gap reasons and 256 KiB encoded checkpoints. A 4 KiB reserve keeps room
+for pending/unknown state even at capacity. Prefixes, saturating omission counts
+and gaps survive later success. The whole legacy metadata read is still
+unbounded; only its isolated cost envelope and the sidecar reads are bounded.
+
+Task-history completeness remains false: this slice does not establish a fresh
+artifact-root accounting origin. An absent directory, empty ledger, new session
+ID or successful latest request cannot establish it. Interrupted, legacy,
+opaque, conflicting, missing and overflowing observations remain unknown.
+Primary and repair histories remain separate detached values. Direct OpenAI
+costs are not passed to the old aggregate estimator; Codex cannot borrow direct
+API pricing. Existing compatibility token counters and reported-cost semantics
+are not redefined as sums of the new request history.
+
+Evidence and checkpoints have fixed-order, map-free compact JSON SHA-256
+projections with explicit nulls, normalized empty arrays, sorted gap enums and
+separate versioned digest domains. They bind scope, ordered attempts, generation
+fingerprints, pending state and omission counts. Prices are excluded.
+
+Two writes per generation do not preserve every pre-crash observation: a crash
+during an invocation may lose that generation's already observed prefix. Its
+pending marker makes the missing history explicit. The repository's atomic
+writer uses rename without file/directory fsync; no power-loss durability or
+provider-invoice completeness is claimed. Per-attempt durable checkpoints,
+fresh-origin initialization, request-local pricing and pricing receipts require
+separate implementation and verification before estimate activation.
+
+Cost-bearing metadata uses compact JSON so its durable nested-envelope size
+matches the collector/reader admission budget; unrelated legacy metadata keeps
+its existing formatting. Recovered metadata-only generations contribute a known
+lower-bound count, with missing finalized descriptors recorded as omissions and
+gaps. Their fingerprints are not reconstructed by guessing.

@@ -56,3 +56,55 @@ build's own test hook passed. OpenAI context-banded estimates remain unknown
 when usage metadata cannot identify the applicable band; the published rows
 are still visible through `catalog show`. Fast and ultrafast rows describe
 verified capabilities, while only adapter mappings can consume them.
+
+## Request-pricing schema and activation gate
+
+Catalog schema 2 appends five pricing CSV columns, in order: `runtime_id`,
+`observed_service_tiers`, `input_tokens_min_inclusive`,
+`input_tokens_max_exclusive`, and `rate_application`. The schema-1 reader keeps
+its original exact 11-column header and produces no request bindings. Schema 2
+requires the exact extended header, with no leading, trailing or quoted name
+whitespace. Schema-1 historical header/cell handling is preserved. Data cells
+keep their established whitespace trimming in either schema; header whitespace
+must never erase populated bindings or bounds. Old binaries reject schema 2; coordinate
+published update-catalog rollout with binary rollout. A failed explicit update
+keeps the previously installed snapshot and does not silently fall back.
+
+All five metadata cells blank or null means legacy/display-only. A complete
+binding requires a supported runtime, exact observed tier spellings, a
+nonnegative decimal int64 minimum, and `whole_request`; an absent maximum means
+unbounded only within that complete binding. The short and long rows must form
+matching `[0,B)` and `[B,unbounded)` intervals, or an all row must span
+`[0,unbounded)`. Every supported raw-tier identity must be unambiguous. Bounds
+and rates are row data, including for explicit custom catalogs; the loader does
+not impose a provider-wide threshold or rate multiplier.
+
+The reviewed initial bindings cover 24 existing rows for GPT-6.1 Sol, GPT-6
+Astra/Sol/Luna, and GPT-5.6 Sol/Terra/Luna. Their short band includes 272000
+inclusive input tokens and their long band starts at 272001. Rates are consumed
+literally from the selected row. Standard binds only observed `default`, Fast
+binds observed `fast` or `priority`, and Astra Ultrafast binds `ultrafast`.
+Unrecognized, omitted, requested-only or differently capitalized tiers do not
+match. GPT-5.4/5.5 remain display-only pending clarification of their documented
+full-session billing unit. Claude all-context rows remain legacy records.
+
+`Catalog.PriceForRequest` uses the exact observed model and raw service tier,
+runtime, and one request's inclusive input count. It returns a detached row and
+catalog schema/revision/digest, never an aggregate estimate. `Catalog.Digest`
+is the full SHA-256 of the exact five-file snapshot, including local snapshots
+without manifest checksums; the human revision alone is not sufficient identity.
+All price accessors deep-copy bindings, tiers, numeric bounds and rate pointers.
+`catalog show --json` exposes those binding semantics and the full digest.
+
+No production estimator is activated by metadata. Legacy aggregate Usage cannot
+consume request-bound rows even when `context_band=all`. A later request-cost
+integration must independently establish official global OpenAI API endpoint
+scope, known input/cache/output categories, every dispatch (including retries),
+complete history and a persisted evidence/catalog basis. Custom gateways,
+regional endpoints, subscription runtimes and aggregate-only old records cannot
+inherit these bindings. Selection does not validate model context capacity or
+include non-token tool charges. A future result is a public list-price token
+estimate, not an invoice total.
+
+Source and test changes for this schema are subject to separate runtime
+verification; the earlier executed evidence above does not cover this slice.

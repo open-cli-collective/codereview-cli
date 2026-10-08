@@ -250,6 +250,27 @@ type builder struct {
 
 // Build turns validated review-domain values into a deterministic action plan.
 func Build(req Request) (Plan, error) {
+	// Selection runs before analysis. Its proposed thread actions cannot make
+	// an unanalyzed discussion safe to reply to or resolve.
+	if len(req.RunSummary.ThreadAnalysisFailures) > 0 {
+		failed := make(map[string]bool, len(req.RunSummary.ThreadAnalysisFailures))
+		for _, failure := range req.RunSummary.ThreadAnalysisFailures {
+			failed[strings.TrimSpace(failure.ThreadID)] = true
+		}
+		var actions []review.ThreadAction
+		for _, action := range req.ThreadActions {
+			if !failed[strings.TrimSpace(action.ThreadID)] {
+				actions = append(actions, action)
+			}
+		}
+		var responses []review.ThreadResponseAction
+		for _, response := range req.ThreadResponses {
+			if !failed[strings.TrimSpace(response.ThreadID)] {
+				responses = append(responses, response)
+			}
+		}
+		req.ThreadActions, req.ThreadResponses = actions, responses
+	}
 	b, err := newBuilder(req)
 	if err != nil {
 		return Plan{}, err
@@ -463,7 +484,7 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
 	approvalWithheld := false
-	if event == review.ReviewEventApprove && (len(b.req.RunSummary.ReviewerFailures) > 0 || hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)) {
+	if event == review.ReviewEventApprove && (len(b.req.RunSummary.ReviewerFailures) > 0 || len(b.req.RunSummary.ThreadAnalysisFailures) > 0 || hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)) {
 		event = review.ReviewEventComment
 		approvalWithheld = true
 	}
@@ -965,7 +986,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 	// misleads, so the explanation has to be the next thing read.
 	withheld := func() {
 		if approvalWithheld {
-			writeApprovalWithheld(&out, summary.Run.ReviewerFailures, summary.Run.ReviewerCoverage)
+			writeApprovalWithheld(&out, summary.Run.ReviewerFailures, summary.Run.ReviewerCoverage, summary.Run.ThreadAnalysisFailures)
 		}
 	}
 	if len(summary.Reviewers) > 0 {
@@ -995,6 +1016,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		writeReviewerCoverageDiagnostics(&out, summary.Run.ReviewerCoverage)
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
 	}
+	writeThreadAnalysisDiagnostics(&out, summary.Run.ThreadAnalysisFailures)
 	writeThreadCountsLine(&out, summary.Threads)
 	if b.req.AgentDefinitionsChanged {
 		out.WriteString("\n---\n\n")

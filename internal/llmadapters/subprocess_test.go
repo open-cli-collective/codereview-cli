@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -353,9 +354,7 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		wantOutput    string
 		wantSession   string
 		wantErr       string
-		wantErrIs     error
 		wantStop      bool
-		timeout       time.Duration
 		wantRawResult bool
 		// wantRetry marks the states startClaude treats as transport
 		// failures. Asserting the launch count is what keeps this table
@@ -372,29 +371,20 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true, wantRetry: true},
 		{name: "missing result", mode: "bg-missing-result", wantErr: "background job: no result file", wantSession: "session-missing", wantStop: true},
 		{name: "empty result", mode: "bg-empty-result", wantErr: "background job: result file is empty", wantSession: "session-empty", wantStop: true},
-		{name: "timeout", mode: "bg-running", wantErrIs: context.DeadlineExceeded, wantStop: true, timeout: 50 * time.Millisecond},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tempDir := t.TempDir()
 			recordPath := filepath.Join(tempDir, "records.jsonl")
 			configDir := filepath.Join(tempDir, "claude")
-			timeout := tt.timeout
-			if timeout == 0 {
-				timeout = 5 * time.Second
-			}
-			adapter := newClaudeHelperAdapter(tt.mode, recordPath, configDir, timeout)
+			adapter := newClaudeHelperAdapter(tt.mode, recordPath, configDir, 5*time.Second)
 
 			stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
 			response, err := stream.Wait(context.Background())
-			if tt.wantErr != "" || tt.wantErrIs != nil {
-				if tt.wantErrIs != nil {
-					if !errors.Is(err, tt.wantErrIs) {
-						t.Fatalf("Wait error = %v, want errors.Is %v", err, tt.wantErrIs)
-					}
-				} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("Wait error = %v, want containing %q", err, tt.wantErr)
 				}
 				if tt.wantSession != "" && stream.SessionID() != tt.wantSession {
@@ -421,6 +411,78 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 				t.Fatalf("SessionID = %q, want %q", stream.SessionID(), tt.wantSession)
 			}
 			assertClaudeCleanup(t, readHelperRecords(t, recordPath), "job-1", false, configDir)
+		})
+	}
+	t.Run("timeout", testSubprocessClaudeBackgroundTimeoutCleanup)
+}
+
+func testSubprocessClaudeBackgroundTimeoutCleanup(t *testing.T) {
+	for _, startupDelay := range []time.Duration{0, 100 * time.Millisecond} {
+		t.Run("startup="+startupDelay.String(), func(t *testing.T) {
+			tempDir := t.TempDir()
+			recordPath := filepath.Join(tempDir, "records.jsonl")
+			configDir := filepath.Join(tempDir, "claude")
+			adapter := newClaudeHelperAdapterWithEnv("bg-running", recordPath, configDir, 5*time.Second,
+				"LLM_HELPER_CLAUDE_LAUNCH_DELAY="+startupDelay.String())
+			req := Request{Prompt: "prompt"}
+			scratch, cleanup, err := adapter.invocationScratchDir(req)
+			if err != nil {
+				t.Fatalf("invocationScratchDir: %v", err)
+			}
+			t.Cleanup(func() { _ = cleanup() })
+			if err := writeClaudeBGPromptFile(req.Prompt, scratch, req.ReviewerWorkspace); err != nil {
+				t.Fatalf("writeClaudeBGPromptFile: %v", err)
+			}
+			args, err := adapter.buildArgs(req, scratch)
+			if err != nil {
+				t.Fatalf("buildArgs: %v", err)
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("validateArgs: %v", err)
+			}
+			workDir, err := claudeBGWorkingDir(adapter.env)
+			if err != nil {
+				t.Fatalf("claudeBGWorkingDir: %v", err)
+			}
+
+			// Startup is not the behavior under test. Await the real helper's
+			// exit and job ID before starting the short polling deadline. The
+			// delayed variant exceeds that deadline before writing its record.
+			startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer startupCancel()
+			launchStdout, launchStderr, err := adapter.runClaudeBGCommand(startupCtx, workDir, args...)
+			if err != nil {
+				t.Fatalf("launch helper: %v; stderr: %s", err, launchStderr)
+			}
+			jobID := extractClaudeBGJobID(string(launchStdout))
+			if jobID != "job-1" {
+				t.Fatalf("job ID = %q, want job-1; stdout: %s", jobID, launchStdout)
+			}
+			assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), false)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			primary := &subprocessStream{baseStream: llm.NewBaseStream(cancel)}
+			stream := &claudeFallbackStream{
+				adapter: adapter, req: req, primary: primary,
+				// Keep retry budget available so an erroneous transport error
+				// would launch a foreground helper and fail the launch count.
+				deadline: taskDeadline(context.Background(), adapter.timeout),
+			}
+			go primary.finishClaudeBG(ctx, adapter, jobID, scratch, workDir, time.Now(), subprocessResult{})
+			_, err = stream.Wait(context.Background())
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Wait error = %v, want context.DeadlineExceeded", err)
+			}
+			if stream.SessionID() != "session-running" {
+				t.Fatalf("SessionID = %q, want session-running", stream.SessionID())
+			}
+			records := readHelperRecords(t, recordPath)
+			assertClaudeCleanup(t, records, jobID, true, configDir)
+			assertClaudeLaunchCount(t, records, false)
+			if _, err := os.Stat(filepath.Join(configDir, "jobs", jobID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("job directory exists after cleanup: stat err = %v", err)
+			}
 		})
 	}
 }
@@ -1434,10 +1496,20 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		return
 	}
 	recordPath := os.Getenv("LLM_HELPER_RECORD")
+	args := adapterArgsFromHelper()
+	if containsFlag(args, "--bg") {
+		if delay := os.Getenv("LLM_HELPER_CLAUDE_LAUNCH_DELAY"); delay != "" {
+			duration, err := time.ParseDuration(delay)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "parse launch delay: %v\n", err)
+				os.Exit(48)
+			}
+			time.Sleep(duration)
+		}
+	}
 	cwd, _ := os.Getwd()
 	entries, _ := os.ReadDir(cwd)
 	stdin, _ := io.ReadAll(os.Stdin)
-	args := adapterArgsFromHelper()
 	record := helperRecord{
 		AdapterArgs:     args,
 		Cwd:             cwd,
@@ -2583,4 +2655,94 @@ func TestSubprocessClaudeBackgroundNothingLeftBehindIsRetried(t *testing.T) {
 	// too and the primary error is what surfaces — but it must have been
 	// attempted.
 	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), true)
+}
+
+func offlineTestRequest(t *testing.T, noNetwork bool) (Request, string) {
+	t.Helper()
+	tempDir := t.TempDir()
+	scratch := filepath.Join(tempDir, "scratch")
+	repoRoot := filepath.Join(tempDir, "repo")
+	for _, dir := range []string{scratch, repoRoot} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	return Request{
+		Prompt: "prompt",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir:    repoRoot,
+			ScratchDir: scratch,
+			NoNetwork:  noNetwork,
+		},
+	}, scratch
+}
+
+func TestSubprocessClaudeDeniesNetworkToolsOnlyForOfflineReviewer(t *testing.T) {
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
+	for _, noNetwork := range []bool{false, true} {
+		req, scratch := offlineTestRequest(t, noNetwork)
+		background, err := adapter.buildArgsForSession(req, scratch, "")
+		if err != nil {
+			t.Fatalf("buildArgsForSession: %v", err)
+		}
+		resumed, err := adapter.buildArgsForSession(req, scratch, "session-1")
+		if err != nil {
+			t.Fatalf("buildArgsForSession(resume): %v", err)
+		}
+		foreground := buildClaudeForegroundArgs(req, scratch, "")
+		for name, args := range map[string][]string{"background": background, "resumed": resumed, "foreground": foreground} {
+			got, ok := flagValueOK(argsBeforePrompt(args), "--disallowedTools")
+			if noNetwork {
+				if !ok {
+					t.Fatalf("%s offline args = %v, want --disallowedTools", name, args)
+				}
+				for _, rule := range []string{"WebFetch", "WebSearch", "Bash(gh *)", "Bash(curl *)", "Bash(wget *)", "Bash(git fetch *)", "Bash(git pull *)", "Bash(git ls-remote *)"} {
+					if !slices.Contains(strings.Split(got, ","), rule) {
+						t.Fatalf("%s disallowed tools = %q, missing %q", name, got, rule)
+					}
+				}
+			} else if ok {
+				t.Fatalf("%s args = %v, want no --disallowedTools without the offline flag", name, args)
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("%s validateArgs(noNetwork=%v): %v", name, noNetwork, err)
+			}
+		}
+		if noNetwork {
+			if err := adapter.validateArgs(removeFlagPair(background, "--disallowedTools"), scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+				t.Fatalf("validateArgs without deny rules = %v, want unsafe config", err)
+			}
+		}
+	}
+}
+
+func TestSubprocessCodexDisablesNetworkOnlyForOfflineReviewer(t *testing.T) {
+	adapter := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
+	for _, noNetwork := range []bool{false, true} {
+		req, scratch := offlineTestRequest(t, noNetwork)
+		started, err := adapter.buildArgsForSession(req, scratch, "")
+		if err != nil {
+			t.Fatalf("buildArgsForSession: %v", err)
+		}
+		resumed, err := adapter.buildArgsForSession(req, scratch, "session-1")
+		if err != nil {
+			t.Fatalf("buildArgsForSession(resume): %v", err)
+		}
+		for name, args := range map[string][]string{"started": started, "resumed": resumed} {
+			configs := flagValues(argsBeforePrompt(args), "-c")
+			for _, want := range []string{`web_search="disabled"`, "sandbox_workspace_write.network_access=false"} {
+				if slices.Contains(configs, want) != noNetwork {
+					t.Fatalf("%s -c values = %v, want %q present=%v", name, configs, want, noNetwork)
+				}
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("%s validateArgs(noNetwork=%v): %v", name, noNetwork, err)
+			}
+		}
+		if noNetwork {
+			if err := adapter.validateArgs(removeFlagPair(started, "-c"), scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+				t.Fatalf("validateArgs without network config = %v, want unsafe config", err)
+			}
+		}
+	}
 }

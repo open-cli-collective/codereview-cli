@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	// SchemaVersion is the on-disk catalog schema understood by this binary.
-	SchemaVersion = 1
+	// SchemaVersion is the latest schema understood by this binary.
+	// Schema 1 remains readable with its original exact pricing header.
+	SchemaVersion = 2
 	// CatalogDirName is the per-user directory holding installed snapshots.
 	CatalogDirName = "catalog"
 	currentPointer = "catalog.current"
@@ -101,23 +102,25 @@ type Default struct {
 // Price is a verified rate per one million tokens. Nil fields mean unknown,
 // never zero.
 type Price struct {
-	ModelID      string   `json:"model_id"`
-	Speed        string   `json:"speed"`
-	ContextBand  string   `json:"context_band"`
-	Input        *float64 `json:"input_usd_per_million,omitempty"`
-	Output       *float64 `json:"output_usd_per_million,omitempty"`
-	CacheRead    *float64 `json:"cache_read_usd_per_million,omitempty"`
-	CacheWrite   *float64 `json:"cache_write_usd_per_million,omitempty"`
-	CacheWrite5m *float64 `json:"cache_write_5m_usd_per_million,omitempty"`
-	CacheWrite1h *float64 `json:"cache_write_1h_usd_per_million,omitempty"`
-	SourceURL    string   `json:"source_url"`
-	VerifiedDate string   `json:"verified_date"`
+	ModelID        string                 `json:"model_id"`
+	Speed          string                 `json:"speed"`
+	ContextBand    string                 `json:"context_band"`
+	Input          *float64               `json:"input_usd_per_million,omitempty"`
+	Output         *float64               `json:"output_usd_per_million,omitempty"`
+	CacheRead      *float64               `json:"cache_read_usd_per_million,omitempty"`
+	CacheWrite     *float64               `json:"cache_write_usd_per_million,omitempty"`
+	CacheWrite5m   *float64               `json:"cache_write_5m_usd_per_million,omitempty"`
+	CacheWrite1h   *float64               `json:"cache_write_1h_usd_per_million,omitempty"`
+	SourceURL      string                 `json:"source_url"`
+	VerifiedDate   string                 `json:"verified_date"`
+	RequestPricing *RequestPricingBinding `json:"request_pricing,omitempty"`
 }
 
 // Catalog is an immutable validated snapshot. Its slices are private so a
 // command cannot accidentally mutate the snapshot used by another stage.
 type Catalog struct {
 	manifest Manifest
+	digest   string
 	source   Source
 	runtimes []Runtime
 	models   []Model
@@ -151,6 +154,15 @@ func (c *Catalog) Source() Source {
 
 // Revision returns the snapshot revision.
 func (c *Catalog) Revision() string { return c.Manifest().Revision }
+
+// Digest returns the full SHA-256 of the exact five snapshot files, including
+// the manifest, independent of the revision and declared checksums.
+func (c *Catalog) Digest() string {
+	if c == nil {
+		return ""
+	}
+	return c.digest
+}
 
 // Runtimes returns a copy in stable order.
 func (c *Catalog) Runtimes() []Runtime { return append([]Runtime(nil), c.runtimes...) }
@@ -218,10 +230,11 @@ func (c *Catalog) DefaultFor(runtimeID, tier string) (Default, bool) {
 	return Default{}, false
 }
 
-// PriceFor returns a price row for a concrete model and observed speed.
+// PriceFor returns a legacy context-independent row for a model and speed.
+// Request-bound rows require PriceForRequest, even for the all context band.
 func (c *Catalog) PriceFor(modelID, speed string) (Price, bool) {
 	for _, price := range c.pricing {
-		if price.ModelID == modelID && price.Speed == speed && price.ContextBand == "all" {
+		if price.ModelID == modelID && price.Speed == speed && price.ContextBand == "all" && price.RequestPricing == nil {
 			return clonePrice(price), true
 		}
 	}
@@ -549,7 +562,7 @@ func loadFiles(files map[string][]byte, source Source) (*Catalog, error) {
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		return nil, fmt.Errorf("model catalog: parse manifest: %w", err)
 	}
-	if manifest.SchemaVersion != SchemaVersion {
+	if manifest.SchemaVersion != 1 && manifest.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("model catalog: schema version %d is incompatible with %d", manifest.SchemaVersion, SchemaVersion)
 	}
 	manifest.Revision = strings.TrimSpace(manifest.Revision)
@@ -586,7 +599,7 @@ func loadFiles(files map[string][]byte, source Source) (*Catalog, error) {
 	if err != nil {
 		return nil, err
 	}
-	pricing, err := parsePricing(fsys, ".")
+	pricing, err := parsePricing(fsys, ".", manifest.SchemaVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -595,7 +608,7 @@ func loadFiles(files map[string][]byte, source Source) (*Catalog, error) {
 	}
 	source.Revision = manifest.Revision
 	manifest.Sources = append([]Source(nil), manifest.Sources...)
-	return &Catalog{manifest: manifest, source: source, runtimes: runtimes, models: models, defaults: defaults, pricing: pricing}, nil
+	return &Catalog{manifest: manifest, digest: fmt.Sprintf("%x", snapshotDigest(files)), source: source, runtimes: runtimes, models: models, defaults: defaults, pricing: pricing}, nil
 }
 
 type fsLike interface{ ReadFile(string) ([]byte, error) }
@@ -618,12 +631,19 @@ func (f osFS) ReadFile(name string) ([]byte, error) {
 }
 
 func readCSV(fsys fsLike, root, name string, want []string) ([]map[string]string, error) {
+	return readCSVWithHeaderPolicy(fsys, root, name, want, false)
+}
+
+// Schema-1 catalogs retain their historical header handling. Schema-2 pricing
+// headers must match exactly: accepting a padded name while indexing rows by
+// that name could erase a populated request binding or its optional maximum.
+func readCSVWithHeaderPolicy(fsys fsLike, root, name string, want []string, exactHeaders bool) ([]map[string]string, error) {
 	body, err := fsys.ReadFile(path.Join(root, name))
 	if err != nil {
 		return nil, fmt.Errorf("model catalog: read %s: %w", name, err)
 	}
 	reader := csv.NewReader(strings.NewReader(string(body)))
-	reader.TrimLeadingSpace = true
+	reader.TrimLeadingSpace = !exactHeaders
 	headers, err := reader.Read()
 	if err != nil {
 		return nil, fmt.Errorf("model catalog: read %s header: %w", name, err)
@@ -632,10 +652,16 @@ func readCSV(fsys fsLike, root, name string, want []string) ([]map[string]string
 		return nil, fmt.Errorf("model catalog: %s header has %d fields, want %d", name, len(headers), len(want))
 	}
 	for i := range headers {
-		if strings.TrimSpace(headers[i]) != want[i] {
+		header := headers[i]
+		if !exactHeaders {
+			header = strings.TrimSpace(header)
+		}
+		if header != want[i] {
 			return nil, fmt.Errorf("model catalog: %s header field %d is %q, want %q", name, i, headers[i], want[i])
 		}
 	}
+	// Header strictness does not change established whitespace handling of cells.
+	reader.TrimLeadingSpace = true
 	rows := make([]map[string]string, 0)
 	for line := 2; ; line++ {
 		values, err := reader.Read()
@@ -798,8 +824,12 @@ func parseDefaults(fsys fsLike, root string) ([]Default, error) {
 	return out, nil
 }
 
-func parsePricing(fsys fsLike, root string) ([]Price, error) {
-	rows, err := readCSV(fsys, root, "pricing.csv", []string{"model_id", "speed", "context_band", "input_usd_per_million", "output_usd_per_million", "cache_read_usd_per_million", "cache_write_usd_per_million", "cache_write_5m_usd_per_million", "cache_write_1h_usd_per_million", "source_url", "verified_date"})
+func parsePricing(fsys fsLike, root string, schemaVersion int) ([]Price, error) {
+	headers := []string{"model_id", "speed", "context_band", "input_usd_per_million", "output_usd_per_million", "cache_read_usd_per_million", "cache_write_usd_per_million", "cache_write_5m_usd_per_million", "cache_write_1h_usd_per_million", "source_url", "verified_date"}
+	if schemaVersion == 2 {
+		headers = append(headers, requestPricingColumns...)
+	}
+	rows, err := readCSVWithHeaderPolicy(fsys, root, "pricing.csv", headers, schemaVersion == 2)
 	if err != nil {
 		return nil, err
 	}
@@ -835,6 +865,12 @@ func parsePricing(fsys fsLike, root string) ([]Price, error) {
 		}
 		if value.Input == nil && value.Output == nil && value.CacheRead == nil && value.CacheWrite == nil && value.CacheWrite5m == nil && value.CacheWrite1h == nil {
 			return nil, fmt.Errorf("model catalog: price %q has no known rates", key)
+		}
+		if schemaVersion == 2 {
+			value.RequestPricing, err = parseRequestPricing(row, value.Speed)
+			if err != nil {
+				return nil, fmt.Errorf("model catalog: price %q: %w", key, err)
+			}
 		}
 		out = append(out, value)
 	}
@@ -906,7 +942,7 @@ func validateRelations(runtimes []Runtime, models []Model, defaults []Default, p
 			return fmt.Errorf("model catalog: price references unknown model %q", value.ModelID)
 		}
 	}
-	return nil
+	return validateRequestPricing(runtimesByID, modelsByRuntime, pricing)
 }
 
 func contains(values []string, want string) bool {
@@ -926,6 +962,7 @@ func clonePrice(value Price) Price {
 	clone.CacheWrite = cloneRate(value.CacheWrite)
 	clone.CacheWrite5m = cloneRate(value.CacheWrite5m)
 	clone.CacheWrite1h = cloneRate(value.CacheWrite1h)
+	clone.RequestPricing = cloneRequestPricing(value.RequestPricing)
 	return clone
 }
 
