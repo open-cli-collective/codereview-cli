@@ -353,9 +353,7 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		wantOutput    string
 		wantSession   string
 		wantErr       string
-		wantErrIs     error
 		wantStop      bool
-		timeout       time.Duration
 		wantRawResult bool
 		// wantRetry marks the states startClaude treats as transport
 		// failures. Asserting the launch count is what keeps this table
@@ -372,29 +370,20 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 		{name: "stop fails still removes", mode: "bg-stop-fails", wantErr: "blocked: stop will fail", wantStop: true, wantRetry: true},
 		{name: "missing result", mode: "bg-missing-result", wantErr: "background job: no result file", wantSession: "session-missing", wantStop: true},
 		{name: "empty result", mode: "bg-empty-result", wantErr: "background job: result file is empty", wantSession: "session-empty", wantStop: true},
-		{name: "timeout", mode: "bg-running", wantErrIs: context.DeadlineExceeded, wantStop: true, timeout: 50 * time.Millisecond},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tempDir := t.TempDir()
 			recordPath := filepath.Join(tempDir, "records.jsonl")
 			configDir := filepath.Join(tempDir, "claude")
-			timeout := tt.timeout
-			if timeout == 0 {
-				timeout = 5 * time.Second
-			}
-			adapter := newClaudeHelperAdapter(tt.mode, recordPath, configDir, timeout)
+			adapter := newClaudeHelperAdapter(tt.mode, recordPath, configDir, 5*time.Second)
 
 			stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
 			if err != nil {
 				t.Fatalf("Start: %v", err)
 			}
 			response, err := stream.Wait(context.Background())
-			if tt.wantErr != "" || tt.wantErrIs != nil {
-				if tt.wantErrIs != nil {
-					if !errors.Is(err, tt.wantErrIs) {
-						t.Fatalf("Wait error = %v, want errors.Is %v", err, tt.wantErrIs)
-					}
-				} else if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("Wait error = %v, want containing %q", err, tt.wantErr)
 				}
 				if tt.wantSession != "" && stream.SessionID() != tt.wantSession {
@@ -421,6 +410,78 @@ func TestSubprocessClaudeBackgroundStatesAndCleanup(t *testing.T) {
 				t.Fatalf("SessionID = %q, want %q", stream.SessionID(), tt.wantSession)
 			}
 			assertClaudeCleanup(t, readHelperRecords(t, recordPath), "job-1", false, configDir)
+		})
+	}
+	t.Run("timeout", testSubprocessClaudeBackgroundTimeoutCleanup)
+}
+
+func testSubprocessClaudeBackgroundTimeoutCleanup(t *testing.T) {
+	for _, startupDelay := range []time.Duration{0, 100 * time.Millisecond} {
+		t.Run("startup="+startupDelay.String(), func(t *testing.T) {
+			tempDir := t.TempDir()
+			recordPath := filepath.Join(tempDir, "records.jsonl")
+			configDir := filepath.Join(tempDir, "claude")
+			adapter := newClaudeHelperAdapterWithEnv("bg-running", recordPath, configDir, 5*time.Second,
+				"LLM_HELPER_CLAUDE_LAUNCH_DELAY="+startupDelay.String())
+			req := Request{Prompt: "prompt"}
+			scratch, cleanup, err := adapter.invocationScratchDir(req)
+			if err != nil {
+				t.Fatalf("invocationScratchDir: %v", err)
+			}
+			t.Cleanup(func() { _ = cleanup() })
+			if err := writeClaudeBGPromptFile(req.Prompt, scratch, req.ReviewerWorkspace); err != nil {
+				t.Fatalf("writeClaudeBGPromptFile: %v", err)
+			}
+			args, err := adapter.buildArgs(req, scratch)
+			if err != nil {
+				t.Fatalf("buildArgs: %v", err)
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("validateArgs: %v", err)
+			}
+			workDir, err := claudeBGWorkingDir(adapter.env)
+			if err != nil {
+				t.Fatalf("claudeBGWorkingDir: %v", err)
+			}
+
+			// Startup is not the behavior under test. Await the real helper's
+			// exit and job ID before starting the short polling deadline. The
+			// delayed variant exceeds that deadline before writing its record.
+			startupCtx, startupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer startupCancel()
+			launchStdout, launchStderr, err := adapter.runClaudeBGCommand(startupCtx, workDir, args...)
+			if err != nil {
+				t.Fatalf("launch helper: %v; stderr: %s", err, launchStderr)
+			}
+			jobID := extractClaudeBGJobID(string(launchStdout))
+			if jobID != "job-1" {
+				t.Fatalf("job ID = %q, want job-1; stdout: %s", jobID, launchStdout)
+			}
+			assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), false)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			primary := &subprocessStream{baseStream: llm.NewBaseStream(cancel)}
+			stream := &claudeFallbackStream{
+				adapter: adapter, req: req, primary: primary,
+				// Keep retry budget available so an erroneous transport error
+				// would launch a foreground helper and fail the launch count.
+				deadline: taskDeadline(context.Background(), adapter.timeout),
+			}
+			go primary.finishClaudeBG(ctx, adapter, jobID, scratch, workDir, time.Now(), subprocessResult{})
+			_, err = stream.Wait(context.Background())
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("Wait error = %v, want context.DeadlineExceeded", err)
+			}
+			if stream.SessionID() != "session-running" {
+				t.Fatalf("SessionID = %q, want session-running", stream.SessionID())
+			}
+			records := readHelperRecords(t, recordPath)
+			assertClaudeCleanup(t, records, jobID, true, configDir)
+			assertClaudeLaunchCount(t, records, false)
+			if _, err := os.Stat(filepath.Join(configDir, "jobs", jobID)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("job directory exists after cleanup: stat err = %v", err)
+			}
 		})
 	}
 }
@@ -1434,10 +1495,20 @@ func TestSubprocessHelperProcess(_ *testing.T) {
 		return
 	}
 	recordPath := os.Getenv("LLM_HELPER_RECORD")
+	args := adapterArgsFromHelper()
+	if containsFlag(args, "--bg") {
+		if delay := os.Getenv("LLM_HELPER_CLAUDE_LAUNCH_DELAY"); delay != "" {
+			duration, err := time.ParseDuration(delay)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "parse launch delay: %v\n", err)
+				os.Exit(48)
+			}
+			time.Sleep(duration)
+		}
+	}
 	cwd, _ := os.Getwd()
 	entries, _ := os.ReadDir(cwd)
 	stdin, _ := io.ReadAll(os.Stdin)
-	args := adapterArgsFromHelper()
 	record := helperRecord{
 		AdapterArgs:     args,
 		Cwd:             cwd,

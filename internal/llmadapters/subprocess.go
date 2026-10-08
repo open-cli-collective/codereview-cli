@@ -1107,7 +1107,12 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 	}
 
 	s.CloseProcessGroup()
+	s.finishClaudeBG(ctx, adapter, jobID, scratch, workDir, start, result)
+}
 
+// finishClaudeBG owns result polling and cleanup after the launcher has exited.
+// The caller keeps the launch and this phase under the same task context.
+func (s *subprocessStream) finishClaudeBG(ctx context.Context, adapter *SubprocessAdapter, jobID string, scratch string, workDir string, start time.Time, result subprocessResult) {
 	if result.err == nil {
 		var sessionID string
 		result.response, sessionID, result.err = adapter.waitForClaudeBGResult(ctx, jobID, scratch)
