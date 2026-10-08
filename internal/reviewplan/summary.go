@@ -530,7 +530,7 @@ func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSumma
 	out.WriteString("### Approval Withheld\n\n")
 	out.WriteString("No blocking or major findings were reported. Approval is withheld because at least one reviewer did not complete its assigned review obligations:\n\n")
 	for _, failure := range failures {
-		fmt.Fprintf(out, "- %s did not produce a result: %s\n", codeSpan(failure.AgentID), escapeCell(failure.Error))
+		fmt.Fprintf(out, "- %s did not produce a result: %s\n", codeSpan(failure.AgentID), escapeCell(samplePublicDiagnostic(failure.Error)))
 	}
 	uninspected := uninspectedFiles(coverage)
 	for _, line := range incompleteCoverageLines(coverage, failures, uninspected) {
