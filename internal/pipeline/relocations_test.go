@@ -69,7 +69,7 @@ func TestPrepareRelocationManifestUsesPinnedGitTreesAndWritesAtomically(t *testi
 		cmd.Dir = dir
 		return cmd.CombinedOutput()
 	}
-	manifest, tree, err := prepareRelocationManifest(context.Background(), command, paths, base, head, []FilePatch{{OldPath: "old.go", Path: "new.go"}})
+	manifest, _, tree, err := prepareRelocationManifest(context.Background(), command, paths, base, head, []FilePatch{{OldPath: "old.go", Path: "new.go"}})
 	if err != nil {
 		t.Fatalf("prepareRelocationManifest: %v", err)
 	}
@@ -87,14 +87,14 @@ func TestPrepareRelocationManifestUsesPinnedGitTreesAndWritesAtomically(t *testi
 		t.Fatalf("relocation artifact omitted digest %s: %s", manifest.Digest, data)
 	}
 
-	if _, _, err := prepareRelocationManifest(context.Background(), command, paths, base, base, nil); err == nil || !strings.Contains(err.Error(), "HEAD does not match") {
+	if _, _, _, err := prepareRelocationManifest(context.Background(), command, paths, base, base, nil); err == nil || !strings.Contains(err.Error(), "HEAD does not match") {
 		t.Fatalf("mismatched HEAD error = %v, want pinned identity error", err)
 	}
 	missingBase := strings.Repeat("0", len(base))
 	if missingBase == base {
 		missingBase = strings.Repeat("1", len(base))
 	}
-	if _, _, err := prepareRelocationManifest(context.Background(), command, paths, missingBase, head, nil); err == nil || !strings.Contains(err.Error(), "pinned base commit") {
+	if _, _, _, err := prepareRelocationManifest(context.Background(), command, paths, missingBase, head, nil); err == nil || !strings.Contains(err.Error(), "pinned base commit") {
 		t.Fatalf("missing base error = %v, want pinned base resolution error", err)
 	}
 }
@@ -168,7 +168,7 @@ func TestPrepareRelocationManifestKeepsSameBlobPatchlessRenamesAsOrdinaryWork(t 
 				t.Fatalf("actual rename patch = %#v, want exact zero-hunk %s -> %s", parsed.Patches, tc.oldPath, tc.newPath)
 			}
 			paths := ArtifactPaths{WorkbenchRepoDir: repo, RelocationsJSON: filepath.Join(t.TempDir(), "relocations.json")}
-			manifest, tree, err := prepareRelocationManifest(context.Background(), nil, paths, base, head, parsed.Patches)
+			manifest, _, tree, err := prepareRelocationManifest(context.Background(), nil, paths, base, head, parsed.Patches)
 			if err != nil {
 				t.Fatalf("prepareRelocationManifest rejected ordinary same-blob rename: %v", err)
 			}
@@ -201,7 +201,7 @@ func TestPrepareRelocationManifestRejectsPatchlessRenameWithChangedPinnedBlob(t 
 	relocationTestGit(t, repo, "commit", "-qm", "changed blob")
 	head := strings.TrimSpace(string(relocationTestGit(t, repo, "rev-parse", "HEAD")))
 	paths := ArtifactPaths{WorkbenchRepoDir: repo, RelocationsJSON: filepath.Join(t.TempDir(), "relocations.json")}
-	_, _, err := prepareRelocationManifest(context.Background(), nil, paths, base, head, []FilePatch{{OldPath: "old.go", Path: "new.go"}})
+	_, _, _, err := prepareRelocationManifest(context.Background(), nil, paths, base, head, []FilePatch{{OldPath: "old.go", Path: "new.go"}})
 	if err == nil || !strings.Contains(err.Error(), "changed pinned blob") {
 		t.Fatalf("changed-blob zero-hunk rename error = %v, want precise fail-closed rejection", err)
 	}

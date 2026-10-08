@@ -13,6 +13,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/pireviewtool"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -255,6 +256,99 @@ func TestPatchlessSameBlobRenamesRemainOrdinaryReviewObligations(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestChangedSymlinkMetadataInspectionPreservesOrdinaryCoverageInDryRunAndLive(t *testing.T) {
+	for _, mode := range []string{"dry-run", "live"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req, contextPath, symlinkPath, residualPath := newPatchlessRenameFixture(t, "symlink")
+			adapter := &relocationWorkspaceAdapter{FakeAdapter: &llm.FakeAdapter{NameValue: "symlink-test"}, contextPath: contextPath, inspectSymlink: true}
+			layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+			runID := "run-symlink-inspection-" + mode
+			var result Result
+			var err error
+			if mode == "dry-run" {
+				result, err = dryRunForTest(ctx, Options{
+					Provider: provider, Adapter: adapter, Store: store, Layout: layout, Now: fixedNow,
+					NewRunID: func() string { return runID }, NewSessionRowID: sequence("symlink-session"),
+					NewFindingID: findingSequence("symlink-finding"), NewActionID: actionSequence(), MaxConcurrency: 1,
+				}, req)
+			} else {
+				prKey, keyErr := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+				if keyErr != nil {
+					t.Fatal(keyErr)
+				}
+				run, allocateErr := store.AllocateRun(ctx, ledger.AllocateRunParams{
+					PRKey: prKey, PRURL: req.PRURL, RunID: runID, SHA: provider.pr.Head.SHA,
+					BaseSHA: provider.pr.Base.SHA, Profile: req.ProfileName,
+					PostingIdentity: req.PostingIdentity.Login, PostMode: ledger.PostModeLive,
+					StartedAt: fixedNow(), ArtifactPath: filepath.Join(t.TempDir(), "live-run"),
+				})
+				if allocateErr != nil {
+					t.Fatalf("AllocateRun: %v", allocateErr)
+				}
+				result, err = liveForTest(ctx, Options{
+					Provider: provider, Adapter: adapter, Store: store, Layout: layout, Now: fixedNow,
+					NewSessionRowID: sequence("symlink-session"), NewFindingID: findingSequence("symlink-finding"),
+					NewActionID: actionSequence(), MaxConcurrency: 1,
+				}, req, run)
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", mode, err)
+			}
+			if result.Plan.Outcome != reviewplan.OutcomeApproved || len(result.ReviewerCoverage) != 1 {
+				t.Fatalf("%s outcome/coverage = %q/%#v, want approved with one complete reviewer", mode, result.Plan.Outcome, result.ReviewerCoverage)
+			}
+			coverage := result.ReviewerCoverage[0]
+			if coverage.Status != reviewerCoverageCompleteBroad && coverage.Status != reviewerCoverageCompleteConstrained {
+				t.Fatalf("%s coverage status = %q, want complete", mode, coverage.Status)
+			}
+			if !relocationTestContainsString(coverage.InspectedFiles, symlinkPath) || !relocationTestContainsString(coverage.InspectedFiles, residualPath) || len(coverage.MissingFiles) != 0 || len(coverage.RelocationReviewedFiles) != 0 {
+				t.Fatalf("%s coverage = %#v, want payload and residual reported inspected without relocation credit", mode, coverage)
+			}
+			adapter.mu.Lock()
+			metadataReads := append([]string(nil), adapter.metadataReads...)
+			bodyReads := append([]string(nil), adapter.bodyReads...)
+			adapter.mu.Unlock()
+			if !relocationTestContainsString(metadataReads, symlinkPath) || relocationTestContainsString(bodyReads, symlinkPath) {
+				t.Fatalf("%s symlink read modes = metadata %#v/body %#v; want metadata-only inspection", mode, metadataReads, bodyReads)
+			}
+			var metadata struct {
+				Digest string `json:"digest"`
+				Links  []struct {
+					Path string `json:"path"`
+				} `json:"links"`
+			}
+			data, readErr := os.ReadFile(result.Artifacts.SymlinkMetadataJSON)
+			if readErr != nil {
+				t.Fatalf("read run symlink metadata artifact: %v", readErr)
+			}
+			if err := json.Unmarshal(data, &metadata); err != nil || metadata.Digest == "" || len(metadata.Links) != 1 || metadata.Links[0].Path != symlinkPath {
+				t.Fatalf("run symlink metadata = %#v, decode error %v", metadata, err)
+			}
+			requests := adapter.Requests()
+			foundReviewer := false
+			for _, request := range requests {
+				if request.ReviewerWorkspace == nil {
+					continue
+				}
+				foundReviewer = true
+				workspace := request.ReviewerWorkspace
+				if workspace.SymlinkMetadataPath != result.Artifacts.SymlinkMetadataJSON || workspace.SymlinkMetadataDigest != metadata.Digest || workspace.BaseSHA != provider.pr.Base.SHA || workspace.HeadSHA != provider.pr.Head.SHA {
+					t.Fatalf("%s pinned metadata workspace = %#v", mode, workspace)
+				}
+				if !strings.Contains(request.Prompt, "view=symlink") || !strings.Contains(request.Prompt, metadata.Digest) {
+					t.Fatalf("%s reviewer prompt omitted symlink inspection contract/digest", mode)
+				}
+			}
+			if !foundReviewer {
+				t.Fatalf("%s adapter did not receive reviewer workspace request", mode)
+			}
+		})
 	}
 }
 
@@ -534,6 +628,8 @@ type relocationWorkspaceAdapter struct {
 	repairResolve     bool
 	primaryFinding    bool
 	primaryToolStatus llm.DiffToolStatus
+	inspectSymlink    bool
+	metadataReads     []string
 }
 
 func (a *relocationWorkspaceAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -579,6 +675,26 @@ func (a *relocationWorkspaceAdapter) Start(ctx context.Context, req llm.Request)
 				return nil, fmt.Errorf("manifest path at %d is not a string", index)
 			}
 			isRelocation := len(row) > 8 && row[8] == true
+			if relocationTestContainsString(prompt.Assignment.SymlinkPaths, path) {
+				if !a.inspectSymlink {
+					skipped = append(skipped, path)
+					continue
+				}
+				workspace := req.ReviewerWorkspace
+				metadataOutput, metadataErr := pireviewtool.Execute(ctx, pireviewtool.Config{
+					RepoDir: workspace.RepoDir, DiffPath: workspace.DiffPath, MaxOutputBytes: workspace.MaxToolOutputBytes,
+					TimeoutMS: 1000, SymlinkMetadataPath: workspace.SymlinkMetadataPath,
+					SymlinkMetadataDigest: workspace.SymlinkMetadataDigest, BaseSHA: workspace.BaseSHA, HeadSHA: workspace.HeadSHA,
+				}, pireviewtool.Request{Tool: pireviewtool.ToolRead, Path: path, View: "symlink"})
+				if metadataErr != nil || !strings.Contains(metadataOutput, `"path": "`+path+`"`) {
+					return nil, fmt.Errorf("inspect changed symlink %q from pinned metadata: %s, %w", path, metadataOutput, metadataErr)
+				}
+				inspected = append(inspected, path)
+				a.mu.Lock()
+				a.metadataReads = append(a.metadataReads, path)
+				a.mu.Unlock()
+				continue
+			}
 			if a.skipPrimary == path {
 				skipped = append(skipped, path)
 				continue

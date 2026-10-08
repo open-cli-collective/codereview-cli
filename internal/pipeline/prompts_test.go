@@ -502,6 +502,24 @@ func TestFindingsOutputContractStatesValidatorConstraintLimits(t *testing.T) {
 	}
 }
 
+func TestChangedSymlinkPromptKeepsUnavailablePayloadUnresolved(t *testing.T) {
+	contract := findingsOutputContractWithRelocations("agent-1", []string{"links/current"}, relocationAssignment{
+		SymlinkMetadataDigest: strings.Repeat("a", 64),
+		SymlinkPaths:          []string{"links/current"},
+	})
+	instructions := strings.Join(contract.Instructions, "\n")
+	for _, want := range []string{
+		"payload_omitted_reason",
+		"payload bytes are unavailable",
+		"keep that path in skipped_files",
+		"metadata inspection alone does not count as payload inspection",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("changed symlink instructions = %q, want %q", instructions, want)
+		}
+	}
+}
+
 func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	prompt, err := buildRollupPrompt(gitprovider.PR{Body: "Rollup prompt body should stay out of prompt payloads."}, []review.Finding{
 		{

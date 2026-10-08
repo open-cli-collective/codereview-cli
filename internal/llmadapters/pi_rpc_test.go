@@ -176,11 +176,15 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 	stream, err := adapter.Start(context.Background(), Request{
 		Prompt: "review assigned files",
 		ReviewerWorkspace: &ReviewerWorkspaceRequest{
-			RepoDir:            repoDir,
-			ScratchDir:         scratchDir,
-			DiffPath:           diffPath,
-			AllowedFiles:       []string{"assigned.go"},
-			MaxToolOutputBytes: 2048,
+			RepoDir:               repoDir,
+			ScratchDir:            scratchDir,
+			DiffPath:              diffPath,
+			SymlinkMetadataPath:   filepath.Join(tempDir, "symlink-metadata.json"),
+			SymlinkMetadataDigest: strings.Repeat("c", 64),
+			BaseSHA:               strings.Repeat("a", 40),
+			HeadSHA:               strings.Repeat("b", 40),
+			AllowedFiles:          []string{"assigned.go"},
+			MaxToolOutputBytes:    2048,
 		},
 	})
 	if err != nil {
@@ -199,7 +203,7 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
 	reviewerPrompt := flagValue(record.AdapterArgs, "--system-prompt")
-	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails"} {
+	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails", "view=symlink", "payload_omitted_reason", "keep that path skipped", "payload_size=0 is an inspected empty payload"} {
 		if !strings.Contains(reviewerPrompt, instruction) {
 			t.Fatalf("reviewer system prompt = %q, want instruction %q", reviewerPrompt, instruction)
 		}
@@ -219,6 +223,9 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 			t.Fatalf("extension does not register %s:\n%s", tool, extension)
 		}
 	}
+	if !strings.Contains(string(extension), `enum: ["symlink"]`) {
+		t.Fatalf("extension omitted optional symlink view schema:\n%s", extension)
+	}
 	for _, forbidden := range []string{"workspace_write", `name: "bash"`, `name: "edit"`, `name: "write"`} {
 		if strings.Contains(strings.ToLower(string(extension)), forbidden) {
 			t.Fatalf("extension contains forbidden capability %q:\n%s", forbidden, extension)
@@ -229,6 +236,54 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 		if value == "" || !pathWithin(t, scratchDir, value) {
 			t.Fatalf("%s = %q, want scratch-rooted path under %q", key, value, scratchDir)
 		}
+	}
+}
+
+func TestPiRPCReviewerToolConfigPinsSymlinkArtifact(t *testing.T) {
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	scratchDir := filepath.Join(root, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diffPath := filepath.Join(root, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("diff\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &ReviewerWorkspaceRequest{
+		RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		SymlinkMetadataPath:   filepath.Join(root, "symlink-metadata.json"),
+		SymlinkMetadataDigest: strings.Repeat("c", 64), BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40),
+	}
+	adapter := NewPiRPCAdapter(PiRPCOptions{})
+	invocationScratch, cleanup, _, extensionPath, err := adapter.prepareInvocation(Request{ReviewerWorkspace: workspace})
+	if err != nil {
+		t.Fatalf("prepareInvocation: %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+	configData, err := os.ReadFile(filepath.Join(invocationScratch, "review-tools.json")) // #nosec G304 -- path is the generated invocation config.
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(configData, &config); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"symlink_metadata_path":   workspace.SymlinkMetadataPath,
+		"symlink_metadata_digest": workspace.SymlinkMetadataDigest,
+		"base_sha":                workspace.BaseSHA,
+		"head_sha":                workspace.HeadSHA,
+	} {
+		if config[key] != want {
+			t.Fatalf("tool config %s = %#v, want %q", key, config[key], want)
+		}
+	}
+	extension, err := os.ReadFile(extensionPath) // #nosec G304 -- path is the generated extension.
+	if err != nil || !strings.Contains(string(extension), "cr_read") || !strings.Contains(string(extension), `enum: ["symlink"]`) {
+		t.Fatalf("generated extension missing bounded symlink view: err=%v content=%s", err, extension)
 	}
 }
 

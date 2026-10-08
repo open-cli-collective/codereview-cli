@@ -14,11 +14,14 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/symlinkmetadata"
 )
 
 const relocationManifestSchemaVersion = 1
 
 const reviewerContextContractVersion = "1"
+
+const symlinkInspectionContractVersion = "1"
 
 type treeEntry struct {
 	Mode string
@@ -44,14 +47,18 @@ type relocationManifest struct {
 
 type relocationReviewState struct {
 	Manifest relocationManifest
+	BaseTree map[string]treeEntry
 	HeadTree map[string]treeEntry
+	Symlinks symlinkmetadata.Artifact
 }
 
 type relocationAssignment struct {
-	ManifestDigest   string
-	MoveCount        int
-	AssignmentDigest string
-	Moves            []relocationMove
+	ManifestDigest        string
+	MoveCount             int
+	AssignmentDigest      string
+	Moves                 []relocationMove
+	SymlinkMetadataDigest string
+	SymlinkPaths          []string
 }
 
 // parseTreeInventory decodes `git ls-tree -r -z --full-tree` output without
@@ -147,7 +154,7 @@ func regularBlob(entry treeEntry) bool {
 	return entry.Type == "blob" && (entry.Mode == "100644" || entry.Mode == "100755")
 }
 
-func prepareRelocationManifest(ctx context.Context, gitCommand func(context.Context, string, ...string) ([]byte, error), paths ArtifactPaths, baseSHA, headSHA string, patches []FilePatch) (relocationManifest, map[string]treeEntry, error) {
+func prepareRelocationManifest(ctx context.Context, gitCommand func(context.Context, string, ...string) ([]byte, error), paths ArtifactPaths, baseSHA, headSHA string, patches []FilePatch) (relocationManifest, map[string]treeEntry, map[string]treeEntry, error) {
 	command := gitCommand
 	if command == nil {
 		command = func(ctx context.Context, dir string, args ...string) ([]byte, error) {
@@ -165,62 +172,62 @@ func prepareRelocationManifest(ctx context.Context, gitCommand func(context.Cont
 	baseSHA = strings.ToLower(strings.TrimSpace(baseSHA))
 	headSHA = strings.ToLower(strings.TrimSpace(headSHA))
 	if !fullCommitOID(baseSHA) || !fullCommitOID(headSHA) {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: relocation inventory requires full base and head commit IDs")
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: relocation inventory requires full base and head commit IDs")
 	}
 	head, err := command(ctx, paths.WorkbenchRepoDir, "rev-parse", "HEAD")
 	if err != nil {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: verify relocation workbench HEAD: %w", err)
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: verify relocation workbench HEAD: %w", err)
 	}
 	if strings.TrimSpace(string(head)) != headSHA {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: relocation workbench HEAD does not match the pinned head commit")
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: relocation workbench HEAD does not match the pinned head commit")
 	}
 	for _, want := range []struct{ name, sha string }{{"base", baseSHA}, {"head", headSHA}} {
 		resolved, err := command(ctx, paths.WorkbenchRepoDir, "rev-parse", "--verify", want.sha+"^{commit}")
 		if err != nil {
-			return relocationManifest{}, nil, fmt.Errorf("pipeline: verify pinned %s commit: %w", want.name, err)
+			return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: verify pinned %s commit: %w", want.name, err)
 		}
 		if strings.TrimSpace(string(resolved)) != want.sha {
-			return relocationManifest{}, nil, fmt.Errorf("pipeline: pinned %s commit does not resolve to its full expected ID", want.name)
+			return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: pinned %s commit does not resolve to its full expected ID", want.name)
 		}
 	}
 	baseRaw, err := command(ctx, paths.WorkbenchRepoDir, "ls-tree", "-r", "-z", "--full-tree", baseSHA)
 	if err != nil {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: inventory pinned base tree: %w", err)
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: inventory pinned base tree: %w", err)
 	}
 	headRaw, err := command(ctx, paths.WorkbenchRepoDir, "ls-tree", "-r", "-z", "--full-tree", headSHA)
 	if err != nil {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: inventory pinned head tree: %w", err)
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: inventory pinned head tree: %w", err)
 	}
 	base, err := parseTreeInventory(baseRaw)
 	if err != nil {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: parse pinned base tree: %w", err)
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: parse pinned base tree: %w", err)
 	}
 	headTree, err := parseTreeInventory(headRaw)
 	if err != nil {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: parse pinned head tree: %w", err)
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: parse pinned head tree: %w", err)
 	}
 	moves, err := certifyRelocations(base, headTree, patches)
 	if err != nil {
-		return relocationManifest{}, nil, err
+		return relocationManifest{}, nil, nil, err
 	}
 	if err := validatePatchlessRenames(patches, moves, base, headTree); err != nil {
-		return relocationManifest{}, nil, err
+		return relocationManifest{}, nil, nil, err
 	}
 	manifest, err := newRelocationManifest(baseSHA, headSHA, moves)
 	if err != nil {
-		return relocationManifest{}, nil, err
+		return relocationManifest{}, nil, nil, err
 	}
 	if strings.TrimSpace(paths.RelocationsJSON) == "" {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: relocation manifest path is required")
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: relocation manifest path is required")
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return relocationManifest{}, nil, err
+		return relocationManifest{}, nil, nil, err
 	}
 	if err := fsatomic.WriteFileAtomic(paths.RelocationsJSON, append(data, '\n'), 0o600); err != nil {
-		return relocationManifest{}, nil, fmt.Errorf("pipeline: write relocation manifest: %w", err)
+		return relocationManifest{}, nil, nil, fmt.Errorf("pipeline: write relocation manifest: %w", err)
 	}
-	return manifest, headTree, nil
+	return manifest, base, headTree, nil
 }
 
 func fullCommitOID(value string) bool {
@@ -258,9 +265,15 @@ func (state relocationReviewState) assignment(agentID string, scope []string) re
 	scope = copySortedStrings(scope)
 	inScope := stringSet(scope)
 	moves := make([]relocationMove, 0)
+	symlinkPaths := make([]string, 0)
 	for _, move := range state.Manifest.Moves {
 		if inScope[move.Path] {
 			moves = append(moves, move)
+		}
+	}
+	for _, link := range state.Symlinks.Links {
+		if inScope[link.Path] {
+			symlinkPaths = append(symlinkPaths, link.Path)
 		}
 	}
 	canonical, _ := json.Marshal(struct {
@@ -271,10 +284,12 @@ func (state relocationReviewState) assignment(agentID string, scope []string) re
 	}{state.Manifest.Digest, agentID, scope, moves})
 	digest := sha256.Sum256(canonical)
 	return relocationAssignment{
-		ManifestDigest:   state.Manifest.Digest,
-		MoveCount:        len(moves),
-		AssignmentDigest: hex.EncodeToString(digest[:]),
-		Moves:            moves,
+		ManifestDigest:        state.Manifest.Digest,
+		MoveCount:             len(moves),
+		AssignmentDigest:      hex.EncodeToString(digest[:]),
+		Moves:                 moves,
+		SymlinkMetadataDigest: state.Symlinks.Digest,
+		SymlinkPaths:          symlinkPaths,
 	}
 }
 

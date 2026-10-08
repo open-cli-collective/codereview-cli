@@ -375,6 +375,17 @@ tool duration, and aggregate reviewer RPC/stderr logs are bounded without
 limiting protocol parsing. Non-reviewer Pi tasks retain their tool-free scratch
 working directory.
 
+For a changed symlink assigned to a Pi reviewer, `cr_read` also accepts the
+explicit `view="symlink"` option. That view reads a run-owned, digest-validated
+artifact built from the pinned base/head Git trees; it returns the exact link
+payload and lexical target status without following the link or reading the
+destination body. Its output uses the same bounded range/continuation contract.
+Payloads larger than the inspection cap are represented with their size and an
+omission reason without fetching their contents, so the link payload remains a
+skipped review obligation. An explicit empty payload and its zero-byte size are
+preserved distinctly from an omitted payload. The default file view, search,
+and list continue to deny symlink traversal.
+
 Unsupported adapters must fail clearly. They must not silently fall back to
 stuffed diffs or full file bodies.
 

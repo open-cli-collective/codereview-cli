@@ -22,7 +22,7 @@ import (
 const (
 	piRPCPromptID               = "prompt-1"
 	piRPCSystemPrompt           = "You are a strict JSON API for code review structured output. Return exactly one JSON object that matches the requested schema. Do not include markdown fences, prose, explanations, or leading/trailing text. The first byte of your final answer must be { and the last byte must be }."
-	piRPCReviewerSystemPrompt   = piRPCSystemPrompt + " Inspect the disposable repository only through the CR-owned cr_read, cr_search, cr_list, and cr_diff tools. Invoke cr_diff before cr_read, cr_search, or cr_list so the review starts from the pinned change. If cr_diff fails, record that exact tool failure as a constraint before inspecting allowed head files. These tools are read-only; do not request shell, write, edit, or any other tool."
+	piRPCReviewerSystemPrompt   = piRPCSystemPrompt + " Inspect the disposable repository only through the CR-owned cr_read, cr_search, cr_list, and cr_diff tools. Invoke cr_diff before cr_read, cr_search, or cr_list so the review starts from the pinned change. If cr_diff fails, record that exact tool failure as a constraint before inspecting allowed head files. For an assigned changed symlink, use cr_read with view=symlink to inspect its pinned payload and lexical target status; this does not read the destination body. If metadata has payload_omitted_reason, the exact payload bytes are unavailable: metadata alone does not count as payload inspection, so keep that path skipped. payload=\"\" with payload_size=0 is an inspected empty payload, not an omission. These tools are read-only; do not request shell, write, edit, or any other tool."
 	piRPCReviewerToolTimeout    = 15 * time.Second
 	piRPCReviewerToolNames      = "cr_read,cr_search,cr_list,cr_diff"
 	piRPCToolEvidenceReserve    = 256
@@ -357,6 +357,12 @@ func (a *PiRPCAdapter) prepareInvocation(req Request) (scratch string, cleanup f
 		"allowed_files":    append([]string(nil), workspace.AllowedFiles...),
 		"max_output_bytes": workspace.MaxToolOutputBytes,
 		"timeout_ms":       piRPCReviewerToolTimeout.Milliseconds(),
+	}
+	if workspace.SymlinkMetadataPath != "" {
+		config["symlink_metadata_path"] = workspace.SymlinkMetadataPath
+		config["symlink_metadata_digest"] = workspace.SymlinkMetadataDigest
+		config["base_sha"] = workspace.BaseSHA
+		config["head_sha"] = workspace.HeadSHA
 	}
 	data, marshalErr := json.Marshal(config)
 	if marshalErr != nil {
@@ -1010,7 +1016,7 @@ export default function (pi) {
     if (!diffAttempted) return Promise.resolve({ content: [{ type: "text", text: "cr_diff must be invoked before inspecting repository files" }], details: {}, isError: true });
     return runTool(tool, params, signal);
   };
-  pi.registerTool({ name: "cr_read", label: "CR Read", description: "Read one repository file. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, required: ["path"], additionalProperties: false }, execute: headTool("cr_read") });
+  pi.registerTool({ name: "cr_read", label: "CR Read", description: "Read one repository file. For an assigned changed symlink only, set view to symlink to inspect pinned link payload and lexical resolution without following it. Use offset and limit with next_offset for ranged regular-file or symlink-metadata reads.", parameters: { type: "object", properties: { path: { type: "string" }, view: { type: "string", enum: ["symlink"] }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, required: ["path"], additionalProperties: false }, execute: headTool("cr_read") });
   pi.registerTool({ name: "cr_search", label: "CR Search", description: "Search repository text literally.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" } }, required: ["query"], additionalProperties: false }, execute: headTool("cr_search") });
   pi.registerTool({ name: "cr_list", label: "CR List", description: "List repository files.", parameters: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }, execute: headTool("cr_list") });
   pi.registerTool({ name: "cr_diff", label: "CR Diff", description: "Read the fixed pinned review diff. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, additionalProperties: false }, execute: (_id, params, signal) => { diffAttempted = true; return runTool("cr_diff", params, signal); } });
