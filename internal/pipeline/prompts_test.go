@@ -17,6 +17,30 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 )
 
+func testPromptFileManifest(paths ...string) promptFileManifest {
+	files := make([]promptFileMetadata, 0, len(paths))
+	for _, path := range paths {
+		files = append(files, promptFileMetadata{Path: path, Status: "modified", Reviewable: true})
+	}
+	return makePromptFileManifest(files, paths)
+}
+
+func promptManifestPathsAtIndices(t *testing.T, manifest promptFileManifest, indices []int) []string {
+	t.Helper()
+	paths := make([]string, 0, len(indices))
+	for _, index := range indices {
+		if index < 0 || index >= len(manifest.Rows) || len(manifest.Rows[index]) == 0 {
+			t.Fatalf("manifest index %d is invalid for %#v", index, manifest)
+		}
+		path, ok := manifest.Rows[index][0].(string)
+		if !ok {
+			t.Fatalf("manifest row %d path type = %T", index, manifest.Rows[index][0])
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
 func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
@@ -48,13 +72,13 @@ func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing
 		t.Fatal("adapter requests = 0, want selection request")
 	}
 	selectionPrompt := requests[0].Prompt
-	if !strings.Contains(selectionPrompt, `"selection_instructions": "Prefer applies_when over prompt wording when routing."`) {
+	if !strings.Contains(selectionPrompt, `"selection_instructions":"Prefer applies_when over prompt wording when routing."`) {
 		t.Fatalf("selection prompt missing custom instruction field: %s", selectionPrompt)
 	}
-	if !strings.Contains(selectionPrompt, `"task": "`+defaultSelectionTask+`"`) {
+	if !strings.Contains(selectionPrompt, `"task":"`+defaultSelectionTask+`"`) {
 		t.Fatalf("selection prompt missing stable task field: %s", selectionPrompt)
 	}
-	if !strings.Contains(selectionPrompt, `"output_contract"`) || !strings.Contains(selectionPrompt, `"schema": "selection"`) {
+	if !strings.Contains(selectionPrompt, `"output_contract"`) || !strings.Contains(selectionPrompt, `"schema":"selection"`) {
 		t.Fatalf("selection prompt missing structured contract fields: %s", selectionPrompt)
 	}
 }
@@ -103,7 +127,7 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 		SelectionInstructions string                   `json:"selection_instructions"`
 		OutputContract        map[string]any           `json:"output_contract"`
 		Agents                []selectionAgentPrompt   `json:"agents"`
-		ChangedFiles          []string                 `json:"changed_files"`
+		FileManifest          promptFileManifest       `json:"file_manifest"`
 		Dossier               selectionPromptDossier   `json:"dossier"`
 		Workbench             selectionPromptWorkbench `json:"workbench"`
 		Threads               []selectionThreadPrompt  `json:"threads"`
@@ -117,8 +141,11 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	if payload.Task != defaultSelectionTask || payload.Schema != "selection" || payload.OutputContract == nil {
 		t.Fatalf("selection prompt envelope = %#v, want task/schema/output contract", payload)
 	}
-	if !reflect.DeepEqual(payload.ChangedFiles, []string{"main.go", "other.go"}) {
-		t.Fatalf("changed files = %#v, want main.go/other.go", payload.ChangedFiles)
+	if !reflect.DeepEqual(promptManifestPaths(payload.FileManifest), []string{"main.go", "other.go"}) {
+		t.Fatalf("file manifest paths = %#v, want main.go/other.go", promptManifestPaths(payload.FileManifest))
+	}
+	if strings.Contains(selectionPrompt, `"changed_files"`) || strings.Contains(selectionPrompt, `"change_map"`) {
+		t.Fatalf("selection prompt duplicated changed-file metadata: %s", selectionPrompt)
 	}
 	if len(payload.Threads) != 1 || payload.Threads[0].ThreadID != "thread-1" || payload.Threads[0].Path != "main.go" || payload.Threads[0].Summary != "Open thread at main.go:2" {
 		t.Fatalf("threads = %#v, want thread-1 on main.go", payload.Threads)
@@ -126,8 +153,8 @@ func TestSelectionOnlyPromptPreservesRoutingContractWithoutReviewerPromptBodies(
 	if !strings.Contains(payload.Dossier.PRIntent, provider.pr.Title) || !strings.Contains(payload.Dossier.PRIntent, provider.pr.Body) {
 		t.Fatalf("pr intent = %q, want title and PR body", payload.Dossier.PRIntent)
 	}
-	if !strings.Contains(payload.Dossier.ChangeMap, "main.go") || !strings.Contains(payload.Dossier.Discussion, "Open thread at main.go:2") {
-		t.Fatalf("dossier payload = %#v, want change map and summarized discussion", payload.Dossier)
+	if !strings.Contains(payload.Dossier.Discussion, "Open thread at main.go:2") {
+		t.Fatalf("dossier payload = %#v, want summarized discussion", payload.Dossier)
 	}
 	if payload.Workbench.Head.SHA != provider.pr.Head.SHA || payload.Workbench.Base.SHA != provider.pr.Base.SHA {
 		t.Fatalf("workbench payload = %#v, want review head/base SHAs", payload.Workbench)
@@ -213,7 +240,7 @@ func TestSelectionOutputContractExampleHasNoAgentsWhenCatalogEmpty(t *testing.T)
 func TestSelectionPromptIncludesMaxSelectedAgentsContract(t *testing.T) {
 	prompt, err := buildSelectionPrompt(
 		agents.Catalog{Agents: []agents.Agent{{ID: "agent-1"}}},
-		selectionPromptInput{ChangedFiles: []string{"main.go"}},
+		selectionPromptInput{ChangedFiles: []string{"main.go"}, FileManifest: testPromptFileManifest("main.go")},
 		3,
 		"",
 	)
@@ -254,7 +281,7 @@ func TestSelectionPromptMarksRepoAgentsRequiredAndUsesDefaultSharedBudget(t *tes
 		{ID: "shared-6"},
 		{ID: "repo", Provenance: agents.Provenance{Kind: agents.SourceRepo}},
 	}}
-	prompt, err := buildSelectionPrompt(catalog, selectionPromptInput{ChangedFiles: []string{"main.go"}}, 0, "")
+	prompt, err := buildSelectionPrompt(catalog, selectionPromptInput{ChangedFiles: []string{"main.go"}, FileManifest: testPromptFileManifest("main.go")}, 0, "")
 	if err != nil {
 		t.Fatalf("buildSelectionPrompt: %v", err)
 	}
@@ -331,7 +358,7 @@ func TestSelectionPromptMarksMatchingProfileAgentRequired(t *testing.T) {
 		RequiredOnMatch: true,
 		Provenance:      agents.Provenance{Kind: agents.SourceProfile},
 	}}}
-	prompt, err := buildSelectionPrompt(catalog, selectionPromptInput{ChangedFiles: []string{"main.go"}}, 0, "")
+	prompt, err := buildSelectionPrompt(catalog, selectionPromptInput{ChangedFiles: []string{"main.go"}, FileManifest: testPromptFileManifest("main.go")}, 0, "")
 	if err != nil {
 		t.Fatalf("buildSelectionPrompt: %v", err)
 	}
@@ -341,8 +368,91 @@ func TestSelectionPromptMarksMatchingProfileAgentRequired(t *testing.T) {
 	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
 		t.Fatalf("Unmarshal prompt: %v", err)
 	}
-	if len(payload.Agents) != 1 || !payload.Agents[0].RequiredIfApplicable || !reflect.DeepEqual(payload.Agents[0].RequiredFiles, []string{"main.go"}) {
+	if len(payload.Agents) != 1 || !payload.Agents[0].RequiredIfApplicable || !reflect.DeepEqual(payload.Agents[0].RequiredFileIndices, []int{0}) {
 		t.Fatalf("agents = %#v, want matching profile agent required for main.go", payload.Agents)
+	}
+}
+
+func TestSelectionRequiredFileIndexCannotBeSilentlyOmitted(t *testing.T) {
+	agent := agents.Agent{ID: "shared:go", RequiredOnMatch: true, FileGlobs: []string{"**/*.go"}}
+	if _, err := selectionAgentPromptFromAgentWithIndices(agent, []string{"main.go"}, map[string]int{}); err == nil || !strings.Contains(err.Error(), "required file") {
+		t.Fatalf("required file index error = %v, want missing-manifest error", err)
+	}
+	if _, err := buildSelectionPrompt(agents.Catalog{Agents: []agents.Agent{agent}}, selectionPromptInput{
+		ChangedFiles: []string{"main.go"},
+	}, 0, ""); err == nil || !strings.Contains(err.Error(), "file manifest") {
+		t.Fatalf("selection prompt error = %v, want authoritative manifest requirement", err)
+	}
+}
+
+func TestPromptFileManifestIndexPrefersCanonicalPathsAcrossRenameChains(t *testing.T) {
+	manifest := promptFileManifest{
+		Columns: promptFileManifestColumns,
+		Rows: [][]any{
+			{"b.go", "a.go", "renamed", 1, 0, 1, false, true},
+			{"c.go", "b.go", "renamed", 2, 0, 1, false, true},
+		},
+	}
+	index, err := promptFileManifestIndex(manifest)
+	if err != nil {
+		t.Fatalf("promptFileManifestIndex: %v", err)
+	}
+	if index["a.go"] != 0 || index["b.go"] != 0 || index["c.go"] != 1 {
+		t.Fatalf("rename-chain indices = %#v, want old a/current b row 0 and current c row 1", index)
+	}
+	indices, err := promptFileIndices([]string{"b.go", "c.go"}, index)
+	if err != nil || !reflect.DeepEqual(indices, []int{0, 1}) {
+		t.Fatalf("assignment indices = %#v, %v; want distinct canonical rows", indices, err)
+	}
+	duplicate := promptFileManifest{Columns: promptFileManifestColumns, Rows: [][]any{
+		{"same.go", "old-a.go", "renamed", 1, 0, 1, false, true},
+		{"same.go", "old-b.go", "renamed", 1, 0, 1, false, true},
+	}}
+	if _, err := promptFileManifestIndex(duplicate); err == nil || !strings.Contains(err.Error(), "duplicate canonical path") {
+		t.Fatalf("duplicate canonical path error = %v, want ambiguity rejection", err)
+	}
+}
+
+func TestPromptFileCitationRefsPreserveOnlyMentionableDeletedAndRenamePaths(t *testing.T) {
+	manifest := promptFileManifest{
+		Columns: promptFileManifestColumns,
+		Rows: [][]any{
+			{"new.go", "old.go", "renamed", 4, 2, 1, false, true},
+			{"deleted.go", "", "deleted", 0, 3, 1, false, false},
+			{"context.go", "", "modified", 5, 0, 1, false, true},
+		},
+	}
+	refs, err := promptFileCitationRefs([]string{"old.go", "deleted.go"}, []string{"new.go"}, manifest)
+	if err != nil {
+		t.Fatalf("promptFileCitationRefs: %v", err)
+	}
+	if !reflect.DeepEqual(refs, [][]int{{0, 1}, {1, 0}}) {
+		t.Fatalf("citation refs = %#v, want exact rename-old and deleted path cells", refs)
+	}
+	contract := findingsOutputContract("agent-1", []string{"new.go"})
+	instructions := strings.Join(contract.Instructions, "\n")
+	if !strings.Contains(instructions, "extra_citation_refs") || !strings.Contains(instructions, "do not cite other out-of-scope rows") {
+		t.Fatalf("findings instructions = %q, want precise extra citation refs", instructions)
+	}
+	for _, filePath := range []string{"old.go", "deleted.go"} {
+		_, err := llm.DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["new.go"],"findings":[{"severity":"major","file_path":"`+filePath+`","anchor":{"kind":"file"},"body":"citation"}]}`), llm.FindingsOptions{
+			KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: stringSet([]string{"new.go", "old.go", "deleted.go"}), NewFindingID: findingSequence("citation"),
+		})
+		if err != nil {
+			t.Fatalf("DecodeFindings allowed citation %q: %v", filePath, err)
+		}
+	}
+	_, err = llm.DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["new.go"],"findings":[{"severity":"major","file_path":"context.go","anchor":{"kind":"file"},"body":"out of scope"}]}`), llm.FindingsOptions{
+		KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: stringSet([]string{"new.go", "old.go", "deleted.go"}), NewFindingID: findingSequence("citation-outside"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in changed files") {
+		t.Fatalf("context-only citation error = %v, want out-of-scope rejection", err)
+	}
+	_, err = llm.DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["new.go"],"findings":[{"severity":"major","file_path":"deleted.go","anchor":{"kind":"file"},"body":"repair citation"}]}`), llm.FindingsOptions{
+		KnownAgents: map[string]bool{"agent-1": true}, ChangedFiles: stringSet([]string{"new.go"}), NewFindingID: findingSequence("repair-citation"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in changed files") {
+		t.Fatalf("repair extra citation error = %v, want repair scope-only rejection", err)
 	}
 }
 
@@ -430,7 +540,7 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	}
 	if len(payload.ReviewerCoverage) != 1 ||
 		payload.ReviewerCoverage[0].Status != reviewerCoverageCompleteBroad ||
-		!reflect.DeepEqual(payload.ReviewerCoverage[0].InspectedFiles, []string{"main.go"}) {
+		payload.ReviewerCoverage[0].InspectedFileCount != 1 || payload.ReviewerCoverage[0].ScopeCount != 1 || payload.ReviewerCoverage[0].SkippedFileCount != 0 {
 		t.Fatalf("reviewer coverage = %#v, want compact broad coverage", payload.ReviewerCoverage)
 	}
 	if payload.Findings[0].Location.Line != 10 || payload.Findings[1].Location.Line != 20 {
@@ -489,13 +599,16 @@ func TestRollupPromptBudgetUsesSynthesisModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSynthesisRuntimeConfig: %v", err)
 	}
+	if rollupRuntime.model == req.SelectionModelOverride {
+		t.Fatalf("rollup model = %q, want synthesis model independent of selection override", rollupRuntime.model)
+	}
 	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
-	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-5-5") {
-		t.Fatalf("rollup budget error = %v, want synthesis-model budget failure", err)
+	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", prompt)
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup:") || strings.Contains(err.Error(), rollupRuntime.model) {
+		t.Fatalf("rollup budget error = %v, want safe synthesis-model budget failure", err)
 	}
 }
 
@@ -506,12 +619,15 @@ func TestRollupPromptBudgetIgnoresSelectionModelOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSynthesisRuntimeConfig: %v", err)
 	}
+	if rollupRuntime.model == req.SelectionModelOverride {
+		t.Fatalf("rollup model = %q, want synthesis model independent of selection override", rollupRuntime.model)
+	}
 	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
-	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", "", rollupRuntime.model, "", prompt)
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup model claude-sonnet-5-5") {
-		t.Fatalf("rollup budget error = %v, want default synthesis model despite selection override", err)
+	err = (Options{Budget: ContextBudget{MaxPromptBytes: 10000}}).checkPromptBudget("rollup", prompt)
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for rollup:") || strings.Contains(err.Error(), req.SelectionModelOverride) {
+		t.Fatalf("rollup budget error = %v, want safe error despite selection override", err)
 	}
 }

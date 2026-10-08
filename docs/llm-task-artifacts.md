@@ -239,6 +239,24 @@ Resume starts at the first task that cannot be reused:
 Raw invalid structured output is local artifact data. Public rollups may include
 concise diagnostics, but they must not include raw failed model output.
 
+## Prompt Budget Rejection Diagnostics
+
+Prompt-size checks run before the corresponding provider or reviewer-workspace
+start. A rejection writes a local diagnostic receipt to
+`prompt-budget/<sha256(task-id)>.json` under the artifact root, including for
+caller-owned `SelectionOnly` artifacts. The receipt uses schema version `1`
+and records only the phase, total and limit byte counts, fixed allow-listed
+top-level section sizes (unknown sections are aggregated as `other`), and the
+envelope size needed to reconcile the total. Invalid JSON is counted once as
+`unparsed_bytes`.
+
+Receipts never contain task IDs, model names, repository paths, prompt text, or
+session identifiers. The directory and file are written with `0700` and `0600`
+permissions. A successful later check does not delete the last rejection
+receipt; it is diagnostic history only and never grants permission to resume
+or bypass a budget check. Normal artifact-root retention and purge remove the
+receipt with the rest of the run artifacts.
+
 ## Dossier Summary Task
 
 `dossier-discussion-summary` is the durable LLM task that converts raw PR

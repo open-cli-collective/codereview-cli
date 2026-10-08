@@ -181,10 +181,28 @@ payload.
 Checkout-native specialist reviewers receive a compact prompt contract plus a
 prepared reviewer workspace. The prompt payload is reviewer-facing context only:
 
-- assignment metadata, including selected files and any `allowed_files`
+- a compact columnar `file_manifest` containing the full changed-file metadata
+  rows in the provider's original order, plus assignment indices
 - reviewer instructions
 - reviewer-facing dossier content
 - pinned workbench identity metadata
+
+The manifest is input-only. Its columns are `path`, `old_path`, `status`,
+`additions`, `deletions`, `hunk_count`, `binary`, and `reviewable`; each row
+retains the complete raw path strings and statistics. Selection, reviewer, and
+coverage-repair prompts use compact JSON. Repeated assignment references use
+zero-based row indices rather than repeating path arrays. The public selection
+and findings schemas continue to use literal path strings.
+
+For reviewer prompts, `scope_indices` is the authoritative set of paths the
+reviewer may inspect and report for coverage. `file_indices` and
+`allowed_file_indices` preserve the original assignment as context and do not
+widen that scope. A reviewer may cite an otherwise out-of-scope removed or
+renamed path only through the explicit `extra_citation_refs` cells derived
+from the existing citation allowance. Coverage repair is restricted to its
+scope path cells and receives no extra citation references. Rollup coverage
+context carries counts and status rather than duplicate path arrays; durable
+coverage and approval decisions continue to use the full local path data.
 
 The prompt payload must not embed:
 
@@ -255,6 +273,9 @@ This is a contract requirement:
 
 - Any task that reads dossier or workbench artifacts by path must include
   content digests for those artifacts in its `input_fingerprint`.
+- Selection must also include a digest of the exact raw
+  `dossier/raw/changed-files.json` bytes. This invalidates reuse when raw file
+  metadata changes even if the scoped prompt is unchanged.
 - Dependency task IDs alone are not sufficient when the prompt references
   generated files outside the prompt body.
 - Resume must reject stale artifacts the same way it rejects stale prompt

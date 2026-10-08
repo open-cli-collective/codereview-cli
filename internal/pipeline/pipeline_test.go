@@ -356,7 +356,7 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunAllowsDossie
 				"Review body",
 				`"workbench"`,
 				provider.pr.Head.SHA,
-				`"id": "harness:reviewer"`,
+				`"id":"harness:reviewer"`,
 			},
 		},
 		promptValidation{
@@ -365,7 +365,7 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunAllowsDossie
 			wants: []string{
 				"Document the checkout-native review contract.",
 				"Review carefully.",
-				`"id": "harness:reviewer"`,
+				`"id":"harness:reviewer"`,
 				"go file changed",
 				"Guidance provenance: repo@refs/heads/main:",
 				"main.go",
@@ -429,7 +429,7 @@ func TestReviewPipelineAcceptanceHarnessPiRPCPermissionBoundedDryRunAllowsDossie
 	}
 	assertPromptContains(t, requests[0].Prompt, "Top-level concern", "Inline concern", "Review body")
 	assertPromptContains(t, requests[1].Prompt, "Document the checkout-native review contract.", `"workbench"`, provider.pr.Head.SHA)
-	assertPromptContains(t, requests[2].Prompt, "Document the checkout-native review contract.", `"id": "harness:reviewer"`, "main.go")
+	assertPromptContains(t, requests[2].Prompt, "Document the checkout-native review contract.", `"id":"harness:reviewer"`, "main.go")
 	if requests[2].ReviewerWorkspace == nil {
 		t.Fatalf("reviewer request = %#v, want prepared reviewer workspace", requests[2])
 	}
@@ -915,14 +915,14 @@ func TestLiveResumeRecoversPostedThreadSummaryForReviewerPrompt(t *testing.T) {
 		if strings.HasPrefix(request.LogPath, threadAnalysisLogsDir+string(filepath.Separator)) {
 			t.Fatalf("resumed pipeline repeated thread analysis:\n%s", request.LogPath)
 		}
-		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+		if strings.Contains(request.Prompt, `"schema":"findings"`) {
 			reviewerPrompt = request.Prompt
 		}
 	}
 	if reviewerPrompt == "" {
 		t.Fatal("resumed reviewer prompt not found")
 	}
-	for _, want := range []string{`"discussion_outcomes"`, `"thread_id": "thread-1"`, `"post_status": "posted"`, "Human clarified null handling."} {
+	for _, want := range []string{`"discussion_outcomes"`, `"thread_id":"thread-1"`, `"post_status":"posted"`, "Human clarified null handling."} {
 		if !strings.Contains(reviewerPrompt, want) {
 			t.Fatalf("resumed reviewer prompt missing %q:\n%s", want, reviewerPrompt)
 		}
@@ -1176,15 +1176,20 @@ func TestDryRunRepairsReadableSkippedFileAndPreservesPrimaryFinding(t *testing.T
 		t.Fatalf("adapter requests = %d, want selection/primary/repair/rollup", len(requests))
 	}
 	var repairPrompt struct {
+		FileManifest   promptFileManifest       `json:"file_manifest"`
+		Assignment     reviewerPromptAssignment `json:"assignment"`
 		CoverageRepair struct {
-			Files []string `json:"files"`
+			FileIndices []int `json:"file_indices"`
 		} `json:"coverage_repair"`
 	}
 	if err := json.Unmarshal([]byte(requests[2].Prompt), &repairPrompt); err != nil {
 		t.Fatalf("decode coverage repair prompt: %v", err)
 	}
-	if !reflect.DeepEqual(repairPrompt.CoverageRepair.Files, []string{"bun.lock"}) {
-		t.Fatalf("coverage repair files = %#v, want bun.lock only", repairPrompt.CoverageRepair.Files)
+	if got := promptManifestPathsAtIndices(t, repairPrompt.FileManifest, repairPrompt.CoverageRepair.FileIndices); !reflect.DeepEqual(got, []string{"bun.lock"}) {
+		t.Fatalf("coverage repair files = %#v, want bun.lock only", got)
+	}
+	if len(repairPrompt.Assignment.ExtraCitationRefs) != 0 {
+		t.Fatalf("coverage repair citation refs = %#v, want no out-of-scope extras", repairPrompt.Assignment.ExtraCitationRefs)
 	}
 	repairTaskID := reviewerCoverageRepairTaskID("harness:reviewer")
 	repairMeta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), repairTaskID)
@@ -1467,15 +1472,16 @@ func TestDryRunCoverageRepairInspectsOneOfTwoReadableSkippedFiles(t *testing.T) 
 		t.Fatalf("adapter requests = %d, want selection/primary/repair/rollup", len(requests))
 	}
 	var repairPrompt struct {
+		FileManifest   promptFileManifest `json:"file_manifest"`
 		CoverageRepair struct {
-			Files []string `json:"files"`
+			FileIndices []int `json:"file_indices"`
 		} `json:"coverage_repair"`
 	}
 	if err := json.Unmarshal([]byte(requests[2].Prompt), &repairPrompt); err != nil {
 		t.Fatalf("decode coverage repair prompt: %v", err)
 	}
-	if !reflect.DeepEqual(repairPrompt.CoverageRepair.Files, []string{"other.go", "third.go"}) {
-		t.Fatalf("coverage repair files = %#v, want both readable skipped files", repairPrompt.CoverageRepair.Files)
+	if got := promptManifestPathsAtIndices(t, repairPrompt.FileManifest, repairPrompt.CoverageRepair.FileIndices); !reflect.DeepEqual(got, []string{"other.go", "third.go"}) {
+		t.Fatalf("coverage repair files = %#v, want both readable skipped files", got)
 	}
 	primaryWorkspace, repairWorkspace := requests[1].ReviewerWorkspace, requests[2].ReviewerWorkspace
 	if primaryWorkspace == nil || repairWorkspace == nil ||
@@ -2330,7 +2336,7 @@ func TestSelectionOnlyExplicitMaxAllowsApplicableRepoSetBeforeCap(t *testing.T) 
 	if len(requests) != 1 {
 		t.Fatalf("adapter requests = %#v, want one selection request", requests)
 	}
-	if !strings.Contains(requests[0].Prompt, `"max_selected_agents": 2`) {
+	if !strings.Contains(requests[0].Prompt, `"max_selected_agents":2`) {
 		t.Fatalf("selection prompt = %q, want room for all potentially required reviewers", requests[0].Prompt)
 	}
 }
@@ -2378,7 +2384,7 @@ func TestSelectionOnlyDefaultCapKeepsRepoAgentsPlusFiveShared(t *testing.T) {
 		t.Fatalf("warnings = %q, want default shared-agent cap warning", got)
 	}
 	requests := adapter.Requests()
-	if len(requests) != 1 || !strings.Contains(requests[0].Prompt, `"max_selected_agents": 6`) || !strings.Contains(requests[0].Prompt, `"required_if_applicable": true`) {
+	if len(requests) != 1 || !strings.Contains(requests[0].Prompt, `"max_selected_agents":6`) || !strings.Contains(requests[0].Prompt, `"required_if_applicable":true`) {
 		t.Fatalf("selection prompt = %#v, want repo-required metadata and repo-plus-shared ceiling", requests)
 	}
 }
@@ -2626,18 +2632,33 @@ func TestSelectionOnlyContextBudgetFailure(t *testing.T) {
 	trustCurrentTempFixtures(t)
 	req.Profile.AgentSources = []string{dir}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	artifactDir := t.TempDir()
 
 	_, err := selectionOnlyForTest(ctx, Options{
 		Provider: provider,
 		Adapter:  adapter,
 		Now:      fixedNow,
 		Budget:   ContextBudget{MaxPromptBytes: 100},
-	}, selectionRequestFromReview(req, t.TempDir()))
-	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection model claude-sonnet-5-5") {
+	}, selectionRequestFromReview(req, artifactDir))
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for selection:") {
 		t.Fatalf("SelectionOnly error = %v, want selection budget failure", err)
 	}
-	if len(adapter.Requests()) != 0 {
-		t.Fatalf("adapter requests = %#v, want no LLM call after budget failure", adapter.Requests())
+	if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter starts/resumes = %#v/%#v, want no LLM call after budget failure", adapter.Requests(), adapter.Resumes())
+	}
+	if info, statErr := os.Stat(artifactDir); statErr != nil || !info.IsDir() {
+		t.Fatalf("caller artifact root stat = %v, %v; want preserved directory", info, statErr)
+	}
+	receipt, receiptData := readPromptBudgetReceiptForTest(t, artifactDir, orchestratorSelectionStage)
+	if receipt.Phase != "selection" || receipt.LimitBytes != 100 || strings.Contains(string(receiptData), "claude-sonnet") {
+		t.Fatalf("selection-only receipt = %#v data=%s", receipt, receiptData)
+	}
+	metadata, metadataErr := llmlifecycle.ListMetadata(lifecyclePaths(ArtifactPathsFromDir(artifactDir)))
+	if metadataErr != nil {
+		t.Fatalf("list selection-only lifecycle metadata: %v", metadataErr)
+	}
+	if len(metadata) != 0 {
+		t.Fatalf("selection-only lifecycle metadata = %#v, want no metadata after preflight rejection", metadata)
 	}
 }
 
@@ -3004,7 +3025,7 @@ func TestDryRunInvalidOrUnreadableRepoGuidanceForcesRequestChangesWithoutReviewe
 				t.Fatalf("rollup = %q, want %q", result.Plan.RollupMarkdown, tt.wantText)
 			}
 			for _, request := range adapter.Requests() {
-				if strings.Contains(request.Prompt, `"schema": "selection"`) || strings.Contains(request.Prompt, `"schema": "rollup"`) || strings.Contains(request.Prompt, `"task": "review files and return findings JSON only"`) {
+				if strings.Contains(request.Prompt, `"schema":"selection"`) || strings.Contains(request.Prompt, `"schema":"rollup"`) || strings.Contains(request.Prompt, `"task":"review files and return findings JSON only"`) {
 					t.Fatalf("unexpected review pipeline prompt: %q", request.Prompt)
 				}
 			}
@@ -3237,7 +3258,7 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 		t.Fatalf("requests len = %d, want selection, three reviewers, beta retry, rollup", len(requests))
 	}
 	rollupPrompt := requests[len(requests)-1].Prompt
-	if !strings.Contains(rollupPrompt, `"reviewer_failures"`) || !strings.Contains(rollupPrompt, `"agent_id": "harness:beta"`) {
+	if !strings.Contains(rollupPrompt, `"reviewer_failures"`) || !strings.Contains(rollupPrompt, `"agent_id":"harness:beta"`) {
 		t.Fatalf("rollup prompt missing isolated reviewer failure context: %s", rollupPrompt)
 	}
 	if result.Plan.Outcome != reviewplan.OutcomeComment {
@@ -3308,7 +3329,7 @@ func TestDryRunReviewerProviderFailureIsolation(t *testing.T) {
 		t.Fatalf("requests len = %d, want selection, three reviewers, rollup", len(requests))
 	}
 	rollupPrompt := requests[len(requests)-1].Prompt
-	if !strings.Contains(rollupPrompt, `"reviewer_failures"`) || !strings.Contains(rollupPrompt, `"agent_id": "harness:beta"`) {
+	if !strings.Contains(rollupPrompt, `"reviewer_failures"`) || !strings.Contains(rollupPrompt, `"agent_id":"harness:beta"`) {
 		t.Fatalf("rollup prompt missing isolated reviewer failure context: %s", rollupPrompt)
 	}
 	if result.Plan.Outcome != reviewplan.OutcomeComment {
@@ -4086,7 +4107,7 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildReviewerPrompt checkpoint: %v", err)
 	}
-	for _, want := range []string{`"discussion_outcomes"`, `"thread_id": "thread-1"`, `"post_status": "posted"`, "Human clarified null handling."} {
+	for _, want := range []string{`"discussion_outcomes"`, `"thread_id":"thread-1"`, `"post_status":"posted"`, "Human clarified null handling."} {
 		if !strings.Contains(checkpointPrompt, want) {
 			t.Fatalf("checkpoint prompt missing %q:\n%s", want, checkpointPrompt)
 		}
@@ -4692,7 +4713,7 @@ func TestLiveNamedSessionResumesOrchestratorOnlyAndReturnsCandidate(t *testing.T
 		t.Fatalf("resume session ids = %#v, want stored-session then selection-new", resumes)
 	}
 	requests := adapter.Requests()
-	if len(requests) != 1 || !strings.Contains(requests[0].Prompt, `"schema": "findings"`) {
+	if len(requests) != 1 || !strings.Contains(requests[0].Prompt, `"schema":"findings"`) {
 		t.Fatalf("fresh starts = %#v, want reviewer only", requests)
 	}
 	if result.NamedSessionCandidate == nil {
@@ -5160,7 +5181,7 @@ func TestLiveNamedSessionLegacyNonCodexRowStillResumes(t *testing.T) {
 	if len(resumes) != 2 || resumes[0].SessionID != "stored-session" || resumes[1].SessionID != "selection-new" {
 		t.Fatalf("resumes = %#v, want stored-session then selection-new", resumes)
 	}
-	if len(adapter.Requests()) != 1 || !strings.Contains(adapter.Requests()[0].Prompt, `"schema": "findings"`) {
+	if len(adapter.Requests()) != 1 || !strings.Contains(adapter.Requests()[0].Prompt, `"schema":"findings"`) {
 		t.Fatalf("fresh starts = %#v, want reviewer only", adapter.Requests())
 	}
 	if result.NamedSessionCandidate == nil || result.NamedSessionCandidate.ProviderSessionID != "rollup-new" || !result.NamedSessionCandidate.DurableSession {
@@ -5374,7 +5395,7 @@ func TestDryRunNoResolveThreadsKeepsSummaryReplyOnly(t *testing.T) {
 	if len(requests) != 4 {
 		t.Fatalf("adapter requests = %d, want dossier/selection/thread-analysis/rollup", len(requests))
 	}
-	if !strings.Contains(requests[1].Prompt, `"status": "pending_human_reply"`) || strings.Contains(requests[1].Prompt, "<!-- codereview:") {
+	if !strings.Contains(requests[1].Prompt, `"status":"pending_human_reply"`) || strings.Contains(requests[1].Prompt, "<!-- codereview:") {
 		t.Fatalf("selection prompt did not use sanitized normalized thread context:\n%s", requests[1].Prompt)
 	}
 	meta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(result.Artifacts), "thread-analysis-thread-1")
@@ -5447,7 +5468,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 		if !strings.Contains(request.Prompt, `"output_contract"`) {
 			t.Fatalf("prompt missing output contract: %s", request.Prompt)
 		}
-		if strings.Contains(request.Prompt, `"schema": "selection"`) {
+		if strings.Contains(request.Prompt, `"schema":"selection"`) {
 			selectionPrompts++
 			if !strings.Contains(request.Prompt, `"agent_id"`) ||
 				!strings.Contains(request.Prompt, `"thread_actions"`) ||
@@ -5463,7 +5484,7 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 				}
 			}
 		}
-		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+		if strings.Contains(request.Prompt, `"schema":"findings"`) {
 			reviewerPrompts++
 			if !strings.Contains(request.Prompt, `"agent"`) || !strings.Contains(request.Prompt, `"assignment"`) || !strings.Contains(request.Prompt, `"dossier"`) || !strings.Contains(request.Prompt, `"workbench"`) {
 				t.Fatalf("reviewer prompt missing checkout-native context: %s", request.Prompt)
@@ -5487,13 +5508,13 @@ func TestDryRunMultiAgentSessionsMapFindingsToReviewerSessions(t *testing.T) {
 				}
 			}
 		}
-		if strings.Contains(request.Prompt, `"schema": "rollup"`) &&
+		if strings.Contains(request.Prompt, `"schema":"rollup"`) &&
 			(!strings.Contains(request.Prompt, `"review_event"`) ||
 				!strings.Contains(request.Prompt, `"dedupe_log"`) ||
 				!strings.Contains(request.Prompt, `"ordered_findings"`)) {
 			t.Fatalf("rollup prompt missing output schema fields: %s", request.Prompt)
 		}
-		if strings.Contains(request.Prompt, `"schema": "rollup"`) {
+		if strings.Contains(request.Prompt, `"schema":"rollup"`) {
 			if strings.Contains(request.Prompt, `"anchor"`) {
 				t.Fatalf("rollup prompt leaked finding anchors: %s", request.Prompt)
 			}
@@ -6346,7 +6367,7 @@ func TestDryRunDeletionOnlyDiffDoesNotRunSelectedReviewer(t *testing.T) {
 		t.Fatalf("adapter requests = %d, want selection/rollup only", len(requests))
 	}
 	for _, request := range requests {
-		if strings.Contains(request.Prompt, `"schema": "findings"`) {
+		if strings.Contains(request.Prompt, `"schema":"findings"`) {
 			t.Fatalf("unexpected reviewer request for deletion-only diff:\n%s", request.Prompt)
 		}
 	}
@@ -6658,12 +6679,11 @@ func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	if !ok {
 		t.Fatalf("contract allowed values type = %T, want map", contract.AllowedValues)
 	}
-	allowedValues, ok := contractAllowedValues["changed_files"].([]string)
-	if !ok {
-		t.Fatalf("contract changed_files type = %T, want []string", contractAllowedValues["changed_files"])
+	if _, ok := contractAllowedValues["changed_files"]; ok {
+		t.Fatalf("contract duplicated changed_files metadata: %#v", contractAllowedValues)
 	}
-	if !reflect.DeepEqual(allowedValues, []string{"schema.sql"}) {
-		t.Fatalf("contract changed_files = %#v, want assignment scope", allowedValues)
+	if !strings.Contains(strings.Join(contract.Instructions, "\n"), "assignment.scope_indices") {
+		t.Fatalf("contract instructions = %#v, want authoritative scope indices", contract.Instructions)
 	}
 	_, err := llm.DecodeFindings([]byte(`{
 		"schema_version": 1,
@@ -6683,6 +6703,377 @@ func TestReviewerScopesSeparateReadAccessFromExpectedCoverage(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "not in changed files") {
 		t.Fatalf("DecodeFindings outside assignment error = %v, want not in changed files", err)
 	}
+}
+
+func TestReviewerManifestKeepsFileAndAllowedIndicesSeparateFromScope(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier-summary", discussionSummaryJSON(nil, nil), 4, 1))
+	adapter.Queue(fakeLLMResult("selection", selectionJSON("harness:reviewer", "main.go"), 5, 1))
+	result, err := selectionOnlyForTest(ctx, Options{Provider: provider, Adapter: adapter, Now: fixedNow}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	var agent agents.Agent
+	for _, candidate := range result.Catalog.Agents {
+		if candidate.ID == "harness:reviewer" {
+			agent = candidate
+			break
+		}
+	}
+	if agent.ID == "" {
+		t.Fatal("harness:reviewer not found in resolved catalog")
+	}
+	selected := llm.SelectedAgent{AgentID: agent.ID, Files: []string{"main.go", "other.go"}, AllowedFiles: []string{"main.go"}}
+	prompt, _, err := buildReviewerPrompt(result.Artifacts, result.PR, selected, agent, []string{"main.go", "other.go"})
+	if err != nil {
+		t.Fatalf("buildReviewerPrompt: %v", err)
+	}
+	var payload struct {
+		FileManifest promptFileManifest       `json:"file_manifest"`
+		Assignment   reviewerPromptAssignment `json:"assignment"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("decode reviewer prompt: %v", err)
+	}
+	if !reflect.DeepEqual(promptManifestPaths(payload.FileManifest), []string{"main.go", "other.go"}) ||
+		!reflect.DeepEqual(payload.Assignment.FileIndices, []int{0, 1}) ||
+		!reflect.DeepEqual(payload.Assignment.AllowedFileIndices, []int{0}) ||
+		!reflect.DeepEqual(payload.Assignment.ScopeIndices, []int{0}) {
+		t.Fatalf("reviewer manifest/indices = %#v / %#v, want both assignment rows but main.go-only scope", payload.FileManifest, payload.Assignment)
+	}
+	if !strings.Contains(strings.Join(findingsOutputContract(agent.ID, []string{"main.go"}).Instructions, "\n"), "context only") {
+		t.Fatal("reviewer contract does not identify out-of-scope file_indices as context only")
+	}
+	_, err = llm.DecodeFindings([]byte(`{"schema_version":1,"agent_id":"harness:reviewer","inspected_files":["main.go"],"findings":[{"severity":"major","file_path":"other.go","anchor":{"kind":"file"},"body":"outside scope"}]}`), llm.FindingsOptions{
+		KnownAgents: map[string]bool{agent.ID: true}, ChangedFiles: stringSet(reviewerAssignmentScope(selected, []string{"main.go", "other.go"})), NewFindingID: findingSequence("scope"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "not in changed files") {
+		t.Fatalf("out-of-scope finding error = %v, want unchanged validator rejection", err)
+	}
+	coverage := buildReviewerCoverage([]llm.SelectedAgent{selected}, []llm.Findings{{AgentID: agent.ID, InspectedFiles: []string{"main.go"}}}, nil, []string{"main.go", "other.go"}, nil)
+	if len(coverage) == 0 || !reflect.DeepEqual(coverage[0].Scope, []string{"main.go"}) {
+		t.Fatalf("coverage = %#v, want authoritative main.go-only reviewer scope", coverage)
+	}
+	for _, entry := range coverage {
+		if slices.Contains(entry.Scope, "other.go") {
+			t.Fatalf("coverage widened allowed scope to context-only other.go: %#v", coverage)
+		}
+	}
+}
+
+func TestMetadataHeavyDryRunKeepsPromptsCompactAndComplete(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+	dir := t.TempDir()
+	writeRequiredAgentForGlob(t, dir, "go", "**/*.go")
+	writeRequiredAgentForGlob(t, dir, "sql", "**/*.sql")
+	trustCurrentTempFixtures(t)
+	req.Profile.AgentSources = []string{dir}
+
+	const fileCount, renameCount = 2500, 500
+	paths := make([]string, 0, fileCount)
+	goPaths := make([]string, 0, fileCount/2)
+	sqlPaths := make([]string, 0, fileCount/2)
+	var diff strings.Builder
+	for i := 0; i < fileCount; i++ {
+		ext := "go"
+		if i%2 == 1 {
+			ext = "sql"
+		}
+		path := fmt.Sprintf("internal/synthetic/%05d/%s/src/file-%05d.%s", i, strings.Repeat("x", 62), i, ext)
+		if len(path) < 100 || len(path) > 115 {
+			t.Fatalf("synthetic path length = %d, want approximately 110", len(path))
+		}
+		paths = append(paths, path)
+		if ext == "go" {
+			goPaths = append(goPaths, path)
+		} else {
+			sqlPaths = append(sqlPaths, path)
+		}
+		if i < renameCount {
+			oldPath := strings.Replace(path, "file-", "legacy-file-", 1)
+			diff.WriteString(renameDiff(oldPath, path))
+		} else {
+			diff.WriteString(smallDiff(path))
+		}
+	}
+	provider.diff.Raw = diff.String()
+	adapter := &metadataHeavyAdapter{FakeAdapter: &llm.FakeAdapter{NameValue: "fake-llm"}}
+	result, err := dryRunForTest(ctx, Options{
+		Provider: provider, Adapter: adapter, Store: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewRunID: func() string { return "run-metadata-heavy" }, NewSessionRowID: sequence("session"),
+		NewFindingID: findingSequence("finding"), NewActionID: actionSequence(), MaxConcurrency: 1,
+	}, req)
+	if err != nil {
+		t.Fatalf("DryRun metadata-heavy input: %v", err)
+	}
+	if result.Plan.Outcome != reviewplan.OutcomeApproved {
+		t.Fatalf("plan outcome = %q, want approve for complete coverage", result.Plan.Outcome)
+	}
+	if len(result.ReviewerCoverage) != 2 {
+		t.Fatalf("reviewer coverage entries = %d, want two", len(result.ReviewerCoverage))
+	}
+	for _, entry := range result.ReviewerCoverage {
+		if entry.Status != reviewerCoverageCompleteBroad && entry.Status != reviewerCoverageCompleteConstrained {
+			t.Fatalf("coverage for %s = %q, want a complete coverage status", entry.AgentID, entry.Status)
+		}
+	}
+	requests := adapter.Requests()
+	if len(requests) != 4 {
+		t.Fatalf("adapter requests = %d, want selection/two reviewers/rollup", len(requests))
+	}
+	var selectionPayload struct {
+		FileManifest   promptFileManifest     `json:"file_manifest"`
+		Agents         []selectionAgentPrompt `json:"agents"`
+		OutputContract outputContract         `json:"output_contract"`
+	}
+	if err := json.Unmarshal([]byte(requests[0].Prompt), &selectionPayload); err != nil {
+		t.Fatalf("decode selection prompt: %v", err)
+	}
+	if got := promptManifestPaths(selectionPayload.FileManifest); !reflect.DeepEqual(got, paths) {
+		t.Fatalf("selection manifest retained %d rows or changed raw order", len(got))
+	}
+	if want := []string{"path", "old_path", "status", "additions", "deletions", "hunk_count", "binary", "reviewable"}; !reflect.DeepEqual(selectionPayload.FileManifest.Columns, want) {
+		t.Fatalf("selection manifest columns = %#v, want %#v", selectionPayload.FileManifest.Columns, want)
+	}
+	if first := selectionPayload.FileManifest.Rows[0]; first[1] != strings.Replace(paths[0], "file-", "legacy-file-", 1) || first[2] != "renamed" {
+		t.Fatalf("first rename row = %#v, want complete old-path and renamed metadata", first)
+	}
+	if ordinary := selectionPayload.FileManifest.Rows[renameCount]; ordinary[2] != "modified" || ordinary[3] != float64(1) || ordinary[4] != float64(1) || ordinary[5] != float64(1) || ordinary[7] != true {
+		t.Fatalf("ordinary row metadata = %#v, want status/stats and reviewable flag", ordinary)
+	}
+	if len(selectionPayload.Agents) != 2 || len(selectionPayload.Agents[0].RequiredFileIndices) != len(goPaths) || len(selectionPayload.Agents[1].RequiredFileIndices) != len(sqlPaths) {
+		t.Fatalf("required-agent indices = %#v, want complete matching path indices", selectionPayload.Agents)
+	}
+	if values, ok := selectionPayload.OutputContract.AllowedValues.(map[string]any); ok {
+		if _, duplicate := values["changed_files"]; duplicate {
+			t.Fatal("selection output contract duplicated changed-file path metadata")
+		}
+	}
+	if _, duplicate := func() (json.RawMessage, bool) {
+		var root map[string]json.RawMessage
+		_ = json.Unmarshal([]byte(requests[0].Prompt), &root)
+		value, ok := root["changed_files"]
+		return value, ok
+	}(); duplicate {
+		t.Fatal("selection prompt duplicated changed-file path metadata at top level")
+	}
+	for requestIndex, request := range requests {
+		if len(request.Prompt) > defaultMaxPromptBytes {
+			t.Fatalf("request %d prompt bytes = %d, exceeds default %d", requestIndex, len(request.Prompt), defaultMaxPromptBytes)
+		}
+		phase := "reviewer"
+		if requestIndex == 0 {
+			phase = "selection"
+		} else if requestIndex == len(requests)-1 {
+			phase = "rollup"
+		}
+		details := promptBudgetDetails(phase, request.Prompt, defaultMaxPromptBytes)
+		sectionParts := make([]string, 0, len(details.sections)+1)
+		for _, section := range details.sections {
+			sectionParts = append(sectionParts, fmt.Sprintf("%s=%d", section.Name, section.Bytes))
+		}
+		sectionParts = append(sectionParts, fmt.Sprintf("envelope=%d", len(request.Prompt)-sumPromptSectionBytes(details.sections)))
+		t.Logf("phase=%s bytes=%d sections=%s", phase, len(request.Prompt), strings.Join(sectionParts, ","))
+	}
+
+	var oldProjection map[string]any
+	if err := json.Unmarshal([]byte(requests[0].Prompt), &oldProjection); err != nil {
+		t.Fatalf("decode old selector projection: %v", err)
+	}
+	oldProjection["changed_files"] = paths
+	contract := oldProjection["output_contract"].(map[string]any)
+	allowed := contract["allowed_values"].(map[string]any)
+	allowed["changed_files"] = paths
+	for _, item := range oldProjection["agents"].([]any) {
+		promptAgent := item.(map[string]any)
+		var required []string
+		for _, rawIndex := range promptAgent["required_file_indices"].([]any) {
+			index := int(rawIndex.(float64))
+			required = append(required, paths[index])
+		}
+		promptAgent["required_files"] = required
+		delete(promptAgent, "required_file_indices")
+	}
+	oldStyle, err := json.MarshalIndent(oldProjection, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal old selector projection: %v", err)
+	}
+	if len(oldStyle) <= defaultMaxPromptBytes {
+		t.Fatalf("old-style selector projection = %d bytes, want above default budget %d", len(oldStyle), defaultMaxPromptBytes)
+	}
+	t.Logf("old-style selector projection bytes=%d exceeds default=%d", len(oldStyle), defaultMaxPromptBytes)
+}
+
+func TestOversizedReviewerPromptPersistsReceiptBeforeReviewerStart(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	baselineStore := openPipelineStore(t)
+	defer closeStore(t, baselineStore)
+	const sentinel = "REVIEWER_PRIVATE_SENTINEL"
+	agentDir := t.TempDir()
+	writeRequiredAgentForGlob(t, agentDir, "reviewer", "**/*.go")
+	writeFile(t, filepath.Join(agentDir, "harness", "reviewer", "prompt.md"), strings.Repeat(sentinel+" ", 1200))
+	trustCurrentTempFixtures(t)
+
+	baselineProvider, baselineReq := dryRunHarness(t)
+	removeRepoAgentFixture(baselineProvider)
+	baselineReq.Profile.AgentSources = []string{agentDir}
+	baselineAdapter := &metadataHeavyAdapter{FakeAdapter: &llm.FakeAdapter{NameValue: "fake-llm"}}
+	_, err := dryRunForTest(ctx, Options{
+		Provider: baselineProvider, Adapter: baselineAdapter, Store: baselineStore,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewRunID: func() string { return "run-reviewer-budget-baseline" }, NewSessionRowID: sequence("baseline-session"),
+		NewFindingID: findingSequence("baseline-finding"), NewActionID: actionSequence(),
+		Budget: ContextBudget{MaxPromptBytes: -1}, MaxConcurrency: 1,
+	}, baselineReq)
+	if err != nil {
+		t.Fatalf("unbounded baseline DryRun: %v", err)
+	}
+	baselineRequests := baselineAdapter.Requests()
+	if len(baselineRequests) < 3 {
+		t.Fatalf("baseline adapter requests = %d, want selection, reviewer, and rollup", len(baselineRequests))
+	}
+	selectionBytes := len(baselineRequests[0].Prompt)
+	var reviewerBytes int
+	for _, request := range baselineRequests {
+		var payload struct {
+			Schema string `json:"schema"`
+		}
+		if err := json.Unmarshal([]byte(request.Prompt), &payload); err != nil {
+			t.Fatalf("decode baseline prompt schema: %v", err)
+		}
+		if payload.Schema == "findings" {
+			reviewerBytes = len(request.Prompt)
+		}
+	}
+	if reviewerBytes <= selectionBytes {
+		t.Fatalf("reviewer prompt bytes=%d, selection prompt bytes=%d; want reviewer-specific content to exceed selection", reviewerBytes, selectionBytes)
+	}
+
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+	req.Profile.AgentSources = []string{agentDir}
+	adapter := &metadataHeavyAdapter{FakeAdapter: &llm.FakeAdapter{NameValue: "fake-llm"}}
+	_, err = dryRunForTest(ctx, Options{
+		Provider: provider, Adapter: adapter, Store: store,
+		Layout: statepaths.NewLayout(t.TempDir(), t.TempDir()), Now: fixedNow,
+		NewRunID: func() string { return "run-reviewer-budget-rejected" }, NewSessionRowID: sequence("rejected-session"),
+		NewFindingID: findingSequence("rejected-finding"), NewActionID: actionSequence(),
+		Budget: ContextBudget{MaxPromptBytes: selectionBytes}, MaxConcurrency: 1,
+	}, req)
+	if err == nil || !strings.Contains(err.Error(), "context budget exceeded for reviewer:") {
+		t.Fatalf("DryRun oversized reviewer error = %v, want reviewer budget rejection", err)
+	}
+	if strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), "claude-sonnet") || strings.Contains(err.Error(), agentDir) {
+		t.Fatalf("reviewer budget error leaked private prompt/path/model data: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 || !strings.Contains(requests[0].Prompt, `"schema":"selection"`) || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter starts/resumes after reviewer rejection = %#v/%#v, want only the allowed selection start", requests, adapter.Resumes())
+	}
+	run, getErr := store.GetRun(ctx, "run-reviewer-budget-rejected")
+	if getErr != nil {
+		t.Fatalf("GetRun after reviewer budget rejection: %v", getErr)
+	}
+	receipt, receiptData := readPromptBudgetReceiptForTest(t, run.ArtifactPath, reviewerTaskID("harness:reviewer"))
+	if receipt.Phase != "reviewer" || receipt.LimitBytes != selectionBytes || receipt.TotalBytes <= receipt.LimitBytes {
+		t.Fatalf("reviewer budget receipt = %#v", receipt)
+	}
+	if strings.Contains(string(receiptData), sentinel) || strings.Contains(string(receiptData), agentDir) || strings.Contains(string(receiptData), "claude-sonnet") {
+		t.Fatalf("reviewer budget receipt leaked private prompt/path/model data: %s", receiptData)
+	}
+	if _, exists, metadataErr := llmlifecycle.ReadMetadata(lifecyclePaths(ArtifactPathsFromDir(run.ArtifactPath)), reviewerTaskID("harness:reviewer")); metadataErr != nil {
+		t.Fatalf("read reviewer lifecycle metadata after preflight rejection: %v", metadataErr)
+	} else if exists {
+		t.Fatal("reviewer lifecycle metadata exists despite pre-provider budget rejection")
+	}
+}
+
+type metadataHeavyAdapter struct {
+	*llm.FakeAdapter
+}
+
+func (a *metadataHeavyAdapter) Start(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	var payload struct {
+		Schema     string                   `json:"schema"`
+		Agents     []selectionAgentPrompt   `json:"agents"`
+		Manifest   promptFileManifest       `json:"file_manifest"`
+		Assignment reviewerPromptAssignment `json:"assignment"`
+	}
+	if err := json.Unmarshal([]byte(req.Prompt), &payload); err != nil {
+		return nil, fmt.Errorf("decode fake metadata-heavy prompt: %w", err)
+	}
+	var output string
+	var sessionID string
+	switch payload.Schema {
+	case "selection":
+		rows := make([]map[string]any, 0, len(payload.Agents))
+		for _, agent := range payload.Agents {
+			files, err := promptManifestPathsAt(payload.Manifest, agent.RequiredFileIndices)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, map[string]any{"agent_id": agent.ID, "rationale": "Required matching files", "files": files})
+		}
+		encoded, err := json.Marshal(map[string]any{
+			"schema_version":  1,
+			"selected_agents": rows,
+			"thread_actions":  []any{},
+			"reasoning":       "Select each required_on_match reviewer for its matching paths.",
+		})
+		if err != nil {
+			return nil, err
+		}
+		output = string(encoded)
+		sessionID = "metadata-heavy-selection"
+	case "findings":
+		files, err := promptManifestPathsAt(payload.Manifest, payload.Assignment.ScopeIndices)
+		if err != nil {
+			return nil, err
+		}
+		output = coverageOnlyJSON(payload.Assignment.AgentID, files, nil)
+		sessionID = "metadata-heavy-reviewer-" + strings.ReplaceAll(payload.Assignment.AgentID, ":", "-")
+	case "rollup":
+		output = rollupJSON("approve", findingIDsFromPrompt(req.Prompt))
+		sessionID = "metadata-heavy-rollup"
+	default:
+		output = discussionSummaryJSON(nil, nil)
+		sessionID = "metadata-heavy-dossier"
+	}
+	a.Queue(fakeLLMResult(sessionID, output, 8, 1))
+	return a.FakeAdapter.Start(ctx, req)
+}
+
+func promptManifestPathsAt(manifest promptFileManifest, indices []int) ([]string, error) {
+	paths := make([]string, 0, len(indices))
+	for _, index := range indices {
+		if index < 0 || index >= len(manifest.Rows) || len(manifest.Rows[index]) == 0 {
+			return nil, fmt.Errorf("manifest index %d is out of range", index)
+		}
+		path, ok := manifest.Rows[index][0].(string)
+		if !ok {
+			return nil, fmt.Errorf("manifest path at index %d is not a string", index)
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+func sumPromptSectionBytes(sections []promptBudgetSection) int {
+	var total int
+	for _, section := range sections {
+		total += section.Bytes
+	}
+	return total
 }
 
 func TestRebaseReviewerCohortKeepsOrderAndDropsEmptyScopeCalls(t *testing.T) {
@@ -7127,7 +7518,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				trustCurrentTempFixtures(t)
 				req.Profile.AgentSources = []string{dir}
 			},
-			want:  "context budget exceeded for selection model claude-sonnet-5-5",
+			want:  "context budget exceeded for selection:",
 			runID: "run-budget-selection-default",
 		},
 		{
@@ -7141,7 +7532,7 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 				req.Profile.AgentSources = []string{dir}
 				req.SelectionModelOverride = "bench-model"
 			},
-			want:  "context budget exceeded for selection model bench-model",
+			want:  "context budget exceeded for selection:",
 			runID: "run-budget-selection-override",
 		},
 	}
@@ -7159,11 +7550,12 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			if tt.queue != nil {
 				tt.queue(adapter)
 			}
+			layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
 			_, err := dryRunForTest(ctx, Options{
 				Provider:        provider,
 				Adapter:         adapter,
 				Store:           store,
-				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Layout:          layout,
 				Now:             fixedNow,
 				NewRunID:        func() string { return tt.runID },
 				NewSessionRowID: sequence("session"),
@@ -7177,6 +7569,17 @@ func TestDryRunContextBudgetFailures(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("DryRun error = %v, want substring %q", err, tt.want)
+			}
+			if len(adapter.Requests()) != 0 || len(adapter.Resumes()) != 0 {
+				t.Fatalf("DryRun adapter starts/resumes = %#v/%#v, want no LLM work after selection rejection", adapter.Requests(), adapter.Resumes())
+			}
+			run, getErr := store.GetRun(ctx, tt.runID)
+			if getErr != nil {
+				t.Fatalf("GetRun after selection budget rejection: %v", getErr)
+			}
+			receipt, receiptData := readPromptBudgetReceiptForTest(t, run.ArtifactPath, orchestratorSelectionStage)
+			if receipt.Phase != "selection" || receipt.LimitBytes != tt.budget || strings.Contains(string(receiptData), "claude-sonnet") || strings.Contains(string(receiptData), "bench-model") {
+				t.Fatalf("DryRun selection receipt = %#v data=%s", receipt, receiptData)
 			}
 		})
 	}
@@ -7260,7 +7663,7 @@ func (a *promptAwareAdapter) Start(_ context.Context, req llm.Request) (llm.Stre
 	a.mu.Unlock()
 
 	switch {
-	case strings.Contains(req.Prompt, `"schema": "selection"`):
+	case strings.Contains(req.Prompt, `"schema":"selection"`):
 		return staticStream{sessionID: "selection-session", output: `{
 			"schema_version": 1,
 			"selected_agents": [
@@ -7270,7 +7673,7 @@ func (a *promptAwareAdapter) Start(_ context.Context, req llm.Request) (llm.Stre
 			"thread_actions": [],
 			"reasoning": "two agents"
 		}`}, nil
-	case strings.Contains(req.Prompt, `"schema": "rollup"`):
+	case strings.Contains(req.Prompt, `"schema":"rollup"`):
 		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", findingIDsFromPrompt(req.Prompt))}, nil
 	case strings.Contains(req.Prompt, "harness:alpha"):
 		return staticStream{sessionID: "alpha-session", output: findingsJSON("harness:alpha", "main.go", "major", 2, "Alpha finding")}, nil
@@ -7345,14 +7748,14 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 	a.mu.Unlock()
 
 	switch {
-	case strings.Contains(req.Prompt, `"schema": "selection"`):
+	case strings.Contains(req.Prompt, `"schema":"selection"`):
 		return staticStream{sessionID: "selection-session", output: selectionJSONForAgents("main.go", "harness:alpha", "harness:beta", "harness:gamma")}, nil
-	case strings.Contains(req.Prompt, `"schema": "rollup"`):
+	case strings.Contains(req.Prompt, `"schema":"rollup"`):
 		return staticStream{sessionID: "rollup-session", output: rollupJSON("comment", findingIDsFromPrompt(req.Prompt))}, nil
-	case strings.Contains(req.Prompt, `"id": "harness:alpha"`):
+	case strings.Contains(req.Prompt, `"id":"harness:alpha"`):
 		a.waitReviewerStart("harness:alpha")
 		return staticStream{sessionID: "alpha-session", output: findingsJSON("harness:alpha", "main.go", "major", 2, "alpha finding")}, nil
-	case strings.Contains(req.Prompt, `"id": "harness:beta"`):
+	case strings.Contains(req.Prompt, `"id":"harness:beta"`):
 		a.waitReviewerStart("harness:beta")
 		if a.betaProviderErr != nil {
 			return staticStream{sessionID: "beta-provider-session", err: a.betaProviderErr}, nil
@@ -7379,7 +7782,7 @@ func (a *reviewerIsolationAdapter) Start(_ context.Context, req llm.Request) (ll
 			sessionID = "beta-retry-session"
 		}
 		return staticStream{sessionID: sessionID, output: `{"schema_version": 1, "agent_id": "harness:beta", "findings": [`}, nil
-	case strings.Contains(req.Prompt, `"id": "harness:gamma"`):
+	case strings.Contains(req.Prompt, `"id":"harness:gamma"`):
 		a.waitReviewerStart("harness:gamma")
 		return staticStream{sessionID: "gamma-session", output: findingsJSON("harness:gamma", "main.go", "minor", 2, "gamma finding")}, nil
 	default:
@@ -8798,6 +9201,15 @@ func writeAgent(t *testing.T, rootDir, category, agent, description, prompt stri
 	writeFile(t, filepath.Join(rootDir, category, "index.yaml"), "name: "+category+"\ndescription: "+category+" category\nowner: owner\n")
 	writeFile(t, filepath.Join(rootDir, category, agent, "index.yaml"), agentYAML(agent, description, false))
 	writeFile(t, filepath.Join(rootDir, category, agent, "prompt.md"), prompt)
+}
+
+func writeRequiredAgentForGlob(t *testing.T, rootDir, name, fileGlob string) {
+	t.Helper()
+	category := "harness"
+	writeFile(t, filepath.Join(rootDir, category, "index.yaml"), "name: "+category+"\ndescription: "+category+" category\nowner: owner\n")
+	index := fmt.Sprintf("name: %s\ndescription: required %s reviewer\nmodel_tier: medium\neffort: medium\nfile_globs:\n  - '%s'\napplies_when:\n  - %s files changed\nrequired_on_match: true\nneeds_full_file_content: false\n", name, name, fileGlob, name)
+	writeFile(t, filepath.Join(rootDir, category, name, "index.yaml"), index)
+	writeFile(t, filepath.Join(rootDir, category, name, "prompt.md"), "Review the assigned changed files.")
 }
 
 func relativeAgentSource(t *testing.T) (string, string) {
