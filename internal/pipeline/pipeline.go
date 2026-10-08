@@ -522,7 +522,7 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}); err != nil {
 		return SelectionResult{}, err
 	}
-	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
+	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
 		SelectionEffortOverride: req.SelectionEffortOverride,
@@ -705,7 +705,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		return Result{}, err
 	}
-	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
+	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		RunID:                   run.RunID,
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
@@ -897,7 +897,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
-	if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
+	if err := opts.checkAndPersistPromptBudget(prepared.artifacts, orchestratorRollupStage, "rollup", rollupPrompt); err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
@@ -1268,20 +1268,17 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
-	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads)
+	// Deleted files remain visible in the manifest but are not reviewer obligations.
+	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
+	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads, reviewerFiles)
 	knownThreadIDs := knownThreads(req.Threads)
 	if len(req.ThreadContext) > 0 {
-		promptInput, promptDeps, err = selectionPromptInputFromThreadContext(req.Artifacts, req.ThreadContext)
+		promptInput, promptDeps, err = selectionPromptInputFromThreadContext(req.Artifacts, req.ThreadContext, reviewerFiles)
 		knownThreadIDs = knownThreadContext(req.ThreadContext)
 	}
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
-	// Deleted files remain in the dossier so the change is visible to the
-	// orchestrator, but they are not reviewer obligations: there is no file at
-	// the head for a reviewer to inspect. Keep them out of the assignment
-	// contract and the post-selection backstops, matching buildReviewerCoverage.
-	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
 	// Citing a removed or pre-rename path must not fail the whole selection.
 	selectableFiles := append(append([]string(nil), reviewerFiles...), mentionableExtraPaths(req.ParsedDiff.Patches)...)
 	promptInput.ChangedFiles = append([]string(nil), reviewerFiles...)
@@ -1291,7 +1288,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
-	if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
+	if err := opts.checkAndPersistPromptBudget(req.Artifacts, orchestratorSelectionStage, "selection", selectionPrompt); err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	selectionLog, err := req.Artifacts.AgentLog(orchestratorSelectionStage)
@@ -2120,11 +2117,13 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	selected = filterSelectedReviewerAssignment(selected, changedFilePaths)
 	// A reviewer may cite its own assignment plus unassignable paths, nothing else.
 	citableFiles := append(append([]string(nil), reviewerAssignmentScope(selected, changedFilePaths)...), mentionableExtraPaths(parsed.Patches)...)
-	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
+	mentionablePaths := mentionableExtraPaths(parsed.Patches)
+	prompt, promptDeps, err := buildReviewerPromptWithExtras(artifacts, pr, selected, agent, changedFilePaths, mentionablePaths, resumeState.discussion)
 	if err != nil {
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
-	if err := opts.checkPromptBudget("reviewer", agent.ID, model, strings.Join(selected.Files, ","), prompt); err != nil {
+	taskID := reviewerTaskID(agent.ID)
+	if err := opts.checkAndPersistPromptBudget(artifacts, taskID, "reviewer", prompt); err != nil {
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
 	logPath, err := artifacts.AgentLog(agent.ID)
@@ -2132,7 +2131,6 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return reviewerExecution{}, err
 	}
 	agentID := agent.ID
-	taskID := reviewerTaskID(agent.ID)
 	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
 	if err != nil {
 		return reviewerExecution{}, err
@@ -2229,7 +2227,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if err != nil {
 		return repairSetupFailed(err)
 	}
-	if err := opts.checkPromptBudget("reviewer coverage repair", agent.ID, model, strings.Join(repairFiles, ","), repairPrompt); err != nil {
+	if err := opts.checkAndPersistPromptBudget(artifacts, repairTaskID, "reviewer coverage repair", repairPrompt); err != nil {
 		return repairSetupFailed(err)
 	}
 	repairIdentity := reviewerCoverageRepairIdentity(agent.ID)
@@ -3594,27 +3592,6 @@ func effectiveCaps(caps gitprovider.ProviderCaps, noResolve bool) reviewplan.Pro
 	}
 }
 
-func (opts Options) checkPromptBudget(phase, agentID, model, filePath, prompt string) error {
-	limit := opts.Budget.MaxPromptBytes
-	if limit == 0 {
-		limit = defaultMaxPromptBytes
-	}
-	if limit < 0 || len(prompt) <= limit {
-		return nil
-	}
-	target := phase
-	if agentID != "" {
-		target += " agent " + agentID
-	}
-	if filePath != "" {
-		target += " file " + filePath
-	}
-	if model != "" {
-		target += " model " + model
-	}
-	return fmt.Errorf("pipeline: context budget exceeded for %s: %d bytes > %d", target, len(prompt), limit)
-}
-
 func (opts Options) now() time.Time {
 	if opts.Now != nil {
 		return opts.Now().UTC()
@@ -3678,15 +3655,15 @@ func workbenchDeps(opts Options) workbench.Deps {
 	return workbench.Deps{GitCommand: opts.GitCommand}
 }
 
-func dossierEnv(opts Options) dossier.Env {
+func dossierEnv(opts Options, paths ArtifactPaths) dossier.Env {
 	return dossier.Env{
 		Adapter:         opts.Adapter,
 		Store:           opts.Store,
 		TaskProgress:    opts.TaskProgress,
 		Now:             opts.now,
 		NewSessionRowID: opts.newSessionRowID,
-		CheckPromptBudget: func(model, prompt string) error {
-			return opts.checkPromptBudget("dossier-summary", "", model, "", prompt)
+		CheckPromptBudget: func(_ string, prompt string) error {
+			return opts.checkAndPersistPromptBudget(paths, dossier.SummaryTaskID, "dossier-summary", prompt)
 		},
 	}
 }
