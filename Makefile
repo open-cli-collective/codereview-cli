@@ -1,4 +1,4 @@
-.PHONY: all build test test-cover test-static-smoke lint fmt tidy deps check install snapshot package-render-check release clean
+.PHONY: all build test test-race test-cover test-static-smoke lint fmt tidy deps check install snapshot package-render-check release clean
 
 # Standard keyring tags: enable 1Password support, keep passage disabled.
 GOFLAGS ?= -tags=keyring_nopassage
@@ -11,6 +11,11 @@ build:
 
 test:
 	go test -v ./...
+
+# Exercise SQLite startup/migration contention repeatedly without racing the
+# entire suite. Keep package execution and test scheduling bounded in CI.
+test-race:
+	go test -race -count=25 -cpu=4 -parallel=4 -p=1 -timeout=5m ./internal/ledger/... ./internal/dbmig/...
 
 test-cover:
 	go test -coverprofile=coverage.out ./...
