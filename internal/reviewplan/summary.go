@@ -422,8 +422,9 @@ func coverageStatusComplete(status string) bool {
 	}
 }
 
-// uninspectedFiles returns the paths this run left unread: everything any
-// reviewer was accountable for, minus everything some reviewer inspected.
+// uninspectedFiles returns paths for which no reviewer supplied either body
+// inspection or a valid relocation-impact review: everything any reviewer was
+// accountable for, minus both forms of accepted coverage.
 //
 // Accountability is the reviewer's scope, not its skip list. A reviewer that
 // crashed carries a scope and no file lists at all, and one that omitted a file
@@ -436,12 +437,13 @@ func coverageStatusComplete(status string) bool {
 // declined and another read is covered and does not belong in this list.
 // Reporting it anyway would send a reader looking for a gap already closed.
 func uninspectedFiles(coverage []ReviewerCoverageSummary) []string {
-	inspected := map[string]bool{}
+	covered := map[string]bool{}
 	for _, entry := range coverage {
-		// Only body inspection satisfies coverage. Context files and files
-		// reviewed for relocation impact are reported separately, not counted.
 		for _, file := range entry.InspectedFiles {
-			inspected[file] = true
+			covered[file] = true
+		}
+		for _, file := range entry.RelocationReviewedFiles {
+			covered[file] = true
 		}
 	}
 	seen := map[string]bool{}
@@ -450,7 +452,7 @@ func uninspectedFiles(coverage []ReviewerCoverageSummary) []string {
 		// Scope is empty on the unassigned pseudo-entry, which carries its
 		// paths as skips instead, so both lists feed the obligation set.
 		for _, file := range append(append([]string(nil), entry.Scope...), entry.SkippedFiles...) {
-			if inspected[file] || seen[file] {
+			if covered[file] || seen[file] {
 				continue
 			}
 			seen[file] = true
@@ -526,7 +528,7 @@ func filesNotIn(files []string, exclude map[string]bool) []string {
 // so a reader given no cause has no next step.
 func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSummary, coverage []ReviewerCoverageSummary) {
 	out.WriteString("### Approval Withheld\n\n")
-	out.WriteString("No blocking or major findings were reported. Approval is withheld because this run did not cover the change:\n\n")
+	out.WriteString("No blocking or major findings were reported. Approval is withheld because at least one reviewer did not complete its assigned review obligations:\n\n")
 	for _, failure := range failures {
 		fmt.Fprintf(out, "- %s did not produce a result: %s\n", codeSpan(failure.AgentID), escapeCell(failure.Error))
 	}
@@ -536,7 +538,7 @@ func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSumma
 		out.WriteString("\n")
 	}
 	if len(uninspected) > 0 {
-		fmt.Fprintf(out, "- %s not body-inspected by any reviewer; %s\n", pluralFiles(len(uninspected)), formatPathExamples(uninspected))
+		fmt.Fprintf(out, "- %s had no body inspection or relocation-impact review by any reviewer; %s\n", pluralFiles(len(uninspected)), formatPathExamples(uninspected))
 	}
 	out.WriteString("\n")
 	if len(uninspected) == 0 && len(failures) == 0 {
@@ -544,10 +546,10 @@ func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSumma
 		// missing, and the answer is none. The gate is per reviewer while
 		// coverage is per review, so a reviewer's declined file that another
 		// reviewer read still withholds approval.
-		out.WriteString("Every changed file was body-inspected by some reviewer. The withhold comes from the per-reviewer statuses above, which are evaluated one reviewer at a time.\n\n")
+		out.WriteString("Every changed file was either body-inspected or received relocation-impact review by some reviewer. The withhold comes from the per-reviewer statuses above, which are evaluated one reviewer at a time.\n\n")
 		return
 	}
-	out.WriteString("Re-running the same review reproduces this: a reviewer that declined a file declines it again. Closing the gap means bringing these paths into the remit of a reviewer that will read them, or establishing that they need no review.\n\n")
+	out.WriteString("Re-running the same review may reproduce this. Closing the gap means resolving the incomplete obligations above, either by having the assigned reviewer inspect the remaining file content or establish that a certified relocation needs no body reread after its impact was reviewed.\n\n")
 }
 
 func pluralFiles(n int) string {

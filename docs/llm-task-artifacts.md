@@ -42,9 +42,12 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 ## Schema Version
 
-`schema_version` is currently `1`. Adding a new task that reuses the existing
-metadata shape does not require a schema bump, so the schema version stays at
-`1` for the dossier summary and reviewer coverage-repair tasks.
+`schema_version` is currently `2`. Version 2 adds the relocation/context
+coverage contract and makes its manifest, exact reviewer assignment, context
+contract, and complete coverage artifact digest load-bearing resume inputs.
+Version 1 task metadata is rejected for reuse and requires rerunning the task;
+old metadata is never treated as safe merely because the prompt or assignment
+count appears unchanged.
 
 Bump it when changing any load-bearing field, status value, fingerprint input,
 task identity, or resume rule in a way that could make an in-flight run unsafe
@@ -62,7 +65,10 @@ Load-bearing metadata fields are:
 - `dependency_task_ids`: task IDs whose completed state was included in this
   task input.
 - `input_fingerprint`: hash of the task schema version, adapter, task identity,
-  phase, model/effort, prompt, and dependency task IDs.
+  phase, model/effort, prompt, dependency task IDs, and every semantic artifact
+  dependency. Reviewer fingerprints include the relocation manifest digest,
+  exact assigned relocation digest, and context-contract version. Rollup also
+  includes the complete `coverage.json` content digest.
 - `agent_id`: reviewer agent ID for reviewer tasks.
 - `status`: one of `succeeded`, `failed_isolated`, or `failed_blocking`.
 - `session_row_id` and `provider_session_id`: ledger/provider session handles
@@ -166,18 +172,47 @@ The lifecycle persists this evidence in metadata and restores it when loading
 a cached task, so reusing successful output preserves the tool state used to
 assess coverage and approval.
 
-In schema version `1`, an absent `reviewer_tool_evidence` field means no
+In schema version `2`, an absent `reviewer_tool_evidence` field means no
 adapter-provided evidence is available. It is distinct from explicit
 `not_invoked` evidence: absence does not trigger the tool-evidence coverage
 check, but the normal coverage checks for skipped, missing, and unassigned
-files still apply. The schema, fingerprint, and payload requirements for
-resume remain unchanged; absence alone does not establish that an artifact
-is safe to reuse.
+files still apply. Version 1 metadata fails the schema check before any task
+output can be reused.
+
+## Relocation and Context Coverage
+
+Reviewer structured output may include `context_files` and an optional
+`relocation_assessment`. Context paths are exact safe repo-relative paths that
+the reviewer actually read from its pinned reviewer workspace; they are not
+assignment coverage. The decoder rejects absolute, traversing, `.git`, or
+nonexistent head-tree paths, and preserves valid path bytes without trimming
+them into a different path.
+
+An assessment can credit only certified relocations assigned to that reviewer.
+It must carry the exact relocation-manifest and assignment digests, set
+`path_impact_reviewed` to true, provide a nonempty basis and nonempty evidence
+paths, and cite evidence present in `inspected_files` or `context_files` that
+exists in the pinned head tree. It does not claim the moved file body was
+inspected. Explicit `skipped_files` override any assessment for the same move.
+Findings and citation validation remain independent and retain their strict
+assignment/anchor allowlists.
+
+Coverage stores body-inspected, context, relocation-reviewed, missing, skipped,
+assessment, constraint, and failure collections in run-owned `coverage.json`.
+Coverage repair targets each assigned readable unresolved obligation, not only
+explicit skips. Rollup fingerprints the complete coverage artifact, and public
+rendering uses bounded samples while retaining full local evidence.
 
 ## Reviewer Coverage Repair Tasks
 
-After a successful primary reviewer task reports assigned readable files as
-skipped, the pipeline may run one focused coverage-repair task for that reviewer.
+After a successful primary reviewer task, the pipeline may run one focused
+coverage-repair task for assigned readable files that remain unresolved: files
+explicitly skipped, omitted from both inspected and skipped lists, or certified
+relocations without a valid path-impact assessment. A valid assessment covers
+only its exact assigned certified moves, with matching manifest/assignment
+digests and nonempty evidence read from the pinned head tree. Explicit skips
+override that assessment. Context paths are preserved separately and do not
+count as assignment coverage.
 Deleted and binary files are outside the repair set, as are files whose basename
 is in the `generatedLockfiles` set (`Cargo.lock`, `bun.lockb`, `go.sum`, and the
 rest of that map); a lockfile spelled outside it, such as `bun.lock`, is repaired
@@ -207,14 +242,22 @@ closed with rerun guidance. An isolated repair failure is retained as a reviewer
 failure so rollup can preserve the primary result while keeping coverage
 incomplete.
 
-The primary findings are retained and repair findings are appended. Inspected
-files are unioned, and a primary skipped file is cleared only when the repair
-explicitly reports it in `inspected_files` and the repair's own
-`reviewer_tool_evidence`, when present, reports `succeeded`; explicit repair
-evidence with any other status contributes no inspected files, so the skip
-stands. As with the primary session, absence does not trigger the
-tool-evidence check, so a repair reporting no evidence keeps its inspected
-files. Skipped files that remain skipped continue to make coverage incomplete.
+The primary findings are retained and repair findings are appended. Body
+inspections, safe context paths, relocation-reviewed paths, assessment records,
+and constraints are merged as separate collections. A primary unresolved file
+is cleared only when the repair explicitly covers it by actual body inspection
+or valid relocation-impact assessment. An explicit repair skip overrides its
+assessment. For body inspection, the repair must report the file in
+`inspected_files` and its own `reviewer_tool_evidence`, when present, reports
+`succeeded`; explicit repair evidence with any other status contributes no
+inspected files, so the skip stands. As with the primary session, absence does
+not trigger the tool-evidence check, so a repair reporting no evidence keeps its
+inspected files. The primary required-tool evidence remains authoritative for
+the final gate: a valid repair cannot erase a primary failed-tool status.
+Unresolved skips or omissions after the single repair continue to make coverage
+incomplete. Complete local coverage collections are written to run-owned
+`coverage.json` before posting; public summaries expose bounded samples while
+retaining the full artifact.
 The reviewer task dependency list passed to rollup includes both the primary
 and repair task IDs, so their outputs, sessions, and coverage status are
 merged before approval is decided. Tool evidence is not merged across the two
@@ -235,6 +278,13 @@ Resume starts at the first task that cannot be reused:
 - Fail with rerun guidance when metadata is missing required payloads, points to
   a missing ledger session, has the wrong schema version, or has a stale input
   fingerprint.
+
+The full relocation proof is stored only in run-owned `relocations.json`;
+`coverage.json` stores the complete reviewer coverage evidence and its manifest
+digest. Public status text is bounded and never substitutes for these local
+artifacts. A changed manifest, assigned move set, context contract, or coverage
+artifact digest invalidates reuse even if the move count and human-readable
+prompt happen to remain unchanged.
 
 Raw invalid structured output is local artifact data. Public rollups may include
 concise diagnostics, but they must not include raw failed model output.

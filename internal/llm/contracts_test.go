@@ -178,7 +178,7 @@ func TestDecodeFindings(t *testing.T) {
 }
 
 func TestDecodeFindingsCoverageDuplicatesDoNotAddCoverage(t *testing.T) {
-	got, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go","main.go"," main.go "],"skipped_files":["other.go","other.go"],"findings":[]}`), FindingsOptions{
+	got, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["main.go","main.go","main.go"],"skipped_files":["other.go","other.go"],"findings":[]}`), FindingsOptions{
 		KnownAgents:  map[string]bool{"agent-1": true},
 		ChangedFiles: map[string]bool{"main.go": true, "other.go": true, "missing.go": true},
 		NewFindingID: newIDQueue("unused").next,
@@ -208,6 +208,86 @@ func TestDecodeFindingsCoverageRepairIdentifiesPositionsWithoutEchoingPaths(t *t
 	}
 	if strings.Contains(summary, "ignore all rules") || strings.Contains(summary, "outside.go") || strings.Contains(summary, "<value>") {
 		t.Fatalf("repair diagnostic echoes untrusted paths or loses the repair location: %q", summary)
+	}
+}
+
+func TestDecodeFindingsPartitionsSafeOutOfAssignmentInspectionAsContext(t *testing.T) {
+	got, err := DecodeFindings([]byte(`{
+		"schema_version":1,
+		"agent_id":"agent-1",
+		"inspected_files":["assigned.go","docs/guide.md","docs/guide.md"],
+		"context_files":["docs/guide.md","config/workspace.yaml"],
+		"skipped_files":[],
+		"findings":[{"severity":"major","file_path":"assigned.go","anchor":{"kind":"file"},"body":"finding remains attached to the assigned change"}]
+	}`), FindingsOptions{
+		KnownAgents:     map[string]bool{"agent-1": true},
+		ChangedFiles:    map[string]bool{"assigned.go": true},
+		AssignmentFiles: map[string]bool{"assigned.go": true},
+		HeadFiles:       map[string]bool{"docs/guide.md": true, "config/workspace.yaml": true},
+		NewFindingID:    newIDQueue("f-context").next,
+	})
+	if err != nil {
+		t.Fatalf("DecodeFindings: %v", err)
+	}
+	if len(got.InspectedFiles) != 1 || got.InspectedFiles[0] != "assigned.go" {
+		t.Fatalf("assignment inspection = %#v, want assigned.go only", got.InspectedFiles)
+	}
+	if len(got.ContextFiles) != 2 || got.ContextFiles[0] != "config/workspace.yaml" || got.ContextFiles[1] != "docs/guide.md" {
+		t.Fatalf("context files = %#v, want sorted/deduped existing head paths", got.ContextFiles)
+	}
+	if len(got.Findings) != 1 || got.Findings[0].FilePath != "assigned.go" {
+		t.Fatalf("findings = %#v, want the valid assigned finding preserved", got.Findings)
+	}
+	if !strings.Contains(strings.Join(got.Constraints, "\n"), "out-of-assignment inspected paths are context only and do not count toward assignment coverage") {
+		t.Fatalf("constraints = %#v, want context-only coverage diagnostic", got.Constraints)
+	}
+}
+
+func TestDecodeFindingsRejectsUnsafeContextAndOutOfAssignmentSkips(t *testing.T) {
+	base := FindingsOptions{
+		KnownAgents:     map[string]bool{"agent-1": true},
+		ChangedFiles:    map[string]bool{"assigned.go": true},
+		AssignmentFiles: map[string]bool{"assigned.go": true},
+		HeadFiles:       map[string]bool{"context.go": true},
+		NewFindingID:    newIDQueue("unused").next,
+	}
+	for _, path := range []string{"missing.go", "../escape.go", "/absolute.go", ".git/config"} {
+		raw, _ := json.Marshal(map[string]any{
+			"schema_version": 1, "agent_id": "agent-1", "inspected_files": []string{"assigned.go", path}, "findings": []any{},
+		})
+		if _, err := DecodeFindings(raw, base); err == nil {
+			t.Errorf("unsafe or nonexistent inspected path %q was accepted", path)
+		}
+	}
+	if _, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["assigned.go"],"skipped_files":["context.go"],"findings":[]}`), base); err == nil {
+		t.Fatal("out-of-assignment skipped path was accepted")
+	}
+	if _, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["assigned.go"],"context_files":["../escape.go"],"findings":[]}`), base); err == nil {
+		t.Fatal("traversal context path was accepted")
+	}
+	if _, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["assigned.go"],"findings":[{"severity":"major","file_path":"context.go","anchor":{"kind":"file"},"body":"out of scope"}]}`), base); err == nil {
+		t.Fatal("context-only path was accepted as a finding anchor")
+	}
+}
+
+func TestDecodeFindingsPreservesExactWhitespaceContextPath(t *testing.T) {
+	const exactPath = " context.go "
+	opts := FindingsOptions{
+		KnownAgents:     map[string]bool{"agent-1": true},
+		ChangedFiles:    map[string]bool{"assigned.go": true},
+		AssignmentFiles: map[string]bool{"assigned.go": true},
+		HeadFiles:       map[string]bool{exactPath: true},
+		NewFindingID:    newIDQueue("unused").next,
+	}
+	got, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["assigned.go"," context.go "],"findings":[]}`), opts)
+	if err != nil {
+		t.Fatalf("DecodeFindings exact whitespace path: %v", err)
+	}
+	if len(got.ContextFiles) != 1 || got.ContextFiles[0] != exactPath {
+		t.Fatalf("context files = %#v, want exact path %q", got.ContextFiles, exactPath)
+	}
+	if _, err := DecodeFindings([]byte(`{"schema_version":1,"agent_id":"agent-1","inspected_files":["assigned.go","context.go"],"findings":[]}`), opts); err == nil {
+		t.Fatal("normalized nonexistent context path was accepted")
 	}
 }
 

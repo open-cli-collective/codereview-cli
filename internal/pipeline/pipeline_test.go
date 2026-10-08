@@ -1643,8 +1643,9 @@ func TestDryRunCoverageRepairToolEvidenceDoesNotDowngradePrimary(t *testing.T) {
 		!reflect.DeepEqual(coverage[0].SkippedFiles, []string{"other.go"}) {
 		t.Fatalf("coverage = %#v, want the unverified repair inspection rejected and the skip retained", coverage)
 	}
-	if coverage[0].Status == reviewerCoverageIncompleteTool || coverage[0].Diagnostic != "" {
-		t.Fatalf("coverage = %#v, want the primary tool evidence preserved rather than downgraded by the repair pass", coverage)
+	if coverage[0].Status == reviewerCoverageIncompleteTool || coverage[0].Diagnostic != "assigned review coverage remains unresolved" ||
+		!slices.Contains(coverage[0].Constraints, "coverage repair tool evidence was incomplete") {
+		t.Fatalf("coverage = %#v, want the primary status preserved and the unverified repair explained", coverage)
 	}
 	if result.Plan.Outcome != reviewplan.OutcomeComment {
 		t.Fatalf("outcome = %q, want approval withheld for coverage the repair never verified", result.Plan.Outcome)
@@ -3465,6 +3466,61 @@ func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestRunStructuredTaskRejectsEqualCountRelocationDigestChangeOnResume(t *testing.T) {
+	ctx := context.Background()
+	artifacts := ArtifactPathsFromDir(t.TempDir())
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("reviewer-session", `{"ok":true}`, 1, 1))
+	taskID := reviewerTaskID("harness:reviewer")
+	move := relocationMove{OldPath: "old.go", Path: "new.go", BlobOID: strings.Repeat("a", 40), Mode: "100644"}
+	fingerprint := func(manifestDigest string) string {
+		state := relocationReviewState{Manifest: relocationManifest{Digest: manifestDigest, Moves: []relocationMove{move}}}
+		assignment := state.assignment("harness:reviewer", []string{"new.go"})
+		if assignment.MoveCount != 1 {
+			t.Fatalf("assignment move count = %d, want 1", assignment.MoveCount)
+		}
+		dependencies := []string{
+			"relocation-manifest=" + assignment.ManifestDigest,
+			"relocation-assignment=" + assignment.AssignmentDigest,
+			"context-contract=" + reviewerContextContractVersion,
+		}
+		return llmlifecycle.Fingerprint(adapter.Name(), taskID, "reviewer", "model", "medium", "same reviewer prompt", dependencies)
+	}
+	firstFingerprint := fingerprint(strings.Repeat("b", 64))
+	secondFingerprint := fingerprint(strings.Repeat("c", 64))
+	if firstFingerprint == secondFingerprint {
+		t.Fatal("equal-count relocation manifest change did not change the task fingerprint")
+	}
+	spec := llmTaskSpec{
+		taskID: taskID, phase: "reviewer", allowNoRunCache: true,
+		inputFingerprint: firstFingerprint, artifacts: artifacts, role: ledger.SessionRoleReviewer,
+		model: "model", effort: "medium", prompt: "same reviewer prompt",
+	}
+	if _, _, _, err := runStructuredTask[string](ctx, Options{Adapter: adapter}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	}); err != nil {
+		t.Fatalf("first runStructuredTask: %v", err)
+	}
+	meta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(artifacts), taskID)
+	if err != nil || !ok {
+		t.Fatalf("reviewer metadata = %#v ok %t err %v", meta, ok, err)
+	}
+	if meta.SchemaVersion != 2 {
+		t.Fatalf("reviewer task schema = %d, want 2", meta.SchemaVersion)
+	}
+
+	spec.inputFingerprint = secondFingerprint
+	_, _, _, err = runStructuredTask[string](ctx, Options{Adapter: adapter}, spec, func(data []byte) (string, error) {
+		return string(data), nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("equal-count relocation resume error = %v, want stale fingerprint rejection", err)
+	}
+	if len(adapter.Requests()) != 1 || len(adapter.Resumes()) != 0 {
+		t.Fatalf("adapter calls after stale resume = starts %#v resumes %#v, want only the first start", adapter.Requests(), adapter.Resumes())
+	}
+}
+
 func TestRunStructuredTaskStartsDurableOrchestratorAndResumesExactSession(t *testing.T) {
 	ctx := context.Background()
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
@@ -4091,11 +4147,17 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	}
 	agent := result.Catalog.Agents[0]
 	selected := result.Selection.SelectedAgents[0]
-	prompt, promptDeps, err := buildReviewerPrompt(result.Artifacts, result.PR, selected, agent, []string{"main.go"})
+	var manifest relocationManifest
+	if err := readJSONFile(result.Artifacts.RelocationsJSON, &manifest); err != nil {
+		t.Fatalf("read relocation manifest: %v", err)
+	}
+	assignment := (relocationReviewState{Manifest: manifest}).assignment(agent.ID, []string{"main.go"})
+	prompt, promptDeps, err := buildReviewerPromptWithRelocationAssignment(result.Artifacts, result.PR, selected, agent, []string{"main.go"}, nil, assignment)
 	if err != nil {
 		t.Fatalf("buildReviewerPrompt: %v", err)
 	}
 	deps := append([]string{orchestratorSelectionStage}, promptDeps...)
+	deps = append(deps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "context-contract="+reviewerContextContractVersion)
 	wantFingerprint := llmlifecycle.Fingerprint(adapter.Name(), reviewerTaskID(agent.ID), "reviewer", requests[1].Model, requests[1].Effort, prompt, deps)
 	if meta.InputFingerprint != wantFingerprint {
 		t.Fatalf("reviewer fingerprint = %q, want standard-speed %q", meta.InputFingerprint, wantFingerprint)
@@ -6381,7 +6443,7 @@ func TestSelectionOnlyAcceptsRenameSourcePath(t *testing.T) {
 	gitCommandMustSucceed(t, provider.fixtureRepoDir, "mv", "main.go", "renamed.go")
 	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "rename main")
 	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
-	provider.diff.Raw = renameDiff("main.go", "renamed.go") + smallDiff("other.go")
+	provider.diff.Raw = gitCommandMustSucceed(t, provider.fixtureRepoDir, "diff", "--find-renames=0%", provider.pr.Base.SHA, provider.pr.Head.SHA) + "\n" + smallDiff("other.go")
 
 	selectionPayload := `{
 		"schema_version": 1,
@@ -6436,7 +6498,7 @@ func TestDryRunReviewerFindingOnDeletedPathIsDecoded(t *testing.T) {
 		"schema_version": 1,
 		"agent_id": "harness:reviewer",
 		"inspected_files": ["other.go"],
-		"skipped_files": ["main.go"],
+		"skipped_files": [],
 		"constraints": [],
 		"findings": [{
 			"severity": "major",
@@ -6479,7 +6541,7 @@ func TestDryRunReviewerFindingOnRenameSourcePathIsDecoded(t *testing.T) {
 	gitCommandMustSucceed(t, provider.fixtureRepoDir, "mv", "main.go", "renamed.go")
 	gitCommandMustSucceed(t, provider.fixtureRepoDir, "commit", "-m", "rename main")
 	provider.pr.Head.SHA = gitCommandMustSucceed(t, provider.fixtureRepoDir, "rev-parse", "HEAD")
-	provider.diff.Raw = renameDiff("main.go", "renamed.go") + smallDiff("other.go")
+	provider.diff.Raw = gitCommandMustSucceed(t, provider.fixtureRepoDir, "diff", "--find-renames=0%", provider.pr.Base.SHA, provider.pr.Head.SHA)
 
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "renamed.go"), 10, 2))
@@ -6657,7 +6719,8 @@ func TestBuildReviewerCoverageMarksAssignedScopeMissing(t *testing.T) {
 		t.Fatalf("coverage entries = %#v", got)
 	}
 	if got[0].Status != reviewerCoverageIncompleteSkipped ||
-		!strings.Contains(got[0].Diagnostic, "other.go") {
+		got[0].Diagnostic != "assigned review coverage remains unresolved" ||
+		!reflect.DeepEqual(got[0].MissingFiles, []string{"other.go"}) {
 		t.Fatalf("coverage = %#v, want incomplete missing other.go", got[0])
 	}
 }
@@ -6798,7 +6861,7 @@ func TestMetadataHeavyDryRunKeepsPromptsCompactAndComplete(t *testing.T) {
 		}
 		if i < renameCount {
 			oldPath := strings.Replace(path, "file-", "legacy-file-", 1)
-			diff.WriteString(renameDiff(oldPath, path))
+			diff.WriteString(contentChangingRenameDiff(oldPath, path))
 		} else {
 			diff.WriteString(smallDiff(path))
 		}
@@ -6840,11 +6903,14 @@ func TestMetadataHeavyDryRunKeepsPromptsCompactAndComplete(t *testing.T) {
 	if got := promptManifestPaths(selectionPayload.FileManifest); !reflect.DeepEqual(got, paths) {
 		t.Fatalf("selection manifest retained %d rows or changed raw order", len(got))
 	}
-	if want := []string{"path", "old_path", "status", "additions", "deletions", "hunk_count", "binary", "reviewable"}; !reflect.DeepEqual(selectionPayload.FileManifest.Columns, want) {
+	if want := []string{"path", "old_path", "status", "additions", "deletions", "hunk_count", "binary", "reviewable", "verified_relocation"}; !reflect.DeepEqual(selectionPayload.FileManifest.Columns, want) {
 		t.Fatalf("selection manifest columns = %#v, want %#v", selectionPayload.FileManifest.Columns, want)
 	}
 	if first := selectionPayload.FileManifest.Rows[0]; first[1] != strings.Replace(paths[0], "file-", "legacy-file-", 1) || first[2] != "renamed" {
 		t.Fatalf("first rename row = %#v, want complete old-path and renamed metadata", first)
+	}
+	if first := selectionPayload.FileManifest.Rows[0]; first[8] != false {
+		t.Fatalf("uncertified content-changing rename row = %#v, want verified_relocation=false", first)
 	}
 	if ordinary := selectionPayload.FileManifest.Rows[renameCount]; ordinary[2] != "modified" || ordinary[3] != float64(1) || ordinary[4] != float64(1) || ordinary[5] != float64(1) || ordinary[7] != true {
 		t.Fatalf("ordinary row metadata = %#v, want status/stats and reviewable flag", ordinary)
@@ -9173,12 +9239,18 @@ func deletionDiff(path string) string {
 	}, "\n")
 }
 
-func renameDiff(oldPath, newPath string) string {
+func contentChangingRenameDiff(oldPath, newPath string) string {
 	return strings.Join([]string{
 		"diff --git a/" + oldPath + " b/" + newPath,
-		"similarity index 100%",
+		"similarity index 80%",
 		"rename from " + oldPath,
 		"rename to " + newPath,
+		"index 1111111..2222222 100644",
+		"--- a/" + oldPath,
+		"+++ b/" + newPath,
+		"@@ -1 +1 @@",
+		"-old content",
+		"+new content",
 		"",
 	}, "\n")
 }

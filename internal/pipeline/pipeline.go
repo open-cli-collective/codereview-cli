@@ -270,31 +270,33 @@ func (e *llmTaskError) Is(target error) bool {
 
 // Result is the completed dry-run pipeline output.
 type Result struct {
-	Run                   ledger.Run
-	PR                    gitprovider.PR
-	PRKey                 string
-	Artifacts             ArtifactPaths
-	Quota                 llm.Quota
-	QuotaSupported        bool
-	QuotaLow              bool
-	Catalog               agents.Catalog
-	Selection             llm.Selection
-	Findings              []review.Finding
-	Rollup                review.Rollup
-	Plan                  reviewplan.Plan
-	Sessions              []ledger.Session
-	PlannedActions        []ledger.PlannedAction
-	NamedSessionCandidate *ledger.NamedSession
-	FailOnTriggered       bool
-	EffectiveCaps         reviewplan.ProviderCaps
-	AgentDefsChanged      bool
-	CurrentBaseSHA        string
-	CurrentHeadSHA        string
-	ReviewBaseSHA         string
-	ReviewHeadSHA         string
-	ReviewerFailures      []ReviewerFailure
-	ReviewerCoverage      []reviewplan.ReviewerCoverageSummary
-	reviewerFastDelivered string
+	Run                    ledger.Run
+	PR                     gitprovider.PR
+	PRKey                  string
+	Artifacts              ArtifactPaths
+	Quota                  llm.Quota
+	QuotaSupported         bool
+	QuotaLow               bool
+	Catalog                agents.Catalog
+	Selection              llm.Selection
+	Findings               []review.Finding
+	Rollup                 review.Rollup
+	Plan                   reviewplan.Plan
+	Sessions               []ledger.Session
+	PlannedActions         []ledger.PlannedAction
+	NamedSessionCandidate  *ledger.NamedSession
+	FailOnTriggered        bool
+	EffectiveCaps          reviewplan.ProviderCaps
+	AgentDefsChanged       bool
+	CurrentBaseSHA         string
+	CurrentHeadSHA         string
+	ReviewBaseSHA          string
+	ReviewHeadSHA          string
+	ReviewerFailures       []ReviewerFailure
+	ReviewerCoverage       []reviewplan.ReviewerCoverageSummary
+	RelocationAssessments  []ReviewerRelocationAssessments
+	coverageArtifactDigest string
+	reviewerFastDelivered  string
 }
 
 // ReviewerFailure records an isolated reviewer LLM task failure that should not
@@ -405,6 +407,7 @@ type preparedSelectionContext struct {
 	currentHeadSHA   string
 	reviewBaseSHA    string
 	reviewHeadSHA    string
+	relocations      relocationReviewState
 	fastRequested    bool
 	fastIgnored      bool
 }
@@ -419,6 +422,8 @@ type selectionPhaseRequest struct {
 	ReviewPR                    gitprovider.PR
 	Catalog                     agents.Catalog
 	ParsedDiff                  ParsedDiff
+	RelocationMoves             []relocationMove
+	RelocationManifestDigest    string
 	Threads                     []gitprovider.InlineThread
 	ThreadContext               []threadcontext.Thread
 	Artifacts                   ArtifactPaths
@@ -522,6 +527,12 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}); err != nil {
 		return SelectionResult{}, err
 	}
+	manifest, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
+	if err != nil {
+		return SelectionResult{}, Failure(FailureTerminal, err)
+	}
+	prepared.relocations = relocationReviewState{Manifest: manifest, HeadTree: headTree}
+	prepared.changedFiles = relocationReviewablePatchPaths(prepared.parsed.Patches, manifest.Moves)
 	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
@@ -545,6 +556,8 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		ReviewPR:                    prepared.reviewPR,
 		Catalog:                     prepared.catalog,
 		ParsedDiff:                  prepared.parsed,
+		RelocationMoves:             prepared.relocations.Manifest.Moves,
+		RelocationManifestDigest:    prepared.relocations.Manifest.Digest,
 		Threads:                     prepared.threads,
 		ThreadContext:               prepared.threadContext,
 		Artifacts:                   prepared.artifacts,
@@ -705,6 +718,12 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		return Result{}, err
 	}
+	manifest, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
+	if err != nil {
+		return Result{}, Failure(FailureTerminal, err)
+	}
+	prepared.relocations = relocationReviewState{Manifest: manifest, HeadTree: headTree}
+	prepared.changedFiles = relocationReviewablePatchPaths(prepared.parsed.Patches, manifest.Moves)
 	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		RunID:                   run.RunID,
 		Profile:                 req.Profile,
@@ -792,7 +811,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 
 	cohortScope := ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
-	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, reviewablePatchPaths(prepared.parsed.Patches), maxAgents)
+	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, relocationReviewablePatchPaths(prepared.parsed.Patches, prepared.relocations.Manifest.Moves), maxAgents)
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
@@ -828,6 +847,8 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 			ReviewPR:                    prepared.reviewPR,
 			Catalog:                     prepared.catalog,
 			ParsedDiff:                  prepared.parsed,
+			RelocationMoves:             prepared.relocations.Manifest.Moves,
+			RelocationManifestDigest:    prepared.relocations.Manifest.Digest,
 			Threads:                     prepared.threads,
 			ThreadContext:               prepared.threadContext,
 			Artifacts:                   prepared.artifacts,
@@ -877,15 +898,22 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return nil, false, err
 	}
 	reviewerThreadResponses, reviewerCheckpointActions := recoverCheckpointThreadResponses(threadResponses, prepared.threadContext, checkpointActions)
-	reviewerRun, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, reviewerDiscussionCheckpoint{responses: reviewerThreadResponses, actions: reviewerCheckpointActions})
+	reviewerRun, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, prepared.relocations, reviewerDiscussionCheckpoint{responses: reviewerThreadResponses, actions: reviewerCheckpointActions})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
 	result.Findings = reviewerRun.findings
 	result.ReviewerFailures = reviewerRun.failures
 	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerRun.sessions)
-	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerRun.results, reviewerRun.failures, prepared.changedFiles, contentlessPatchPaths(prepared.parsed.Patches), reviewerToolEvidenceByAgent(reviewerRun.primarySessions))
+	primaryToolEvidence := reviewerToolEvidenceByAgent(reviewerRun.primarySessions)
+	reviewerCoverage := buildReviewerCoverageWithRelocations(selection.SelectedAgents, reviewerRun.results, reviewerRun.failures, prepared.changedFiles, relocationContentlessPaths(prepared.parsed.Patches, prepared.relocations.Manifest.Moves), primaryToolEvidence)
 	result.ReviewerCoverage = reviewerCoverage
+	result.RelocationAssessments = relocationAssessmentArtifacts(reviewerRun.results, primaryToolEvidence)
+	coverageDigest, err := writeCoverageArtifact(prepared.artifacts, prepared.relocations, reviewerCoverage, result.RelocationAssessments, reviewerRun.failures)
+	if err != nil {
+		return nil, false, err
+	}
+	result.coverageArtifactDigest = coverageDigest
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerRun.ledgerSessions...)
 
 	rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
@@ -907,12 +935,14 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	reviewerDeps := reviewerRun.taskIDs
 	rollupDeps := append([]string(nil), selectionTaskIDs...)
 	rollupDeps = append(rollupDeps, reviewerDeps...)
+	rollupFingerprintDeps := append([]string(nil), rollupDeps...)
+	rollupFingerprintDeps = append(rollupFingerprintDeps, "coverage-artifact="+coverageDigest, "relocation-manifest="+prepared.relocations.Manifest.Digest, "context-contract="+reviewerContextContractVersion)
 	rollup, rollupSession, rollupLedgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             run.RunID,
 		taskID:            orchestratorRollupStage,
 		phase:             "rollup",
 		dependencyTaskIDs: rollupDeps,
-		inputFingerprint:  llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupDeps),
+		inputFingerprint:  llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupFingerprintDeps),
 		artifacts:         prepared.artifacts,
 		role:              ledger.SessionRoleOrchestrator,
 		model:             rollupModel,
@@ -995,6 +1025,11 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 		return err
 	}
 	result.PlannedActions = plannedActions
+	digest, err := writeCoverageArtifact(prepared.artifacts, prepared.relocations, result.ReviewerCoverage, result.RelocationAssessments, result.ReviewerFailures)
+	if err != nil {
+		return err
+	}
+	result.coverageArtifactDigest = digest
 	return writeArtifacts(prepared.artifacts, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored), opts.Catalog)
 }
 
@@ -1269,7 +1304,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
 	// Deleted files remain visible in the manifest but are not reviewer obligations.
-	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
+	reviewerFiles := relocationReviewablePatchPaths(req.ParsedDiff.Patches, req.RelocationMoves)
 	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads, reviewerFiles)
 	knownThreadIDs := knownThreads(req.Threads)
 	if len(req.ThreadContext) > 0 {
@@ -1279,6 +1314,11 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
+	verifiedMoves := relocationMovePaths(req.RelocationMoves)
+	for i := range promptInput.ManifestRows {
+		promptInput.ManifestRows[i].VerifiedRelocation = verifiedMoves[promptInput.ManifestRows[i].Path]
+	}
+	promptInput.FileManifest = makePromptFileManifest(promptInput.ManifestRows, reviewerFiles)
 	// Citing a removed or pre-rename path must not fail the whole selection.
 	selectableFiles := append(append([]string(nil), reviewerFiles...), mentionableExtraPaths(req.ParsedDiff.Patches)...)
 	promptInput.ChangedFiles = append([]string(nil), reviewerFiles...)
@@ -1302,7 +1342,9 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 			KnownThreads: knownThreadIDs,
 		})
 	}
-	selectionFingerprint := llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, fingerprintDeps)
+	selectionFingerprintDeps := append([]string(nil), fingerprintDeps...)
+	selectionFingerprintDeps = append(selectionFingerprintDeps, "relocation-manifest="+req.RelocationManifestDigest, "context-contract="+reviewerContextContractVersion)
+	selectionFingerprint := llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, selectionFingerprintDeps)
 	hasRun := strings.TrimSpace(req.RunID) != ""
 	if !hasRun {
 		if err := llmlifecycle.ResetIfInputFingerprintChanged(lifecyclePaths(req.Artifacts), orchestratorSelectionStage, selectionFingerprint); err != nil {
@@ -2019,7 +2061,7 @@ type reviewerExecution struct {
 	taskIDs         []string
 }
 
-func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int, cohortScope ledger.ReviewerCohortScope, reviewerResumeIDs map[string]string, discussion reviewerDiscussionCheckpoint) (reviewerBatchResult, error) {
+func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int, cohortScope ledger.ReviewerCohortScope, reviewerResumeIDs map[string]string, relocations relocationReviewState, discussion reviewerDiscussionCheckpoint) (reviewerBatchResult, error) {
 	type job struct {
 		selected llm.SelectedAgent
 		agent    agents.Agent
@@ -2055,7 +2097,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 				return
 			}
 			defer func() { <-sem }()
-			execution, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs, reviewerResume{scope: cohortScope, sessionID: reviewerResumeIDs[current.agent.ID], discussion: discussion})
+			execution, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs, reviewerResume{scope: cohortScope, sessionID: reviewerResumeIDs[current.agent.ID], discussion: discussion, relocations: relocations})
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -2093,9 +2135,10 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 }
 
 type reviewerResume struct {
-	scope      ledger.ReviewerCohortScope
-	sessionID  string
-	discussion reviewerDiscussionCheckpoint
+	scope       ledger.ReviewerCohortScope
+	sessionID   string
+	discussion  reviewerDiscussionCheckpoint
+	relocations relocationReviewState
 }
 
 type reviewerDiscussionCheckpoint struct {
@@ -2113,12 +2156,14 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
-	changedFilePaths := reviewablePatchPaths(parsed.Patches)
+	changedFilePaths := relocationReviewablePatchPaths(parsed.Patches, resumeState.relocations.Manifest.Moves)
 	selected = filterSelectedReviewerAssignment(selected, changedFilePaths)
 	// A reviewer may cite its own assignment plus unassignable paths, nothing else.
-	citableFiles := append(append([]string(nil), reviewerAssignmentScope(selected, changedFilePaths)...), mentionableExtraPaths(parsed.Patches)...)
+	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
+	assignment := resumeState.relocations.assignment(agent.ID, assignmentScope)
+	citableFiles := append(append([]string(nil), assignmentScope...), mentionableExtraPaths(parsed.Patches)...)
 	mentionablePaths := mentionableExtraPaths(parsed.Patches)
-	prompt, promptDeps, err := buildReviewerPromptWithExtras(artifacts, pr, selected, agent, changedFilePaths, mentionablePaths, resumeState.discussion)
+	prompt, promptDeps, err := buildReviewerPromptWithRelocationAssignment(artifacts, pr, selected, agent, changedFilePaths, mentionablePaths, assignment, resumeState.discussion)
 	if err != nil {
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
@@ -2149,6 +2194,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if req.ReviewerFast {
 		fingerprintDeps = append(fingerprintDeps, "fast=true")
 	}
+	fingerprintDeps = append(fingerprintDeps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "context-contract="+reviewerContextContractVersion)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            taskID,
@@ -2166,11 +2212,25 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		resumeSessionID:   resumeState.sessionID,
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
-		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(citableFiles),
-			NewFindingID: opts.newFindingID,
+		decoded, err := llm.DecodeFindings(data, llm.FindingsOptions{
+			KnownAgents:     map[string]bool{agent.ID: true},
+			ChangedFiles:    stringSet(citableFiles),
+			AssignmentFiles: stringSet(assignmentScope),
+			HeadFiles:       safeHeadContextPaths(resumeState.relocations.HeadTree),
+			NewFindingID:    opts.newFindingID,
 		})
+		if err != nil {
+			return llm.Findings{}, err
+		}
+		decoded.RelocationReviewedFiles, decoded.RelocationDiagnostic = validateRelocationAssessment(decoded, assignment, resumeState.relocations.HeadTree)
+		if assignment.MoveCount > 0 {
+			decoded.RelocationAssessments = []llm.RelocationAssessmentRecord{{
+				Assessment: decoded.RelocationAssessment, ManifestDigest: assignment.ManifestDigest,
+				AssignmentDigest: assignment.AssignmentDigest, ReviewedFiles: append([]string(nil), decoded.RelocationReviewedFiles...),
+				Valid: decoded.RelocationDiagnostic == "", Diagnostic: decoded.RelocationDiagnostic,
+			}}
+		}
+		return decoded, nil
 	})
 	execution := reviewerExecution{
 		sessions:        []sessionDraft{session},
@@ -2199,7 +2259,8 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		execution.findingSessions[finding.ID] = session.RowID
 	}
 
-	repairFiles := reviewerCoverageRepairFiles(findings.SkippedFiles, parsed.Patches)
+	missingForRepair := coverageMissingFiles(assignmentScope, findings.InspectedFiles, findings.SkippedFiles, findings.RelocationReviewedFiles)
+	repairFiles := reviewerCoverageRepairFiles(missingForRepair, parsed.Patches, resumeState.relocations.Manifest.Moves)
 	if len(repairFiles) == 0 {
 		return execution, nil
 	}
@@ -2213,6 +2274,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		Files:        append([]string(nil), repairFiles...),
 		AllowedFiles: append([]string(nil), repairFiles...),
 	}
+	repairAssignment := resumeState.relocations.assignment(agent.ID, repairFiles)
 	repairTaskID := reviewerCoverageRepairTaskID(agent.ID)
 	// The repair only adds coverage, so its setup failures are isolated like its execution failures.
 	repairSetupFailed := func(err error) (reviewerExecution, error) {
@@ -2223,7 +2285,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		}
 		return execution, nil
 	}
-	repairPrompt, repairPromptDeps, err := buildReviewerCoverageRepairPrompt(artifacts, pr, repairSelected, agent, changedFilePaths)
+	repairPrompt, repairPromptDeps, err := buildReviewerCoverageRepairPromptWithRelocationAssignment(artifacts, pr, repairSelected, agent, changedFilePaths, repairAssignment)
 	if err != nil {
 		return repairSetupFailed(err)
 	}
@@ -2255,6 +2317,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if req.ReviewerFast {
 		repairFingerprintDeps = append(repairFingerprintDeps, "fast=true")
 	}
+	repairFingerprintDeps = append(repairFingerprintDeps, "relocation-manifest="+repairAssignment.ManifestDigest, "relocation-assignment="+repairAssignment.AssignmentDigest, "context-contract="+reviewerContextContractVersion)
 	repair, repairSession, repairLedgerSession, repairErr := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            repairTaskID,
@@ -2272,11 +2335,25 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		resumeSessionID:   session.ProviderReportedSessionID,
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
-		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(repairFiles),
-			NewFindingID: opts.newFindingID,
+		decoded, err := llm.DecodeFindings(data, llm.FindingsOptions{
+			KnownAgents:     map[string]bool{agent.ID: true},
+			ChangedFiles:    stringSet(repairFiles),
+			AssignmentFiles: stringSet(repairFiles),
+			HeadFiles:       safeHeadContextPaths(resumeState.relocations.HeadTree),
+			NewFindingID:    opts.newFindingID,
 		})
+		if err != nil {
+			return llm.Findings{}, err
+		}
+		decoded.RelocationReviewedFiles, decoded.RelocationDiagnostic = validateRelocationAssessment(decoded, repairAssignment, resumeState.relocations.HeadTree)
+		if repairAssignment.MoveCount > 0 {
+			decoded.RelocationAssessments = []llm.RelocationAssessmentRecord{{
+				Assessment: decoded.RelocationAssessment, ManifestDigest: repairAssignment.ManifestDigest,
+				AssignmentDigest: repairAssignment.AssignmentDigest, ReviewedFiles: append([]string(nil), decoded.RelocationReviewedFiles...),
+				Valid: decoded.RelocationDiagnostic == "", Diagnostic: decoded.RelocationDiagnostic,
+			}}
+		}
+		return decoded, nil
 	})
 	// No cohort session update here: that slot seeds the next run's primary review.
 	execution.sessions = append(execution.sessions, repairSession)
@@ -2297,6 +2374,14 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if reviewerToolEvidenceForcesIncomplete(repairSession.Response.ReviewerToolEvidence) {
 		// A repair that never proved its own tool use inspected nothing, so its claim cannot clear a skip.
 		repair.InspectedFiles = nil
+		repair.ContextFiles = nil
+		repair.RelocationReviewedFiles = nil
+		repair.RelocationDiagnostic = "coverage repair tool evidence was incomplete"
+		for i := range repair.RelocationAssessments {
+			repair.RelocationAssessments[i].Valid = false
+			repair.RelocationAssessments[i].ReviewedFiles = nil
+			repair.RelocationAssessments[i].Diagnostic = repair.RelocationDiagnostic
+		}
 	}
 	execution.result = mergeReviewerFindings(findings, repair)
 	for _, finding := range repair.Findings {
@@ -2333,15 +2418,20 @@ func reviewerCoverageRepairTaskID(agentID string) string {
 // reviewerCoverageRepairFiles returns skipped assignment paths whose head
 // content can be inspected. Deleted and binary patches retain their existing
 // fail-closed coverage state without spending a semantic repair pass.
-func reviewerCoverageRepairFiles(skipped []string, patches []FilePatch) []string {
+func reviewerCoverageRepairFiles(missing []string, patches []FilePatch, moveSets ...[]relocationMove) []string {
 	repairable := make(map[string]bool, len(patches))
+	var moves []relocationMove
+	if len(moveSets) > 0 {
+		moves = moveSets[0]
+	}
+	contentless := relocationContentlessPaths(patches, moves)
 	for _, patch := range patches {
-		if !patch.Deleted && !patch.Binary {
+		if !patch.Deleted && !patch.Binary && !contentless[patch.Path] {
 			repairable[patch.Path] = true
 		}
 	}
 	var files []string
-	for _, file := range skipped {
+	for _, file := range missing {
 		if repairable[file] && !slices.Contains(files, file) {
 			files = append(files, file)
 		}
@@ -2351,14 +2441,28 @@ func reviewerCoverageRepairFiles(skipped []string, patches []FilePatch) []string
 
 func mergeReviewerFindings(primary, repair llm.Findings) llm.Findings {
 	merged := llm.Findings{
-		AgentID:        primary.AgentID,
-		Findings:       append(append([]review.Finding(nil), primary.Findings...), repair.Findings...),
-		InspectedFiles: appendUniqueStrings(nil, primary.InspectedFiles...),
-		SkippedFiles:   appendUniqueStrings(nil, primary.SkippedFiles...),
-		Constraints:    appendUniqueStrings(nil, primary.Constraints...),
+		AgentID:                 primary.AgentID,
+		Findings:                append(append([]review.Finding(nil), primary.Findings...), repair.Findings...),
+		InspectedFiles:          appendUniqueStrings(nil, primary.InspectedFiles...),
+		ContextFiles:            appendUniqueStrings(nil, primary.ContextFiles...),
+		SkippedFiles:            appendUniqueStrings(nil, primary.SkippedFiles...),
+		Constraints:             appendUniqueStrings(nil, primary.Constraints...),
+		RelocationAssessment:    primary.RelocationAssessment,
+		RelocationReviewedFiles: appendUniqueStrings(nil, primary.RelocationReviewedFiles...),
+		RelocationDiagnostic:    primary.RelocationDiagnostic,
+		RelocationAssessments:   append([]llm.RelocationAssessmentRecord(nil), primary.RelocationAssessments...),
 	}
 	merged.InspectedFiles = appendUniqueStrings(merged.InspectedFiles, repair.InspectedFiles...)
-	inspected := stringSet(repair.InspectedFiles)
+	merged.ContextFiles = appendUniqueStrings(merged.ContextFiles, repair.ContextFiles...)
+	merged.RelocationReviewedFiles = appendUniqueStrings(merged.RelocationReviewedFiles, repair.RelocationReviewedFiles...)
+	merged.RelocationAssessments = append(merged.RelocationAssessments, repair.RelocationAssessments...)
+	if repair.RelocationAssessment != nil {
+		merged.RelocationAssessment = repair.RelocationAssessment
+	}
+	if repair.RelocationDiagnostic != "" && merged.RelocationDiagnostic == "" {
+		merged.RelocationDiagnostic = repair.RelocationDiagnostic
+	}
+	inspected := stringSet(append(append([]string(nil), repair.InspectedFiles...), repair.RelocationReviewedFiles...))
 	remainingSkipped := merged.SkippedFiles[:0]
 	for _, file := range merged.SkippedFiles {
 		if !inspected[file] {
@@ -2367,6 +2471,9 @@ func mergeReviewerFindings(primary, repair llm.Findings) llm.Findings {
 	}
 	merged.SkippedFiles = appendUniqueStrings(remainingSkipped, repair.SkippedFiles...)
 	merged.Constraints = appendUniqueStrings(merged.Constraints, repair.Constraints...)
+	if repair.RelocationDiagnostic != "" {
+		merged.Constraints = appendUniqueStrings(merged.Constraints, repair.RelocationDiagnostic)
+	}
 	return merged
 }
 
@@ -3091,6 +3198,10 @@ func filterSelectedReviewerAssignments(selection llm.Selection, changedFiles []s
 }
 
 func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, contentless map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
+	return buildReviewerCoverageWithRelocations(selected, results, failures, changedFiles, contentless, toolEvidence...)
+}
+
+func buildReviewerCoverageWithRelocations(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, contentless map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
 	if len(selected) == 0 && len(changedFiles) == 0 {
 		return nil
 	}
@@ -3126,8 +3237,13 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			// so a reviewer that did read a lockfile doesn't emit an inspected file
 			// outside its scope.
 			entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
+			entry.ContextFiles = copySortedStrings(result.ContextFiles)
+			entry.RelocationReviewedFiles = sortedIntersection(result.RelocationReviewedFiles, scope)
 			entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
 			entry.Constraints = copySortedStrings(result.Constraints)
+			if result.RelocationDiagnostic != "" {
+				entry.Constraints = appendUniqueStrings(entry.Constraints, result.RelocationDiagnostic)
+			}
 		}
 		if failure, ok := failureByAgent[agent.AgentID]; ok {
 			// A reviewer that failed only its coverage repair keeps what the primary pass proved.
@@ -3143,18 +3259,19 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			continue
 		}
 		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); reviewerToolEvidenceForcesIncomplete(evidence) {
+			entry.RelocationReviewedFiles = nil
+			entry.MissingFiles = coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
 			entry.Status = reviewerCoverageIncompleteTool
 			entry.Diagnostic = reviewerToolDiagnostic(evidence, "")
 			out = append(out, entry)
 			continue
 		}
-		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
+		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles, entry.RelocationReviewedFiles)
+		entry.MissingFiles = missing
 		switch {
 		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
 			entry.Status = reviewerCoverageIncompleteSkipped
-			if len(missing) > 0 {
-				entry.Diagnostic = "assigned files were neither inspected nor skipped: " + strings.Join(missing, ", ")
-			}
+			entry.Diagnostic = "assigned review coverage remains unresolved"
 		case len(agent.AllowedFiles) > 0:
 			entry.Status = reviewerCoverageCompleteConstrained
 		default:
@@ -3198,10 +3315,15 @@ func reviewerAssignmentScope(agent llm.SelectedAgent, changedFiles []string) []s
 	return copySortedStrings(changedFiles)
 }
 
-func coverageMissingFiles(scope, inspected, skipped []string) []string {
+func coverageMissingFiles(scope, inspected, skipped []string, relocationReviewed ...[]string) []string {
 	covered := stringSet(inspected)
-	for _, file := range skipped {
-		covered[file] = true
+	explicitlySkipped := stringSet(skipped)
+	for _, files := range relocationReviewed {
+		for _, file := range files {
+			if !explicitlySkipped[file] {
+				covered[file] = true
+			}
+		}
 	}
 	var missing []string
 	for _, file := range scope {

@@ -128,7 +128,7 @@ func TestApprovalWithheldBoundsMissingPathExamples(t *testing.T) {
 	}
 	section := sectionBetween(plan.RollupMarkdown, "### Approval Withheld", "### Reviewer Coverage")
 	for _, want := range []string{
-		"2500 files not body-inspected by any reviewer",
+		"2500 files had no body inspection or relocation-impact review by any reviewer",
 		"examples: `missing-0000.go`, `missing-0001.go`, `missing-0002.go`, `missing-0003.go`, `missing-0004.go`",
 		"2495 omitted",
 	} {

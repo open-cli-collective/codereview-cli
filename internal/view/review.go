@@ -45,13 +45,16 @@ type ReviewReviewerSummary struct {
 // ReviewReviewerCoverageSummary describes reviewer coverage rendered in the
 // rollup summary.
 type ReviewReviewerCoverageSummary struct {
-	AgentID        string   `json:"agent_id"`
-	Status         string   `json:"status"`
-	Scope          []string `json:"scope,omitempty"`
-	InspectedFiles []string `json:"inspected_files,omitempty"`
-	SkippedFiles   []string `json:"skipped_files,omitempty"`
-	Constraints    []string `json:"constraints,omitempty"`
-	Diagnostic     string   `json:"diagnostic,omitempty"`
+	AgentID                 string   `json:"agent_id"`
+	Status                  string   `json:"status"`
+	Scope                   []string `json:"scope,omitempty"`
+	InspectedFiles          []string `json:"inspected_files,omitempty"`
+	SkippedFiles            []string `json:"skipped_files,omitempty"`
+	MissingFiles            []string `json:"missing_files,omitempty"`
+	ContextFiles            []string `json:"context_files,omitempty"`
+	RelocationReviewedFiles []string `json:"relocation_reviewed_files,omitempty"`
+	Constraints             []string `json:"constraints,omitempty"`
+	Diagnostic              string   `json:"diagnostic,omitempty"`
 }
 
 // ReviewThreadCounts summarizes PR discussion thread handling.
@@ -171,12 +174,14 @@ type ReviewAction struct {
 
 // ReviewArtifacts lists dry-run artifact paths.
 type ReviewArtifacts struct {
-	Dir            string `json:"dir"`
-	DiffPatch      string `json:"diff_patch"`
-	SlicesDir      string `json:"slices_dir"`
-	FindingsJSON   string `json:"findings_json"`
-	RollupMarkdown string `json:"rollup_markdown"`
-	AgentLogsDir   string `json:"agent_logs_dir"`
+	Dir             string `json:"dir"`
+	DiffPatch       string `json:"diff_patch"`
+	SlicesDir       string `json:"slices_dir"`
+	FindingsJSON    string `json:"findings_json"`
+	RollupMarkdown  string `json:"rollup_markdown"`
+	AgentLogsDir    string `json:"agent_logs_dir"`
+	RelocationsJSON string `json:"relocations_json"`
+	CoverageJSON    string `json:"coverage_json"`
 }
 
 // NewReviewDryRun maps a pipeline result to the shared dry-run presentation model.
@@ -200,12 +205,14 @@ func NewReviewDryRun(result pipeline.Result) (ReviewDryRun, error) {
 		Summary:         newReviewSummary(result.Plan.Summary),
 		FailOnTriggered: result.FailOnTriggered,
 		Artifacts: ReviewArtifacts{
-			Dir:            result.Artifacts.Dir,
-			DiffPatch:      result.Artifacts.DiffPatch,
-			SlicesDir:      result.Artifacts.SlicesDir,
-			FindingsJSON:   result.Artifacts.FindingsJSON,
-			RollupMarkdown: result.Artifacts.RollupMarkdown,
-			AgentLogsDir:   result.Artifacts.AgentLogsDir,
+			Dir:             result.Artifacts.Dir,
+			DiffPatch:       result.Artifacts.DiffPatch,
+			SlicesDir:       result.Artifacts.SlicesDir,
+			FindingsJSON:    result.Artifacts.FindingsJSON,
+			RollupMarkdown:  result.Artifacts.RollupMarkdown,
+			AgentLogsDir:    result.Artifacts.AgentLogsDir,
+			RelocationsJSON: result.Artifacts.RelocationsJSON,
+			CoverageJSON:    result.Artifacts.CoverageJSON,
 		},
 	}
 	if result.QuotaSupported {
@@ -280,13 +287,16 @@ func newReviewSummary(summary reviewplan.Summary) ReviewSummary {
 	}
 	for _, coverage := range summary.Run.ReviewerCoverage {
 		out.Run.ReviewerCoverage = append(out.Run.ReviewerCoverage, ReviewReviewerCoverageSummary{
-			AgentID:        coverage.AgentID,
-			Status:         coverage.Status,
-			Scope:          coverage.Scope,
-			InspectedFiles: coverage.InspectedFiles,
-			SkippedFiles:   coverage.SkippedFiles,
-			Constraints:    coverage.Constraints,
-			Diagnostic:     coverage.Diagnostic,
+			AgentID:                 coverage.AgentID,
+			Status:                  coverage.Status,
+			Scope:                   coverage.Scope,
+			InspectedFiles:          coverage.InspectedFiles,
+			SkippedFiles:            coverage.SkippedFiles,
+			MissingFiles:            coverage.MissingFiles,
+			ContextFiles:            coverage.ContextFiles,
+			RelocationReviewedFiles: coverage.RelocationReviewedFiles,
+			Constraints:             coverage.Constraints,
+			Diagnostic:              coverage.Diagnostic,
 		})
 	}
 	for _, workstream := range summary.Run.Workstreams {
