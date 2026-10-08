@@ -130,6 +130,7 @@ cases:
     pr: https://github.com/OWNER/REPO/pull/123
     review_base_sha: 1111111
     review_head_sha: 2222222
+    without_discussion: true # default for pinned cases; false opts into saved sessions
     expected_base_sha: abc1234
     expected_head_sha: def5678
     anchors:
@@ -147,6 +148,34 @@ the PR's current branch state. Expected SHA fields are optional baseline
 metadata for downstream reports and graders; they do not change what gets
 reviewed. All SHA fields must be non-empty 7 to 64 character hexadecimal SHAs
 when present.
+
+`without_discussion` is an optional per-case boolean for full-pipeline
+`benchmark run`. It defaults to `true` when both review SHAs are pinned, and
+`false` for unpinned cases. Setting it to `true` requires both review SHAs.
+Discussion-free runs do not resume or overwrite saved orchestrator/reviewer
+sessions or the PR's reviewer cohort, so candidates do not inherit earlier
+reviews. Both subprocess and `--in-process` runs apply the same setting.
+Explicit `false` opts into the normal saved-session behavior, including for
+pinned cases. Expected SHA metadata alone does not enable discussion-free mode.
+
+For cross-version comparisons with `--cr-bin`, isolated cases require a binary
+that supports `cr review --without-discussion` and reports
+`run.without_discussion: true` in review JSON. An older binary may reject the
+flag; a successful child exit without that marker is recorded as
+`discussion_isolation_unverified` and counted as a failed benchmark cell.
+The harness preserves the child's actual exit code and raw output and never
+retries without the flag. To deliberately benchmark an older binary, set
+`without_discussion: false` and account for possible saved-session contamination.
+Doctor and selected-case artifacts record the effective setting. Per-run
+metrics, manifests, summaries, and comparisons distinguish
+`requested_without_discussion` from `without_discussion_verified`; a missing
+marker is never treated as proof of isolation. `benchmark compare` rechecks
+the current review artifact; replacing or corrupting it invalidates prior
+verification and fails a cell that requested discussion-free execution.
+
+Selector-only `benchmark select` already uses a caller-owned selection run with
+no saved review sessions. It preserves this case setting in its recipe but does
+not need the full-review flag.
 
 Candidate `profile` must reference a configured profile. Candidate PR hosts must
 match the candidate profile's Git host. For the current full-pipeline
@@ -270,8 +299,9 @@ When set on the case, `run` also passes:
 |------------|-------------|
 | `review_base_sha` | `--review-base-sha <sha>` |
 | `review_head_sha` | `--review-head-sha <sha>` |
+| `without_discussion` | `--without-discussion` when effectively true; defaults to true for pinned cases |
 
-Unset fields are omitted. Benchmark candidate artifacts record reviewer
+Other unset fields are omitted. Benchmark candidate artifacts record reviewer
 `effort_source` as `inherited` or `override`, so reports can distinguish the
 two execution recipes even when the inherited effort is resolved later per
 agent. Effort values are `low`, `medium`, `high`, `xhigh`, or `max`; validation
@@ -280,8 +310,8 @@ rejects levels unsupported by the candidate profile's runtime. `claude_cli`,
 `anthropic_api` supports through `high`. Effective extended-effort support
 depends on the selected model and, for CLI adapters, the installed CLI.
 
-Posting, retry, approval, thread-resolution, session,
-and live-review flags are never taken from the suite.
+Apart from the per-case `without_discussion` setting, posting, retry, approval,
+thread-resolution, session, and live-review flags are never taken from the suite.
 
 `--cr-bin <path>` selects the binary used for child review runs. If omitted,
 `run` uses the current `cr` binary. `doctor` reports the binary it would use.
