@@ -5,6 +5,7 @@ package llm
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -96,7 +97,7 @@ control.close()
 				if _, err := io.ReadFull(control, reply[:]); err != nil || reply[0] != 'Q' {
 					t.Errorf("worker release acknowledgment = %q, err=%v", reply, err)
 				}
-				if n, err := control.Read(reply[:]); n != 0 || err != io.EOF {
+				if n, err := control.Read(reply[:]); n != 0 || !errors.Is(err, io.EOF) {
 					t.Errorf("worker control did not close: n=%d err=%v", n, err)
 				}
 			}
