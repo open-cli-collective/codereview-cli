@@ -151,21 +151,36 @@ func resolveSymlinkTarget(linkPath string, payload []byte, tree map[string]treeE
 	if strings.ContainsRune(value, '\\') {
 		return symlinkmetadata.ResolutionUnsupported, "", nil, nil
 	}
-	resolved := path.Clean(path.Join(path.Dir(linkPath), value))
-	if resolved == "." || resolved == ".." || strings.HasPrefix(resolved, "../") {
+	components := strings.Split(value, "/")
+	stack := strings.Split(path.Dir(linkPath), "/")
+	if len(stack) == 1 && stack[0] == "." {
+		stack = nil
+	}
+	for index, component := range components {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) == 0 {
+				return symlinkmetadata.ResolutionOutside, "", nil, nil
+			}
+			stack = stack[:len(stack)-1]
+		default:
+			stack = append(stack, component)
+			current := strings.Join(stack, "/")
+			if component == ".git" {
+				return symlinkmetadata.ResolutionUnsupported, current, nil, nil
+			}
+			if index < len(components)-1 {
+				if entry, ok := tree[current]; ok && entry.Type == "blob" && entry.Mode == "120000" {
+					return symlinkmetadata.ResolutionLinkedAncestor, current, nil, nil
+				}
+			}
+		}
+	}
+	resolved := strings.Join(stack, "/")
+	if resolved == "" {
 		return symlinkmetadata.ResolutionOutside, "", nil, nil
-	}
-	for _, component := range strings.Split(resolved, "/") {
-		if component == ".git" {
-			return symlinkmetadata.ResolutionUnsupported, resolved, nil, nil
-		}
-	}
-	components := strings.Split(resolved, "/")
-	for index := 1; index < len(components); index++ {
-		ancestor := strings.Join(components[:index], "/")
-		if entry, ok := tree[ancestor]; ok && entry.Mode == "120000" {
-			return symlinkmetadata.ResolutionLinkedAncestor, resolved, nil, nil
-		}
 	}
 	if target, ok := tree[resolved]; ok {
 		switch {

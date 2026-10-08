@@ -131,10 +131,12 @@ func TestResolveSymlinkTargetClassifiesWithoutFollowingLinks(t *testing.T) {
 		{name: "windows rooted path", linkPath: "links/current", payload: "\\outside\\target", tree: map[string]treeEntry{}, wantStatus: symlinkmetadata.ResolutionOutside},
 		{name: "ambiguous backslash path", linkPath: "links/current", payload: "..\\target\\file", tree: map[string]treeEntry{}, wantStatus: symlinkmetadata.ResolutionUnsupported},
 		{name: "escaping", linkPath: "links/current", payload: "../../outside", tree: map[string]treeEntry{}, wantStatus: symlinkmetadata.ResolutionOutside},
-		{name: "git metadata", linkPath: "links/current", payload: "../.git/config", tree: map[string]treeEntry{}, wantStatus: symlinkmetadata.ResolutionUnsupported, wantPath: ".git/config"},
+		{name: "git metadata", linkPath: "links/current", payload: "../.git/config", tree: map[string]treeEntry{}, wantStatus: symlinkmetadata.ResolutionUnsupported, wantPath: ".git"},
 		{name: "chained target", linkPath: "links/current", payload: "../target/link", tree: map[string]treeEntry{"target/link": linked}, wantStatus: symlinkmetadata.ResolutionLinkedTarget, wantPath: "target/link"},
 		{name: "cycle endpoint is not followed", linkPath: "links/current", payload: "../target/link", tree: map[string]treeEntry{"target/link": linked, "links/current": linked}, wantStatus: symlinkmetadata.ResolutionLinkedTarget, wantPath: "target/link"},
-		{name: "linked ancestor", linkPath: "links/current", payload: "../target/parent/child", tree: map[string]treeEntry{"target/parent": ancestor}, wantStatus: symlinkmetadata.ResolutionLinkedAncestor, wantPath: "target/parent/child"},
+		{name: "linked ancestor", linkPath: "links/current", payload: "../target/parent/child", tree: map[string]treeEntry{"target/parent": ancestor}, wantStatus: symlinkmetadata.ResolutionLinkedAncestor, wantPath: "target/parent"},
+		{name: "linked ancestor is not erased by parent component", linkPath: "links/current", payload: "../target/parent/../file", tree: map[string]treeEntry{"target/parent": ancestor, "target/file": regular}, wantStatus: symlinkmetadata.ResolutionLinkedAncestor, wantPath: "target/parent"},
+		{name: "git metadata is not erased by parent component", linkPath: "links/current", payload: "../.git/../target/file", tree: map[string]treeEntry{"target/file": regular}, wantStatus: symlinkmetadata.ResolutionUnsupported, wantPath: ".git"},
 		{name: "NUL unsupported", linkPath: "links/current", payload: "../target\x00/file", tree: map[string]treeEntry{}, wantStatus: symlinkmetadata.ResolutionUnsupported},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

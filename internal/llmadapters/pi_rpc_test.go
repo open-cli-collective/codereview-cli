@@ -203,7 +203,7 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
 	reviewerPrompt := flagValue(record.AdapterArgs, "--system-prompt")
-	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails", "view=symlink", "payload_omitted_reason", "keep that path skipped", "payload_size=0 is an inspected empty payload"} {
+	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails", "view=symlink", "assignment.base_only_symlink_paths", "ordinary cr_read and no view", "payload_omitted_reason", "keep that path skipped", "payload_size=0 is an inspected empty payload"} {
 		if !strings.Contains(reviewerPrompt, instruction) {
 			t.Fatalf("reviewer system prompt = %q, want instruction %q", reviewerPrompt, instruction)
 		}

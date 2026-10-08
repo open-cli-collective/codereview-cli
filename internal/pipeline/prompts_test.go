@@ -511,7 +511,7 @@ func TestChangedSymlinkPromptKeepsUnavailablePayloadUnresolved(t *testing.T) {
 	for _, want := range []string{
 		"payload_omitted_reason",
 		"payload bytes are unavailable",
-		"keep that path in skipped_files",
+		"keep that symlink-payload obligation in skipped_files",
 		"metadata inspection alone does not count as payload inspection",
 	} {
 		if !strings.Contains(instructions, want) {

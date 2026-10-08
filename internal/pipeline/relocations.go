@@ -59,6 +59,7 @@ type relocationAssignment struct {
 	Moves                 []relocationMove
 	SymlinkMetadataDigest string
 	SymlinkPaths          []string
+	BaseOnlySymlinkPaths  []string
 }
 
 // parseTreeInventory decodes `git ls-tree -r -z --full-tree` output without
@@ -266,6 +267,7 @@ func (state relocationReviewState) assignment(agentID string, scope []string) re
 	inScope := stringSet(scope)
 	moves := make([]relocationMove, 0)
 	symlinkPaths := make([]string, 0)
+	baseOnlySymlinkPaths := make([]string, 0)
 	for _, move := range state.Manifest.Moves {
 		if inScope[move.Path] {
 			moves = append(moves, move)
@@ -273,7 +275,12 @@ func (state relocationReviewState) assignment(agentID string, scope []string) re
 	}
 	for _, link := range state.Symlinks.Links {
 		if inScope[link.Path] {
-			symlinkPaths = append(symlinkPaths, link.Path)
+			switch {
+			case link.Head != nil:
+				symlinkPaths = append(symlinkPaths, link.Path)
+			case link.Base != nil && regularBlob(state.HeadTree[link.Path]):
+				baseOnlySymlinkPaths = append(baseOnlySymlinkPaths, link.Path)
+			}
 		}
 	}
 	canonical, _ := json.Marshal(struct {
@@ -290,6 +297,7 @@ func (state relocationReviewState) assignment(agentID string, scope []string) re
 		Moves:                 moves,
 		SymlinkMetadataDigest: state.Symlinks.Digest,
 		SymlinkPaths:          symlinkPaths,
+		BaseOnlySymlinkPaths:  baseOnlySymlinkPaths,
 	}
 }
 

@@ -380,6 +380,10 @@ explicit `view="symlink"` option. That view reads a run-owned, digest-validated
 artifact built from the pinned base/head Git trees; it returns the exact link
 payload and lexical target status without following the link or reading the
 destination body. Its output uses the same bounded range/continuation contract.
+Assignments distinguish head-tree symlinks from paths that were symlinks only
+in the base tree and are regular files in the head tree. For the latter, base
+symlink metadata is historical context only; complete coverage still requires
+an ordinary `cr_read` of the pinned head regular-file body.
 Payloads larger than the inspection cap are represented with their size and an
 omission reason without fetching their contents, so the link payload remains a
 skipped review obligation. An explicit empty payload and its zero-byte size are
