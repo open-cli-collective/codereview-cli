@@ -34,7 +34,7 @@ func TestFingerprintPreservesPipelineCacheKey(t *testing.T) {
 		"review changed code",
 		[]string{"orchestrator-selection", "discussion=abc123"},
 	)
-	const want = "6dde97e6bd16df08b6753200e4ef26bfc556548ab370ca2a454e1c089f483ba1"
+	const want = "5a7c3a29a23d3fb2562f6ced535fdead984af8c79360d210c170ec263ba4e2a2"
 	if got != want {
 		t.Fatalf("Fingerprint() = %q, want legacy pipeline cache key %q", got, want)
 	}

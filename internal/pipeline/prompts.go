@@ -27,13 +27,19 @@ func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.Se
 }
 
 func buildReviewerPromptWithExtras(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles, mentionablePaths []string, checkpoints ...reviewerDiscussionCheckpoint) (string, []string, error) {
+	return buildReviewerPromptWithRelocationAssignment(paths, pr, selected, agent, changedFiles, mentionablePaths, relocationAssignment{}, checkpoints...)
+}
+
+func buildReviewerPromptWithRelocationAssignment(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles, mentionablePaths []string, relocation relocationAssignment, checkpoints ...reviewerDiscussionCheckpoint) (string, []string, error) {
 	input, deps, err := reviewerPromptInputFromArtifacts(paths, pr, selected, agent)
 	if err != nil {
 		return "", nil, err
 	}
 	reviewable := stringSet(changedFiles)
+	verifiedMoves := relocationMovePaths(relocation.Moves)
 	for i := range input.ManifestRows {
 		input.ManifestRows[i].Reviewable = reviewable[input.ManifestRows[i].Path]
+		input.ManifestRows[i].VerifiedRelocation = verifiedMoves[input.ManifestRows[i].Path]
 	}
 	assignmentScope := reviewerAssignmentScope(selected, changedFiles)
 	manifestPaths := append(append([]string(nil), assignmentScope...), selected.Files...)
@@ -60,11 +66,12 @@ func buildReviewerPromptWithExtras(paths ArtifactPaths, pr gitprovider.PR, selec
 	}
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
-		"output_contract": findingsOutputContract(agent.ID, assignmentScope),
+		"output_contract": findingsOutputContractWithRelocations(agent.ID, assignmentScope, relocation),
 		"agent":           reviewerAgentPromptFromAgent(agent),
 		"assignment": reviewerPromptAssignment{
 			AgentID: agent.ID, Rationale: selected.Rationale,
 			FileIndices: fileIndices, AllowedFileIndices: allowedFileIndices, ScopeIndices: scopeIndices, ExtraCitationRefs: extraCitationRefs,
+			ManifestDigest: relocation.ManifestDigest, RelocationCount: relocation.MoveCount, AssignmentDigest: relocation.AssignmentDigest,
 		},
 		"file_manifest": manifest,
 		"dossier":       input.Dossier,
@@ -82,8 +89,8 @@ func buildReviewerPromptWithExtras(paths ArtifactPaths, pr gitprovider.PR, selec
 	return string(body), deps, nil
 }
 
-func buildReviewerCoverageRepairPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
-	prompt, deps, err := buildReviewerPrompt(paths, pr, selected, agent, changedFiles)
+func buildReviewerCoverageRepairPromptWithRelocationAssignment(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string, relocation relocationAssignment) (string, []string, error) {
+	prompt, deps, err := buildReviewerPromptWithRelocationAssignment(paths, pr, selected, agent, changedFiles, nil, relocation)
 	if err != nil {
 		return "", nil, err
 	}
@@ -108,11 +115,12 @@ func buildReviewerCoverageRepairPrompt(paths ArtifactPaths, pr gitprovider.PR, s
 	payload["coverage_repair"] = map[string]any{
 		"file_indices": repairIndices,
 		"instructions": []string{
-			"The primary review explicitly skipped these assigned readable files.",
-			"For this repair, finding file_path, inspected_files, and skipped_files must use only the file_manifest path cells referenced by assignment.scope_indices.",
-			"Inspect each listed file in the prepared workspace, including only the changed content and dependency or workspace graph context relevant to this review.",
+			"The primary review left these assigned readable obligations unresolved; the repair is the one focused follow-up for omissions and explicit skips.",
+			"For this repair, finding file_path, inspected_files, and skipped_files must use only the file_manifest path cells referenced by assignment.scope_indices. context_files may name safe existing pinned-head paths outside that scope and never expands finding anchors or assignment coverage.",
+			"Actually inspect each listed ordinary residual file body in the prepared workspace. For a verified relocation, review path impact and cite read context without claiming its body was inspected unless you actually read it.",
 			"Return findings from this focused pass only; primary findings are retained separately and must not be repeated.",
-			"List a file in inspected_files only after actually inspecting it. Keep any file you still cannot inspect in skipped_files so coverage remains incomplete.",
+			"List a file in inspected_files only after actually inspecting its body. Keep any unresolved body-inspection or relocation-impact obligation in skipped_files so coverage remains incomplete.",
+			"For any verified relocation in this repair assignment, assess path impact using the supplied manifest and assignment digests; uncertainty or an explicit skip remains incomplete.",
 		},
 	}
 	body, err := json.Marshal(payload)
@@ -305,6 +313,9 @@ type reviewerPromptWorkbench struct {
 type reviewerPromptAssignment struct {
 	AgentID            string  `json:"agent_id"`
 	Rationale          string  `json:"rationale,omitempty"`
+	ManifestDigest     string  `json:"manifest_digest,omitempty"`
+	RelocationCount    int     `json:"relocation_count,omitempty"`
+	AssignmentDigest   string  `json:"assignment_digest,omitempty"`
 	FileIndices        []int   `json:"file_indices"`
 	AllowedFileIndices []int   `json:"allowed_file_indices,omitempty"`
 	ScopeIndices       []int   `json:"scope_indices"`
@@ -320,14 +331,15 @@ type reviewerPromptInput struct {
 }
 
 type promptFileMetadata struct {
-	Path       string
-	OldPath    string
-	Status     string
-	Additions  int
-	Deletions  int
-	HunkCount  int
-	Binary     bool
-	Reviewable bool
+	Path               string
+	OldPath            string
+	Status             string
+	Additions          int
+	Deletions          int
+	HunkCount          int
+	Binary             bool
+	Reviewable         bool
+	VerifiedRelocation bool
 }
 
 type promptFileManifest struct {
@@ -335,7 +347,7 @@ type promptFileManifest struct {
 	Rows    [][]any  `json:"rows"`
 }
 
-var promptFileManifestColumns = []string{"path", "old_path", "status", "additions", "deletions", "hunk_count", "binary", "reviewable"}
+var promptFileManifestColumns = []string{"path", "old_path", "status", "additions", "deletions", "hunk_count", "binary", "reviewable", "verified_relocation"}
 
 func promptMetadataPaths(files []promptFileMetadata) []string {
 	paths := make([]string, 0, len(files))
@@ -356,7 +368,7 @@ func makePromptFileManifest(files []promptFileMetadata, reviewablePaths []string
 		if reviewablePaths != nil {
 			isReviewable = reviewable[file.Path]
 		}
-		rows = append(rows, []any{file.Path, file.OldPath, file.Status, file.Additions, file.Deletions, file.HunkCount, file.Binary, isReviewable})
+		rows = append(rows, []any{file.Path, file.OldPath, file.Status, file.Additions, file.Deletions, file.HunkCount, file.Binary, isReviewable, file.VerifiedRelocation})
 	}
 	return promptFileManifest{Columns: append([]string(nil), promptFileManifestColumns...), Rows: rows}
 }
@@ -973,19 +985,24 @@ func selectionExampleAgents(agentIDs []string, changedFiles []string) []map[stri
 }
 
 func findingsOutputContract(agentID string, changedFiles []string) outputContract {
+	return findingsOutputContractWithRelocations(agentID, changedFiles, relocationAssignment{})
+}
+
+func findingsOutputContractWithRelocations(agentID string, changedFiles []string, relocation relocationAssignment) outputContract {
 	constraintLimits := llm.DefaultFindingsConstraintLimits()
-	return outputContract{
+	contract := outputContract{
 		Instructions: []string{
 			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
 			"Use only the keys shown in response_schema. Unknown keys are rejected.",
 			"allowed_values is context only; do not include allowed_values keys in the response.",
 			"schema_version must be 1.",
 			"agent_id must match the provided agent id.",
-			"inspected_files must list assigned changed files you actually inspected, even when findings is empty.",
-			"skipped_files must list assigned changed files you intentionally did not inspect or could not inspect.",
-			"At least one of inspected_files or skipped_files must be non-empty.",
+			"inspected_files must list assigned ordinary changed-file bodies you actually inspected, even when findings is empty. A certified relocation may be covered by its path-impact assessment without claiming the body was inspected.",
+			"skipped_files must list assigned body-inspection or relocation-impact obligations you intentionally did not complete or could not complete.",
+			"At least one of inspected_files, skipped_files, or context_files must be non-empty; context evidence alone may support a valid relocation assessment.",
 			"constraints must list any material review constraints, such as intentionally narrow scope, missing context, or tool limitations.",
 			"assignment.scope_indices are the authoritative review scope; file_indices outside scope_indices are context only and do not expand inspected_files or skipped_files.",
+			"context_files may list only safe existing pinned-head paths outside assignment.scope_indices; these paths do not count toward assignment coverage and cannot be finding anchors.",
 			fmt.Sprintf("constraints must contain at most %d entries.", constraintLimits.MaxEntries),
 			fmt.Sprintf("Each constraints entry must contain at most %d Unicode runes.", constraintLimits.MaxRunesPerEntry),
 			"findings must be an empty array when there are no actionable findings.",
@@ -998,6 +1015,7 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 			"agent_id":        "string, required",
 			"inspected_files": "string[], assigned changed files inspected by this reviewer",
 			"skipped_files":   "string[], assigned changed files intentionally not inspected or not inspectable",
+			"context_files":   "string[], safe existing pinned-head context paths outside assignment scope",
 			"constraints":     "string[], material scope/tool/context constraints",
 			"findings":        "array of {severity: string, file_path: string, anchor: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}, body: string}",
 		},
@@ -1009,6 +1027,7 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 			"agent_id":        agentID,
 			"inspected_files": firstNOrPlaceholder(changedFiles, "path/to/changed-file.ext", 1),
 			"skipped_files":   []string{},
+			"context_files":   []string{},
 			"constraints":     []string{},
 			"findings": []map[string]any{{
 				"severity":  "major",
@@ -1020,6 +1039,24 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 			}},
 		},
 	}
+	if relocation.MoveCount > 0 {
+		contract.Instructions = append(contract.Instructions,
+			"For every verified relocation assigned to you, review path impact: imports and relative references, workspace configuration, build/CI/scripts, runtime assets and routes, and guidance/ownership. State uncertainty as skipped rather than claiming complete review.",
+			"Include relocation_assessment with the exact assignment.manifest_digest and assignment.assignment_digest, path_impact_reviewed=true only when you completed the path-impact review, non-empty basis, and evidence_files drawn from inspected_files or context_files.",
+			"An explicit skipped_files entry for a relocation overrides the assessment and leaves that move incomplete.",
+		)
+		schema := contract.ResponseSchema.(map[string]any)
+		schema["relocation_assessment"] = "optional {manifest_digest: string, assignment_digest: string, path_impact_reviewed: boolean, evidence_files: string[], basis: string}"
+		example := contract.Example.(map[string]any)
+		example["relocation_assessment"] = map[string]any{
+			"manifest_digest":      relocation.ManifestDigest,
+			"assignment_digest":    relocation.AssignmentDigest,
+			"path_impact_reviewed": true,
+			"evidence_files":       firstNOrPlaceholder(changedFiles, "path/to/inspected-file.ext", 1),
+			"basis":                "Reviewed imports, workspace/build configuration, runtime paths, and repository guidance for assigned moves.",
+		}
+	}
+	return contract
 }
 
 func rollupOutputContract(findings []review.Finding) outputContract {

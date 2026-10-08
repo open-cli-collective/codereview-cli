@@ -23,7 +23,7 @@ import (
 )
 
 // SchemaVersion identifies the on-disk LLM task artifact schema.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Status is the durable outcome recorded for one structured LLM task.
 type Status string

@@ -49,6 +49,8 @@ type Paths struct {
 	WorkbenchDir     string `json:"workbench_dir"`
 	WorkbenchRepoDir string `json:"workbench_repo_dir"`
 	WorkbenchScratch string `json:"workbench_scratch_dir"`
+	RelocationsJSON  string `json:"relocations_json"`
+	CoverageJSON     string `json:"coverage_json"`
 }
 
 // ForRun returns the artifact paths for a generated run ID.
@@ -80,6 +82,8 @@ func FromDir(dir string) Paths {
 		WorkbenchDir:     filepath.Join(dir, "workbench"),
 		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
 		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
+		RelocationsJSON:  filepath.Join(dir, "relocations.json"),
+		CoverageJSON:     filepath.Join(dir, "coverage.json"),
 	}
 }
 

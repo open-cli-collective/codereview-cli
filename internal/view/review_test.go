@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 )
 
 func TestRenderReviewDryRunText(t *testing.T) {
@@ -48,8 +50,34 @@ func TestRenderReviewDryRunJSON(t *testing.T) {
 	if decoded.Run.RunID != "run-1" || len(decoded.Actions) != 1 || decoded.Actions[0].Kind != "inline_comment" {
 		t.Fatalf("decoded = %#v", decoded)
 	}
+	if decoded.Artifacts.RelocationsJSON != "/tmp/run-1/relocations.json" || decoded.Artifacts.CoverageJSON != "/tmp/run-1/coverage.json" {
+		t.Fatalf("decoded artifacts omit relocation coverage paths: %#v", decoded.Artifacts)
+	}
 	if bytes.Contains(out.Bytes(), []byte("Quota:")) {
 		t.Fatalf("JSON output contains text quota prefix: %s", out.String())
+	}
+}
+
+func TestNewReviewSummaryPreservesRelocationCoverageCollections(t *testing.T) {
+	summary := reviewplan.Summary{Run: reviewplan.RunSummary{ReviewerCoverage: []reviewplan.ReviewerCoverageSummary{{
+		AgentID:                 "go:tests",
+		Status:                  "complete_broad",
+		Scope:                   []string{"old/module.go", "src/router.go"},
+		InspectedFiles:          []string{"src/router.go"},
+		MissingFiles:            []string{},
+		ContextFiles:            []string{"config/routes.yaml"},
+		RelocationReviewedFiles: []string{"old/module.go"},
+	}}}}
+
+	got := newReviewSummary(summary)
+	if len(got.Run.ReviewerCoverage) != 1 {
+		t.Fatalf("reviewer coverage = %#v", got.Run.ReviewerCoverage)
+	}
+	coverage := got.Run.ReviewerCoverage[0]
+	if len(coverage.InspectedFiles) != 1 || coverage.InspectedFiles[0] != "src/router.go" ||
+		len(coverage.ContextFiles) != 1 || coverage.ContextFiles[0] != "config/routes.yaml" ||
+		len(coverage.RelocationReviewedFiles) != 1 || coverage.RelocationReviewedFiles[0] != "old/module.go" {
+		t.Fatalf("reviewer coverage collections = %#v", coverage)
 	}
 }
 
@@ -139,12 +167,14 @@ func testReviewDryRun() ReviewDryRun {
 			Payload:       json.RawMessage(`{"body":"Fix this"}`),
 		}},
 		Artifacts: ReviewArtifacts{
-			Dir:            "/tmp/run-1",
-			DiffPatch:      "/tmp/run-1/diff.patch",
-			SlicesDir:      "/tmp/run-1/slices",
-			FindingsJSON:   "/tmp/run-1/findings.json",
-			RollupMarkdown: "/tmp/run-1/rollup.md",
-			AgentLogsDir:   "/tmp/run-1/agent-logs",
+			Dir:             "/tmp/run-1",
+			DiffPatch:       "/tmp/run-1/diff.patch",
+			SlicesDir:       "/tmp/run-1/slices",
+			FindingsJSON:    "/tmp/run-1/findings.json",
+			RollupMarkdown:  "/tmp/run-1/rollup.md",
+			AgentLogsDir:    "/tmp/run-1/agent-logs",
+			RelocationsJSON: "/tmp/run-1/relocations.json",
+			CoverageJSON:    "/tmp/run-1/coverage.json",
 		},
 	}
 }
