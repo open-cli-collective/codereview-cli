@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"reflect"
 	"strings"
@@ -37,7 +38,7 @@ type dossierIndexFileArtifact struct {
 }
 
 func prepareDossierArtifacts(ctx context.Context, opts Options, req dossier.PreparationRequest) error {
-	return dossier.Prepare(ctx, dossierEnv(opts), req)
+	return dossier.Prepare(ctx, dossierEnv(opts, req.Artifacts), req)
 }
 
 func readJSONFile(path string, out any) error {
@@ -162,8 +163,8 @@ func TestSelectionPromptDependenciesTrackDossierAndWorkbenchDigests(t *testing.T
 	if err != nil {
 		t.Fatalf("selectionPromptInputFromArtifacts first: %v", err)
 	}
-	if len(deps1) != 2 {
-		t.Fatalf("deps len = %d, want dossier/workbench deps", len(deps1))
+	if len(deps1) != 3 || !strings.HasPrefix(deps1[2], "changed_files_metadata=") {
+		t.Fatalf("deps = %#v, want dossier index, raw changed-files, and workbench dependencies", deps1)
 	}
 
 	indexPath := result.Artifacts.DossierIndexPath()
@@ -193,6 +194,76 @@ func TestSelectionPromptDependenciesTrackDossierAndWorkbenchDigests(t *testing.T
 	}
 	if reflect.DeepEqual(deps2, deps3) {
 		t.Fatalf("deps after workbench metadata change = %#v, want changed from %#v", deps3, deps2)
+	}
+	inputBefore, _, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads, []string{"main.go"})
+	if err != nil {
+		t.Fatalf("selectionPromptInputFromArtifacts before raw formatting change: %v", err)
+	}
+	promptBefore, err := buildSelectionPrompt(agents.Catalog{}, inputBefore, 0, "")
+	if err != nil {
+		t.Fatalf("buildSelectionPrompt before raw formatting change: %v", err)
+	}
+	changedFilesPath, err := result.Artifacts.DossierRawPath("changed-files.json")
+	if err != nil {
+		t.Fatalf("DossierRawPath changed-files: %v", err)
+	}
+	var rawMetadata any
+	if err := readJSONFile(changedFilesPath, &rawMetadata); err != nil {
+		t.Fatalf("read raw changed-files metadata: %v", err)
+	}
+	formattedRaw, err := json.MarshalIndent(rawMetadata, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal raw changed-files metadata: %v", err)
+	}
+	if err := os.WriteFile(changedFilesPath, append(formattedRaw, '\n'), 0o600); err != nil {
+		t.Fatalf("write formatted raw changed-files metadata: %v", err)
+	}
+	inputAfter, depsAfterRawChange, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads, []string{"main.go"})
+	if err != nil {
+		t.Fatalf("selectionPromptInputFromArtifacts after raw formatting change: %v", err)
+	}
+	promptAfter, err := buildSelectionPrompt(agents.Catalog{}, inputAfter, 0, "")
+	if err != nil {
+		t.Fatalf("buildSelectionPrompt after raw formatting change: %v", err)
+	}
+	if promptBefore != promptAfter {
+		t.Fatalf("scoped prompt changed after whitespace-only raw metadata change")
+	}
+	if reflect.DeepEqual(deps3, depsAfterRawChange) {
+		t.Fatalf("raw changed-files digest did not invalidate dependencies: %#v", depsAfterRawChange)
+	}
+	var changedRows []map[string]any
+	if err := json.Unmarshal(formattedRaw, &changedRows); err != nil {
+		t.Fatalf("decode raw changed-file rows: %v", err)
+	}
+	if len(changedRows) != 1 {
+		t.Fatalf("raw changed-file rows = %#v, want one row", changedRows)
+	}
+	changedRows[0]["old_path"] = "legacy-main.go"
+	changedRows[0]["status"] = "renamed"
+	changedRows[0]["additions"] = 17
+	changedRows[0]["deletions"] = 3
+	changedRows[0]["hunk_count"] = 4
+	semanticRaw, err := json.Marshal(changedRows)
+	if err != nil {
+		t.Fatalf("marshal changed raw file metadata: %v", err)
+	}
+	if err := os.WriteFile(changedFilesPath, append(semanticRaw, '\n'), 0o600); err != nil {
+		t.Fatalf("write semantic raw metadata change: %v", err)
+	}
+	inputAfterSemanticChange, depsAfterSemanticChange, err := selectionPromptInputFromArtifacts(result.Artifacts, result.Threads, []string{"main.go"})
+	if err != nil {
+		t.Fatalf("selectionPromptInputFromArtifacts after metadata change: %v", err)
+	}
+	promptAfterSemanticChange, err := buildSelectionPrompt(agents.Catalog{}, inputAfterSemanticChange, 0, "")
+	if err != nil {
+		t.Fatalf("buildSelectionPrompt after metadata change: %v", err)
+	}
+	if promptAfterSemanticChange == promptAfter {
+		t.Fatalf("scoped prompt did not reflect changed status, rename, and file statistics")
+	}
+	if len(depsAfterSemanticChange) != 3 || depsAfterSemanticChange[2] == depsAfterRawChange[2] {
+		t.Fatalf("raw metadata dependency after stats/status/rename change = %#v, want a new changed-files digest", depsAfterSemanticChange)
 	}
 }
 

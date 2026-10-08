@@ -216,6 +216,52 @@ func TestOpenAIAPIAdapterRequestAndResponse(t *testing.T) {
 	assertLogContains(t, logPath, `"resp_1"`)
 }
 
+func TestOpenAIAPIAdapterFastRequest(t *testing.T) {
+	adapter, err := newAPIAdapter(apiOpenAI, APIOptions{APIKey: "openai-key"}) // #nosec G101 -- test credential placeholder.
+	if err != nil {
+		t.Fatalf("newAPIAdapter: %v", err)
+	}
+	_, body, err := adapter.buildProviderRequest(Request{Model: "gpt-6.1-sol", Prompt: "prompt", Fast: true})
+	if err != nil {
+		t.Fatalf("buildProviderRequest: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal request: %v", err)
+	}
+	if payload["service_tier"] != "fast" {
+		t.Fatalf("request body = %#v, want service_tier fast", payload)
+	}
+}
+
+func TestParseOpenAIResponseSpeed(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		tier string
+		want string
+	}{
+		{name: "fast", tier: "fast", want: "fast"},
+		{name: "priority alias", tier: "priority", want: "fast"},
+		{name: "standard", tier: "standard", want: "standard"},
+		{name: "default", tier: "default", want: "standard"},
+		{name: "omitted", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"id":"resp-speed","service_tier":%q,"output_text":"{}","usage":{}}`, tt.tier)
+			if tt.tier == "" {
+				body = `{"id":"resp-speed","output_text":"{}","usage":{}}`
+			}
+			_, response, err := parseOpenAIResponse([]byte(body))
+			if err != nil {
+				t.Fatalf("parseOpenAIResponse: %v", err)
+			}
+			if response.Usage.Speed != tt.want {
+				t.Fatalf("speed = %q, want %q", response.Usage.Speed, tt.want)
+			}
+		})
+	}
+}
+
 func TestAPIAdapterFromConfig(t *testing.T) {
 	for _, tt := range []struct {
 		name     string

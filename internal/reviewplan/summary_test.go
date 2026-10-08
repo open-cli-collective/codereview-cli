@@ -356,9 +356,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		md := plan.RollupMarkdown
 		for _, want := range []string{
 			"### Reviewer Coverage",
-			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); skipped: `schema.sql`; constraints: read-only tools",
-			"<summary>Inspected files (1)</summary>",
-			"- `main.go`",
+			"- `go:implementation-tests` — ⚠️ incomplete (skipped files); scope: 1 file; examples: `main.go`; body-inspected: 1 file; examples: `main.go`; skipped: 1 file; examples: `schema.sql`; constraints: read-only tools",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -369,7 +367,7 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 	})
 
-	t.Run("coverage collapses shared inspected files and notes deviations", func(t *testing.T) {
+	t.Run("coverage reports bounded per-reviewer file lists", func(t *testing.T) {
 		req := baseRequest()
 		req.Findings = nil
 		req.Rollup = review.Rollup{
@@ -399,11 +397,8 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		md := plan.RollupMarkdown
 		for _, want := range []string{
-			"- `go:implementation-tests` — complete (broad); skipped: none; constraints: none\n",
-			"- `architecture:solid` — complete (constrained); inspected 1 assigned file (2 inspected across reviewers): `a.go`; skipped: none; constraints: scoped to assigned files",
-			"<summary>Inspected files (2)</summary>",
-			"- `a.go`",
-			"- `b.go`",
+			"- `go:implementation-tests` — complete (broad); body-inspected: 2 files; examples: `a.go`, `b.go`; skipped: none; constraints: none\n",
+			"- `architecture:solid` — complete (constrained); body-inspected: 1 file; examples: `a.go`; skipped: none; constraints: scoped to assigned files",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("rollup missing %q:\n%s", want, md)
@@ -446,9 +441,9 @@ func TestRollupSummaryRendering(t *testing.T) {
 		}
 		md := plan.RollupMarkdown
 		for _, want := range []string{
-			"- `complete-broad` — complete (broad); skipped: none; constraints: none",
-			"- `complete-constrained` — complete (constrained); skipped: `main.go`; constraints: read-only tools",
-			"- `failed` — ⚠️ failed\n",
+			"- `complete-broad` — complete (broad); body-inspected: 1 file; examples: `main.go`; skipped: none; constraints: none",
+			"- `complete-constrained` — complete (constrained); skipped: 1 file; examples: `main.go`; constraints: read-only tools",
+			"- `failed` — ⚠️ failed; scope: 1 file; examples: `main.go`\n",
 		} {
 			if !strings.Contains(md, want) {
 				t.Fatalf("coverage row missing %q:\n%s", want, md)
@@ -472,9 +467,9 @@ func TestRollupSummaryRendering(t *testing.T) {
 			"| go:implementation-tests | 2 |",
 			"| policies:conventions | 0 |",
 			"| failed | ⚠️ did not run |",
-			"- `go:implementation-tests` — ⚠️ incomplete (tool failure); skipped: none; constraints: none\n",
-			"- `policies:conventions` — ⚠️ incomplete (tool failure); skipped: none; constraints: none\n",
-			"- `failed` — ⚠️ failed\n",
+			"- `go:implementation-tests` — ⚠️ incomplete (tool failure); scope: 1 file; examples: `main.go`; body-inspected: 1 file; examples: `main.go`; skipped: none; constraints: none\n",
+			"- `policies:conventions` — ⚠️ incomplete (tool failure); scope: 1 file; examples: `main.go`; body-inspected: 1 file; examples: `main.go`; skipped: none; constraints: none\n",
+			"- `failed` — ⚠️ failed; scope: 1 file; examples: `main.go`\n",
 		} {
 			if !strings.Contains(plan.RollupMarkdown, want) {
 				t.Errorf("rollup missing %q:\n%s", want, plan.RollupMarkdown)

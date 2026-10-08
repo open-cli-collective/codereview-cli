@@ -9,6 +9,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/config/configtest"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 func TestValidateAcceptsValidSuite(t *testing.T) {
@@ -130,11 +131,11 @@ func TestValidateForRunAcceptsExtendedPiEffort(t *testing.T) {
 	}
 }
 
-func TestValidateForRunRejectsExtendedEffortForUnsupportedRuntime(t *testing.T) {
+func TestValidateForRunAcceptsExtendedClaudeCLIEffort(t *testing.T) {
 	body := strings.Replace(validSuiteYAML(), "        effort: high\n        agent_dirs:", "        effort: xhigh\n        agent_dirs:", 1)
 	suite := loadSuite(t, body)
 	err := ValidateForRun(suite, runtimeTestConfig(config.LLMProviderAnthropic, config.LLMAuthSubscription, config.LLMAdapterClaudeCLI))
-	if err == nil || !strings.Contains(err.Error(), `candidate "cand1" stages.reviewers.effort: config: unsupported effort: effort "xhigh" is unsupported`) {
+	if err != nil {
 		t.Fatalf("ValidateForRun error = %v", err)
 	}
 }
@@ -145,6 +146,28 @@ func TestValidateForRunAcceptsReviewerModelTierWithoutReviewerModel(t *testing.T
 
 	if err := ValidateForRun(suite, testConfig()); err != nil {
 		t.Fatalf("ValidateForRun: %v", err)
+	}
+}
+
+func TestValidateRejectsTierReviewerEffortUnsupportedByResolvedModel(t *testing.T) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatalf("LoadBundled: %v", err)
+	}
+	cfg := testConfig()
+	profile := cfg.Profiles["home"]
+	profile.LLM = profile.LLM.WithCatalog(catalog)
+	profile.LLM.Provider = config.LLMProviderOpenAI
+	profile.LLM.Auth = config.LLMAuthAPIKey
+	profile.LLM.Adapter = config.LLMAdapterOpenAIAPI
+	profile.LLM.ModelMap = config.ModelMap{string(config.ModelTierMedium): "gpt-5.4"}
+	cfg.Profiles["home"] = profile
+
+	body := strings.Replace(validSuiteYAML(), "      reviewers:\n        model: gpt-5.4\n        effort: high\n", "      reviewers:\n        model_tier: medium\n        effort: max\n", 1)
+	suite := loadSuite(t, body)
+	err = ValidateForRun(suite, cfg)
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `candidate "cand1" stages.reviewers model_tier "medium" effort "max"`) || !strings.Contains(err.Error(), "not verified for model gpt-5.4") {
+		t.Fatalf("ValidateForRun error = %v, want tier resolution context and unsupported model effort", err)
 	}
 }
 

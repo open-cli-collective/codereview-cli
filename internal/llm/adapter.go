@@ -58,12 +58,16 @@ type ReviewerWorkspaceCapable interface {
 // per-invocation writable directories. Env is appended before invocation-owned
 // toolchain paths are applied.
 type ReviewerWorkspaceRequest struct {
-	RepoDir            string
-	ScratchDir         string
-	DiffPath           string
-	Env                []string
-	AllowedFiles       []string
-	MaxToolOutputBytes int
+	RepoDir               string
+	ScratchDir            string
+	DiffPath              string
+	SymlinkMetadataPath   string
+	SymlinkMetadataDigest string
+	BaseSHA               string
+	HeadSHA               string
+	Env                   []string
+	AllowedFiles          []string
+	MaxToolOutputBytes    int
 	// NoNetwork asks the adapter to deny reviewer tools that reach the network
 	// (git hosts, web fetch, web search), so a reviewer cannot look up live PR
 	// state such as discussion. It narrows the tool surface; it is not a sandbox.

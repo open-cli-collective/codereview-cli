@@ -37,18 +37,21 @@ var ErrMarkerInvalid = errors.New("runartifact: marker invalid")
 // The artifact root owns these fixed child names, so methods on this type return
 // lifecycle-owned paths rather than arbitrary user input.
 type Paths struct {
-	Dir              string `json:"dir"`
-	DiffPatch        string `json:"diff_patch"`
-	SlicesDir        string `json:"slices_dir"`
-	FindingsJSON     string `json:"findings_json"`
-	RollupMarkdown   string `json:"rollup_markdown"`
-	AgentSourcesJSON string `json:"agent_sources_json"`
-	AgentLogsDir     string `json:"agent_logs_dir"`
-	LLMTasksDir      string `json:"llm_tasks_dir"`
-	DossierDir       string `json:"dossier_dir"`
-	WorkbenchDir     string `json:"workbench_dir"`
-	WorkbenchRepoDir string `json:"workbench_repo_dir"`
-	WorkbenchScratch string `json:"workbench_scratch_dir"`
+	Dir                 string `json:"dir"`
+	DiffPatch           string `json:"diff_patch"`
+	SlicesDir           string `json:"slices_dir"`
+	FindingsJSON        string `json:"findings_json"`
+	RollupMarkdown      string `json:"rollup_markdown"`
+	AgentSourcesJSON    string `json:"agent_sources_json"`
+	AgentLogsDir        string `json:"agent_logs_dir"`
+	LLMTasksDir         string `json:"llm_tasks_dir"`
+	DossierDir          string `json:"dossier_dir"`
+	WorkbenchDir        string `json:"workbench_dir"`
+	WorkbenchRepoDir    string `json:"workbench_repo_dir"`
+	WorkbenchScratch    string `json:"workbench_scratch_dir"`
+	RelocationsJSON     string `json:"relocations_json"`
+	SymlinkMetadataJSON string `json:"symlink_metadata_json"`
+	CoverageJSON        string `json:"coverage_json"`
 }
 
 // ForRun returns the artifact paths for a generated run ID.
@@ -68,18 +71,21 @@ func ForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, 
 // FromDir returns the artifact path set rooted at dir.
 func FromDir(dir string) Paths {
 	return Paths{
-		Dir:              dir,
-		DiffPatch:        filepath.Join(dir, "diff.patch"),
-		SlicesDir:        filepath.Join(dir, "slices"),
-		FindingsJSON:     filepath.Join(dir, "findings.json"),
-		RollupMarkdown:   filepath.Join(dir, "rollup.md"),
-		AgentSourcesJSON: filepath.Join(dir, "agent-sources.json"),
-		AgentLogsDir:     filepath.Join(dir, "agent-logs"),
-		LLMTasksDir:      filepath.Join(dir, "llm-tasks"),
-		DossierDir:       filepath.Join(dir, "dossier"),
-		WorkbenchDir:     filepath.Join(dir, "workbench"),
-		WorkbenchRepoDir: filepath.Join(dir, "workbench", "repo"),
-		WorkbenchScratch: filepath.Join(dir, "workbench", "scratch"),
+		Dir:                 dir,
+		DiffPatch:           filepath.Join(dir, "diff.patch"),
+		SlicesDir:           filepath.Join(dir, "slices"),
+		FindingsJSON:        filepath.Join(dir, "findings.json"),
+		RollupMarkdown:      filepath.Join(dir, "rollup.md"),
+		AgentSourcesJSON:    filepath.Join(dir, "agent-sources.json"),
+		AgentLogsDir:        filepath.Join(dir, "agent-logs"),
+		LLMTasksDir:         filepath.Join(dir, "llm-tasks"),
+		DossierDir:          filepath.Join(dir, "dossier"),
+		WorkbenchDir:        filepath.Join(dir, "workbench"),
+		WorkbenchRepoDir:    filepath.Join(dir, "workbench", "repo"),
+		WorkbenchScratch:    filepath.Join(dir, "workbench", "scratch"),
+		RelocationsJSON:     filepath.Join(dir, "relocations.json"),
+		SymlinkMetadataJSON: filepath.Join(dir, "symlink-metadata.json"),
+		CoverageJSON:        filepath.Join(dir, "coverage.json"),
 	}
 }
 

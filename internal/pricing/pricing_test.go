@@ -1,8 +1,16 @@
 package pricing
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"math"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
+
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 func p(v int) *int { return &v }
@@ -206,5 +214,103 @@ func TestEstimateUsageUSDRejectsMixedOrUnknownSpeed(t *testing.T) {
 				t.Fatalf("speed %q should leave cost unavailable", speed)
 			}
 		})
+	}
+}
+
+func TestEstimateUsageUSDForUsesSelectedCatalogRatesAndBasis(t *testing.T) {
+	catalog := customPricingCatalog(t)
+	cost, ok := EstimateUsageUSDFor(catalog, "pricing-test-model", Usage{
+		TokensIn:      p(1_000_000),
+		TokensOut:     p(1_000_000),
+		CacheRead:     p(1_000_000),
+		CacheCreate5m: p(1_000_000),
+		CacheCreate1h: p(1_000_000),
+		Speed:         "standard",
+	})
+	if !ok {
+		t.Fatal("expected selected catalog rate to be usable")
+	}
+	if want := 26.7; math.Abs(cost-want) > 1e-9 {
+		t.Fatalf("cost = %v, want %v from selected catalog", cost, want)
+	}
+	if want := "pricing-test-revision/pricing"; EstimateBasis(catalog) != want {
+		t.Fatalf("EstimateBasis = %q, want %q", EstimateBasis(catalog), want)
+	}
+}
+
+func TestEstimateUsageUSDForLeavesUnknownRatesAndContextBandsUnavailable(t *testing.T) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatalf("LoadBundled: %v", err)
+	}
+	if _, ok := EstimateUsageUSDFor(catalog, "gpt-5.5", Usage{CacheCreate5m: p(1), Speed: "standard"}); ok {
+		t.Fatal("unknown cache-write rate should remain unavailable")
+	}
+	if _, ok := EstimateUsageUSDFor(catalog, "gpt-6.1-sol", Usage{TokensIn: p(1_000_000), Speed: "standard"}); ok {
+		t.Fatal("context-banded rate should remain unavailable without context metadata")
+	}
+}
+
+func customPricingCatalog(t *testing.T) *modelcatalog.Catalog {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := t.TempDir()
+	dataDir := filepath.Join(filepath.Dir(testFile), "..", "modelcatalog", "data")
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository's bundled fixture.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+	appendCatalogRow(t, source, "models.csv", "openai-api-key,pricing-test-model,low,,,,https://example.invalid,2026-10-03\n")
+	appendCatalogRow(t, source, "pricing.csv", "pricing-test-model,standard,all,7,11,0.7,,3,5,https://example.invalid,2026-10-03\n")
+	manifestPath := filepath.Join(source, "manifest.json")
+	manifestBody, err := os.ReadFile(manifestPath) // #nosec G304 -- manifestPath is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest modelcatalog.Manifest
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	manifest.Revision = "pricing-test-revision"
+	for _, name := range []string{"models.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(source, name)) // #nosec G304 -- source is under t.TempDir.
+		if err != nil {
+			t.Fatalf("read changed %s: %v", name, err)
+		}
+		digest := sha256.Sum256(body)
+		manifest.Files[name] = fmt.Sprintf("%x", digest)
+	}
+	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, append(manifestBody, '\n'), 0o600); err != nil { // #nosec G703 -- manifestPath is under t.TempDir.
+		t.Fatalf("write manifest: %v", err)
+	}
+	catalog, err := modelcatalog.LoadPath(source)
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	return catalog
+}
+
+func appendCatalogRow(t *testing.T, dir, name, row string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	body, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600) // #nosec G304 -- path is under t.TempDir.
+	if err != nil {
+		t.Fatalf("open %s: %v", name, err)
+	}
+	defer body.Close()
+	if _, err := body.WriteString(row); err != nil {
+		t.Fatalf("append %s: %v", name, err)
 	}
 }

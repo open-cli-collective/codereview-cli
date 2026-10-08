@@ -375,7 +375,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return exitcode.AuthConfig(loadSpan.End(err))
 			}
-			cfg, err := config.Load(path)
+			cfg, err := cmdruntime.LoadConfig(opts)
 			if err != nil {
 				return cmderr.Config(loadSpan.End(err))
 			}
@@ -715,7 +715,7 @@ func newLLMCommand(opts *root.Options) *cobra.Command {
 	root.AddJSONFlag(resolveCmd, &resolveJSON)
 
 	modelsCmd.AddCommand(listCmd, setCmd, unsetCmd, resetCmd, resolveCmd)
-	llmCmd.AddCommand(modelsCmd)
+	llmCmd.AddCommand(modelsCmd, newEffortsCommand(opts))
 	return llmCmd
 }
 
@@ -772,7 +772,7 @@ func loadConfig(opts *root.Options) (string, config.File, error) {
 	if err != nil {
 		return "", config.File{}, exitcode.AuthConfig(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if err != nil {
 		return "", config.File{}, cmderr.Config(err)
 	}
@@ -890,6 +890,12 @@ func modelMapResult(profileName string, profile config.Profile) modelMapResultVi
 }
 
 func mutateActiveModelMap(opts *root.Options, mutate func(config.Profile, *config.ModelMap) error) (string, error) {
+	return mutateActiveLLM(opts, func(profile config.Profile, runtime *config.LLMConfig) error {
+		return mutate(profile, &runtime.ModelMap)
+	})
+}
+
+func mutateActiveLLM(opts *root.Options, mutate func(config.Profile, *config.LLMConfig) error) (string, error) {
 	path, cfg, profileName, profile, err := loadActiveProfile(opts)
 	if err != nil {
 		return "", err
@@ -898,7 +904,7 @@ func mutateActiveModelMap(opts *root.Options, mutate func(config.Profile, *confi
 	if err != nil {
 		return "", cmderr.Config(err)
 	}
-	if err := mutate(profile, &runtime.ModelMap); err != nil {
+	if err := mutate(profile, &runtime); err != nil {
 		return "", err
 	}
 	cfg.LLMRuntimes[runtimeName] = runtime

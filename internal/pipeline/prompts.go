@@ -23,33 +23,76 @@ import (
 const dossierFinalExcerptRunes = 240
 
 func buildReviewerPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string, checkpoints ...reviewerDiscussionCheckpoint) (string, []string, error) {
+	return buildReviewerPromptWithExtras(paths, pr, selected, agent, changedFiles, nil, checkpoints...)
+}
+
+func buildReviewerPromptWithExtras(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles, mentionablePaths []string, checkpoints ...reviewerDiscussionCheckpoint) (string, []string, error) {
+	return buildReviewerPromptWithRelocationAssignment(paths, pr, selected, agent, changedFiles, mentionablePaths, relocationAssignment{}, checkpoints...)
+}
+
+func buildReviewerPromptWithRelocationAssignment(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles, mentionablePaths []string, relocation relocationAssignment, checkpoints ...reviewerDiscussionCheckpoint) (string, []string, error) {
 	input, deps, err := reviewerPromptInputFromArtifacts(paths, pr, selected, agent)
 	if err != nil {
 		return "", nil, err
 	}
+	reviewable := stringSet(changedFiles)
+	verifiedMoves := relocationMovePaths(relocation.Moves)
+	for i := range input.ManifestRows {
+		input.ManifestRows[i].Reviewable = reviewable[input.ManifestRows[i].Path]
+		input.ManifestRows[i].VerifiedRelocation = verifiedMoves[input.ManifestRows[i].Path]
+	}
 	assignmentScope := reviewerAssignmentScope(selected, changedFiles)
+	manifestPaths := append(append([]string(nil), assignmentScope...), selected.Files...)
+	manifestPaths = append(manifestPaths, selected.AllowedFiles...)
+	manifest, indexByPath, err := scopedPromptFileManifest(input.ManifestRows, manifestPaths, mentionablePaths)
+	if err != nil {
+		return "", nil, err
+	}
+	fileIndices, err := promptFileIndices(selected.Files, indexByPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("pipeline: reviewer assignment file is missing from dossier metadata: %w", err)
+	}
+	allowedFileIndices, err := promptFileIndices(selected.AllowedFiles, indexByPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("pipeline: reviewer allowed file is missing from dossier metadata: %w", err)
+	}
+	scopeIndices, err := promptFileIndices(assignmentScope, indexByPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("pipeline: reviewer scope file is missing from dossier metadata: %w", err)
+	}
+	extraCitationRefs, err := promptFileCitationRefs(mentionablePaths, assignmentScope, manifest)
+	if err != nil {
+		return "", nil, fmt.Errorf("pipeline: reviewer citation path is missing from dossier metadata: %w", err)
+	}
 	payload := map[string]any{
 		"task":            "review files and return findings JSON only",
-		"output_contract": findingsOutputContract(agent.ID, assignmentScope),
+		"output_contract": findingsOutputContractWithRelocations(agent.ID, assignmentScope, relocation),
 		"agent":           reviewerAgentPromptFromAgent(agent),
-		"assignment":      input.Assignment,
-		"dossier":         input.Dossier,
-		"workbench":       input.Workbench,
-		"pr":              input.PR,
-		"schema":          "findings",
+		"assignment": reviewerPromptAssignment{
+			AgentID: agent.ID, Rationale: selected.Rationale,
+			FileIndices: fileIndices, AllowedFileIndices: allowedFileIndices, ScopeIndices: scopeIndices, ExtraCitationRefs: extraCitationRefs,
+			ManifestDigest: relocation.ManifestDigest, RelocationCount: relocation.MoveCount, AssignmentDigest: relocation.AssignmentDigest,
+			SymlinkMetadataDigest: symlinkPromptDigest(relocation), SymlinkPaths: append([]string(nil), relocation.SymlinkPaths...),
+			BaseOnlySymlinkPaths: append([]string(nil), relocation.BaseOnlySymlinkPaths...),
+		},
+		"file_manifest": manifest,
+		"dossier":       input.Dossier,
+		"workbench":     input.Workbench,
+		"pr":            input.PR,
+		"schema":        "findings",
 	}
 	if len(checkpoints) > 0 && len(checkpoints[0].responses) > 0 {
 		payload["discussion_outcomes"] = reviewerDiscussionOutcomes(checkpoints[0])
 	}
-	body, err := json.MarshalIndent(payload, "", "  ")
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", nil, err
 	}
 	return string(body), deps, nil
 }
 
-func buildReviewerCoverageRepairPrompt(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string) (string, []string, error) {
-	prompt, deps, err := buildReviewerPrompt(paths, pr, selected, agent, changedFiles)
+func buildReviewerCoverageRepairPromptWithRelocationAssignment(paths ArtifactPaths, pr gitprovider.PR, selected llm.SelectedAgent, agent agents.Agent, changedFiles []string, relocation relocationAssignment) (string, []string, error) {
+	prompt, deps, err := buildReviewerPromptWithRelocationAssignment(paths, pr, selected, agent, changedFiles, nil, relocation)
 	if err != nil {
 		return "", nil, err
 	}
@@ -58,20 +101,45 @@ func buildReviewerCoverageRepairPrompt(paths ArtifactPaths, pr gitprovider.PR, s
 		return "", nil, fmt.Errorf("pipeline: decode reviewer prompt for coverage repair: %w", err)
 	}
 	payload["task"] = "complete one focused coverage repair pass and return findings JSON only"
+	var manifest promptFileManifest
+	if raw, ok := payload["file_manifest"]; ok {
+		encoded, _ := json.Marshal(raw)
+		_ = json.Unmarshal(encoded, &manifest)
+	}
+	indexByPath, err := promptFileManifestIndex(manifest)
+	if err != nil {
+		return "", nil, fmt.Errorf("pipeline: index coverage repair manifest: %w", err)
+	}
+	repairIndices, err := promptFileIndices(selected.Files, indexByPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("pipeline: coverage repair file is missing from dossier metadata: %w", err)
+	}
 	payload["coverage_repair"] = map[string]any{
-		"files": append([]string(nil), selected.Files...),
+		"file_indices": repairIndices,
 		"instructions": []string{
-			"The primary review explicitly skipped these assigned readable files.",
-			"Inspect each listed file in the prepared workspace, including only the changed content and dependency or workspace graph context relevant to this review.",
+			"The primary review left these assigned readable obligations unresolved; the repair is the one focused follow-up for omissions and explicit skips.",
+			"For this repair, finding file_path, inspected_files, and skipped_files must use only the file_manifest path cells referenced by assignment.scope_indices. context_files may name safe existing pinned-head paths outside that scope and never expands finding anchors or assignment coverage.",
+			"Actually inspect each listed ordinary residual file body in the prepared workspace. For a verified relocation, review path impact and cite read context without claiming its body was inspected unless you actually read it.",
 			"Return findings from this focused pass only; primary findings are retained separately and must not be repeated.",
-			"List a file in inspected_files only after actually inspecting it. Keep any file you still cannot inspect in skipped_files so coverage remains incomplete.",
+			"List a file in inspected_files only after actually inspecting its body. Keep any unresolved body-inspection or relocation-impact obligation in skipped_files so coverage remains incomplete.",
+			"For any verified relocation in this repair assignment, assess path impact using the supplied manifest and assignment digests; uncertainty or an explicit skip remains incomplete.",
+			"For each head-tree symlink in assignment.symlink_paths, inspect its pinned payload and lexical resolution with cr_read(view=symlink); this reads the link payload only, never the destination body. Only list the path as inspected after actually inspecting available payload bytes.",
+			"For each path in assignment.base_only_symlink_paths, the pinned base symlink payload is historical metadata only; the path is a regular file in the head tree. Read its head-tree regular body with ordinary cr_read (no view) before listing the path in inspected_files. Metadata-only inspection does not satisfy the head body obligation.",
+			"For a path in assignment.symlink_paths, if symlink metadata has payload_omitted_reason, the payload bytes were unavailable: metadata inspection alone does not count as payload inspection, so keep that symlink-payload obligation in skipped_files. payload=\"\" with payload_size=0 is an inspected empty payload, not an omitted payload.",
 		},
 	}
-	body, err := json.MarshalIndent(payload, "", "  ")
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", nil, err
 	}
 	return string(body), deps, nil
+}
+
+func symlinkPromptDigest(assignment relocationAssignment) string {
+	if len(assignment.SymlinkPaths) == 0 && len(assignment.BaseOnlySymlinkPaths) == 0 {
+		return ""
+	}
+	return assignment.SymlinkMetadataDigest
 }
 
 type reviewerDiscussionOutcome struct {
@@ -109,12 +177,11 @@ type selectionAgentPrompt struct {
 	AppliesWhen          []string `json:"applies_when,omitempty"`
 	NeedsFullFileContent bool     `json:"needs_full_file_content"`
 	RequiredIfApplicable bool     `json:"required_if_applicable"`
-	RequiredFiles        []string `json:"required_files,omitempty"`
+	RequiredFileIndices  []int    `json:"required_file_indices,omitempty"`
 }
 
 type selectionPromptDossier struct {
 	PRIntent     string `json:"pr_intent"`
-	ChangeMap    string `json:"change_map"`
 	RepoGuidance string `json:"repo_guidance"`
 	Discussion   string `json:"discussion"`
 }
@@ -138,7 +205,9 @@ type selectionThreadPrompt struct {
 }
 
 type selectionPromptInput struct {
-	ChangedFiles []string                 `json:"changed_files"`
+	ChangedFiles []string                 `json:"-"`
+	FileManifest promptFileManifest       `json:"file_manifest"`
+	ManifestRows []promptFileMetadata     `json:"-"`
 	Dossier      selectionPromptDossier   `json:"dossier"`
 	Workbench    selectionPromptWorkbench `json:"workbench"`
 	Threads      []selectionThreadPrompt  `json:"threads,omitempty"`
@@ -166,8 +235,16 @@ func promptPRFromPR(pr gitprovider.PR) promptPR {
 	}
 }
 
-func selectionAgentPromptFromAgent(agent agents.Agent, changedFiles []string) selectionAgentPrompt {
+func selectionAgentPromptFromAgentWithIndices(agent agents.Agent, changedFiles []string, indexByPath map[string]int) (selectionAgentPrompt, error) {
 	requiredFiles := requiredOnMatchFiles(agent, changedFiles)
+	requiredIndices := make([]int, 0, len(requiredFiles))
+	for _, path := range requiredFiles {
+		index, ok := indexByPath[path]
+		if !ok {
+			return selectionAgentPrompt{}, fmt.Errorf("required file %q is missing from file manifest", path)
+		}
+		requiredIndices = append(requiredIndices, index)
+	}
 	return selectionAgentPrompt{
 		ID:                   agent.ID,
 		Name:                 agent.Name,
@@ -176,16 +253,20 @@ func selectionAgentPromptFromAgent(agent agents.Agent, changedFiles []string) se
 		AppliesWhen:          append([]string(nil), agent.AppliesWhen...),
 		NeedsFullFileContent: agent.NeedsFullFileContent,
 		RequiredIfApplicable: agent.Provenance.Kind == agents.SourceRepo || len(requiredFiles) > 0,
-		RequiredFiles:        requiredFiles,
-	}
+		RequiredFileIndices:  requiredIndices,
+	}, nil
 }
 
-func selectionAgentPromptsFromCatalog(catalog agents.Catalog, changedFiles []string) []selectionAgentPrompt {
+func selectionAgentPromptsFromCatalog(catalog agents.Catalog, changedFiles []string, indexByPath map[string]int) ([]selectionAgentPrompt, error) {
 	out := make([]selectionAgentPrompt, 0, len(catalog.Agents))
 	for _, agent := range catalog.Agents {
-		out = append(out, selectionAgentPromptFromAgent(agent, changedFiles))
+		promptAgent, err := selectionAgentPromptFromAgentWithIndices(agent, changedFiles, indexByPath)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, promptAgent)
 	}
-	return out
+	return out, nil
 }
 
 func requiredOnMatchFiles(agent agents.Agent, changedFiles []string) []string {
@@ -230,7 +311,6 @@ func reviewerAgentPromptFromAgent(agent agents.Agent) reviewerAgentPrompt {
 
 type reviewerPromptDossier struct {
 	PRIntent     string `json:"pr_intent"`
-	ChangeMap    string `json:"change_map"`
 	RepoGuidance string `json:"repo_guidance"`
 	Discussion   string `json:"discussion"`
 }
@@ -243,17 +323,186 @@ type reviewerPromptWorkbench struct {
 }
 
 type reviewerPromptAssignment struct {
-	AgentID      string   `json:"agent_id"`
-	Rationale    string   `json:"rationale,omitempty"`
-	Files        []string `json:"files"`
-	AllowedFiles []string `json:"allowed_files,omitempty"`
+	AgentID               string   `json:"agent_id"`
+	Rationale             string   `json:"rationale,omitempty"`
+	ManifestDigest        string   `json:"manifest_digest,omitempty"`
+	RelocationCount       int      `json:"relocation_count,omitempty"`
+	AssignmentDigest      string   `json:"assignment_digest,omitempty"`
+	SymlinkMetadataDigest string   `json:"symlink_metadata_digest,omitempty"`
+	SymlinkPaths          []string `json:"symlink_paths,omitempty"`
+	BaseOnlySymlinkPaths  []string `json:"base_only_symlink_paths,omitempty"`
+	FileIndices           []int    `json:"file_indices"`
+	AllowedFileIndices    []int    `json:"allowed_file_indices,omitempty"`
+	ScopeIndices          []int    `json:"scope_indices"`
+	ExtraCitationRefs     [][]int  `json:"extra_citation_refs,omitempty"`
 }
 
 type reviewerPromptInput struct {
-	PR         promptPR                 `json:"pr"`
-	Dossier    reviewerPromptDossier    `json:"dossier"`
-	Workbench  reviewerPromptWorkbench  `json:"workbench"`
-	Assignment reviewerPromptAssignment `json:"assignment"`
+	PR           promptPR                 `json:"pr"`
+	Dossier      reviewerPromptDossier    `json:"dossier"`
+	Workbench    reviewerPromptWorkbench  `json:"workbench"`
+	Assignment   reviewerPromptAssignment `json:"assignment"`
+	ManifestRows []promptFileMetadata     `json:"-"`
+}
+
+type promptFileMetadata struct {
+	Path               string
+	OldPath            string
+	Status             string
+	Additions          int
+	Deletions          int
+	HunkCount          int
+	Binary             bool
+	Reviewable         bool
+	VerifiedRelocation bool
+}
+
+type promptFileManifest struct {
+	Columns []string `json:"columns"`
+	Rows    [][]any  `json:"rows"`
+}
+
+var promptFileManifestColumns = []string{"path", "old_path", "status", "additions", "deletions", "hunk_count", "binary", "reviewable", "verified_relocation"}
+
+func promptMetadataPaths(files []promptFileMetadata) []string {
+	paths := make([]string, 0, len(files))
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	return paths
+}
+
+func makePromptFileManifest(files []promptFileMetadata, reviewablePaths []string) promptFileManifest {
+	reviewable := make(map[string]bool, len(reviewablePaths))
+	for _, path := range reviewablePaths {
+		reviewable[path] = true
+	}
+	rows := make([][]any, 0, len(files))
+	for _, file := range files {
+		isReviewable := file.Reviewable
+		if reviewablePaths != nil {
+			isReviewable = reviewable[file.Path]
+		}
+		rows = append(rows, []any{file.Path, file.OldPath, file.Status, file.Additions, file.Deletions, file.HunkCount, file.Binary, isReviewable, file.VerifiedRelocation})
+	}
+	return promptFileManifest{Columns: append([]string(nil), promptFileManifestColumns...), Rows: rows}
+}
+
+func promptFileManifestIndex(manifest promptFileManifest) (map[string]int, error) {
+	index := make(map[string]int, len(manifest.Rows)*2)
+	canonical := make(map[string]int, len(manifest.Rows))
+	for i, row := range manifest.Rows {
+		if len(row) < 2 {
+			return nil, fmt.Errorf("manifest row %d is incomplete", i)
+		}
+		path, _ := row[0].(string)
+		if path == "" {
+			return nil, fmt.Errorf("manifest row %d has an empty path", i)
+		}
+		if _, exists := canonical[path]; exists {
+			return nil, fmt.Errorf("duplicate canonical path %q in file manifest", path)
+		}
+		canonical[path] = i
+		index[path] = i
+	}
+	for i, row := range manifest.Rows {
+		oldPath, _ := row[1].(string)
+		if oldPath == "" {
+			continue
+		}
+		if _, exists := canonical[oldPath]; exists {
+			continue
+		}
+		if existing, exists := index[oldPath]; exists && existing != i {
+			return nil, fmt.Errorf("ambiguous rename source %q in file manifest", oldPath)
+		}
+		index[oldPath] = i
+	}
+	return index, nil
+}
+
+func promptManifestPaths(manifest promptFileManifest) []string {
+	paths := make([]string, 0, len(manifest.Rows))
+	for _, row := range manifest.Rows {
+		if len(row) > 0 {
+			if path, ok := row[0].(string); ok {
+				paths = append(paths, path)
+			}
+		}
+	}
+	return paths
+}
+
+func promptFileIndices(paths []string, indexByPath map[string]int) ([]int, error) {
+	indices := make([]int, 0, len(paths))
+	for _, path := range paths {
+		index, ok := indexByPath[path]
+		if !ok {
+			return nil, fmt.Errorf("path %q", path)
+		}
+		indices = append(indices, index)
+	}
+	return indices, nil
+}
+
+func promptFileCitationRefs(paths, scope []string, manifest promptFileManifest) ([][]int, error) {
+	scopeSet := stringSet(scope)
+	refs := make([][]int, 0, len(paths))
+	for _, path := range paths {
+		if scopeSet[path] {
+			continue
+		}
+		if row, ok := promptFilePathCell(manifest, path); ok {
+			refs = append(refs, []int{row, 0})
+			continue
+		}
+		if row, ok := promptFileOldPathCell(manifest, path); ok {
+			refs = append(refs, []int{row, 1})
+			continue
+		}
+		return nil, fmt.Errorf("mentionable path %q is missing from file manifest", path)
+	}
+	return refs, nil
+}
+
+func promptFilePathCell(manifest promptFileManifest, path string) (int, bool) {
+	for rowIndex, row := range manifest.Rows {
+		if len(row) > 0 && row[0] == path {
+			return rowIndex, true
+		}
+	}
+	return 0, false
+}
+
+func promptFileOldPathCell(manifest promptFileManifest, path string) (int, bool) {
+	for rowIndex, row := range manifest.Rows {
+		if len(row) > 1 && row[1] == path {
+			return rowIndex, true
+		}
+	}
+	return 0, false
+}
+
+func scopedPromptFileManifest(files []promptFileMetadata, scope, mentionable []string) (promptFileManifest, map[string]int, error) {
+	paths := make(map[string]bool, len(scope)+len(mentionable))
+	for _, path := range scope {
+		paths[path] = true
+	}
+	for _, path := range mentionable {
+		paths[path] = true
+	}
+	selected := make([]promptFileMetadata, 0, len(files))
+	for _, file := range files {
+		if paths[file.Path] || (file.OldPath != "" && paths[file.OldPath]) {
+			selected = append(selected, file)
+		}
+	}
+	manifest := makePromptFileManifest(selected, nil)
+	index, err := promptFileManifestIndex(manifest)
+	if err != nil {
+		return promptFileManifest{}, nil, err
+	}
+	return manifest, index, nil
 }
 
 const defaultSelectionTask = "select reviewer agents from dossier/workbench context; return selection JSON only"
@@ -263,14 +512,32 @@ func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, ma
 	for _, thread := range input.Threads {
 		threadIDs = append(threadIDs, thread.ThreadID)
 	}
-	effectiveMaxAgents := selectionPromptMaxAgents(catalog.Agents, input.ChangedFiles, maxAgents)
+	changedFiles := input.ChangedFiles
+	if len(changedFiles) == 0 {
+		changedFiles = promptManifestPaths(input.FileManifest)
+	}
+	indexByPath, err := promptFileManifestIndex(input.FileManifest)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: index selection manifest: %w", err)
+	}
+	if len(input.FileManifest.Rows) == 0 && len(changedFiles) > 0 {
+		return "", fmt.Errorf("pipeline: file manifest is missing changed-file metadata")
+	}
+	if _, err := promptFileIndices(changedFiles, indexByPath); err != nil {
+		return "", fmt.Errorf("pipeline: changed file is missing from dossier metadata: %w", err)
+	}
+	agentsPrompt, err := selectionAgentPromptsFromCatalog(catalog, changedFiles, indexByPath)
+	if err != nil {
+		return "", fmt.Errorf("pipeline: build required file indices: %w", err)
+	}
+	effectiveMaxAgents := selectionPromptMaxAgents(catalog.Agents, changedFiles, maxAgents)
 	payload := map[string]any{
 		"task":                defaultSelectionTask,
-		"output_contract":     selectionOutputContract(catalog.Agents, input.ChangedFiles, threadIDs, maxAgents),
+		"output_contract":     selectionOutputContract(catalog.Agents, changedFiles, threadIDs, maxAgents),
 		"schema":              "selection",
 		"max_selected_agents": effectiveMaxAgents,
-		"agents":              selectionAgentPromptsFromCatalog(catalog, input.ChangedFiles),
-		"changed_files":       append([]string(nil), input.ChangedFiles...),
+		"agents":              agentsPrompt,
+		"file_manifest":       input.FileManifest,
 		"dossier":             input.Dossier,
 		"workbench":           input.Workbench,
 		"threads":             input.Threads,
@@ -278,7 +545,7 @@ func buildSelectionPrompt(catalog agents.Catalog, input selectionPromptInput, ma
 	if instructions := strings.TrimSpace(selectionInstructions); instructions != "" {
 		payload["selection_instructions"] = instructions
 	}
-	body, err := json.MarshalIndent(payload, "", "  ")
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("pipeline: build selection prompt: %w", err)
 	}
@@ -304,19 +571,15 @@ func selectionPromptMaxAgents(candidates []agents.Agent, changedFiles []string, 
 
 type dossierPromptCore struct {
 	PRIntent     string
-	ChangeMap    string
 	RepoGuidance string
 	Discussion   string
+	ChangedFiles []promptFileMetadata
 	Metadata     workbenchMetadataArtifact
 	Dependencies []string
 }
 
 func loadDossierPromptCore(paths ArtifactPaths) (dossierPromptCore, error) {
 	prIntentPath, err := paths.DossierFinalPath("pr-intent.md")
-	if err != nil {
-		return dossierPromptCore{}, err
-	}
-	changeMapPath, err := paths.DossierFinalPath("change-map.md")
 	if err != nil {
 		return dossierPromptCore{}, err
 	}
@@ -329,10 +592,6 @@ func loadDossierPromptCore(paths ArtifactPaths) (dossierPromptCore, error) {
 		return dossierPromptCore{}, err
 	}
 	prIntent, err := selectionPromptContentFromPath(prIntentPath)
-	if err != nil {
-		return dossierPromptCore{}, err
-	}
-	changeMap, err := selectionPromptContentFromPath(changeMapPath)
 	if err != nil {
 		return dossierPromptCore{}, err
 	}
@@ -349,6 +608,30 @@ func loadDossierPromptCore(paths ArtifactPaths) (dossierPromptCore, error) {
 	if err != nil {
 		return dossierPromptCore{}, fmt.Errorf("pipeline: read dossier artifact %s: %w", filepath.Base(paths.DossierIndexPath()), err)
 	}
+	changedFilesPath, err := paths.DossierRawPath("changed-files.json")
+	if err != nil {
+		return dossierPromptCore{}, err
+	}
+	changedFilesBytes, err := os.ReadFile(changedFilesPath) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
+	if err != nil {
+		return dossierPromptCore{}, fmt.Errorf("pipeline: read dossier changed-files metadata: %w", err)
+	}
+	var changedFiles []struct {
+		Path      string `json:"path"`
+		OldPath   string `json:"old_path"`
+		Status    string `json:"status"`
+		Additions int    `json:"additions"`
+		Deletions int    `json:"deletions"`
+		HunkCount int    `json:"hunk_count"`
+		Binary    bool   `json:"binary"`
+	}
+	if err := json.Unmarshal(changedFilesBytes, &changedFiles); err != nil {
+		return dossierPromptCore{}, fmt.Errorf("pipeline: decode dossier changed-files metadata: %w", err)
+	}
+	promptFiles := make([]promptFileMetadata, 0, len(changedFiles))
+	for _, file := range changedFiles {
+		promptFiles = append(promptFiles, promptFileMetadata{Path: file.Path, OldPath: file.OldPath, Status: file.Status, Additions: file.Additions, Deletions: file.Deletions, HunkCount: file.HunkCount, Binary: file.Binary})
+	}
 	metaPath := paths.WorkbenchMetadataPath()
 	metaBytes, err := os.ReadFile(metaPath) // #nosec G304 -- artifact path is pipeline-owned under the selected run/workbench root.
 	if err != nil {
@@ -360,18 +643,19 @@ func loadDossierPromptCore(paths ArtifactPaths) (dossierPromptCore, error) {
 	}
 	return dossierPromptCore{
 		PRIntent:     prIntent,
-		ChangeMap:    changeMap,
 		RepoGuidance: repoGuidance,
 		Discussion:   discussion,
+		ChangedFiles: promptFiles,
 		Metadata:     meta,
 		Dependencies: []string{
 			"dossier_index=" + sha256Hex(indexBytes),
 			"workbench_metadata=" + sha256Hex(metaBytes),
+			"changed_files_metadata=" + sha256Hex(changedFilesBytes),
 		},
 	}, nil
 }
 
-func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovider.InlineThread) (selectionPromptInput, []string, error) {
+func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovider.InlineThread, reviewablePathSets ...[]string) (selectionPromptInput, []string, error) {
 	core, err := loadDossierPromptCore(paths)
 	if err != nil {
 		return selectionPromptInput{}, nil, err
@@ -382,10 +666,10 @@ func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovide
 	}
 
 	input := selectionPromptInput{
-		ChangedFiles: append([]string(nil), core.Metadata.FingerprintInputs.ChangedFiles...),
+		ChangedFiles: promptMetadataPaths(core.ChangedFiles),
+		ManifestRows: append([]promptFileMetadata(nil), core.ChangedFiles...),
 		Dossier: selectionPromptDossier{
 			PRIntent:     core.PRIntent,
-			ChangeMap:    core.ChangeMap,
 			RepoGuidance: core.RepoGuidance,
 			Discussion:   core.Discussion,
 		},
@@ -397,11 +681,16 @@ func selectionPromptInputFromArtifacts(paths ArtifactPaths, threads []gitprovide
 		},
 		Threads: selectionThreadPrompts(threads, summary),
 	}
+	var reviewablePaths []string
+	if len(reviewablePathSets) > 0 {
+		reviewablePaths = reviewablePathSets[0]
+	}
+	input.FileManifest = makePromptFileManifest(input.ManifestRows, reviewablePaths)
 	return input, core.Dependencies, nil
 }
 
-func selectionPromptInputFromThreadContext(paths ArtifactPaths, threads []threadcontext.Thread) (selectionPromptInput, []string, error) {
-	input, deps, err := selectionPromptInputFromArtifacts(paths, nil)
+func selectionPromptInputFromThreadContext(paths ArtifactPaths, threads []threadcontext.Thread, reviewablePathSets ...[]string) (selectionPromptInput, []string, error) {
+	input, deps, err := selectionPromptInputFromArtifacts(paths, nil, reviewablePathSets...)
 	if err != nil {
 		return selectionPromptInput{}, nil, err
 	}
@@ -430,7 +719,6 @@ func reviewerPromptInputFromArtifacts(paths ArtifactPaths, pr gitprovider.PR, se
 		PR: promptPRFromPR(pr),
 		Dossier: reviewerPromptDossier{
 			PRIntent:     core.PRIntent,
-			ChangeMap:    core.ChangeMap,
 			RepoGuidance: core.RepoGuidance,
 			Discussion:   core.Discussion,
 		},
@@ -441,11 +729,10 @@ func reviewerPromptInputFromArtifacts(paths ArtifactPaths, pr gitprovider.PR, se
 			Head:         core.Metadata.Head,
 		},
 		Assignment: reviewerPromptAssignment{
-			AgentID:      agent.ID,
-			Rationale:    selected.Rationale,
-			Files:        append([]string(nil), selected.Files...),
-			AllowedFiles: append([]string(nil), selected.AllowedFiles...),
+			AgentID:   agent.ID,
+			Rationale: selected.Rationale,
 		},
+		ManifestRows: append([]promptFileMetadata(nil), core.ChangedFiles...),
 	}
 	return input, core.Dependencies, nil
 }
@@ -545,7 +832,7 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFai
 		"reviewer_failures": reviewerFailures,
 		"reviewer_coverage": rollupCoveragePrompt(reviewerCoverage),
 	}
-	body, err := json.MarshalIndent(payload, "", "  ")
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("pipeline: build rollup prompt: %w", err)
 	}
@@ -553,26 +840,26 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFai
 }
 
 type rollupCoveragePromptEntry struct {
-	AgentID        string   `json:"agent_id"`
-	Status         string   `json:"status"`
-	Scope          []string `json:"scope,omitempty"`
-	InspectedFiles []string `json:"inspected_files,omitempty"`
-	SkippedFiles   []string `json:"skipped_files,omitempty"`
-	Constraints    []string `json:"constraints,omitempty"`
-	Diagnostic     string   `json:"diagnostic,omitempty"`
+	AgentID            string   `json:"agent_id"`
+	Status             string   `json:"status"`
+	ScopeCount         int      `json:"scope_count"`
+	InspectedFileCount int      `json:"inspected_file_count"`
+	SkippedFileCount   int      `json:"skipped_file_count"`
+	Constraints        []string `json:"constraints,omitempty"`
+	Diagnostic         string   `json:"diagnostic,omitempty"`
 }
 
 func rollupCoveragePrompt(coverage []reviewplan.ReviewerCoverageSummary) []rollupCoveragePromptEntry {
 	out := make([]rollupCoveragePromptEntry, 0, len(coverage))
 	for _, entry := range coverage {
 		out = append(out, rollupCoveragePromptEntry{
-			AgentID:        entry.AgentID,
-			Status:         entry.Status,
-			Scope:          append([]string(nil), entry.Scope...),
-			InspectedFiles: append([]string(nil), entry.InspectedFiles...),
-			SkippedFiles:   append([]string(nil), entry.SkippedFiles...),
-			Constraints:    append([]string(nil), entry.Constraints...),
-			Diagnostic:     entry.Diagnostic,
+			AgentID:            entry.AgentID,
+			Status:             entry.Status,
+			ScopeCount:         len(entry.Scope),
+			InspectedFileCount: len(entry.InspectedFiles),
+			SkippedFileCount:   len(entry.SkippedFiles),
+			Constraints:        append([]string(nil), entry.Constraints...),
+			Diagnostic:         entry.Diagnostic,
 		})
 	}
 	return out
@@ -611,8 +898,10 @@ func rollupFindingsPrompt(findings []review.Finding) []rollupFindingPrompt {
 }
 
 type agentSourcesArtifact struct {
-	Sources []agents.SourceInfo       `json:"sources"`
-	Agents  []agentProvenanceArtifact `json:"agents"`
+	CatalogRevision string                    `json:"catalog_revision,omitempty"`
+	CatalogSource   string                    `json:"catalog_source,omitempty"`
+	Sources         []agents.SourceInfo       `json:"sources"`
+	Agents          []agentProvenanceArtifact `json:"agents"`
 }
 
 type agentProvenanceArtifact struct {
@@ -654,12 +943,10 @@ func selectionOutputContract(candidates []agents.Agent, changedFiles []string, t
 		"allowed_values is context only; do not include allowed_values keys in the response.",
 		"schema_version must be 1.",
 		"selected_agents[].agent_id must be one of the allowed_agent_ids.",
-		"selected_agents[].files must contain only paths from changed_files.",
-		"selected_agents[].allowed_files must contain only paths from changed_files when present.",
+		"Use literal path strings from file_manifest rows; selected_agents[].files and allowed_files must refer to those paths.",
 	}
 	allowedValues := map[string]any{
 		"allowed_agent_ids":   agentIDs,
-		"changed_files":       changedFiles,
 		"known_thread_ids":    threadIDs,
 		"max_selected_agents": effectiveMaxAgents,
 	}
@@ -713,41 +1000,51 @@ func selectionExampleAgents(agentIDs []string, changedFiles []string) []map[stri
 }
 
 func findingsOutputContract(agentID string, changedFiles []string) outputContract {
+	return findingsOutputContractWithRelocations(agentID, changedFiles, relocationAssignment{})
+}
+
+func findingsOutputContractWithRelocations(agentID string, changedFiles []string, relocation relocationAssignment) outputContract {
 	constraintLimits := llm.DefaultFindingsConstraintLimits()
-	return outputContract{
+	contract := outputContract{
 		Instructions: []string{
 			"Return exactly one raw JSON object. Do not wrap it in Markdown fences.",
 			"Use only the keys shown in response_schema. Unknown keys are rejected.",
 			"allowed_values is context only; do not include allowed_values keys in the response.",
 			"schema_version must be 1.",
 			"agent_id must match the provided agent id.",
-			"inspected_files must list assigned changed files you actually inspected, even when findings is empty.",
-			"skipped_files must list assigned changed files you intentionally did not inspect or could not inspect.",
-			"At least one of inspected_files or skipped_files must be non-empty.",
+			"inspected_files must list assigned ordinary changed-file bodies or changed symlink payloads you actually inspected, even when findings is empty. A certified relocation may be covered by its path-impact assessment without claiming the body was inspected.",
+			"skipped_files must list assigned body-inspection, symlink-payload, or relocation-impact obligations you intentionally did not complete or could not complete.",
+			"For each head-tree symlink in assignment.symlink_paths, inspect its exact pinned link payload and resolution with cr_read using view=symlink. This inspects the symlink payload, not the destination body; list the path in inspected_files only after actually inspecting available payload bytes.",
+			"For a path in assignment.symlink_paths, if symlink metadata has payload_omitted_reason, the payload bytes were unavailable: metadata inspection alone does not count as payload inspection, so keep that symlink-payload obligation in skipped_files. payload=\"\" with payload_size=0 is an inspected empty payload, not an omitted payload.",
+			"At least one of inspected_files, skipped_files, or context_files must be non-empty; context evidence alone may support a valid relocation assessment.",
 			"constraints must list any material review constraints, such as intentionally narrow scope, missing context, or tool limitations.",
+			"assignment.scope_indices are the authoritative review scope; file_indices outside scope_indices are context only and do not expand inspected_files or skipped_files.",
+			"context_files may list only safe existing pinned-head paths outside assignment.scope_indices; these paths do not count toward assignment coverage and cannot be finding anchors.",
 			fmt.Sprintf("constraints must contain at most %d entries.", constraintLimits.MaxEntries),
 			fmt.Sprintf("Each constraints entry must contain at most %d Unicode runes.", constraintLimits.MaxRunesPerEntry),
 			"findings must be an empty array when there are no actionable findings.",
-			"file_path must be one of changed_files.",
+			"For a finding file_path, use the literal path value from a manifest path cell in assignment.scope_indices or from an exact cell in extra_citation_refs; do not cite other out-of-scope rows.",
+			"inspected_files and skipped_files must use only literal manifest path values from assignment.scope_indices.",
 			"Do not provide finding_id; the harness assigns IDs.",
 		},
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
 			"agent_id":        "string, required",
-			"inspected_files": "string[], assigned changed files inspected by this reviewer",
+			"inspected_files": "string[], assigned ordinary changed-file bodies or changed symlink payloads actually inspected; symlink payload inspection does not mean the destination body was read",
 			"skipped_files":   "string[], assigned changed files intentionally not inspected or not inspectable",
+			"context_files":   "string[], safe existing pinned-head context paths outside assignment scope",
 			"constraints":     "string[], material scope/tool/context constraints",
 			"findings":        "array of {severity: string, file_path: string, anchor: {kind: 'file'} or {kind: 'line', side: 'RIGHT'|'LEFT', line: positive number}, body: string}",
 		},
 		AllowedValues: map[string]any{
-			"severities":    []string{"blocking", "major", "minor", "nits"},
-			"changed_files": changedFiles,
+			"severities": []string{"blocking", "major", "minor", "nits"},
 		},
 		Example: map[string]any{
 			"schema_version":  1,
 			"agent_id":        agentID,
 			"inspected_files": firstNOrPlaceholder(changedFiles, "path/to/changed-file.ext", 1),
 			"skipped_files":   []string{},
+			"context_files":   []string{},
 			"constraints":     []string{},
 			"findings": []map[string]any{{
 				"severity":  "major",
@@ -759,6 +1056,38 @@ func findingsOutputContract(agentID string, changedFiles []string) outputContrac
 			}},
 		},
 	}
+	if len(relocation.SymlinkPaths) > 0 {
+		contract.Instructions = append(contract.Instructions,
+			"assignment.symlink_paths identifies paths that are symlinks in the head tree and are covered by the fixed pinned metadata artifact; use the exact assignment.symlink_metadata_digest when describing the evidence.",
+			"For each assigned symlink, consider how its payload and lexical resolution affect consumers, imports/relative references, workspaces, build/CI/scripts, runtime assets/routes, and guidance/ownership. Missing, linked, outside-repository, or unsupported target status is not evidence that a destination body was read; state unresolved uncertainty in skipped_files or constraints.",
+			"A payload_omitted_reason means the exact symlink payload bytes are unavailable, even though pinned metadata was read; do not claim that path as inspected and keep the payload obligation in skipped_files. An explicitly present empty payload with payload_size=0 is different and is inspectable.",
+			"If a pinned head target resolves to a regular repository file and its contents matter, inspect it with ordinary cr_read only when it is a safe regular path. Do not follow the symlink or claim the target body was inspected by view=symlink.",
+		)
+	}
+	if len(relocation.BaseOnlySymlinkPaths) > 0 {
+		contract.Instructions = append(contract.Instructions,
+			"assignment.base_only_symlink_paths identifies paths that were symlinks only in the base tree and are regular files in the head tree; their pinned base payload is historical metadata only.",
+			"For each base-only symlink path, read the head-tree regular body with ordinary cr_read (no view) before listing the path in inspected_files. Reading base symlink metadata does not satisfy the head body obligation; if you only inspect metadata, keep the path in skipped_files.",
+		)
+	}
+	if relocation.MoveCount > 0 {
+		contract.Instructions = append(contract.Instructions,
+			"For every verified relocation assigned to you, review path impact: imports and relative references, workspace configuration, build/CI/scripts, runtime assets and routes, and guidance/ownership. State uncertainty as skipped rather than claiming complete review.",
+			"Include relocation_assessment with the exact assignment.manifest_digest and assignment.assignment_digest, path_impact_reviewed=true only when you completed the path-impact review, non-empty basis, and evidence_files drawn from inspected_files or context_files.",
+			"An explicit skipped_files entry for a relocation overrides the assessment and leaves that move incomplete.",
+		)
+		schema := contract.ResponseSchema.(map[string]any)
+		schema["relocation_assessment"] = "optional {manifest_digest: string, assignment_digest: string, path_impact_reviewed: boolean, evidence_files: string[], basis: string}"
+		example := contract.Example.(map[string]any)
+		example["relocation_assessment"] = map[string]any{
+			"manifest_digest":      relocation.ManifestDigest,
+			"assignment_digest":    relocation.AssignmentDigest,
+			"path_impact_reviewed": true,
+			"evidence_files":       firstNOrPlaceholder(changedFiles, "path/to/inspected-file.ext", 1),
+			"basis":                "Reviewed imports, workspace/build configuration, runtime paths, and repository guidance for assigned moves.",
+		}
+	}
+	return contract
 }
 
 func rollupOutputContract(findings []review.Finding) outputContract {

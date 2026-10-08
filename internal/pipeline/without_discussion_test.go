@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +61,7 @@ func addExistingDiscussion(provider *readOnlyProvider, bot gitprovider.Identity)
 
 // storePriorSessions stores the PR's default orchestrator session and reviewer
 // cohort as an earlier live review would have left them.
-func storePriorSessions(t *testing.T, ctx context.Context, store *ledger.Store, provider *readOnlyProvider, req Request) (string, ledger.ReviewerCohortScope) {
+func storePriorSessions(ctx context.Context, t *testing.T, store *ledger.Store, provider *readOnlyProvider, req Request) (string, ledger.ReviewerCohortScope) {
 	t.Helper()
 	// The earlier live review that left these sessions behind.
 	allocateLiveRun(t, store, provider, req, "run-prior-live")
@@ -82,7 +83,7 @@ func storePriorSessions(t *testing.T, ctx context.Context, store *ledger.Store, 
 		Scope: scope, Adapter: "fake-llm", CreatedAt: fixedNow().Add(-time.Hour), UpdatedAt: fixedNow().Add(-time.Hour),
 		Members: []ledger.ReviewerCohortMember{{
 			AgentID: "harness:reviewer", AssignmentMode: ledger.ReviewerAssignmentScoped, Files: []string{"main.go"},
-			Model: "claude-sonnet-5", Effort: "medium", ProviderSessionID: priorReviewerSession,
+			Model: "claude-sonnet-5-5", Effort: "medium", ProviderSessionID: priorReviewerSession,
 		}},
 	}); err != nil {
 		t.Fatalf("ReplaceReviewerCohort: %v", err)
@@ -139,16 +140,21 @@ func allPrompts(adapter *llm.FakeAdapter) []string {
 // dossierText concatenates every file the run wrote under its dossier.
 func dossierText(t *testing.T, dir string) string {
 	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("open dossier root: %v", err)
+	}
+	defer root.Close()
 	var out strings.Builder
-	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return err
 		}
-		data, err := os.ReadFile(path) // #nosec G304 -- test reads its own temp artifacts.
+		data, err := root.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		out.WriteString(path)
+		out.WriteString(filepath.Join(dir, path))
 		out.WriteString("\n")
 		out.Write(data)
 		out.WriteString("\n")
@@ -166,7 +172,7 @@ func TestDryRunWithoutDiscussionReplaysAsFirstPass(t *testing.T) {
 	defer closeStore(t, store)
 	provider, req := pinnedDiscussionHarness(t)
 	req.WithoutDiscussion = true
-	sessionName, cohortScope := storePriorSessions(t, ctx, store, provider, req)
+	sessionName, cohortScope := storePriorSessions(ctx, t, store, provider, req)
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("selection-replay", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	adapter.Queue(fakeLLMResult("reviewer-replay", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
@@ -247,7 +253,7 @@ func TestDryRunPinnedWithDiscussionStillResumesPriorSessions(t *testing.T) {
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := pinnedDiscussionHarness(t)
-	storePriorSessions(t, ctx, store, provider, req)
+	storePriorSessions(ctx, t, store, provider, req)
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("reviewer-resumed", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
 	adapter.Queue(fakeLLMResult("rollup-resumed", rollupJSON("comment", []string{"finding-1"}), 30, 6))
