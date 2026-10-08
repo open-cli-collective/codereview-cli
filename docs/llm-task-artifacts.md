@@ -112,8 +112,9 @@ differ.
 reuse the output only when the metadata schema and input fingerprint still match
 the current task.
 
-`failed_isolated` is for reviewer-local LLM failures while the caller context is
-still valid. This includes structured validation failures and provider failures
+`failed_isolated` is for reviewer-local LLM failures and review-time thread
+analysis failures while the caller context is still valid. This includes
+structured validation failures and provider failures
 after a task provider session has started. Provider start failures with no
 session are treated as blocking because they can indicate auth, quota, or other
 systemic adapter problems. The failed reviewer is treated as
@@ -121,6 +122,37 @@ dependency-satisfied for downstream rollup, and the rollup receives a
 diagnostic. Sibling reviewers continue to run. A review with any isolated
 reviewer failure must not approve; the final event is clamped to at least
 `comment`.
+
+Review-time thread analysis uses the same isolation boundary. An isolated thread
+failure leaves that thread untouched, emits a warning, and appears under
+**Unanalyzed Threads** in the posted rollup. Public diagnostics report total
+counts and at most five deterministic examples, with each ID and diagnostic
+sampled to 500 Unicode runes. The complete `thread_analysis_failures` collection
+remains in the dry-run JSON summary, and every failure remains in the local
+per-thread task artifacts. Successful sibling analyses still produce replies and
+resolutions, and reviewer execution continues. Proposed selection actions for a
+failed thread are suppressed. Any unanalyzed thread withholds an otherwise
+approving review, even when the reviewers inspected every changed file.
+
+Matching isolated thread failures are reused when resuming an interrupted run;
+resume does not spend another provider call on them. Use `--rerun` to retry in a
+fresh run. Existing `failed_blocking` thread tasks still retry on resume, and
+matching successful analyses remain cached. Public diagnostics do not echo
+rejected model values or provider error text; detailed errors remain in the local
+task artifacts. Cancellation, provider failures without execution evidence,
+stale or corrupt artifacts, and persistence or checkpoint errors remain
+blocking. Response-only `cr respond` retains its blocking thread-analysis
+behavior.
+
+The synthesis prompt includes bounded failure counts and examples plus a digest
+of the complete typed thread failure evidence when present. Its fingerprint
+therefore changes even when an omitted failure changes. The existing coverage
+artifact, relocation manifest, context contract, and pinned symlink metadata
+inspection dependencies remain intact. Prompts without thread failures remain
+unchanged, preserving reuse of existing successful synthesis tasks. This change
+requires no additional task-metadata schema bump: existing blocking tasks retain
+their retry semantics, and new isolated thread tasks use the existing status
+contract.
 
 `failed_blocking` means the task prevents dependent phases from safely running.
 Selection and rollup failures are blocking. `reviewrun` is the sole owner of

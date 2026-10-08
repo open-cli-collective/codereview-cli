@@ -32,7 +32,7 @@ func TestApprovalWithheldDoesNotCallValidRelocationUnread(t *testing.T) {
 		RelocationReviewedFiles: []string{"old/module.go"},
 	}}
 	var out strings.Builder
-	writeApprovalWithheld(&out, nil, coverage)
+	writeApprovalWithheld(&out, nil, coverage, nil)
 	text := out.String()
 	if !strings.Contains(text, "Every changed file was either body-inspected or received relocation-impact review") {
 		t.Fatalf("withheld text does not describe relocation coverage accurately: %s", text)

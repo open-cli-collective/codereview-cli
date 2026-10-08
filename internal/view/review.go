@@ -66,14 +66,15 @@ type ReviewThreadCounts struct {
 
 // ReviewRunSummary is the execution metadata rendered in the rollup footer.
 type ReviewRunSummary struct {
-	ToolVersion       string                          `json:"tool_version,omitempty"`
-	Adapter           string                          `json:"adapter,omitempty"`
-	Model             string                          `json:"model,omitempty"`
-	PostingIdentity   string                          `json:"posting_identity,omitempty"`
-	SelectedReviewers []string                        `json:"selected_reviewers,omitempty"`
-	ReviewerCoverage  []ReviewReviewerCoverageSummary `json:"reviewer_coverage,omitempty"`
-	WallDurationMS    *int64                          `json:"wall_duration_ms"`
-	Workstreams       []ReviewWorkstream              `json:"workstreams"`
+	ToolVersion            string                                    `json:"tool_version,omitempty"`
+	Adapter                string                                    `json:"adapter,omitempty"`
+	Model                  string                                    `json:"model,omitempty"`
+	PostingIdentity        string                                    `json:"posting_identity,omitempty"`
+	SelectedReviewers      []string                                  `json:"selected_reviewers,omitempty"`
+	ReviewerCoverage       []ReviewReviewerCoverageSummary           `json:"reviewer_coverage,omitempty"`
+	ThreadAnalysisFailures []reviewplan.ThreadAnalysisFailureSummary `json:"thread_analysis_failures,omitempty"`
+	WallDurationMS         *int64                                    `json:"wall_duration_ms"`
+	Workstreams            []ReviewWorkstream                        `json:"workstreams"`
 }
 
 // ReviewWorkstream is adapter-reported usage for one workstream.
@@ -277,6 +278,7 @@ func newReviewSummary(summary reviewplan.Summary) ReviewSummary {
 			ComputeDurationMS: summary.Totals.ComputeDurationMS,
 		},
 	}
+	out.Run.ThreadAnalysisFailures = append([]reviewplan.ThreadAnalysisFailureSummary(nil), summary.Run.ThreadAnalysisFailures...)
 	produced := reviewplan.ReviewersProducedResults(summary.Run.ReviewerCoverage)
 	for _, reviewer := range summary.Reviewers {
 		row := ReviewReviewerSummary{Name: reviewer.Name, Findings: reviewer.Findings}
