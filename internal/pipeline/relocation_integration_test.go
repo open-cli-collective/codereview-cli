@@ -463,13 +463,10 @@ func newPatchlessRenameFixture(t *testing.T, kind string) (*readOnlyProvider, Re
 	case "mode":
 		oldPath, renamePath = "scripts/tool.sh", "scripts/renamed-tool.sh"
 		writeFile(t, filepath.Join(repo, oldPath), "#!/bin/sh\necho reviewed\n")
-		if err := os.Chmod(filepath.Join(repo, oldPath), 0o644); err != nil {
-			t.Fatal(err)
-		}
 	case "symlink":
 		oldPath, renamePath = "links/old", "links/new"
 		writeFile(t, filepath.Join(repo, "targets/target.txt"), "target\n")
-		if err := os.MkdirAll(filepath.Join(repo, "links"), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(repo, "links"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Symlink("../targets/target.txt", filepath.Join(repo, oldPath)); err != nil {
@@ -484,7 +481,7 @@ func newPatchlessRenameFixture(t *testing.T, kind string) (*readOnlyProvider, Re
 	gitCommandMustSucceed(t, repo, "checkout", "-b", "feature")
 	gitCommandMustSucceed(t, repo, "mv", oldPath, renamePath)
 	if kind == "mode" {
-		if err := os.Chmod(filepath.Join(repo, renamePath), 0o755); err != nil {
+		if err := os.Chmod(filepath.Join(repo, renamePath), 0o755); err != nil { // #nosec G302 -- Git fixture requires a tracked executable mode.
 			t.Fatal(err)
 		}
 	}

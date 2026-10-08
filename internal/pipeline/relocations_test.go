@@ -113,10 +113,10 @@ func TestPrepareRelocationManifestKeepsSameBlobPatchlessRenamesAsOrdinaryWork(t 
 			oldPath: "scripts/tool.sh",
 			newPath: "scripts/renamed-tool.sh",
 			writeBase: func(repo string) error {
-				return os.WriteFile(filepath.Join(repo, "scripts/tool.sh"), []byte("#!/bin/sh\necho reviewed\n"), 0o644)
+				return os.WriteFile(filepath.Join(repo, "scripts/tool.sh"), []byte("#!/bin/sh\necho reviewed\n"), 0o600)
 			},
 			changeHead: func(repo, _ string) error {
-				return os.Chmod(filepath.Join(repo, "scripts/renamed-tool.sh"), 0o755)
+				return os.Chmod(filepath.Join(repo, "scripts/renamed-tool.sh"), 0o755) // #nosec G302 -- Git fixture requires a tracked executable mode.
 			},
 			wantMode: "100755",
 		},
@@ -125,10 +125,10 @@ func TestPrepareRelocationManifestKeepsSameBlobPatchlessRenamesAsOrdinaryWork(t 
 			oldPath: "links/old",
 			newPath: "links/new",
 			writeBase: func(repo string) error {
-				if err := os.MkdirAll(filepath.Join(repo, "targets"), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Join(repo, "targets"), 0o700); err != nil {
 					return err
 				}
-				if err := os.WriteFile(filepath.Join(repo, "targets/target.txt"), []byte("target\n"), 0o644); err != nil {
+				if err := os.WriteFile(filepath.Join(repo, "targets/target.txt"), []byte("target\n"), 0o600); err != nil {
 					return err
 				}
 				return os.Symlink("../targets/target.txt", filepath.Join(repo, "links/old"))
@@ -143,7 +143,7 @@ func TestPrepareRelocationManifestKeepsSameBlobPatchlessRenamesAsOrdinaryWork(t 
 			relocationTestGit(t, repo, "init", "-q")
 			relocationTestGit(t, repo, "config", "user.name", "CR Tests")
 			relocationTestGit(t, repo, "config", "user.email", "cr-tests@example.invalid")
-			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, tc.oldPath)), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, tc.oldPath)), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			if err := tc.writeBase(repo); err != nil {
