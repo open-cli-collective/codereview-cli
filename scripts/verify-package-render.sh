@@ -103,6 +103,10 @@ raise "failure path did not keep refresh warning-only" unless failure.calls.last
 raise "hook must not assign command results" if body.match?(/\bresult\s*=/)
 # Model the tap's direct-command conversion with a strict declarative DSL.
 # A result assignment left behind would try to call unsupported system_command.
+# This narrow double mirrors Homebrew 7.0.9's InstallSteps::DSL#run contract:
+# https://github.com/Homebrew/brew/blob/7.0.9/Library/Homebrew/install_steps.rb
+# It is not an upstream compatibility test. Recheck the generated cask with
+# Homebrew's content loader and brew style when that DSL changes.
 class StepsHarness
   attr_reader :calls
   def initialize
