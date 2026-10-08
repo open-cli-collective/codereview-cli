@@ -25,14 +25,15 @@ type ReviewerRelocationAssessments struct {
 }
 
 type coverageArtifact struct {
-	SchemaVersion  int                                  `json:"schema_version"`
-	BaseSHA        string                               `json:"base_sha"`
-	HeadSHA        string                               `json:"head_sha"`
-	ManifestDigest string                               `json:"manifest_digest"`
-	Moves          []relocationMove                     `json:"moves"`
-	Reviewers      []reviewplan.ReviewerCoverageSummary `json:"reviewers"`
-	Assessments    []ReviewerRelocationAssessments      `json:"relocation_assessments"`
-	Failures       []ReviewerFailure                    `json:"failures"`
+	SchemaVersion         int                                  `json:"schema_version"`
+	BaseSHA               string                               `json:"base_sha"`
+	HeadSHA               string                               `json:"head_sha"`
+	ManifestDigest        string                               `json:"manifest_digest"`
+	SymlinkMetadataDigest string                               `json:"symlink_metadata_digest"`
+	Moves                 []relocationMove                     `json:"moves"`
+	Reviewers             []reviewplan.ReviewerCoverageSummary `json:"reviewers"`
+	Assessments           []ReviewerRelocationAssessments      `json:"relocation_assessments"`
+	Failures              []ReviewerFailure                    `json:"failures"`
 }
 
 func relocationAssessmentArtifacts(results []llm.Findings, evidenceByAgent ...map[string]*llm.ReviewerToolEvidence) []ReviewerRelocationAssessments {
@@ -65,7 +66,8 @@ func writeCoverageArtifact(paths ArtifactPaths, relocations relocationReviewStat
 	}
 	artifact := coverageArtifact{
 		SchemaVersion: 1, BaseSHA: relocations.Manifest.BaseSHA, HeadSHA: relocations.Manifest.HeadSHA,
-		ManifestDigest: relocations.Manifest.Digest, Moves: append([]relocationMove(nil), relocations.Manifest.Moves...),
+		ManifestDigest: relocations.Manifest.Digest, SymlinkMetadataDigest: relocations.Symlinks.Digest,
+		Moves:       append([]relocationMove(nil), relocations.Manifest.Moves...),
 		Reviewers:   append([]reviewplan.ReviewerCoverageSummary(nil), reviewers...),
 		Assessments: append([]ReviewerRelocationAssessments(nil), assessments...),
 		Failures:    append([]ReviewerFailure(nil), failures...),

@@ -39,6 +39,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/stagemodel"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/symlinkmetadata"
 	"github.com/open-cli-collective/codereview-cli/internal/threadcontext"
 	"github.com/open-cli-collective/codereview-cli/internal/workbench"
 )
@@ -3466,15 +3467,18 @@ func TestRunStructuredTaskRejectsAdapterMismatchBeforeRetry(t *testing.T) {
 	}
 }
 
-func TestRunStructuredTaskRejectsEqualCountRelocationDigestChangeOnResume(t *testing.T) {
+func TestRunStructuredTaskRejectsEqualCountSymlinkDigestChangeOnResume(t *testing.T) {
 	ctx := context.Background()
 	artifacts := ArtifactPathsFromDir(t.TempDir())
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	adapter.Queue(fakeLLMResult("reviewer-session", `{"ok":true}`, 1, 1))
 	taskID := reviewerTaskID("harness:reviewer")
 	move := relocationMove{OldPath: "old.go", Path: "new.go", BlobOID: strings.Repeat("a", 40), Mode: "100644"}
-	fingerprint := func(manifestDigest string) string {
-		state := relocationReviewState{Manifest: relocationManifest{Digest: manifestDigest, Moves: []relocationMove{move}}}
+	fingerprint := func(manifestDigest, symlinkDigest string) string {
+		state := relocationReviewState{
+			Manifest: relocationManifest{Digest: manifestDigest, Moves: []relocationMove{move}},
+			Symlinks: symlinkmetadata.Artifact{Digest: symlinkDigest},
+		}
 		assignment := state.assignment("harness:reviewer", []string{"new.go"})
 		if assignment.MoveCount != 1 {
 			t.Fatalf("assignment move count = %d, want 1", assignment.MoveCount)
@@ -3482,14 +3486,17 @@ func TestRunStructuredTaskRejectsEqualCountRelocationDigestChangeOnResume(t *tes
 		dependencies := []string{
 			"relocation-manifest=" + assignment.ManifestDigest,
 			"relocation-assignment=" + assignment.AssignmentDigest,
+			"symlink-metadata=" + assignment.SymlinkMetadataDigest,
+			"symlink-contract=" + symlinkInspectionContractVersion,
 			"context-contract=" + reviewerContextContractVersion,
 		}
 		return llmlifecycle.Fingerprint(adapter.Name(), taskID, "reviewer", "model", "medium", "same reviewer prompt", dependencies)
 	}
-	firstFingerprint := fingerprint(strings.Repeat("b", 64))
-	secondFingerprint := fingerprint(strings.Repeat("c", 64))
+	manifestDigest := strings.Repeat("b", 64)
+	firstFingerprint := fingerprint(manifestDigest, strings.Repeat("d", 64))
+	secondFingerprint := fingerprint(manifestDigest, strings.Repeat("e", 64))
 	if firstFingerprint == secondFingerprint {
-		t.Fatal("equal-count relocation manifest change did not change the task fingerprint")
+		t.Fatal("equal-count symlink metadata digest change did not change the task fingerprint")
 	}
 	spec := llmTaskSpec{
 		taskID: taskID, phase: "reviewer", allowNoRunCache: true,
@@ -3505,8 +3512,8 @@ func TestRunStructuredTaskRejectsEqualCountRelocationDigestChangeOnResume(t *tes
 	if err != nil || !ok {
 		t.Fatalf("reviewer metadata = %#v ok %t err %v", meta, ok, err)
 	}
-	if meta.SchemaVersion != 2 {
-		t.Fatalf("reviewer task schema = %d, want 2", meta.SchemaVersion)
+	if meta.SchemaVersion != llmlifecycle.SchemaVersion {
+		t.Fatalf("reviewer task schema = %d, want %d", meta.SchemaVersion, llmlifecycle.SchemaVersion)
 	}
 
 	spec.inputFingerprint = secondFingerprint
@@ -3514,7 +3521,7 @@ func TestRunStructuredTaskRejectsEqualCountRelocationDigestChangeOnResume(t *tes
 		return string(data), nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
-		t.Fatalf("equal-count relocation resume error = %v, want stale fingerprint rejection", err)
+		t.Fatalf("equal-count symlink metadata resume error = %v, want stale fingerprint rejection", err)
 	}
 	if len(adapter.Requests()) != 1 || len(adapter.Resumes()) != 0 {
 		t.Fatalf("adapter calls after stale resume = starts %#v resumes %#v, want only the first start", adapter.Requests(), adapter.Resumes())
@@ -4151,13 +4158,17 @@ func TestDryRunFastFallsBackForUnsupportedModel(t *testing.T) {
 	if err := readJSONFile(result.Artifacts.RelocationsJSON, &manifest); err != nil {
 		t.Fatalf("read relocation manifest: %v", err)
 	}
-	assignment := (relocationReviewState{Manifest: manifest}).assignment(agent.ID, []string{"main.go"})
+	var symlinks symlinkmetadata.Artifact
+	if err := readJSONFile(result.Artifacts.SymlinkMetadataJSON, &symlinks); err != nil {
+		t.Fatalf("read symlink metadata: %v", err)
+	}
+	assignment := (relocationReviewState{Manifest: manifest, Symlinks: symlinks}).assignment(agent.ID, []string{"main.go"})
 	prompt, promptDeps, err := buildReviewerPromptWithRelocationAssignment(result.Artifacts, result.PR, selected, agent, []string{"main.go"}, nil, assignment)
 	if err != nil {
 		t.Fatalf("buildReviewerPrompt: %v", err)
 	}
 	deps := append([]string{orchestratorSelectionStage}, promptDeps...)
-	deps = append(deps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "context-contract="+reviewerContextContractVersion)
+	deps = append(deps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "symlink-metadata="+assignment.SymlinkMetadataDigest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
 	wantFingerprint := llmlifecycle.Fingerprint(adapter.Name(), reviewerTaskID(agent.ID), "reviewer", requests[1].Model, requests[1].Effort, prompt, deps)
 	if meta.InputFingerprint != wantFingerprint {
 		t.Fatalf("reviewer fingerprint = %q, want standard-speed %q", meta.InputFingerprint, wantFingerprint)
