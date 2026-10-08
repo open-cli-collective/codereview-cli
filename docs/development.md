@@ -90,6 +90,7 @@ progress interface rather than importing Cobra or root options.
 ```bash
 make build   # compile the binary
 make test    # go test ./...
+make test-race # repeated race checks for ledger/dbmig
 make lint    # golangci-lint run
 make tidy    # go mod tidy and verify go.mod is unchanged
 make deps    # download and verify Go modules
@@ -98,6 +99,27 @@ make clean   # remove build artifacts
 ```
 
 `make snapshot` runs a local GoReleaser snapshot build without publishing.
+
+### Concurrency checks
+
+`make test-race` runs all tests in `internal/ledger` and `internal/dbmig` under
+the Go race detector with 25 repetitions. This includes concurrent ledger
+startup and allocation, the immediate transaction-lock DSN contract, and
+migration version re-checks. Repeating the existing contention tests makes
+timing-dependent failures more likely to surface without applying race
+detection to the entire suite.
+
+The target sets test `GOMAXPROCS` to four with `-cpu=4` and caps tests using
+`t.Parallel` at four with `-parallel=4`. Contention-test worker goroutines
+remain bounded by their own fixture counts. Packages run serially, with a
+five-minute timeout per package. The target requires
+`CGO_ENABLED=1` and a C compiler, even though the SQLite driver itself is
+pure Go. CI runs the same target in the separate `test-race` job on pull
+requests and pushes to `main`, with a 20-minute job timeout. The job uses the
+same pinned shared test action as `test`, including Go version selection from
+`go.mod` and the action's default dependency/build caching. Existing required
+check names and branch-protection settings are unchanged; requiring the new
+check is a separate maintainer decision after it has run successfully.
 
 ## Repo-Local Shape
 
