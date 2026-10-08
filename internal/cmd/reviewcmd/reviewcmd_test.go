@@ -671,6 +671,71 @@ func TestReviewRejectsInvalidReviewSHAOverrides(t *testing.T) {
 	}
 }
 
+func TestReviewDryRunPassesWithoutDiscussion(t *testing.T) {
+	for _, mode := range []string{"--dry-run", "--no-post"} {
+		t.Run(mode, func(t *testing.T) {
+			runner := &fakeRunner{result: testPipelineResult(false)}
+			cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))
+
+			err := root.Execute(cmd, []string{
+				"review", "https://github.com/open-cli-collective/codereview-cli/pull/29",
+				mode,
+				"--review-base-sha", "1111111",
+				"--review-head-sha", "2222222",
+				"--without-discussion",
+			})
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if len(runner.requests) != 1 {
+				t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+			}
+			if !runner.requests[0].WithoutDiscussion {
+				t.Fatal("WithoutDiscussion = false, want true")
+			}
+		})
+	}
+}
+
+func TestReviewRejectsWithoutDiscussionOutsidePinnedDryRun(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "live with SHAs", args: []string{"--review-base-sha", "1111111", "--review-head-sha", "2222222", "--without-discussion"}, wantErr: "require --dry-run or --no-post"},
+		{name: "live without SHAs", args: []string{"--without-discussion"}, wantErr: "--without-discussion requires --dry-run or --no-post"},
+		{name: "dry run without SHAs", args: []string{"--dry-run", "--without-discussion"}, wantErr: "--without-discussion requires --review-base-sha and --review-head-sha"},
+		{name: "no post without SHAs", args: []string{"--no-post", "--without-discussion"}, wantErr: "--without-discussion requires --review-base-sha and --review-head-sha"},
+		{name: "dry run with base only", args: []string{"--dry-run", "--review-base-sha", "1111111", "--without-discussion"}, wantErr: "must be set together"},
+		{name: "fresh session", args: []string{"--dry-run", "--review-base-sha", "1111111", "--review-head-sha", "2222222", "--without-discussion", "--fresh-session"}, wantErr: "--fresh-session cannot be used with --without-discussion"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var factoryCalled bool
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
+				factoryCalled = true
+				return app.Runtime{Runner: &fakeRunner{result: testPipelineResult(false), liveResult: testLiveResult(false)}}, nil
+			})
+
+			args := append([]string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"}, tt.args...)
+			err := root.Execute(cmd, args)
+			if err == nil {
+				t.Fatal("Execute error = nil, want usage error")
+			}
+			if got := exitcode.FromError(err); got != exitcode.UsageError {
+				t.Fatalf("exit code = %d, want usage", got)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.wantErr)
+			}
+			if factoryCalled {
+				t.Fatal("runtime factory was called for invalid --without-discussion use")
+			}
+		})
+	}
+}
+
 func TestReviewLiveRejectsStageOverridesBeforeRuntimeFactory(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1746,7 +1811,7 @@ func reviewTestCatalog(t *testing.T) (*modelcatalog.Catalog, string) {
 	}
 	files["models.csv"] = append(files["models.csv"], []byte("openai-api-key,custom-review-model,low|medium,Y,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
 	files["defaults.csv"] = []byte(strings.Replace(string(files["defaults.csv"]), "openai-api-key,medium,gpt-6.1-sol,low,", "openai-api-key,medium,custom-review-model,medium,", 1))
-	files["pricing.csv"] = append(files["pricing.csv"], []byte("custom-review-model,standard,all,3,7,1,0.5,,,https://example.invalid/custom-review-model,2026-10-03\n")...)
+	files["pricing.csv"] = append(files["pricing.csv"], []byte("custom-review-model,standard,all,3,7,1,0.5,,,https://example.invalid/custom-review-model,2026-10-03,,,,,\n")...)
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
 			t.Fatalf("write catalog %s: %v", name, err)

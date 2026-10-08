@@ -201,8 +201,12 @@ type Request struct {
 	ReviewerFast                bool
 	ReviewBaseSHA               string
 	ReviewHeadSHA               string
-	Rerun                       bool
-	FreshSession                bool
+	// WithoutDiscussion replays a pinned dry-run review as a first pass: no
+	// PR discussion is fetched, and no PR-scoped orchestrator or reviewer
+	// session (which saw earlier discussion) is resumed or updated.
+	WithoutDiscussion bool
+	Rerun             bool
+	FreshSession      bool
 
 	FailOn              *review.Severity
 	AllowSelfReview     bool
@@ -292,6 +296,8 @@ type Result struct {
 	CurrentHeadSHA         string
 	ReviewBaseSHA          string
 	ReviewHeadSHA          string
+	ThreadAnalysisFailures []threadanalysis.Failure
+	WithoutDiscussion      bool
 	ReviewerFailures       []ReviewerFailure
 	ReviewerCoverage       []reviewplan.ReviewerCoverageSummary
 	RelocationAssessments  []ReviewerRelocationAssessments
@@ -380,9 +386,11 @@ type selectionSetupRequest struct {
 	ReviewBaseSHA    string
 	ReviewHeadSHA    string
 	NoResolveThreads bool
-	ResolvedPR       *reviewPRContext
-	InvocationRoot   *string
-	ResolveArtifacts func(gitprovider.PR) (ArtifactPaths, error)
+	// WithoutDiscussion skips every PR discussion read, independent of pinning.
+	WithoutDiscussion bool
+	ResolvedPR        *reviewPRContext
+	InvocationRoot    *string
+	ResolveArtifacts  func(gitprovider.PR) (ArtifactPaths, error)
 }
 
 type preparedSelectionContext struct {
@@ -462,6 +470,9 @@ func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Resul
 	}
 	if strings.TrimSpace(req.ReviewBaseSHA) != "" || strings.TrimSpace(req.ReviewHeadSHA) != "" {
 		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: pinned review SHAs require dry-run review"))
+	}
+	if req.WithoutDiscussion {
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: review without discussion requires dry-run review"))
 	}
 	if strings.TrimSpace(run.RunID) == "" {
 		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: live run ID is required"))
@@ -653,15 +664,16 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, fmt.Errorf("pipeline: reviewer credentials resolve to PR author %q; pass --allow-self-review to continue", req.PostingIdentity.Login)
 	}
 	prepared, err := prepareSelectionContext(ctx, opts, selectionSetupRequest{
-		PRRef:            req.PRRef,
-		Profile:          req.Profile,
-		PostingIdentity:  req.PostingIdentity,
-		AgentDirs:        req.AgentDirs,
-		ReviewBaseSHA:    req.ReviewBaseSHA,
-		ReviewHeadSHA:    req.ReviewHeadSHA,
-		NoResolveThreads: req.NoResolveThreads,
-		ResolvedPR:       &reviewCtx,
-		InvocationRoot:   &invocationRoot,
+		PRRef:             req.PRRef,
+		Profile:           req.Profile,
+		PostingIdentity:   req.PostingIdentity,
+		AgentDirs:         req.AgentDirs,
+		ReviewBaseSHA:     req.ReviewBaseSHA,
+		ReviewHeadSHA:     req.ReviewHeadSHA,
+		NoResolveThreads:  req.NoResolveThreads,
+		WithoutDiscussion: req.WithoutDiscussion,
+		ResolvedPR:        &reviewCtx,
+		InvocationRoot:    &invocationRoot,
 		ResolveArtifacts: func(reviewPR gitprovider.PR) (ArtifactPaths, error) {
 			if mode.live {
 				return ArtifactPathsFromDir(mode.run.ArtifactPath), nil
@@ -678,6 +690,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	prepared.fastRequested = req.ReviewerFast
 
 	result := prepared.reviewResult()
+	result.WithoutDiscussion = req.WithoutDiscussion
 	run := mode.run
 	if !mode.live {
 		if resumedDryRun != nil {
@@ -698,7 +711,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			if err != nil {
 				return Result{}, err
 			}
-			if err := runartifact.WriteMarker(prepared.artifacts.Dir, runartifact.KindReview, run.RunID); err != nil {
+			if err := runartifact.WriteMarkerWithOptions(prepared.artifacts.Dir, runartifact.KindReview, run.RunID, runartifact.MarkerOptions{WithoutDiscussion: req.WithoutDiscussion}); err != nil {
 				return Result{}, err
 			}
 		}
@@ -716,6 +729,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		ChangedFiles:     prepared.changedFiles,
 		Artifacts:        prepared.artifacts,
 		HeadRefNamespace: opts.Provider.Capabilities().HeadRefNamespace,
+		Offline:          req.WithoutDiscussion,
 	}); err != nil {
 		if errors.Is(err, workbench.ErrUnsafeFetchRef) || errors.Is(err, workbench.ErrInvalidRepositoryIdentity) {
 			return Result{}, Failure(FailureTerminal, err)
@@ -813,15 +827,25 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
-	namedSession, err := prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
-	if err != nil {
-		return nil, false, err
-	}
-
-	cohortScope := ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
-	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, relocationReviewablePatchPaths(prepared.parsed.Patches, prepared.relocations.Manifest.Moves), maxAgents)
-	if err != nil {
-		return executionPhaseFailure(err)
+	// A review without discussion must not resume the PR's orchestrator or
+	// reviewer sessions: they carry earlier discussion. It also leaves them
+	// untouched, so a replay never becomes the PR's next live context. The zero
+	// named-session state and cohort scope make every checkpoint a no-op.
+	var namedSession namedSessionState
+	var cohortScope ledger.ReviewerCohortScope
+	var selection llm.Selection
+	var reviewerResumeIDs map[string]string
+	reusedCohort := false
+	if !req.WithoutDiscussion {
+		namedSession, err = prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
+		if err != nil {
+			return nil, false, err
+		}
+		cohortScope = ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
+		selection, reviewerResumeIDs, reusedCohort, err = loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, relocationReviewablePatchPaths(prepared.parsed.Patches, prepared.relocations.Manifest.Moves), maxAgents)
+		if err != nil {
+			return executionPhaseFailure(err)
+		}
 	}
 	if reusedCohort {
 		if err := restoreOrchestratorSessionFromRun(ctx, opts.Store, run.RunID, prepared.artifacts, &namedSession); err != nil {
@@ -885,7 +909,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	prepared.fastIgnored = req.ReviewerFast && !effectiveFast
 	req.ReviewerFast = effectiveFast
 	opts.emitWarning(warning)
-	if !reusedCohort {
+	if !reusedCohort && !req.WithoutDiscussion {
 		if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
 			return nil, false, err
 		}
@@ -895,12 +919,13 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if reusedCohort && !selectionInRun {
 		selectionTaskIDs = nil
 	}
-	threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext, namedSession.resumeID(), func(sessionID string) error {
+	threadResponses, threadFailures, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext, namedSession.resumeID(), func(sessionID string) error {
 		return namedSession.checkpointProviderSessionID(ctx, sessionID, opts.now())
 	})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
+	result.ThreadAnalysisFailures = threadFailures
 	checkpointActions, err := checkpointThreadResponses(ctx, opts, req, mode, run, result.EffectiveCaps, threadResponses)
 	if err != nil {
 		return nil, false, err
@@ -929,7 +954,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
-	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, reviewerRun.findings, reviewerRun.failures, reviewerCoverage)
+	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, reviewerRun.findings, reviewerRun.failures, reviewerCoverage, threadFailureSummaries(threadFailures))
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
@@ -979,6 +1004,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 
 	plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, reviewerRun.findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
 		threadResponses:  threadResponses,
+		threadFailures:   threadFailures,
 		repoSources:      repoSources,
 		hasRun:           true,
 		selection:        selectionSession,
@@ -1069,7 +1095,13 @@ func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitp
 		}
 		runs = append(runs, legacyRuns...)
 	}
-	best, found := runlifecycle.NewestCompatibleIncompleteRun(runs, pr.Base.SHA, ledger.PostModeDryRun, runartifact.KindReview, runartifact.MarkerMatches)
+	// A run resumes only into a run with the same discussion setting, so a
+	// discussion-free replay never reuses tasks or sessions that saw discussion.
+	markerMatches := func(artifactPath, kind, runID string) bool {
+		marker, err := runartifact.ReadMarker(artifactPath, kind)
+		return err == nil && marker.RunID == runID && marker.WithoutDiscussion == req.WithoutDiscussion
+	}
+	best, found := runlifecycle.NewestCompatibleIncompleteRun(runs, pr.Base.SHA, ledger.PostModeDryRun, runartifact.KindReview, markerMatches)
 	return best, found, nil
 }
 
@@ -1194,7 +1226,9 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 	var threadContext []threadcontext.Thread
 	var reviews []gitprovider.Review
 	var issueComments []gitprovider.IssueComment
-	if !reviewCtx.pinnedReview {
+	// Discussion is cut off here, at its only source, so no later consumer
+	// (dossier, selection, thread analysis, reviewers, planner) can see it.
+	if !reviewCtx.pinnedReview && !req.WithoutDiscussion {
 		threads, err = opts.Provider.ListInlineThreads(ctx, req.PRRef)
 		if err != nil {
 			return preparedSelectionContext{}, err
@@ -1262,6 +1296,7 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		CurrentPR:             pr,
 		ReviewPR:              reviewPR,
 		PinnedReview:          reviewCtx.pinnedReview,
+		WithoutDiscussion:     req.WithoutDiscussion,
 		ChangedFiles:          dossierChangedFiles(parsed.Patches),
 		Threads:               threads,
 		ThreadContext:         threadContext,
@@ -1270,11 +1305,18 @@ func prepareSelectionContext(ctx context.Context, opts Options, req selectionSet
 		Catalog:               catalog,
 		CurrentBaseSHA:        reviewCtx.currentBaseSHA,
 		CurrentHeadSHA:        reviewCtx.currentHeadSHA,
-		DiscussionOmittedNote: "Current PR discussion omitted because this review is pinned to explicit base/head SHAs.",
+		DiscussionOmittedNote: discussionOmittedNote(req.WithoutDiscussion),
 	}); err != nil {
 		return preparedSelectionContext{}, err
 	}
 	return out, nil
+}
+
+func discussionOmittedNote(withoutDiscussion bool) string {
+	if withoutDiscussion {
+		return "No PR discussion is provided for this review."
+	}
+	return "Current PR discussion omitted because this review is pinned to explicit base/head SHAs."
 }
 
 func resolveReviewPRContext(ctx context.Context, provider ReadProvider, ref gitprovider.PRRef, reviewBaseSHA, reviewHeadSHA string) (reviewPRContext, error) {
@@ -1393,16 +1435,16 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	return selection, selectionSession, ledgerSession, nil
 }
 
-func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread, resumeSessionID string, onSessionID func(string) error) ([]review.ThreadResponseAction, error) {
+func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread, resumeSessionID string, onSessionID func(string) error) ([]review.ThreadResponseAction, []threadanalysis.Failure, error) {
 	eligible := threadcontext.PendingCRAuthoredFindingThreads(threads)
 	if len(eligible) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	runtimeConfig, err := resolveThreadAnalysisRuntimeConfig(req.Profile)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	results, err := threadanalysis.AnalyzeThreads(ctx, threadanalysis.Options{
+	results, failures, err := threadanalysis.AnalyzeThreads(ctx, threadanalysis.Options{
 		Store:           opts.Store,
 		RunID:           run.RunID,
 		Adapter:         opts.Adapter,
@@ -1414,13 +1456,17 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 		NewStepID:       opts.newSessionRowID,
 		ResumeSessionID: resumeSessionID,
 		OnSessionID:     onSessionID,
+		IsolateFailures: true,
 	}, eligible, func(thread threadcontext.Thread) (string, error) {
 		return artifacts.ThreadAnalysisLog(string(thread.ID))
 	})
 	if err != nil {
-		return nil, pipelineTaskError(err)
+		return nil, nil, pipelineTaskError(err)
 	}
-	return threadanalysis.ResponseActions(results), nil
+	for _, failure := range failures {
+		opts.emitWarning(fmt.Sprintf("thread %s was not analyzed: %s; isolated failures are cached on resume, use --rerun to retry", failure.ThreadID, failure.Error))
+	}
+	return threadanalysis.ResponseActions(results), failures, nil
 }
 
 func checkpointThreadResponses(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, caps reviewplan.ProviderCaps, responses []review.ThreadResponseAction) ([]ledger.PlannedAction, error) {
@@ -2184,7 +2230,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return reviewerExecution{}, err
 	}
 	agentID := agent.ID
-	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, resumeState.relocations.Symlinks)
+	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion, SymlinkMetadata: resumeState.relocations.Symlinks})
 	if err != nil {
 		return reviewerExecution{}, err
 	}
@@ -2203,6 +2249,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		fingerprintDeps = append(fingerprintDeps, "fast=true")
 	}
 	fingerprintDeps = append(fingerprintDeps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "symlink-metadata="+assignment.SymlinkMetadataDigest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
+	if req.WithoutDiscussion {
+		fingerprintDeps = append(fingerprintDeps, "without_discussion=true")
+	}
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            taskID,
@@ -2306,7 +2355,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return repairSetupFailed(err)
 	}
 	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
-	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, resumeState.relocations.Symlinks)
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion, SymlinkMetadata: resumeState.relocations.Symlinks})
 	if err != nil {
 		return repairSetupFailed(err)
 	}
@@ -2326,6 +2375,9 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		repairFingerprintDeps = append(repairFingerprintDeps, "fast=true")
 	}
 	repairFingerprintDeps = append(repairFingerprintDeps, "relocation-manifest="+repairAssignment.ManifestDigest, "relocation-assignment="+repairAssignment.AssignmentDigest, "symlink-metadata="+repairAssignment.SymlinkMetadataDigest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
+	if req.WithoutDiscussion {
+		repairFingerprintDeps = append(repairFingerprintDeps, "without_discussion=true")
+	}
 	repair, repairSession, repairLedgerSession, repairErr := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            repairTaskID,
@@ -2775,6 +2827,7 @@ type planRunInputs struct {
 	rollup           sessionDraft
 	selectedAgents   []llm.SelectedAgent
 	threadResponses  []review.ThreadResponseAction
+	threadFailures   []threadanalysis.Failure
 	repoSources      []agents.SourceInfo
 	findingSessions  map[review.FindingID]string
 	reviewerFailures []ReviewerFailure
@@ -2845,15 +2898,16 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
-		ToolVersion:       req.ToolVersion,
-		Adapter:           runAdapter(inputs),
-		Model:             sharedWorkstreamModel(workstreams),
-		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
-		SelectedReviewers: selectedIDs,
-		ReviewerFailures:  reviewerFailureSummaries(inputs.reviewerFailures),
-		ReviewerCoverage:  inputs.reviewerCoverage,
-		WallDurationMS:    &wallMS,
-		Workstreams:       workstreams,
+		ToolVersion:            req.ToolVersion,
+		Adapter:                runAdapter(inputs),
+		Model:                  sharedWorkstreamModel(workstreams),
+		PostingIdentity:        runlifecycle.PostingKey(req.PostingIdentity),
+		SelectedReviewers:      selectedIDs,
+		ReviewerFailures:       reviewerFailureSummaries(inputs.reviewerFailures),
+		ThreadAnalysisFailures: threadFailureSummaries(inputs.threadFailures),
+		ReviewerCoverage:       inputs.reviewerCoverage,
+		WallDurationMS:         &wallMS,
+		Workstreams:            workstreams,
 	}
 
 	findingReviewers := make(map[review.FindingID]string, len(inputs.findingSessions))
@@ -2869,20 +2923,26 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 // several provider sessions, so they are deliberately not a sessionDraft: there
 // is no single session they could be written back to.
 type workstreamTotals struct {
-	model       string
-	usage       llm.Usage
-	durationMS  int64
-	startedAt   time.Time
-	completedAt time.Time
+	requestHistories    []*llm.RequestCostEvidence
+	blockLegacyEstimate bool
+	unknownRequestCost  bool
+	model               string
+	usage               llm.Usage
+	durationMS          int64
+	startedAt           time.Time
+	completedAt         time.Time
 }
 
 func draftWorkstreamTotals(draft sessionDraft) workstreamTotals {
 	return workstreamTotals{
-		model:       draft.Model,
-		usage:       draft.Response.Usage,
-		durationMS:  draft.Response.DurationMS,
-		startedAt:   draft.StartedAt,
-		completedAt: draft.CompletedAt,
+		requestHistories:    []*llm.RequestCostEvidence{llm.CloneRequestCostEvidence(draft.Response.RequestCostEvidence)},
+		blockLegacyEstimate: draft.Adapter == "openai_api" || draft.Adapter == "codex_cli" || draft.Response.RequestCostEvidence != nil,
+		unknownRequestCost:  draft.Adapter == "openai_api" || draft.Response.RequestCostEvidence != nil,
+		model:               draft.Model,
+		usage:               draft.Response.Usage,
+		durationMS:          draft.Response.DurationMS,
+		startedAt:           draft.StartedAt,
+		completedAt:         draft.CompletedAt,
 	}
 }
 
@@ -2904,6 +2964,10 @@ func combineReviewerWorkstreamTotals(drafts []sessionDraft) workstreamTotals {
 	allStandard := true
 	anySpeed := false
 	for _, draft := range drafts {
+		provenance := draftWorkstreamTotals(draft)
+		combined.requestHistories = append(combined.requestHistories, provenance.requestHistories...)
+		combined.blockLegacyEstimate = combined.blockLegacyEstimate || provenance.blockLegacyEstimate
+		combined.unknownRequestCost = combined.unknownRequestCost || provenance.unknownRequestCost
 		combined.durationMS += draft.Response.DurationMS
 		if combined.startedAt.IsZero() || !draft.StartedAt.IsZero() && draft.StartedAt.Before(combined.startedAt) {
 			combined.startedAt = draft.StartedAt
@@ -2989,6 +3053,14 @@ func runAdapter(inputs planRunInputs) string {
 		}
 	}
 	return strings.TrimSpace(inputs.rollup.Adapter)
+}
+
+func threadFailureSummaries(failures []threadanalysis.Failure) []reviewplan.ThreadAnalysisFailureSummary {
+	out := make([]reviewplan.ThreadAnalysisFailureSummary, 0, len(failures))
+	for _, failure := range failures {
+		out = append(out, reviewplan.ThreadAnalysisFailureSummary{ThreadID: failure.ThreadID, Error: failure.Error})
+	}
+	return out
 }
 
 func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerFailureSummary {
@@ -3444,10 +3516,16 @@ func workstreamUsageFromTotalsForCatalog(name string, totals workstreamTotals, c
 		CacheCreate1h: usage.CacheCreate1h,
 		CostUSD:       usage.CostUSD,
 	}
+	// Collection-only: direct OpenAI history and legacy totals remain unpriced.
+	// A custom all-band price row cannot bypass request evidence gates. Codex
+	// retains reported costs but cannot borrow a direct-API estimate.
+	if totals.unknownRequestCost {
+		workstream.CostUSD = nil
+	}
 	// When the adapter reports no cost (e.g. subscription auth), estimate it from
 	// tokens at public list prices — only for models the price table knows, so an
 	// agent's unpriced model leaves cost unavailable rather than wrong.
-	if workstream.CostUSD == nil {
+	if workstream.CostUSD == nil && !totals.blockLegacyEstimate {
 		priceUsage := pricing.Usage{
 			TokensIn: usage.TokensIn, TokensOut: usage.TokensOut, CacheRead: usage.CacheRead,
 			CacheCreate5m: usage.CacheCreate5m, CacheCreate1h: usage.CacheCreate1h,
@@ -3597,6 +3675,9 @@ func validate(opts Options, req Request) error {
 	}
 	if strings.TrimSpace(req.PRURL) == "" {
 		return fmt.Errorf("pipeline: PR URL is required")
+	}
+	if req.WithoutDiscussion && (strings.TrimSpace(req.ReviewBaseSHA) == "" || strings.TrimSpace(req.ReviewHeadSHA) == "") {
+		return fmt.Errorf("pipeline: review without discussion requires pinned review base and head SHAs")
 	}
 	if strings.TrimSpace(runlifecycle.PostingKey(req.PostingIdentity)) == "" {
 		return fmt.Errorf("pipeline: posting identity is required")

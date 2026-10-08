@@ -16,6 +16,8 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
+	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 )
 
 func TestAnthropicAPIAdapterRequestAndResponse(t *testing.T) {
@@ -231,6 +233,111 @@ func TestOpenAIAPIAdapterFastRequest(t *testing.T) {
 	}
 	if payload["service_tier"] != "fast" {
 		t.Fatalf("request body = %#v, want service_tier fast", payload)
+	}
+}
+
+func TestParseOpenAIResponseCacheWrites(t *testing.T) {
+	zero, five, seven, twelve, negative := 0, 5, 7, 12, -3
+	for _, tt := range []struct {
+		name     string
+		details  string
+		want     *int
+		wantRead *int
+	}{
+		{name: "missing details"},
+		{name: "null details", details: `,"input_tokens_details":null`},
+		{name: "missing count", details: `,"input_tokens_details":{"cached_tokens":5}`, wantRead: &five},
+		{name: "null count", details: `,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":null}`, wantRead: &five},
+		{name: "zero count", details: `,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":0}`, want: &zero, wantRead: &five},
+		{name: "positive count", details: `,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":7}`, want: &seven, wantRead: &five},
+		{name: "negative count retained", details: `,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":-3}`, want: &negative, wantRead: &five},
+		{name: "overlapping counts retained", details: `,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":12}`, want: &twelve, wantRead: &five},
+		{name: "unknown field ignored", details: `,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":7,"future_detail":{"count":9}}`, want: &seven, wantRead: &five},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"id":"resp-cache","service_tier":"default","output_text":"{}","usage":{"input_tokens":16,"output_tokens":3%s}}`, tt.details)
+			_, response, err := parseOpenAIResponse([]byte(body))
+			if err != nil {
+				t.Fatalf("parseOpenAIResponse: %v", err)
+			}
+			got := response.Usage.CacheCreate
+			if (got == nil) != (tt.want == nil) || got != nil && *got != *tt.want {
+				t.Fatalf("CacheCreate = %v, want %v", got, tt.want)
+			}
+			read := response.Usage.CacheRead
+			if (read == nil) != (tt.wantRead == nil) || read != nil && *read != *tt.wantRead {
+				t.Fatalf("CacheRead = %v, want %v", read, tt.wantRead)
+			}
+			// OpenAI input is inclusive of cache reads and writes. Preserve the
+			// provider's total. Raw negative or overlapping counts are not
+			// proof of billable usage; a future estimator must validate them.
+			if response.Usage.TokensIn == nil || *response.Usage.TokensIn != 16 ||
+				response.Usage.TokensOut == nil || *response.Usage.TokensOut != 3 {
+				t.Fatalf("Usage = %#v, want unchanged input/output totals", response.Usage)
+			}
+			if response.Usage.CacheCreate5m != nil || response.Usage.CacheCreate1h != nil || response.Usage.CostUSD != nil {
+				t.Fatalf("Usage = %#v, want unknown TTL buckets and cost", response.Usage)
+			}
+			if response.Usage.Speed != "standard" {
+				t.Fatalf("Speed = %q, want observed standard tier", response.Usage.Speed)
+			}
+		})
+	}
+}
+
+func TestParseOpenAIResponseRejectsMalformedCacheWriteCount(t *testing.T) {
+	for _, count := range []string{`"7"`, `1.5`, `true`, `{}`, `[]`, `9223372036854775808`} {
+		t.Run(count, func(t *testing.T) {
+			body := fmt.Sprintf(`{"output_text":"{}","usage":{"input_tokens_details":{"cache_write_tokens":%s}}}`, count)
+			if _, _, err := parseOpenAIResponse([]byte(body)); err == nil {
+				t.Fatal("expected malformed cache-write count to fail response decoding")
+			}
+		})
+	}
+}
+
+func TestParsedOpenAIUsageLeavesBundledEstimatesUnavailable(t *testing.T) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatalf("LoadBundled: %v", err)
+	}
+	for _, count := range []string{`null`, `0`, `7`} {
+		t.Run(count, func(t *testing.T) {
+			body := fmt.Sprintf(`{"service_tier":"default","output_text":"{}","usage":{"input_tokens":16,"output_tokens":3,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":%s}}}`, count)
+			_, response, err := parseOpenAIResponse([]byte(body))
+			if err != nil {
+				t.Fatalf("parseOpenAIResponse: %v", err)
+			}
+			usage := response.Usage
+			_, ok := pricing.EstimateUsageUSDFor(catalog, "gpt-6.1-sol", pricing.Usage{
+				TokensIn:         usage.TokensIn,
+				TokensOut:        usage.TokensOut,
+				CacheRead:        usage.CacheRead,
+				CacheCreateTotal: usage.CacheCreate,
+				CacheCreate5m:    usage.CacheCreate5m,
+				CacheCreate1h:    usage.CacheCreate1h,
+				Speed:            usage.Speed,
+			})
+			if ok {
+				t.Fatal("parsed cache-write telemetry must not activate bundled context-banded estimates")
+			}
+		})
+	}
+}
+
+func TestParseAnthropicResponseKeepsSeparateCacheBuckets(t *testing.T) {
+	_, response, err := parseAnthropicResponse([]byte(`{"content":[{"type":"text","text":"{}"}],"usage":{"input_tokens":16,"output_tokens":3,"cache_read_input_tokens":5,"cache_creation_input_tokens":7,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":4},"input_tokens_details":{"cached_tokens":100,"cache_write_tokens":200}}}`))
+	if err != nil {
+		t.Fatalf("parseAnthropicResponse: %v", err)
+	}
+	assertIntPtr(t, "TokensIn", response.Usage.TokensIn, 16)
+	assertIntPtr(t, "TokensOut", response.Usage.TokensOut, 3)
+	assertIntPtr(t, "CacheRead", response.Usage.CacheRead, 5)
+	assertIntPtr(t, "CacheCreate", response.Usage.CacheCreate, 7)
+	assertIntPtr(t, "CacheCreate5m", response.Usage.CacheCreate5m, 3)
+	assertIntPtr(t, "CacheCreate1h", response.Usage.CacheCreate1h, 4)
+	if response.Usage.CostUSD != nil {
+		t.Fatal("cache usage must not become a reported cost")
 	}
 }
 

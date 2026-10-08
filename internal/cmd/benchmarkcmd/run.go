@@ -89,10 +89,12 @@ type benchmarkManifest struct {
 }
 
 type benchmarkManifestRun struct {
-	RunID       string       `json:"run_id"`
-	CandidateID string       `json:"candidate_id"`
-	CaseID      string       `json:"case_id"`
-	Artifacts   runArtifacts `json:"artifacts"`
+	RunID                      string       `json:"run_id"`
+	CandidateID                string       `json:"candidate_id"`
+	CaseID                     string       `json:"case_id"`
+	RequestedWithoutDiscussion bool         `json:"requested_without_discussion"`
+	WithoutDiscussionVerified  bool         `json:"without_discussion_verified"`
+	Artifacts                  runArtifacts `json:"artifacts"`
 }
 
 type benchmarkCandidate struct {
@@ -144,41 +146,44 @@ type benchmarkAgentDir struct {
 }
 
 type benchmarkCase struct {
-	ID              string             `json:"id"`
-	PR              string             `json:"pr"`
-	ReviewBaseSHA   string             `json:"review_base_sha,omitempty"`
-	ReviewHeadSHA   string             `json:"review_head_sha,omitempty"`
-	ExpectedBaseSHA string             `json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA string             `json:"expected_head_sha,omitempty"`
-	Anchors         []benchmark.Anchor `json:"anchors,omitempty"`
+	ID                string             `json:"id"`
+	PR                string             `json:"pr"`
+	ReviewBaseSHA     string             `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA     string             `json:"review_head_sha,omitempty"`
+	WithoutDiscussion bool               `json:"without_discussion"`
+	ExpectedBaseSHA   string             `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA   string             `json:"expected_head_sha,omitempty"`
+	Anchors           []benchmark.Anchor `json:"anchors,omitempty"`
 }
 
 type benchmarkRun struct {
-	RunID                  string                   `json:"run_id"`
-	CandidateID            string                   `json:"candidate_id"`
-	CaseID                 string                   `json:"case_id"`
-	PRURL                  string                   `json:"pr_url"`
-	RequestedReviewBaseSHA string                   `json:"requested_review_base_sha,omitempty"`
-	RequestedReviewHeadSHA string                   `json:"requested_review_head_sha,omitempty"`
-	ExpectedBaseSHA        string                   `json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA        string                   `json:"expected_head_sha,omitempty"`
-	ReviewRunID            string                   `json:"review_run_id,omitempty"`
-	ReviewArtifactPath     string                   `json:"review_artifact_path,omitempty"`
-	ReviewBaseSHA          string                   `json:"review_base_sha,omitempty"`
-	ReviewHeadSHA          string                   `json:"review_head_sha,omitempty"`
-	CurrentBaseSHA         string                   `json:"current_base_sha,omitempty"`
-	CurrentHeadSHA         string                   `json:"current_head_sha,omitempty"`
-	ExitCode               int                      `json:"exit_code"`
-	RetryCount             int                      `json:"retry_count"`
-	FailureClassification  string                   `json:"failure_classification"`
-	DurationMS             int64                    `json:"duration_ms"`
-	FindingCount           int                      `json:"finding_count"`
-	SeverityCounts         map[string]int           `json:"severity_counts"`
-	SelectedAgents         []benchmarkSelectedAgent `json:"selected_agents,omitempty"`
-	ThreadActionCount      int                      `json:"thread_action_count,omitempty"`
-	Usage                  *benchmark.RunMetrics    `json:"usage,omitempty"`
-	Warnings               []string                 `json:"warnings"`
-	Artifacts              runArtifacts             `json:"artifacts"`
+	RunID                      string                   `json:"run_id"`
+	CandidateID                string                   `json:"candidate_id"`
+	CaseID                     string                   `json:"case_id"`
+	PRURL                      string                   `json:"pr_url"`
+	RequestedReviewBaseSHA     string                   `json:"requested_review_base_sha,omitempty"`
+	RequestedReviewHeadSHA     string                   `json:"requested_review_head_sha,omitempty"`
+	RequestedWithoutDiscussion bool                     `json:"requested_without_discussion"`
+	WithoutDiscussionVerified  bool                     `json:"without_discussion_verified"`
+	ExpectedBaseSHA            string                   `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA            string                   `json:"expected_head_sha,omitempty"`
+	ReviewRunID                string                   `json:"review_run_id,omitempty"`
+	ReviewArtifactPath         string                   `json:"review_artifact_path,omitempty"`
+	ReviewBaseSHA              string                   `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA              string                   `json:"review_head_sha,omitempty"`
+	CurrentBaseSHA             string                   `json:"current_base_sha,omitempty"`
+	CurrentHeadSHA             string                   `json:"current_head_sha,omitempty"`
+	ExitCode                   int                      `json:"exit_code"`
+	RetryCount                 int                      `json:"retry_count"`
+	FailureClassification      string                   `json:"failure_classification"`
+	DurationMS                 int64                    `json:"duration_ms"`
+	FindingCount               int                      `json:"finding_count"`
+	SeverityCounts             map[string]int           `json:"severity_counts"`
+	SelectedAgents             []benchmarkSelectedAgent `json:"selected_agents,omitempty"`
+	ThreadActionCount          int                      `json:"thread_action_count,omitempty"`
+	Usage                      *benchmark.RunMetrics    `json:"usage,omitempty"`
+	Warnings                   []string                 `json:"warnings"`
+	Artifacts                  runArtifacts             `json:"artifacts"`
 }
 
 type runArtifacts struct {
@@ -324,7 +329,7 @@ func runBenchmarkSuite(ctx context.Context, cmd *cobra.Command, opts *root.Optio
 			}
 			summary.Runs = append(summary.Runs, runSummary)
 			summary.RunCount++
-			if runSummary.ExitCode == exitcode.Success {
+			if runSummary.ExitCode == exitcode.Success && (!runSummary.RequestedWithoutDiscussion || runSummary.WithoutDiscussionVerified) {
 				summary.SuccessCount++
 			} else {
 				summary.FailureCount++
@@ -377,23 +382,26 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 		Candidate: candidate,
 		Case:      benchCase,
 	})
+	verifyDiscussionIsolation(benchCase, &execution)
 	_ = reviewSpan.End(execution.Err)
 
 	runSummary := benchmarkRun{
-		RunID:                  runID,
-		CandidateID:            candidate.ID,
-		CaseID:                 benchCase.ID,
-		PRURL:                  benchCase.PR,
-		RequestedReviewBaseSHA: benchCase.ReviewBaseSHA,
-		RequestedReviewHeadSHA: benchCase.ReviewHeadSHA,
-		ExpectedBaseSHA:        benchCase.ExpectedBaseSHA,
-		ExpectedHeadSHA:        benchCase.ExpectedHeadSHA,
-		ExitCode:               execution.ExitCode,
-		RetryCount:             0,
-		DurationMS:             durationMS(execution.Duration),
-		SeverityCounts:         map[string]int{},
-		Warnings:               []string{},
-		Artifacts:              artifacts,
+		RunID:                      runID,
+		CandidateID:                candidate.ID,
+		CaseID:                     benchCase.ID,
+		PRURL:                      benchCase.PR,
+		RequestedReviewBaseSHA:     benchCase.ReviewBaseSHA,
+		RequestedReviewHeadSHA:     benchCase.ReviewHeadSHA,
+		RequestedWithoutDiscussion: benchCase.EffectiveWithoutDiscussion(),
+		WithoutDiscussionVerified:  benchCase.EffectiveWithoutDiscussion() && execution.Review != nil && execution.Review.Run.WithoutDiscussion,
+		ExpectedBaseSHA:            benchCase.ExpectedBaseSHA,
+		ExpectedHeadSHA:            benchCase.ExpectedHeadSHA,
+		ExitCode:                   execution.ExitCode,
+		RetryCount:                 0,
+		DurationMS:                 durationMS(execution.Duration),
+		SeverityCounts:             map[string]int{},
+		Warnings:                   []string{},
+		Artifacts:                  artifacts,
 	}
 	if execution.Err != nil && execution.ExitCode < 0 {
 		runSummary.Warnings = append(runSummary.Warnings, fmt.Sprintf("review command failed to start or complete: %s", execution.Err.Error()))
@@ -414,9 +422,8 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 		} else if usage.HasData() {
 			runSummary.Usage = &usage
 		}
-	} else {
-		runSummary.Warnings = append(runSummary.Warnings, execution.Warnings...)
 	}
+	runSummary.Warnings = append(runSummary.Warnings, execution.Warnings...)
 
 	if err := writeArtifactFile(artifacts.ReviewJSON, execution.Stdout); err != nil {
 		return benchmarkRun{}, runSpan.End(err)
@@ -431,6 +438,29 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 	return runSummary, nil
 }
 
+// A successful child exit is not evidence that an external binary honored the
+// isolation flag. Require the #627 response marker, retaining raw output and the
+// real child exit code when the capability cannot be verified.
+func verifyDiscussionIsolation(benchCase benchmark.Case, execution *reviewExecutionResult) {
+	if !benchCase.EffectiveWithoutDiscussion() {
+		return
+	}
+	if execution.ExitCode != exitcode.Success {
+		execution.Warnings = append(execution.Warnings, "discussion-free benchmark requires cr review --without-discussion; no fallback to saved sessions was attempted")
+		return
+	}
+	if execution.Review != nil && execution.Review.Run.WithoutDiscussion {
+		return
+	}
+	verificationErr := fmt.Errorf("discussion isolation could not be verified: review JSON must report run.without_discussion=true; use a compatible cr binary or explicitly set without_discussion: false to opt out")
+	execution.Warnings = append(execution.Warnings, verificationErr.Error())
+	if execution.FailureClassification != failureNone {
+		return // Preserve a more specific missing/invalid JSON failure.
+	}
+	execution.Err = verificationErr
+	execution.FailureClassification = failureDiscussionIsolationUnverified
+}
+
 func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchmark.Case) []string {
 	args := []string{"--profile", candidate.Profile, "--quiet", "review", benchCase.PR, "--dry-run", "--json"}
 	if benchCase.ReviewBaseSHA != "" {
@@ -438,6 +468,9 @@ func reviewArgs(suiteDir string, candidate benchmark.Candidate, benchCase benchm
 	}
 	if benchCase.ReviewHeadSHA != "" {
 		args = append(args, "--review-head-sha", benchCase.ReviewHeadSHA)
+	}
+	if benchCase.EffectiveWithoutDiscussion() {
+		args = append(args, "--without-discussion")
 	}
 	if candidate.Stages.Selection.Model != "" {
 		args = append(args,
@@ -631,13 +664,14 @@ func summarizeCases(cases []benchmark.Case) []benchmarkCase {
 	out := make([]benchmarkCase, 0, len(cases))
 	for _, benchCase := range cases {
 		out = append(out, benchmarkCase{
-			ID:              benchCase.ID,
-			PR:              benchCase.PR,
-			ReviewBaseSHA:   benchCase.ReviewBaseSHA,
-			ReviewHeadSHA:   benchCase.ReviewHeadSHA,
-			ExpectedBaseSHA: benchCase.ExpectedBaseSHA,
-			ExpectedHeadSHA: benchCase.ExpectedHeadSHA,
-			Anchors:         append([]benchmark.Anchor(nil), benchCase.Anchors...),
+			ID:                benchCase.ID,
+			PR:                benchCase.PR,
+			ReviewBaseSHA:     benchCase.ReviewBaseSHA,
+			ReviewHeadSHA:     benchCase.ReviewHeadSHA,
+			WithoutDiscussion: benchCase.EffectiveWithoutDiscussion(),
+			ExpectedBaseSHA:   benchCase.ExpectedBaseSHA,
+			ExpectedHeadSHA:   benchCase.ExpectedHeadSHA,
+			Anchors:           append([]benchmark.Anchor(nil), benchCase.Anchors...),
 		})
 	}
 	return out
@@ -773,10 +807,12 @@ func writeSuiteArtifacts(summary benchmarkSuiteSummary) error {
 	}
 	for _, run := range summary.Runs {
 		manifest.Runs = append(manifest.Runs, benchmarkManifestRun{
-			RunID:       run.RunID,
-			CandidateID: run.CandidateID,
-			CaseID:      run.CaseID,
-			Artifacts:   run.Artifacts,
+			RunID:                      run.RunID,
+			CandidateID:                run.CandidateID,
+			CaseID:                     run.CaseID,
+			RequestedWithoutDiscussion: run.RequestedWithoutDiscussion,
+			WithoutDiscussionVerified:  run.WithoutDiscussionVerified,
+			Artifacts:                  run.Artifacts,
 		})
 	}
 	if err := writeJSONFile(summary.Artifacts.Manifest, manifest); err != nil {

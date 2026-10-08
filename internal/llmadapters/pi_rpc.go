@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
@@ -27,9 +28,14 @@ const (
 	piRPCReviewerToolNames      = "cr_read,cr_search,cr_list,cr_diff"
 	piRPCToolEvidenceReserve    = 256
 	piRPCToolDiagnosticMaxRunes = 128
+	piRPCErrorMaxRunes          = 512
 	piRPCPreflightTimeout       = 5 * time.Second
 	piRPCPreflightOutputBytes   = 64 * 1024
 	piRPCPreflightRegistration  = "codereview-pi-reviewer-tools-registered cr_read,cr_search,cr_list,cr_diff"
+	// piRPCSettlementGrace bounds the quiet period after a run boundary that
+	// does not announce more work. Pi 1.0 follows it with agent_settled; older
+	// runtimes never do and would otherwise idle until the task deadline.
+	piRPCSettlementGrace = 30 * time.Second
 )
 
 // ErrPiRPCIncompatible reports that the installed Pi runtime cannot enforce
@@ -54,6 +60,7 @@ type PiRPCAdapter struct {
 	timeout           time.Duration
 	scratchDirFactory ScratchDirFactory
 	fastModeModels    []string
+	settlementGrace   time.Duration
 	preflightMu       sync.Mutex
 	preflightReady    bool
 }
@@ -84,6 +91,7 @@ func NewPiRPCAdapter(opts PiRPCOptions) *PiRPCAdapter {
 		timeout:           timeout,
 		scratchDirFactory: factory,
 		fastModeModels:    append([]string(nil), opts.FastModeModels...),
+		settlementGrace:   piRPCSettlementGrace,
 	}
 }
 
@@ -165,6 +173,7 @@ func (a *PiRPCAdapter) Start(ctx context.Context, req Request) (Stream, error) {
 		stdin:              process.Stdin(),
 		allowReviewerTools: req.ReviewerWorkspace != nil,
 		logBytesLeft:       -1,
+		settlementGrace:    a.settlementGrace,
 	}
 	if req.ReviewerWorkspace != nil {
 		stream.toolEvidenceBytesLeft = min(piRPCToolEvidenceReserve, req.ReviewerWorkspace.MaxToolOutputBytes)
@@ -232,6 +241,7 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 	args := append(append([]string(nil), a.commandArgsPrefix...),
 		"--mode", "rpc",
 		"--system-prompt", piRPCReviewerSystemPrompt,
+		"--append-system-prompt", "",
 		"--no-builtin-tools",
 		"--tools", piRPCReviewerToolNames,
 		"--extension", extensionPath,
@@ -392,6 +402,13 @@ func (a *PiRPCAdapter) buildArgs(req Request, extensionPath string) ([]string, e
 	args := []string{
 		"--mode", "rpc",
 		"--system-prompt", systemPrompt,
+		// An explicit empty CLI append source suppresses APPEND_SYSTEM.md
+		// discovery in Pi 1.0. --no-context-files separately suppresses
+		// AGENTS.md/CLAUDE.md; --system-prompt overrides SYSTEM.md discovery.
+		// Keep the selected agent directory intact so authentication refreshes
+		// continue to persist in the user's original credential store.
+		"--append-system-prompt", "",
+		"--no-context-files",
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -402,7 +419,7 @@ func (a *PiRPCAdapter) buildArgs(req Request, extensionPath string) ([]string, e
 		args = append(args, "--no-tools")
 	} else {
 		args[3] = piRPCReviewerSystemPrompt
-		args = append(args, "--no-builtin-tools", "--no-context-files", "--no-approve", "--tools", piRPCReviewerToolNames, "--extension", extensionPath)
+		args = append(args, "--no-builtin-tools", "--no-approve", "--tools", piRPCReviewerToolNames, "--extension", extensionPath)
 	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
@@ -415,21 +432,22 @@ func (a *PiRPCAdapter) buildArgs(req Request, extensionPath string) ([]string, e
 
 func (a *PiRPCAdapter) validateArgs(args []string, req Request, extensionPath string) error {
 	allowedFlags := map[string]bool{
-		"--mode":                true,
-		"--system-prompt":       true,
-		"--no-tools":            false,
-		"--no-builtin-tools":    false,
-		"--no-context-files":    false,
-		"--no-approve":          false,
-		"--tools":               true,
-		"--no-extensions":       false,
-		"--extension":           true,
-		"--no-skills":           false,
-		"--no-prompt-templates": false,
-		"--no-themes":           false,
-		"--no-session":          false,
-		"--model":               true,
-		"--thinking":            true,
+		"--mode":                 true,
+		"--system-prompt":        true,
+		"--append-system-prompt": true,
+		"--no-tools":             false,
+		"--no-builtin-tools":     false,
+		"--no-context-files":     false,
+		"--no-approve":           false,
+		"--tools":                true,
+		"--no-extensions":        false,
+		"--extension":            true,
+		"--no-skills":            false,
+		"--no-prompt-templates":  false,
+		"--no-themes":            false,
+		"--no-session":           false,
+		"--model":                true,
+		"--thinking":             true,
 	}
 	if err := validateAllowedFlags("pi_rpc", args, allowedFlags); err != nil {
 		return err
@@ -442,10 +460,13 @@ func (a *PiRPCAdapter) validateArgs(args []string, req Request, extensionPath st
 	if flagValue(args, "--mode") != "rpc" {
 		return fmt.Errorf("%w: pi_rpc must use rpc mode", ErrUnsafeSubprocessConfig)
 	}
-	for _, flag := range []string{"--system-prompt", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+	for _, flag := range []string{"--system-prompt", "--append-system-prompt", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(args, flag) {
 			return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 		}
+	}
+	if appendPrompt, ok := flagValueOK(args, "--append-system-prompt"); !ok || appendPrompt != "" {
+		return fmt.Errorf("%w: pi_rpc must use an explicit empty append system prompt", ErrUnsafeSubprocessConfig)
 	}
 	wantSystemPrompt := piRPCSystemPrompt
 	if req.ReviewerWorkspace == nil {
@@ -495,6 +516,7 @@ type piRPCStream struct {
 	baseStream
 	stdin                 io.Closer
 	allowReviewerTools    bool
+	settlementGrace       time.Duration
 	logLimitMu            sync.Mutex
 	logBytesLeft          int
 	logCapped             bool
@@ -503,6 +525,7 @@ type piRPCStream struct {
 	diffToolCompleted     int
 	diffToolFailed        int
 	diffToolError         string
+	toolTrace             piRPCReviewerToolTrace
 }
 
 func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
@@ -518,34 +541,45 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	}()
 
 	scanResult := s.scanStdout(stdout)
+	// Closing stdin asks Pi to shut down, so it happens only after settlement
+	// or a terminal failure. Keep reading stdout so shutdown never blocks on a
+	// full pipe.
 	if s.stdin != nil {
 		_ = s.stdin.Close()
 	}
+	stdoutDone := make(chan struct{})
+	go func() {
+		defer close(stdoutDone)
+		_, _ = io.Copy(piRPCLogWriter{stream: s}, stdout)
+	}()
 	waitErr := cmd.Wait()
+	<-stdoutDone
 	<-stderrDone
-	evidence := s.reviewerToolEvidence()
-	s.writeReviewerToolEvidence(evidence)
-	scanResult.response.ReviewerToolEvidence = evidence
-
 	result := subprocessResult{response: scanResult.response}
 	switch {
 	case scanResult.err != nil:
 		result.err = scanResult.err
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		result.err = ctx.Err()
-	case scanResult.agentEnd && waitErr != nil:
+	case scanResult.settled && waitErr != nil:
 		result.err = waitErr
-	case scanResult.agentEnd && len(scanResult.response.StructuredOutput) == 0:
+	case scanResult.settled && len(scanResult.response.StructuredOutput) == 0:
 		result.err = errors.New("llm pi rpc: no structured output")
-	case scanResult.agentEnd:
+	case scanResult.settled:
 		result.err = nil
 	case ctx.Err() != nil:
 		result.err = ctx.Err()
 	case waitErr != nil:
 		result.err = waitErr
-	case !scanResult.agentEnd:
-		result.err = errors.New("llm pi rpc: missing agent_end")
+	default:
+		result.err = errors.New("llm pi rpc: stream ended before agent_settled")
 	}
+	// Settlement is the protocol boundary, but a terminal error or canceled
+	// context must not promote partial execution evidence to a complete stream.
+	s.toolTrace.streamComplete = scanResult.settled && result.err == nil && ctx.Err() == nil
+	evidence := s.reviewerToolEvidence()
+	s.writeReviewerToolEvidence(evidence)
+	result.response.ReviewerToolEvidence = evidence
 	recordRequestDuration(&result.response, start, result.err)
 	s.Cancel()
 	s.CloseProcessGroup()
@@ -557,14 +591,26 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 type piRPCScanResult struct {
 	response Response
 	err      error
-	agentEnd bool
+	settled  bool
 }
 
+// scanStdout consumes RPC records until agent_settled, the only boundary after
+// which Pi does no further automatic work. agent_end can be followed by
+// retries, compaction recovery, or queued work, and a successful prompt
+// response only acknowledges acceptance.
 func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var result piRPCScanResult
+	var final *piRPCAssistantMessage
+	var retryFailure string
+	settlement := piRPCSettlementWatch{grace: s.settlementGrace, expire: s.Cancel}
+	defer settlement.stop()
 	for scanner.Scan() {
+		if settlement.expired.Load() {
+			break
+		}
+		settlement.stop()
 		line := append([]byte(nil), scanner.Bytes()...)
 		s.writeLog(normalizePiRPCLogLine(line))
 		event, err := parsePiRPCEvent(line)
@@ -587,19 +633,109 @@ func (s *piRPCStream) scanStdout(stdout io.Reader) piRPCScanResult {
 			result.err = fmt.Errorf("llm pi rpc: prompt failed: %s", event.responseFailure)
 			return result
 		}
-		if len(event.structuredOutput) > 0 {
-			result.response.StructuredOutput = event.structuredOutput
-		}
-		result.response.Usage = mergeUsage(result.response.Usage, event.usage)
-		if event.agentEnd {
-			result.agentEnd = true
+		if event.promptHandled {
+			s.Cancel()
+			result.err = errors.New("llm pi rpc: prompt was handled without starting a run")
 			return result
 		}
+		result.response.Usage = addPiRPCUsage(result.response.Usage, event.usage)
+		if event.assistant != nil {
+			final = event.assistant
+		}
+		if event.retryFailure != "" {
+			retryFailure = event.retryFailure
+		}
+		if event.settled {
+			result.settled = true
+			result.response.StructuredOutput, result.err = piRPCFinalAnswer(final, retryFailure)
+			return result
+		}
+		if event.awaitsSettlement {
+			settlement.arm()
+		}
+	}
+	if settlement.expired.Load() {
+		result.err = fmt.Errorf("%w: no agent_settled within %s after the run ended; CR requires the Pi 1.0 RPC completion contract", ErrPiRPCIncompatible, s.settlementGrace)
+		return result
 	}
 	if err := scanner.Err(); err != nil && result.err == nil {
 		result.err = err
 	}
 	return result
+}
+
+// piRPCFinalAnswer accepts only the last completed assistant message, so text
+// from an earlier turn or failed attempt never stands in for the answer.
+func piRPCFinalAnswer(final *piRPCAssistantMessage, retryFailure string) ([]byte, error) {
+	switch {
+	case final == nil:
+		return nil, nil
+	case final.stopReason == "error" || final.stopReason == "aborted":
+		diagnostic := final.errorMessage
+		if diagnostic == "" {
+			diagnostic = retryFailure
+		}
+		if diagnostic == "" {
+			diagnostic = "no error message reported"
+		}
+		return nil, fmt.Errorf("llm pi rpc: final assistant message %s: %s", final.stopReason, boundPiRPCDiagnostic(diagnostic, piRPCErrorMaxRunes))
+	case final.stopReason == "toolUse":
+		return nil, errors.New("llm pi rpc: run settled without a final answer after tool use")
+	default:
+		return final.output, nil
+	}
+}
+
+// piRPCSettlementWatch fails a run that goes quiet after a boundary which
+// announced no further work but never reports agent_settled.
+type piRPCSettlementWatch struct {
+	grace   time.Duration
+	expire  func()
+	timer   *time.Timer
+	expired atomic.Bool
+}
+
+func (w *piRPCSettlementWatch) arm() {
+	if w.grace <= 0 {
+		return
+	}
+	w.timer = time.AfterFunc(w.grace, func() {
+		w.expired.Store(true)
+		w.expire()
+	})
+}
+
+func (w *piRPCSettlementWatch) stop() {
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+}
+
+// addPiRPCUsage adds one completed usage report to the run total. Fields that
+// no report has provided stay nil (unknown) rather than becoming zero.
+func addPiRPCUsage(total Usage, next Usage) Usage {
+	total.TokensIn = addPiRPCUsageField(total.TokensIn, next.TokensIn)
+	total.TokensOut = addPiRPCUsageField(total.TokensOut, next.TokensOut)
+	total.CacheRead = addPiRPCUsageField(total.CacheRead, next.CacheRead)
+	total.CacheCreate = addPiRPCUsageField(total.CacheCreate, next.CacheCreate)
+	total.CacheCreate5m = addPiRPCUsageField(total.CacheCreate5m, next.CacheCreate5m)
+	total.CacheCreate1h = addPiRPCUsageField(total.CacheCreate1h, next.CacheCreate1h)
+	total.CostUSD = addPiRPCUsageField(total.CostUSD, next.CostUSD)
+	return total
+}
+
+func addPiRPCUsageField[T int | float64](total *T, next *T) *T {
+	switch {
+	case next == nil:
+		return total
+	case total == nil:
+		value := *next
+		return &value
+	default:
+		value := *total + *next
+		return &value
+	}
 }
 
 type piRPCLogWriter struct{ stream *piRPCStream }
@@ -644,7 +780,11 @@ func (s *piRPCStream) writeLog(p []byte) {
 }
 
 func (s *piRPCStream) observeReviewerToolEvent(event piRPCEvent) {
-	if !s.allowReviewerTools || event.toolName != "cr_diff" {
+	if !s.allowReviewerTools {
+		return
+	}
+	s.toolTrace.observe(event)
+	if event.toolName != "cr_diff" {
 		return
 	}
 	if event.toolStarted {
@@ -674,9 +814,9 @@ func (s *piRPCStream) reviewerToolEvidence() *llm.ReviewerToolEvidence {
 	case s.diffToolStarted > 0:
 		status = llm.DiffToolStatusIncomplete
 	}
-	evidence := &llm.ReviewerToolEvidence{DiffStatus: status}
+	evidence := &llm.ReviewerToolEvidence{DiffStatus: status, Trace: s.toolTrace.snapshot()}
 	if status == llm.DiffToolStatusFailed {
-		evidence.DiffDiagnostic = boundPiRPCToolError(s.diffToolError)
+		evidence.DiffDiagnostic = boundPiRPCDiagnostic(s.diffToolError, piRPCToolDiagnosticMaxRunes)
 	}
 	return evidence
 }
@@ -699,13 +839,13 @@ func (s *piRPCStream) writeReviewerToolEvidence(evidence *llm.ReviewerToolEviden
 	}
 }
 
-func boundPiRPCToolError(value string) string {
+func boundPiRPCDiagnostic(value string, maxRunes int) string {
 	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 	runes := []rune(value)
-	if len(runes) <= piRPCToolDiagnosticMaxRunes {
+	if len(runes) <= maxRunes {
 		return value
 	}
-	return string(runes[:piRPCToolDiagnosticMaxRunes-3]) + "..."
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func piRPCToolError(raw json.RawMessage) string {
@@ -878,7 +1018,7 @@ func compactPiRPCPartialForLog(partialRaw json.RawMessage) json.RawMessage {
 
 type piRPCEvent struct {
 	sessionID        string
-	structuredOutput []byte
+	assistant        *piRPCAssistantMessage
 	usage            Usage
 	toolUse          bool
 	toolName         string
@@ -886,8 +1026,23 @@ type piRPCEvent struct {
 	toolCompleted    bool
 	toolFailed       bool
 	toolError        string
+	toolCallID       string
+	toolArgs         json.RawMessage
+	toolOutcomeKnown bool
+	toolOutput       *llm.ReviewerToolOutput
 	responseFailure  string
-	agentEnd         bool
+	promptHandled    bool
+	retryFailure     string
+	awaitsSettlement bool
+	settled          bool
+}
+
+// piRPCAssistantMessage is the authoritative message_end form of one
+// completed assistant message.
+type piRPCAssistantMessage struct {
+	output       []byte
+	stopReason   string
+	errorMessage string
 }
 
 func parsePiRPCEvent(line []byte) (piRPCEvent, error) {
@@ -902,20 +1057,23 @@ func parsePiRPCEvent(line []byte) (piRPCEvent, error) {
 	eventType := rawString(raw, "type")
 	event := piRPCEvent{
 		toolUse: piRPCEventIndicatesToolUse(eventType) || valueIndicatesToolUse(decoded),
-		usage:   parsePiRPCUsage(raw),
 	}
 	if event.toolUse {
 		event.toolName = firstRawString(raw, "toolName", "tool_name", "name")
+		event.toolCallID = piRPCToolCallID(raw)
 		switch eventType {
 		case "tool_execution_start":
 			event.toolStarted = true
+			event.toolArgs = raw["args"]
 		case "tool_execution_end":
 			event.toolCompleted = true
 			event.toolFailed = rawBool(raw, "isError")
 			var resultRaw map[string]json.RawMessage
-			if err := json.Unmarshal(raw["result"], &resultRaw); err == nil && rawBool(resultRaw, "isError") {
-				event.toolFailed = true
+			if err := json.Unmarshal(raw["result"], &resultRaw); err == nil {
+				event.toolFailed = event.toolFailed || rawBool(resultRaw, "isError")
+				event.toolOutput = parsePiRPCToolOutput(resultRaw["details"])
 			}
+			event.toolOutcomeKnown = piRPCToolOutcomeKnown(raw, resultRaw, event.toolFailed)
 			if event.toolFailed {
 				event.toolError = piRPCToolError(raw["result"])
 				if event.toolError == "" {
@@ -927,26 +1085,41 @@ func parsePiRPCEvent(line []byte) (piRPCEvent, error) {
 	if id := firstRawString(raw, "sessionId", "session_id"); id != "" {
 		event.sessionID = id
 	}
-	if eventType == "response" && rawString(raw, "command") == "prompt" && !rawBool(raw, "success") {
-		event.responseFailure = rawString(raw, "error")
-		if event.responseFailure == "" {
-			event.responseFailure = "unknown error"
+	if eventType == "response" && rawString(raw, "command") == "prompt" {
+		if !rawBool(raw, "success") {
+			event.responseFailure = rawString(raw, "error")
+			if event.responseFailure == "" {
+				event.responseFailure = "unknown error"
+			}
+			return event, nil
+		}
+		var data map[string]json.RawMessage
+		if err := json.Unmarshal(raw["data"], &data); err == nil && rawString(data, "disposition") == "handled" {
+			event.promptHandled = true
 		}
 		return event, nil
 	}
-	if eventType == "message_end" {
-		if output, usage := parsePiRPCMessageEnd(raw["message"]); len(output) > 0 {
-			event.structuredOutput = output
-			event.usage = mergeUsage(event.usage, usage)
-		} else {
-			event.usage = mergeUsage(event.usage, usage)
+	// Usage is counted only from completed reports: message_end for each
+	// assistant message and compaction_end for summary generation.
+	// message_update usage is cumulative, and agent_end.messages repeats
+	// messages already reported by message_end.
+	switch eventType {
+	case "message_end":
+		event.assistant, event.usage = parsePiRPCMessageEnd(raw["message"])
+	case "compaction_end":
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(raw["result"], &result); err == nil {
+			event.usage = parsePiRPCUsage(result)
 		}
-	}
-	if eventType == "agent_end" {
-		event.agentEnd = true
-		if output := parsePiRPCAgentEnd(raw["messages"]); len(output) > 0 {
-			event.structuredOutput = output
+		event.awaitsSettlement = !rawBool(raw, "willRetry")
+	case "auto_retry_end":
+		if !rawBool(raw, "success") {
+			event.retryFailure = rawString(raw, "finalError")
 		}
+	case "agent_end":
+		event.awaitsSettlement = !rawBool(raw, "willRetry")
+	case "agent_settled":
+		event.settled = true
 	}
 	return event, nil
 }
@@ -986,8 +1159,9 @@ function runTool(tool, params, signal) {
     });
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
+    let stdoutTruncated = false;
     const append = (current, chunk) => Buffer.concat([current, chunk]).subarray(0, maxOutputBytes);
-    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
+    child.stdout.on("data", (chunk) => { stdoutTruncated ||= stdout.length + chunk.length > maxOutputBytes; stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
     const kill = () => {
       try {
@@ -1004,7 +1178,8 @@ function runTool(tool, params, signal) {
       clearTimeout(timer);
       signal?.removeEventListener("abort", kill);
       const text = code === 0 ? stdout.toString("utf8") : (stderr.toString("utf8") || ("tool exited " + code));
-      resolve({ content: [{ type: "text", text }], details: {}, isError: code !== 0 });
+      const details = code === 0 ? { codereview_tool_output: { version: 1, bytes: stdout.length, truncated: stdoutTruncated } } : {};
+      resolve({ content: [{ type: "text", text }], details, isError: code !== 0 });
     });
     child.stdin.end(JSON.stringify({ ...params, tool }));
   });
@@ -1032,7 +1207,7 @@ func piRPCEventIndicatesToolUse(value string) bool {
 		normalized == "bash"
 }
 
-func parsePiRPCMessageEnd(value json.RawMessage) ([]byte, Usage) {
+func parsePiRPCMessageEnd(value json.RawMessage) (*piRPCAssistantMessage, Usage) {
 	var raw map[string]json.RawMessage
 	if len(value) == 0 {
 		return nil, Usage{}
@@ -1040,30 +1215,14 @@ func parsePiRPCMessageEnd(value json.RawMessage) ([]byte, Usage) {
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return nil, Usage{}
 	}
-	usage := parsePiRPCUsage(raw)
 	if rawString(raw, "role") != "assistant" {
-		return nil, usage
+		return nil, Usage{}
 	}
-	return extractPiRPCText(raw["content"]), usage
-}
-
-func parsePiRPCAgentEnd(value json.RawMessage) []byte {
-	var messages []map[string]json.RawMessage
-	if len(value) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(value, &messages); err != nil {
-		return nil
-	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		if rawString(messages[i], "role") != "assistant" {
-			continue
-		}
-		if output := extractPiRPCText(messages[i]["content"]); len(output) > 0 {
-			return output
-		}
-	}
-	return nil
+	return &piRPCAssistantMessage{
+		output:       extractPiRPCText(raw["content"]),
+		stopReason:   rawString(raw, "stopReason"),
+		errorMessage: rawString(raw, "errorMessage"),
+	}, parsePiRPCUsage(raw)
 }
 
 func extractPiRPCText(value json.RawMessage) []byte {
@@ -1099,7 +1258,11 @@ func parsePiRPCUsage(raw map[string]json.RawMessage) Usage {
 		TokensOut:   firstRawIntPtr(usageRaw, "tokens_out", "tokensOut", "output", "outputTokens", "completionTokens"),
 		CacheRead:   firstRawIntPtr(usageRaw, "cache_read", "cacheRead"),
 		CacheCreate: firstRawIntPtr(usageRaw, "cache_create", "cacheCreate", "cache_write", "cacheWrite"),
-		CostUSD:     firstRawFloatPtr(usageRaw, "cost_usd", "costUSD", "totalCost", "totalCostUSD"),
+		// Pi reports cacheWrite1h as the one-hour subset of cacheWrite. The
+		// remainder is not labeled with a retention, so no five-minute value
+		// is derived from it.
+		CacheCreate1h: rawIntPtr(usageRaw, "cacheWrite1h"),
+		CostUSD:       firstRawFloatPtr(usageRaw, "cost_usd", "costUSD", "totalCost", "totalCostUSD"),
 	}
 	if usage.CostUSD == nil {
 		usage.CostUSD = nestedRawFloatPtr(usageRaw, "cost", "total")
