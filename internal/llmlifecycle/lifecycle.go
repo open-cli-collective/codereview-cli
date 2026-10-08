@@ -23,7 +23,7 @@ import (
 )
 
 // SchemaVersion identifies the on-disk LLM task artifact schema.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // Status is the durable outcome recorded for one structured LLM task.
 type Status string
@@ -416,7 +416,7 @@ func LoadStructured[T any](ctx context.Context, req Request, decode llm.Decoder[
 		}
 		draft := SessionDraftFromLedger(session)
 		draft.Response.Usage.Speed = meta.Speed
-		draft.Response.ReviewerToolEvidence = meta.ReviewerToolEvidence
+		draft.Response.ReviewerToolEvidence = llm.CloneReviewerToolEvidence(meta.ReviewerToolEvidence)
 		progress := progressResult(meta, llm.StructuredResult[T]{SessionID: meta.ProviderSessionID}, true, draft.Response.Usage)
 		loadProgress(req.Progress, NewProgressEvent(req, ResumeSessionID(meta)), progress)
 		return Result[T]{Value: value, Draft: draft, Session: session, Cached: true}, true, nil
@@ -701,7 +701,7 @@ func BaseMetadata(req Request, draft SessionDraft) Metadata {
 		CacheCreate1h:        draft.Response.Usage.CacheCreate1h,
 		CostUSD:              draft.Response.Usage.CostUSD,
 		Speed:                draft.Response.Usage.Speed,
-		ReviewerToolEvidence: draft.Response.ReviewerToolEvidence,
+		ReviewerToolEvidence: llm.CloneReviewerToolEvidence(draft.Response.ReviewerToolEvidence),
 	}
 }
 
@@ -831,7 +831,7 @@ func SessionDraftFromMetadata(meta Metadata) SessionDraft {
 		Model:                     meta.Model,
 		Effort:                    meta.Effort,
 		Response: llm.Response{
-			ReviewerToolEvidence: meta.ReviewerToolEvidence,
+			ReviewerToolEvidence: llm.CloneReviewerToolEvidence(meta.ReviewerToolEvidence),
 			Usage: llm.Usage{
 				TokensIn:      meta.TokensIn,
 				TokensOut:     meta.TokensOut,
@@ -870,7 +870,7 @@ func loadOptionalTaskSession(ctx context.Context, store Store, runID string, met
 	}
 	draft := SessionDraftFromLedger(session)
 	draft.Response.Usage.Speed = meta.Speed
-	draft.Response.ReviewerToolEvidence = meta.ReviewerToolEvidence
+	draft.Response.ReviewerToolEvidence = llm.CloneReviewerToolEvidence(meta.ReviewerToolEvidence)
 	return session, draft, nil
 }
 

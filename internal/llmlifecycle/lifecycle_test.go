@@ -34,7 +34,7 @@ func TestFingerprintIncludesCurrentTaskSchemaVersion(t *testing.T) {
 		"review changed code",
 		[]string{"orchestrator-selection", "discussion=abc123"},
 	)
-	const want = "119c25ca1cdbaffa98f09019140779be4802f63e96769568fac3d9aa35b4697e"
+	const want = "8c285dc068b786907f3539d508f4b9c6c81051aa5b9788753c306b9f0de5d839"
 	if got != want {
 		t.Fatalf("Fingerprint() = %q, want current schema-version cache key %q", got, want)
 	}
@@ -453,7 +453,7 @@ func TestRunStructuredRejectsPreviousSchemaBeforeProviderCall(t *testing.T) {
 	staleAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	req.Adapter = staleAdapter
 	_, err = RunStructured(ctx, req, decodeLifecyclePayload)
-	if err == nil || !strings.Contains(err.Error(), "schema version = 2, want 3") {
+	if err == nil || !strings.Contains(err.Error(), "schema version = 3, want 4") {
 		t.Fatalf("RunStructured previous schema error = %v, want fail-closed schema rejection", err)
 	}
 	if len(staleAdapter.Requests()) != 0 || len(staleAdapter.Resumes()) != 0 {

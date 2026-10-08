@@ -42,12 +42,16 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 ## Schema Version
 
-`schema_version` is currently `3`. Version 2 added the relocation/context
-coverage contract. Version 3 adds the pinned symlink metadata digest and
+`schema_version` is currently `4`. Version 2 added the relocation/context
+coverage contract. Version 3 added the pinned symlink metadata digest and
 inspection-contract version to reviewer, coverage-repair, and rollup resume
-inputs. Schema versions 1 and 2 are rejected for reuse and require rerunning
-the task; old metadata is never treated as safe merely because the prompt or
-assignment count appears unchanged.
+inputs. Version 4 adds bounded per-call reviewer tool telemetry, including the
+explicit distinction between regular-file and symlink-metadata read views.
+Schema versions 1, 2, and 3 are rejected for reuse and require rerunning the task,
+so old successful Pi tasks cannot silently reuse output without this collection
+contract. The schema version participates in the input fingerprint. Old
+metadata is never treated as safe merely because the prompt or assignment
+count appears unchanged.
 
 Bump it when changing any load-bearing field, status value, fingerprint input,
 task identity, or resume rule in a way that could make an in-flight run unsafe
@@ -174,12 +178,79 @@ The lifecycle persists this evidence in metadata and restores it when loading
 a cached task, so reusing successful output preserves the tool state used to
 assess coverage and approval.
 
-In schema version `2`, an absent `reviewer_tool_evidence` field means no
+In schema version `4`, an absent `reviewer_tool_evidence` field means no
 adapter-provided evidence is available. It is distinct from explicit
 `not_invoked` evidence: absence does not trigger the tool-evidence coverage
 check, but the normal coverage checks for skipped, missing, and unassigned
-files still apply. Version 1 metadata fails the schema check before any task
+files still apply. Version 1, 2, or 3 metadata fails the schema check before any task
 output can be reused.
+
+### Bounded execution trace
+
+Pi reviewer invocations also persist `reviewer_tool_evidence.trace`, version
+`1`, source `pi_rpc`. This trace records only actual `tool_execution_start` and
+`tool_execution_end` events for `cr_read` and `cr_diff`. Model tool-call text,
+`inspected_files` claims, searches, and directory listings do not create file
+read evidence. Other adapters, including subprocess adapters, leave evidence
+absent; an absent trace means this per-call contract is unsupported/unavailable,
+not that no calls happened. A present empty `calls` array means no supported
+execution events were observed during that invocation.
+
+Each call retains its exact bounded `call_id`, tool, observed start/end flags,
+requested byte offset/limit, and `succeeded`, `failed`, or `incomplete` outcome.
+Success requires matching start/end call identity and an explicit non-error
+execution outcome. An unmatched end, missing end/identity/outcome, duplicate
+identity, or mismatched tool cannot establish success. A stable
+`provenance_issue` explains missing or ambiguous observations without copying
+raw arguments, tool output, or failure text into the trace.
+
+For `cr_read`, `path` is the unchanged canonical repository-relative argument.
+Absolute, traversing, VCS metadata, noncanonical, or unavailable paths are
+omitted with a provenance issue rather than normalized into another file's
+evidence. This collection is independent of reviewer assignments: context
+reads can be recorded without receiving assignment coverage. `read_view` is
+`file` for an ordinary read or `symlink` for an explicit `view="symlink"`
+request. Unavailable arguments or an invalid explicit view leave `read_view`
+absent rather than assuming a file-body read. Symlink-view ranges cover pinned
+metadata only: they do not read a destination body or a head regular-file body for a base-only
+symlink transition. The trace does not duplicate pinned link payloads, digests,
+target resolution, or payload-omission evidence from the symlink artifact.
+Tool success alone does not establish that a non-omitted link payload was read.
+`cr_diff` reads the fixed pinned diff and has no path parameter, so its entries are always
+unattributed to individual files. Its success never fabricates a per-file read.
+
+`output`, when present, is CR-extension-reported transport byte count and
+truncation state. Absence means unknown. `output.truncated: false` does not mean
+a complete file/diff was returned: the helper may have selected a bounded
+range. Range headers in returned text are not parsed as provenance, because
+repository content itself can contain those strings. Zero requested offset and
+limit select the helper's default bounded read, not unbounded/full inspection.
+
+The collector retains at most 256 calls and 64 KiB of combined identity/path
+bytes. IDs are limited to 256 bytes and paths to 4096 bytes. Identity/path
+strings are omitted instead of shortened into misleading identities.
+`truncated` records collection limits, and `dropped_events` counts events
+discarded at the record/identity budget. End events for already retained calls
+can still complete those calls after the cap. `stream_complete` requires a
+clean `agent_end`, parse, and process exit; a complete stream can still contain
+incomplete calls. The trace has its own bound and survives RPC/stderr log caps.
+
+Lifecycle metadata preserves the terminal invocation's trace for success,
+isolated failure, and cache reload. Each provider invocation/validation retry
+owns a separate trace; a fresh or resumed call does not inherit or union tool
+evidence from an earlier invocation. Pi itself still does not support provider
+session resume. Mutable trace snapshots are copied at response and lifecycle
+boundaries.
+
+This is collection-only telemetry. A successful call is not proof that the
+reviewer read the entire file, understood it, or meaningfully inspected it.
+The existing diff gate, symlink inspection contract, and coverage/approval
+behavior are unchanged. The separate structured model-output schema remains
+version `1`; only durable task metadata advances to version `4`. Per-file
+reconciliation remains a separate opt-in follow-up; it must account for missing
+or truncated evidence and distinguish assigned body inspection, relocation
+impact assessment, and supporting context. `coverage.json` remains the existing
+coverage artifact; the trace does not create a competing coverage format.
 
 ## Relocation and Context Coverage
 

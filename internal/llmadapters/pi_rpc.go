@@ -503,6 +503,7 @@ type piRPCStream struct {
 	diffToolCompleted     int
 	diffToolFailed        int
 	diffToolError         string
+	toolTrace             piRPCReviewerToolTrace
 }
 
 func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, stderr io.Reader) {
@@ -523,6 +524,7 @@ func (s *piRPCStream) run(ctx context.Context, cmd *exec.Cmd, stdout io.Reader, 
 	}
 	waitErr := cmd.Wait()
 	<-stderrDone
+	s.toolTrace.streamComplete = scanResult.agentEnd && scanResult.err == nil && waitErr == nil
 	evidence := s.reviewerToolEvidence()
 	s.writeReviewerToolEvidence(evidence)
 	scanResult.response.ReviewerToolEvidence = evidence
@@ -644,7 +646,11 @@ func (s *piRPCStream) writeLog(p []byte) {
 }
 
 func (s *piRPCStream) observeReviewerToolEvent(event piRPCEvent) {
-	if !s.allowReviewerTools || event.toolName != "cr_diff" {
+	if !s.allowReviewerTools {
+		return
+	}
+	s.toolTrace.observe(event)
+	if event.toolName != "cr_diff" {
 		return
 	}
 	if event.toolStarted {
@@ -674,7 +680,7 @@ func (s *piRPCStream) reviewerToolEvidence() *llm.ReviewerToolEvidence {
 	case s.diffToolStarted > 0:
 		status = llm.DiffToolStatusIncomplete
 	}
-	evidence := &llm.ReviewerToolEvidence{DiffStatus: status}
+	evidence := &llm.ReviewerToolEvidence{DiffStatus: status, Trace: s.toolTrace.snapshot()}
 	if status == llm.DiffToolStatusFailed {
 		evidence.DiffDiagnostic = boundPiRPCToolError(s.diffToolError)
 	}
@@ -886,6 +892,10 @@ type piRPCEvent struct {
 	toolCompleted    bool
 	toolFailed       bool
 	toolError        string
+	toolCallID       string
+	toolArgs         json.RawMessage
+	toolOutcomeKnown bool
+	toolOutput       *llm.ReviewerToolOutput
 	responseFailure  string
 	agentEnd         bool
 }
@@ -906,16 +916,20 @@ func parsePiRPCEvent(line []byte) (piRPCEvent, error) {
 	}
 	if event.toolUse {
 		event.toolName = firstRawString(raw, "toolName", "tool_name", "name")
+		event.toolCallID = piRPCToolCallID(raw)
 		switch eventType {
 		case "tool_execution_start":
 			event.toolStarted = true
+			event.toolArgs = raw["args"]
 		case "tool_execution_end":
 			event.toolCompleted = true
 			event.toolFailed = rawBool(raw, "isError")
 			var resultRaw map[string]json.RawMessage
-			if err := json.Unmarshal(raw["result"], &resultRaw); err == nil && rawBool(resultRaw, "isError") {
-				event.toolFailed = true
+			if err := json.Unmarshal(raw["result"], &resultRaw); err == nil {
+				event.toolFailed = event.toolFailed || rawBool(resultRaw, "isError")
+				event.toolOutput = parsePiRPCToolOutput(resultRaw["details"])
 			}
+			event.toolOutcomeKnown = piRPCToolOutcomeKnown(raw, resultRaw, event.toolFailed)
 			if event.toolFailed {
 				event.toolError = piRPCToolError(raw["result"])
 				if event.toolError == "" {
@@ -986,8 +1000,9 @@ function runTool(tool, params, signal) {
     });
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
+    let stdoutTruncated = false;
     const append = (current, chunk) => Buffer.concat([current, chunk]).subarray(0, maxOutputBytes);
-    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
+    child.stdout.on("data", (chunk) => { stdoutTruncated ||= stdout.length + chunk.length > maxOutputBytes; stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
     const kill = () => {
       try {
@@ -1004,7 +1019,8 @@ function runTool(tool, params, signal) {
       clearTimeout(timer);
       signal?.removeEventListener("abort", kill);
       const text = code === 0 ? stdout.toString("utf8") : (stderr.toString("utf8") || ("tool exited " + code));
-      resolve({ content: [{ type: "text", text }], details: {}, isError: code !== 0 });
+      const details = code === 0 ? { codereview_tool_output: { version: 1, bytes: stdout.length, truncated: stdoutTruncated } } : {};
+      resolve({ content: [{ type: "text", text }], details, isError: code !== 0 });
     });
     child.stdin.end(JSON.stringify({ ...params, tool }));
   });

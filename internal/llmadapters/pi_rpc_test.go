@@ -360,6 +360,10 @@ func TestPiRPCReviewerLogCapDoesNotBreakProtocolCompletion(t *testing.T) {
 	if response.ReviewerToolEvidence == nil || response.ReviewerToolEvidence.DiffStatus != llm.DiffToolStatusNotInvoked {
 		t.Fatalf("reviewer tool evidence = %#v, want not-invoked cr_diff", response.ReviewerToolEvidence)
 	}
+	trace := response.ReviewerToolEvidence.Trace
+	if trace == nil || !trace.StreamComplete || len(trace.Calls) != 20 || trace.Calls[19].ProvenanceIssue != "missing_start" {
+		t.Fatalf("trace = %#v, want all unmatched executions despite capped logs", trace)
+	}
 	logged, err := os.ReadFile(logPath) // #nosec G304 -- logPath is rooted in t.TempDir.
 	if err != nil {
 		t.Fatalf("ReadFile(log): %v", err)
