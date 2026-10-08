@@ -23,6 +23,7 @@ type RequestPricingBinding struct {
 // UnavailableReason explains why no request price could be selected.
 type UnavailableReason string
 
+// Request pricing unavailability reasons returned by PriceForRequest.
 const (
 	UnavailableCatalog        UnavailableReason = "catalog_unavailable"
 	UnavailableInput          UnavailableReason = "invalid_input_tokens"

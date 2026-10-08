@@ -40,8 +40,7 @@ func replacePricingRecords(t *testing.T, files map[string][]byte, rows [][]strin
 	t.Helper()
 	var body bytes.Buffer
 	writer := csv.NewWriter(&body)
-	writer.WriteAll(rows)
-	if err := writer.Error(); err != nil {
+	if err := writer.WriteAll(rows); err != nil {
 		t.Fatal(err)
 	}
 	files["pricing.csv"] = body.Bytes()

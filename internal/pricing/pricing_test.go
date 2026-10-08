@@ -403,8 +403,12 @@ func TestPaddedV2HeadersCannotDemoteRequestBoundAllToLegacy(t *testing.T) {
 			if _, ok := EstimateUsageUSDFor(catalog, "pricing-test-model", usage); ok {
 				t.Fatal("canonical bound all row entered legacy estimator")
 			}
-			pricingPath := filepath.Join(source, "pricing.csv")
-			body, err := os.ReadFile(pricingPath) // #nosec G304 -- owned fixture under t.TempDir.
+			sourceRoot, err := os.OpenRoot(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = sourceRoot.Close() })
+			body, err := sourceRoot.ReadFile("pricing.csv")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -422,7 +426,7 @@ func TestPaddedV2HeadersCannotDemoteRequestBoundAllToLegacy(t *testing.T) {
 				parts[1] = strings.Replace(parts[1], ",openai-api-key,default,0,,whole_request", ",openai-api-key,default,0,100,whole_request", 1)
 			}
 			body = []byte(strings.Join(headers, ",") + "\n" + parts[1])
-			if err := os.WriteFile(pricingPath, body, 0o600); err != nil {
+			if err := sourceRoot.WriteFile("pricing.csv", body, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			manifest := catalog.Manifest()
@@ -431,7 +435,10 @@ func TestPaddedV2HeadersCannotDemoteRequestBoundAllToLegacy(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(source, "manifest.json"), manifestBody, 0o600); err != nil {
+			if err := sourceRoot.WriteFile("manifest.json", manifestBody, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := sourceRoot.Close(); err != nil {
 				t.Fatal(err)
 			}
 			malformed, err := modelcatalog.LoadPath(source)

@@ -91,13 +91,18 @@ func TestCatalogSnapshotIsCachedForOneCommand(t *testing.T) {
 		t.Fatal("runtime.Caller failed")
 	}
 	source := t.TempDir()
+	sourceRoot, err := os.OpenRoot(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sourceRoot.Close() })
 	dataDir := filepath.Join(filepath.Dir(testFile), "..", "..", "modelcatalog", "data")
 	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
 		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository's bundled fixture.
 		if err != nil {
 			t.Fatalf("read catalog %s: %v", name, err)
 		}
-		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+		if err := sourceRoot.WriteFile(name, body, 0o600); err != nil {
 			t.Fatalf("write catalog %s: %v", name, err)
 		}
 	}
@@ -114,13 +119,12 @@ func TestCatalogSnapshotIsCachedForOneCommand(t *testing.T) {
 	if reason != "" || beforeSelection.Price.ContextBand != "short" {
 		t.Fatalf("original selection = %#v, %q", beforeSelection, reason)
 	}
-	pricingPath := filepath.Join(source, "pricing.csv")
-	body, err := os.ReadFile(pricingPath) // #nosec G304 -- under t.TempDir.
+	body, err := sourceRoot.ReadFile("pricing.csv")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body = bytes.ReplaceAll(body, []byte("272001"), []byte("100001"))
-	if err := os.WriteFile(pricingPath, body, 0o600); err != nil {
+	if err := sourceRoot.WriteFile("pricing.csv", body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manifest := first.Manifest()
@@ -129,7 +133,10 @@ func TestCatalogSnapshotIsCachedForOneCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(source, "manifest.json"), manifestBody, 0o600); err != nil {
+	if err := sourceRoot.WriteFile("manifest.json", manifestBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceRoot.Close(); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err := modelcatalog.LoadPath(source)
