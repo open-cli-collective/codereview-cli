@@ -24,18 +24,19 @@ const (
 	runStatusFailed    = "failed"
 	runStatusPartial   = "partial"
 
-	failureNone                 = "none"
-	failureMissingArtifact      = "missing_artifact"
-	failureMissingReviewJSON    = "missing_review_json"
-	failureInvalidReviewJSON    = "invalid_review_json"
-	failureInvalidSelectionJSON = "invalid_selection_json"
-	failureUsageError           = "usage_error"
-	failureAuthConfigError      = "auth_config_error"
-	failureUpstreamError        = "upstream_error"
-	failureChildProcessError    = "child_process_error"
-	failureChildExitNonzero     = "child_exit_nonzero"
-	failureUnavailable          = "unavailable"
-	failureSelectionError       = "selection_error"
+	failureDiscussionIsolationUnverified = "discussion_isolation_unverified"
+	failureNone                          = "none"
+	failureMissingArtifact               = "missing_artifact"
+	failureMissingReviewJSON             = "missing_review_json"
+	failureInvalidReviewJSON             = "invalid_review_json"
+	failureInvalidSelectionJSON          = "invalid_selection_json"
+	failureUsageError                    = "usage_error"
+	failureAuthConfigError               = "auth_config_error"
+	failureUpstreamError                 = "upstream_error"
+	failureChildProcessError             = "child_process_error"
+	failureChildExitNonzero              = "child_exit_nonzero"
+	failureUnavailable                   = "unavailable"
+	failureSelectionError                = "selection_error"
 
 	placementAnchorHit       = "anchor_overlap_hit"
 	placementAnchorMiss      = "anchor_overlap_miss"
@@ -79,33 +80,35 @@ type comparisonArtifacts struct {
 }
 
 type comparisonRun struct {
-	RunID                  string                   `json:"run_id"`
-	CandidateID            string                   `json:"candidate_id"`
-	CaseID                 string                   `json:"case_id"`
-	PRURL                  string                   `json:"pr_url"`
-	RequestedReviewBaseSHA string                   `json:"requested_review_base_sha,omitempty"`
-	RequestedReviewHeadSHA string                   `json:"requested_review_head_sha,omitempty"`
-	ExpectedBaseSHA        string                   `json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA        string                   `json:"expected_head_sha,omitempty"`
-	ReviewBaseSHA          string                   `json:"review_base_sha,omitempty"`
-	ReviewHeadSHA          string                   `json:"review_head_sha,omitempty"`
-	CurrentBaseSHA         string                   `json:"current_base_sha,omitempty"`
-	CurrentHeadSHA         string                   `json:"current_head_sha,omitempty"`
-	Status                 string                   `json:"status"`
-	ExitCode               int                      `json:"exit_code"`
-	RetryCount             int                      `json:"retry_count"`
-	FailureClassification  string                   `json:"failure_classification"`
-	FindingCount           int                      `json:"finding_count"`
-	SeverityCounts         map[string]int           `json:"severity_counts"`
-	SelectedAgents         []benchmarkSelectedAgent `json:"selected_agents,omitempty"`
-	ThreadActionCount      int                      `json:"thread_action_count,omitempty"`
-	DurationMS             int64                    `json:"duration_ms"`
-	Usage                  *benchmark.RunMetrics    `json:"usage,omitempty"`
-	Artifacts              comparisonRunArtifacts   `json:"artifacts"`
-	AnchorSummary          *anchorSummary           `json:"anchor_summary,omitempty"`
-	AnchorResults          []anchorResult           `json:"anchor_results,omitempty"`
-	UnmatchedFindings      []unmatchedFinding       `json:"unmatched_findings,omitempty"`
-	Warnings               []string                 `json:"warnings"`
+	RunID                      string                   `json:"run_id"`
+	CandidateID                string                   `json:"candidate_id"`
+	CaseID                     string                   `json:"case_id"`
+	PRURL                      string                   `json:"pr_url"`
+	RequestedReviewBaseSHA     string                   `json:"requested_review_base_sha,omitempty"`
+	RequestedReviewHeadSHA     string                   `json:"requested_review_head_sha,omitempty"`
+	RequestedWithoutDiscussion bool                     `json:"requested_without_discussion"`
+	WithoutDiscussionVerified  bool                     `json:"without_discussion_verified"`
+	ExpectedBaseSHA            string                   `json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA            string                   `json:"expected_head_sha,omitempty"`
+	ReviewBaseSHA              string                   `json:"review_base_sha,omitempty"`
+	ReviewHeadSHA              string                   `json:"review_head_sha,omitempty"`
+	CurrentBaseSHA             string                   `json:"current_base_sha,omitempty"`
+	CurrentHeadSHA             string                   `json:"current_head_sha,omitempty"`
+	Status                     string                   `json:"status"`
+	ExitCode                   int                      `json:"exit_code"`
+	RetryCount                 int                      `json:"retry_count"`
+	FailureClassification      string                   `json:"failure_classification"`
+	FindingCount               int                      `json:"finding_count"`
+	SeverityCounts             map[string]int           `json:"severity_counts"`
+	SelectedAgents             []benchmarkSelectedAgent `json:"selected_agents,omitempty"`
+	ThreadActionCount          int                      `json:"thread_action_count,omitempty"`
+	DurationMS                 int64                    `json:"duration_ms"`
+	Usage                      *benchmark.RunMetrics    `json:"usage,omitempty"`
+	Artifacts                  comparisonRunArtifacts   `json:"artifacts"`
+	AnchorSummary              *anchorSummary           `json:"anchor_summary,omitempty"`
+	AnchorResults              []anchorResult           `json:"anchor_results,omitempty"`
+	UnmatchedFindings          []unmatchedFinding       `json:"unmatched_findings,omitempty"`
+	Warnings                   []string                 `json:"warnings"`
 }
 
 type comparisonRunArtifacts struct {
@@ -294,27 +297,30 @@ func buildComparison(summary benchmarkSuiteSummary, resultsDir string) compariso
 	for _, run := range summary.Runs {
 		benchCase := casesByID[run.CaseID]
 		read := readReviewArtifactForCompare(resultsDir, run)
+		reconcileDiscussionIsolationForCompare(&run, read)
 		row := comparisonRun{
-			RunID:                  run.RunID,
-			CandidateID:            run.CandidateID,
-			CaseID:                 run.CaseID,
-			PRURL:                  run.PRURL,
-			RequestedReviewBaseSHA: run.RequestedReviewBaseSHA,
-			RequestedReviewHeadSHA: run.RequestedReviewHeadSHA,
-			ExpectedBaseSHA:        run.ExpectedBaseSHA,
-			ExpectedHeadSHA:        run.ExpectedHeadSHA,
-			ReviewBaseSHA:          run.ReviewBaseSHA,
-			ReviewHeadSHA:          run.ReviewHeadSHA,
-			CurrentBaseSHA:         run.CurrentBaseSHA,
-			CurrentHeadSHA:         run.CurrentHeadSHA,
-			Status:                 compareRunStatus(run, read.ok),
-			ExitCode:               run.ExitCode,
-			RetryCount:             run.RetryCount,
-			FailureClassification:  compareFailureClassification(run, read),
-			FindingCount:           run.FindingCount,
-			SeverityCounts:         copySeverityCounts(run.SeverityCounts),
-			DurationMS:             run.DurationMS,
-			Usage:                  run.Usage,
+			RunID:                      run.RunID,
+			CandidateID:                run.CandidateID,
+			CaseID:                     run.CaseID,
+			PRURL:                      run.PRURL,
+			RequestedReviewBaseSHA:     run.RequestedReviewBaseSHA,
+			RequestedReviewHeadSHA:     run.RequestedReviewHeadSHA,
+			RequestedWithoutDiscussion: run.RequestedWithoutDiscussion,
+			WithoutDiscussionVerified:  run.WithoutDiscussionVerified,
+			ExpectedBaseSHA:            run.ExpectedBaseSHA,
+			ExpectedHeadSHA:            run.ExpectedHeadSHA,
+			ReviewBaseSHA:              run.ReviewBaseSHA,
+			ReviewHeadSHA:              run.ReviewHeadSHA,
+			CurrentBaseSHA:             run.CurrentBaseSHA,
+			CurrentHeadSHA:             run.CurrentHeadSHA,
+			Status:                     compareRunStatus(run, read.ok),
+			ExitCode:                   run.ExitCode,
+			RetryCount:                 run.RetryCount,
+			FailureClassification:      compareFailureClassification(run, read),
+			FindingCount:               run.FindingCount,
+			SeverityCounts:             copySeverityCounts(run.SeverityCounts),
+			DurationMS:                 run.DurationMS,
+			Usage:                      run.Usage,
 			Artifacts: comparisonRunArtifacts{
 				ReviewJSON:         run.Artifacts.ReviewJSON,
 				SelectionJSON:      run.Artifacts.SelectionJSON,
@@ -327,6 +333,9 @@ func buildComparison(summary benchmarkSuiteSummary, resultsDir string) compariso
 			Warnings: appendUniqueWarnings(nil, run.Warnings...),
 		}
 		row.Warnings = appendUniqueWarnings(row.Warnings, read.warnings...)
+		if run.RequestedWithoutDiscussion && !run.WithoutDiscussionVerified {
+			row.Warnings = appendUniqueWarnings(row.Warnings, "discussion isolation could not be verified from the saved execution and current review JSON")
+		}
 		if len(benchCase.Anchors) > 0 {
 			if read.parsed != nil {
 				row.AnchorSummary, row.AnchorResults, row.UnmatchedFindings = compareAnchors(benchCase.Anchors, read.parsed.Findings)
@@ -513,6 +522,16 @@ func benchmarkArtifactPathInResultsDir(resultsDir, artifactPath string) (string,
 	return abs, true, ""
 }
 
+// Comparison rechecks the current review artifact instead of trusting a saved
+// verification bit. A changed artifact can invalidate prior verification, but
+// cannot retroactively validate an execution that was originally unverified.
+func reconcileDiscussionIsolationForCompare(run *benchmarkRun, read reviewArtifactRead) {
+	run.WithoutDiscussionVerified = run.RequestedWithoutDiscussion && run.WithoutDiscussionVerified && read.ok && read.parsed != nil && read.parsed.Run.WithoutDiscussion
+	if run.RequestedWithoutDiscussion && !run.WithoutDiscussionVerified && read.ok && (run.FailureClassification == "" || run.FailureClassification == failureNone) {
+		run.FailureClassification = failureDiscussionIsolationUnverified
+	}
+}
+
 func compareFailureClassification(run benchmarkRun, read reviewArtifactRead) string {
 	if run.FailureClassification != "" && run.FailureClassification != failureNone {
 		return run.FailureClassification
@@ -538,7 +557,7 @@ func compareFailureClassification(run benchmarkRun, read reviewArtifactRead) str
 }
 
 func compareRunStatus(run benchmarkRun, reviewJSONOK bool) string {
-	if run.ExitCode != exitcode.Success {
+	if run.ExitCode != exitcode.Success || run.RequestedWithoutDiscussion && !run.WithoutDiscussionVerified {
 		return runStatusFailed
 	}
 	if reviewJSONOK {
