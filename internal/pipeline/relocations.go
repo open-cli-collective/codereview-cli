@@ -203,7 +203,7 @@ func prepareRelocationManifest(ctx context.Context, gitCommand func(context.Cont
 	if err != nil {
 		return relocationManifest{}, nil, err
 	}
-	if err := validatePatchlessRenames(patches, moves); err != nil {
+	if err := validatePatchlessRenames(patches, moves, base, headTree); err != nil {
 		return relocationManifest{}, nil, err
 	}
 	manifest, err := newRelocationManifest(baseSHA, headSHA, moves)
@@ -287,7 +287,13 @@ func relocationMovePaths(moves []relocationMove) map[string]bool {
 }
 
 func relocationReviewablePatchPaths(patches []FilePatch, moves []relocationMove) []string {
-	paths := reviewablePatchPaths(patches)
+	contentless := contentlessPatchPaths(patches)
+	for _, patch := range patches {
+		if patch.OldPath != "" && patch.Path != "" && patch.OldPath != patch.Path && !patch.Deleted {
+			delete(contentless, patch.Path)
+		}
+	}
+	paths := excludeFiles(patchPaths(patches), contentless)
 	seen := stringSet(paths)
 	for _, move := range moves {
 		if !seen[move.Path] {
@@ -300,6 +306,11 @@ func relocationReviewablePatchPaths(patches []FilePatch, moves []relocationMove)
 
 func relocationContentlessPaths(patches []FilePatch, moves []relocationMove) map[string]bool {
 	contentless := contentlessPatchPaths(patches)
+	for _, patch := range patches {
+		if patch.OldPath != "" && patch.Path != "" && patch.OldPath != patch.Path && !patch.Deleted {
+			delete(contentless, patch.Path)
+		}
+	}
 	for _, move := range moves {
 		delete(contentless, move.Path)
 	}
@@ -340,7 +351,7 @@ func validateRelocationAssessment(findings llm.Findings, assignment relocationAs
 	return copySortedStrings(reviewed), ""
 }
 
-func validatePatchlessRenames(patches []FilePatch, moves []relocationMove) error {
+func validatePatchlessRenames(patches []FilePatch, moves []relocationMove, base, head map[string]treeEntry) error {
 	certified := make(map[string]bool, len(moves))
 	for _, move := range moves {
 		certified[move.OldPath+"\x00"+move.Path] = true
@@ -352,7 +363,23 @@ func validatePatchlessRenames(patches []FilePatch, moves []relocationMove) error
 		if certified[patch.OldPath+"\x00"+patch.Path] {
 			continue
 		}
-		return fmt.Errorf("pipeline: rename %q to %q has no certified identical-file evidence or meaningful provider diff", patch.OldPath, patch.Path)
+		old, oldExists := base[patch.OldPath]
+		newEntry, newExists := head[patch.Path]
+		_, oldStillPresent := head[patch.OldPath]
+		_, newWasPresent := base[patch.Path]
+		if oldExists && newExists && !oldStillPresent && !newWasPresent && old.Type == "blob" && newEntry.Type == "blob" && fullCommitOID(old.OID) && old.OID == newEntry.OID {
+			// Same-blob mode changes and symlink renames remain ordinary assigned
+			// review obligations; only regular same-mode pairs receive move credit.
+			continue
+		}
+		switch {
+		case !oldExists || !newExists:
+			return fmt.Errorf("pipeline: rename %q to %q is missing a pinned base/head blob identity and has no meaningful provider diff", patch.OldPath, patch.Path)
+		case old.Type == "blob" && newEntry.Type == "blob" && old.OID != newEntry.OID:
+			return fmt.Errorf("pipeline: rename %q to %q has a changed pinned blob and no meaningful provider diff", patch.OldPath, patch.Path)
+		default:
+			return fmt.Errorf("pipeline: rename %q to %q has no identical pinned blob evidence or meaningful provider diff", patch.OldPath, patch.Path)
+		}
 	}
 	return nil
 }

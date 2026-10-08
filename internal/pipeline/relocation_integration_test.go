@@ -153,6 +153,111 @@ func TestLargeRelocationDryRunAndLiveUseWorkspaceContextAndVerifiedImpact(t *tes
 	}
 }
 
+func TestPatchlessSameBlobRenamesRemainOrdinaryReviewObligations(t *testing.T) {
+	cases := []struct {
+		name        string
+		kind        string
+		wantOutcome reviewplan.Outcome
+	}{
+		{name: "mode-changing regular rename is body-read", kind: "mode", wantOutcome: reviewplan.OutcomeApproved},
+		{name: "unchanged symlink rename is skipped and withholds", kind: "symlink", wantOutcome: reviewplan.OutcomeComment},
+	}
+	for _, tc := range cases {
+		for _, mode := range []string{"dry-run", "live"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				ctx := context.Background()
+				store := openPipelineStore(t)
+				defer closeStore(t, store)
+				provider, req, contextPath, renamePath, residualPath := newPatchlessRenameFixture(t, tc.kind)
+				adapter := &relocationWorkspaceAdapter{
+					FakeAdapter: &llm.FakeAdapter{NameValue: "relocation-test"}, contextPath: contextPath,
+				}
+				if tc.kind == "symlink" {
+					adapter.skipPrimary = renamePath
+				}
+				layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+				runID := "run-patchless-" + tc.kind + "-" + mode
+				var result Result
+				var err error
+				if mode == "dry-run" {
+					result, err = dryRunForTest(ctx, Options{
+						Provider: provider, Adapter: adapter, Store: store, Layout: layout, Now: fixedNow,
+						NewRunID: func() string { return runID }, NewSessionRowID: sequence("patchless-session"),
+						NewFindingID: findingSequence("patchless-finding"), NewActionID: actionSequence(), MaxConcurrency: 1,
+					}, req)
+				} else {
+					prKey, keyErr := statepaths.PRKey(req.PRRef.Host, req.PRRef.Owner, req.PRRef.Repo, req.PRRef.Number)
+					if keyErr != nil {
+						t.Fatal(keyErr)
+					}
+					run, allocateErr := store.AllocateRun(ctx, ledger.AllocateRunParams{
+						PRKey: prKey, PRURL: req.PRURL, RunID: runID, SHA: provider.pr.Head.SHA,
+						BaseSHA: provider.pr.Base.SHA, Profile: req.ProfileName,
+						PostingIdentity: req.PostingIdentity.Login, PostMode: ledger.PostModeLive,
+						StartedAt: fixedNow(), ArtifactPath: filepath.Join(t.TempDir(), "live-run"),
+					})
+					if allocateErr != nil {
+						t.Fatalf("AllocateRun: %v", allocateErr)
+					}
+					result, err = liveForTest(ctx, Options{
+						Provider: provider, Adapter: adapter, Store: store, Layout: layout, Now: fixedNow,
+						NewSessionRowID: sequence("patchless-session"), NewFindingID: findingSequence("patchless-finding"),
+						NewActionID: actionSequence(), MaxConcurrency: 1,
+					}, req, run)
+				}
+				if err != nil {
+					t.Fatalf("%s preparation/review: %v", mode, err)
+				}
+				if result.Plan.Outcome != tc.wantOutcome {
+					t.Fatalf("%s outcome = %q, want %q", mode, result.Plan.Outcome, tc.wantOutcome)
+				}
+				if len(result.ReviewerCoverage) != 1 {
+					t.Fatalf("coverage = %#v, want one reviewer", result.ReviewerCoverage)
+				}
+				coverage := result.ReviewerCoverage[0]
+				if len(coverage.RelocationReviewedFiles) != 0 {
+					t.Fatalf("ordinary rename received relocation coverage: %#v", coverage.RelocationReviewedFiles)
+				}
+				if !relocationTestContainsString(coverage.InspectedFiles, residualPath) {
+					t.Fatalf("unrelated changed file %q was not body-inspected: %#v", residualPath, coverage.InspectedFiles)
+				}
+				adapter.mu.Lock()
+				bodyReads := append([]string(nil), adapter.bodyReads...)
+				adapter.mu.Unlock()
+				if tc.kind == "mode" {
+					if !relocationTestContainsString(coverage.InspectedFiles, renamePath) || !relocationTestContainsString(bodyReads, renamePath) {
+						t.Fatalf("regular mode-changing rename was not assigned and read: coverage=%#v body reads=%#v", coverage, bodyReads)
+					}
+					if coverage.Status != reviewerCoverageCompleteBroad && coverage.Status != reviewerCoverageCompleteConstrained {
+						t.Fatalf("regular mode-changing rename coverage status = %q, want complete", coverage.Status)
+					}
+				} else {
+					if !relocationTestContainsString(coverage.SkippedFiles, renamePath) || !relocationTestContainsString(coverage.MissingFiles, renamePath) {
+						t.Fatalf("symlink rename skip was not preserved as an unresolved obligation: %#v", coverage)
+					}
+					if relocationTestContainsString(bodyReads, renamePath) {
+						t.Fatalf("test reviewer attempted to read symlink path %q: %#v", renamePath, bodyReads)
+					}
+					if coverage.Status != reviewerCoverageIncompleteSkipped {
+						t.Fatalf("symlink rename coverage status = %q, want incomplete_skipped", coverage.Status)
+					}
+				}
+				var manifest relocationManifest
+				data, readErr := os.ReadFile(result.Artifacts.RelocationsJSON)
+				if readErr != nil {
+					t.Fatalf("read relocations.json: %v", readErr)
+				}
+				if err := json.Unmarshal(data, &manifest); err != nil {
+					t.Fatalf("decode relocations.json: %v", err)
+				}
+				if len(manifest.Moves) != 0 {
+					t.Fatalf("manifest certified ordinary rename: %#v", manifest.Moves)
+				}
+			})
+		}
+	}
+}
+
 func TestRelocationAssessmentAndCoverageRepairFailClosedEndToEnd(t *testing.T) {
 	movePath := "apps/components/shared/file-0000.go"
 	residualPath := "src/router.go"
@@ -339,6 +444,87 @@ func newRelocationFixture(t *testing.T, moveCount int) (*readOnlyProvider, Reque
 	return provider, req, contextPath
 }
 
+func newPatchlessRenameFixture(t *testing.T, kind string) (*readOnlyProvider, Request, string, string, string) {
+	t.Helper()
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+	ref := req.PRRef
+	repo := t.TempDir()
+	gitCommandMustSucceed(t, repo, "init", "-b", "main")
+	gitCommandMustSucceed(t, repo, "config", "user.name", "Relocation Test")
+	gitCommandMustSucceed(t, repo, "config", "user.email", "relocation@example.invalid")
+	gitCommandMustSucceed(t, repo, "remote", "add", "origin", fmt.Sprintf("git@%s:%s/%s.git", ref.Host, ref.Owner, ref.Repo))
+	contextPath := "config/routes.yaml"
+	residualPath := "src/router.go"
+	writeFile(t, filepath.Join(repo, contextPath), "routes:\n  moved: scripts\n")
+	writeFile(t, filepath.Join(repo, residualPath), "package src\n\nconst route = \"/old\"\n")
+	oldPath, renamePath := "", ""
+	switch kind {
+	case "mode":
+		oldPath, renamePath = "scripts/tool.sh", "scripts/renamed-tool.sh"
+		writeFile(t, filepath.Join(repo, oldPath), "#!/bin/sh\necho reviewed\n")
+		if err := os.Chmod(filepath.Join(repo, oldPath), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	case "symlink":
+		oldPath, renamePath = "links/old", "links/new"
+		writeFile(t, filepath.Join(repo, "targets/target.txt"), "target\n")
+		if err := os.MkdirAll(filepath.Join(repo, "links"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("../targets/target.txt", filepath.Join(repo, oldPath)); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("unknown patchless rename fixture kind %q", kind)
+	}
+	gitCommandMustSucceed(t, repo, "add", "-A")
+	gitCommandMustSucceed(t, repo, "commit", "-m", "patchless rename base")
+	base := gitCommandMustSucceed(t, repo, "rev-parse", "HEAD")
+	gitCommandMustSucceed(t, repo, "checkout", "-b", "feature")
+	gitCommandMustSucceed(t, repo, "mv", oldPath, renamePath)
+	if kind == "mode" {
+		if err := os.Chmod(filepath.Join(repo, renamePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(repo, residualPath), "package src\n\nconst route = \"/new\"\n")
+	gitCommandMustSucceed(t, repo, "add", "-A")
+	gitCommandMustSucceed(t, repo, "commit", "-m", "rename without hunks and change unrelated file")
+	head := gitCommandMustSucceed(t, repo, "rev-parse", "HEAD")
+	diff := gitCommandOutput(t, repo, "diff", "--find-renames=100%", "--no-ext-diff", strings.TrimSpace(string(base)), strings.TrimSpace(string(head)))
+	parsed, err := parseUnifiedDiff(diff)
+	if err != nil {
+		t.Fatalf("parse patchless fixture diff: %v", err)
+	}
+	var foundRename, foundResidual bool
+	for _, patch := range parsed.Patches {
+		if patch.OldPath == oldPath && patch.Path == renamePath && len(patch.Hunks) == 0 {
+			foundRename = true
+		}
+		if patch.Path == residualPath && len(patch.Hunks) > 0 {
+			foundResidual = true
+		}
+	}
+	if !foundRename || !foundResidual {
+		t.Fatalf("fixture diff lacks zero-hunk rename or unrelated content change: %s", diff)
+	}
+	provider.fixtureRepoDir = repo
+	provider.pr.Base.SHA = strings.TrimSpace(string(base))
+	provider.pr.Head.SHA = strings.TrimSpace(string(head))
+	provider.pr.Base.Name = "main"
+	provider.pr.Base.Ref = "refs/heads/main"
+	provider.pr.Head.Name = "feature"
+	provider.pr.Head.Ref = "refs/heads/feature"
+	provider.pr.Ref = ref
+	provider.diff = gitprovider.UnifiedDiff{Raw: diff}
+	agentDir := t.TempDir()
+	writeRequiredAgentForGlob(t, agentDir, "relocation", "**/*")
+	trustCurrentTempFixtures(t)
+	req.Profile.AgentSources = []string{agentDir}
+	return provider, req, contextPath, renamePath, residualPath
+}
+
 type relocationWorkspaceAdapter struct {
 	*llm.FakeAdapter
 	mu                sync.Mutex
@@ -396,10 +582,14 @@ func (a *relocationWorkspaceAdapter) Start(ctx context.Context, req llm.Request)
 				return nil, fmt.Errorf("manifest path at %d is not a string", index)
 			}
 			isRelocation := len(row) > 8 && row[8] == true
+			if a.skipPrimary == path {
+				skipped = append(skipped, path)
+				continue
+			}
 			if isRelocation {
 				// A valid assignment assessment reviews the path impact, not the body.
 				// A repair without impact evidence leaves its assigned move unresolved.
-				if isRepair || a.skipPrimary == path {
+				if isRepair {
 					skipped = append(skipped, path)
 				}
 				continue

@@ -99,6 +99,114 @@ func TestPrepareRelocationManifestUsesPinnedGitTreesAndWritesAtomically(t *testi
 	}
 }
 
+func TestPrepareRelocationManifestKeepsSameBlobPatchlessRenamesAsOrdinaryWork(t *testing.T) {
+	cases := []struct {
+		name       string
+		oldPath    string
+		newPath    string
+		writeBase  func(string) error
+		changeHead func(string, string) error
+		wantMode   string
+	}{
+		{
+			name:    "regular mode change",
+			oldPath: "scripts/tool.sh",
+			newPath: "scripts/renamed-tool.sh",
+			writeBase: func(repo string) error {
+				return os.WriteFile(filepath.Join(repo, "scripts/tool.sh"), []byte("#!/bin/sh\necho reviewed\n"), 0o644)
+			},
+			changeHead: func(repo, _ string) error {
+				return os.Chmod(filepath.Join(repo, "scripts/renamed-tool.sh"), 0o755)
+			},
+			wantMode: "100755",
+		},
+		{
+			name:    "unchanged symlink",
+			oldPath: "links/old",
+			newPath: "links/new",
+			writeBase: func(repo string) error {
+				if err := os.MkdirAll(filepath.Join(repo, "targets"), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(filepath.Join(repo, "targets/target.txt"), []byte("target\n"), 0o644); err != nil {
+					return err
+				}
+				return os.Symlink("../targets/target.txt", filepath.Join(repo, "links/old"))
+			},
+			changeHead: func(string, string) error { return nil },
+			wantMode:   "120000",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			relocationTestGit(t, repo, "init", "-q")
+			relocationTestGit(t, repo, "config", "user.name", "CR Tests")
+			relocationTestGit(t, repo, "config", "user.email", "cr-tests@example.invalid")
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, tc.oldPath)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.writeBase(repo); err != nil {
+				t.Fatal(err)
+			}
+			relocationTestGit(t, repo, "add", "-A")
+			relocationTestGit(t, repo, "commit", "-qm", "base")
+			base := strings.TrimSpace(string(relocationTestGit(t, repo, "rev-parse", "HEAD")))
+			relocationTestGit(t, repo, "mv", tc.oldPath, tc.newPath)
+			if err := tc.changeHead(repo, tc.newPath); err != nil {
+				t.Fatal(err)
+			}
+			relocationTestGit(t, repo, "add", "-A")
+			relocationTestGit(t, repo, "commit", "-qm", "patchless rename")
+			head := strings.TrimSpace(string(relocationTestGit(t, repo, "rev-parse", "HEAD")))
+			diff := string(relocationTestGit(t, repo, "diff", "--find-renames=100%", "--no-ext-diff", base, head))
+			parsed, err := parseUnifiedDiff(diff)
+			if err != nil {
+				t.Fatalf("parse actual Git diff: %v", err)
+			}
+			if len(parsed.Patches) != 1 || parsed.Patches[0].OldPath != tc.oldPath || parsed.Patches[0].Path != tc.newPath || len(parsed.Patches[0].Hunks) != 0 {
+				t.Fatalf("actual rename patch = %#v, want exact zero-hunk %s -> %s", parsed.Patches, tc.oldPath, tc.newPath)
+			}
+			paths := ArtifactPaths{WorkbenchRepoDir: repo, RelocationsJSON: filepath.Join(t.TempDir(), "relocations.json")}
+			manifest, tree, err := prepareRelocationManifest(context.Background(), nil, paths, base, head, parsed.Patches)
+			if err != nil {
+				t.Fatalf("prepareRelocationManifest rejected ordinary same-blob rename: %v", err)
+			}
+			if len(manifest.Moves) != 0 {
+				t.Fatalf("ordinary rename received relocation credit: %#v", manifest.Moves)
+			}
+			if got := tree[tc.newPath]; got.Mode != tc.wantMode || got.Type != "blob" {
+				t.Fatalf("head tree destination = %#v, want blob mode %s", got, tc.wantMode)
+			}
+		})
+	}
+}
+
+func TestPrepareRelocationManifestRejectsPatchlessRenameWithChangedPinnedBlob(t *testing.T) {
+	repo := t.TempDir()
+	relocationTestGit(t, repo, "init", "-q")
+	relocationTestGit(t, repo, "config", "user.name", "CR Tests")
+	relocationTestGit(t, repo, "config", "user.email", "cr-tests@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "old.go"), []byte("package old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	relocationTestGit(t, repo, "add", "old.go")
+	relocationTestGit(t, repo, "commit", "-qm", "base")
+	base := strings.TrimSpace(string(relocationTestGit(t, repo, "rev-parse", "HEAD")))
+	relocationTestGit(t, repo, "mv", "old.go", "new.go")
+	if err := os.WriteFile(filepath.Join(repo, "new.go"), []byte("package changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	relocationTestGit(t, repo, "add", "-A")
+	relocationTestGit(t, repo, "commit", "-qm", "changed blob")
+	head := strings.TrimSpace(string(relocationTestGit(t, repo, "rev-parse", "HEAD")))
+	paths := ArtifactPaths{WorkbenchRepoDir: repo, RelocationsJSON: filepath.Join(t.TempDir(), "relocations.json")}
+	_, _, err := prepareRelocationManifest(context.Background(), nil, paths, base, head, []FilePatch{{OldPath: "old.go", Path: "new.go"}})
+	if err == nil || !strings.Contains(err.Error(), "changed pinned blob") {
+		t.Fatalf("changed-blob zero-hunk rename error = %v, want precise fail-closed rejection", err)
+	}
+}
+
 func relocationTestGit(t *testing.T, dir string, args ...string) []byte {
 	t.Helper()
 	// #nosec G204 -- fixed Git executable and test-supplied args operate only on this temporary repository.
@@ -163,15 +271,67 @@ func relocationTreeEntry(mode, marker, path string) treeEntry {
 func TestValidatePatchlessRenamesRequiresCertifiedEvidenceOrHunks(t *testing.T) {
 	move := relocationMove{OldPath: "old.go", Path: "new.go", BlobOID: strings.Repeat("a", 40), Mode: "100644"}
 	patch := FilePatch{OldPath: move.OldPath, Path: move.Path}
-	if err := validatePatchlessRenames([]FilePatch{patch}, []relocationMove{move}); err != nil {
+	base := map[string]treeEntry{"old.go": relocationTreeEntry("100644", "a", "old.go")}
+	head := map[string]treeEntry{"new.go": relocationTreeEntry("100644", "a", "new.go")}
+	if err := validatePatchlessRenames([]FilePatch{patch}, []relocationMove{move}, base, head); err != nil {
 		t.Fatalf("certified patchless move: %v", err)
 	}
-	if err := validatePatchlessRenames([]FilePatch{patch}, nil); err == nil {
-		t.Fatal("uncertified patchless rename returned no error")
+	if err := validatePatchlessRenames([]FilePatch{patch}, nil, base, head); err != nil {
+		t.Fatalf("same-blob ordinary rename should remain reviewable: %v", err)
 	}
 	patch.Hunks = []reviewplan.DiffHunk{{OldStart: 1, NewStart: 1}}
-	if err := validatePatchlessRenames([]FilePatch{patch}, nil); err != nil {
+	if err := validatePatchlessRenames([]FilePatch{patch}, nil, nil, nil); err != nil {
 		t.Fatalf("rename with provider hunk: %v", err)
+	}
+}
+
+func TestValidatePatchlessRenamesAllowsSameBlobModeChangesAndSymlinksAsOrdinary(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		oldMode  string
+		newMode  string
+		wantPath string
+	}{
+		{name: "regular mode change", oldMode: "100644", newMode: "100755", wantPath: "new/run.sh"},
+		{name: "unchanged symlink", oldMode: "120000", newMode: "120000", wantPath: "new/link"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			patch := FilePatch{OldPath: "old/path", Path: tc.wantPath}
+			base := map[string]treeEntry{"old/path": relocationTreeEntry(tc.oldMode, "a", "old/path")}
+			head := map[string]treeEntry{tc.wantPath: relocationTreeEntry(tc.newMode, "a", tc.wantPath)}
+			if err := validatePatchlessRenames([]FilePatch{patch}, nil, base, head); err != nil {
+				t.Fatalf("same complete blob identity should remain ordinary assigned work: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidatePatchlessRenamesFailsClosedForMissingOrChangedPinnedBlobs(t *testing.T) {
+	patch := FilePatch{OldPath: "old.go", Path: "new.go"}
+	for _, tc := range []struct {
+		name string
+		base map[string]treeEntry
+		head map[string]treeEntry
+	}{
+		{name: "missing base", head: map[string]treeEntry{"new.go": relocationTreeEntry("100644", "a", "new.go")}},
+		{name: "missing head", base: map[string]treeEntry{"old.go": relocationTreeEntry("100644", "a", "old.go")}},
+		{name: "changed blob", base: map[string]treeEntry{"old.go": relocationTreeEntry("100644", "a", "old.go")}, head: map[string]treeEntry{"new.go": relocationTreeEntry("100644", "b", "new.go")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validatePatchlessRenames([]FilePatch{patch}, nil, tc.base, tc.head); err == nil {
+				t.Fatal("uncertified patchless rename passed without matching pinned blob evidence")
+			}
+		})
+	}
+}
+
+func TestOrdinaryPatchlessRenameRemainsAssignedAndNotContentless(t *testing.T) {
+	patch := FilePatch{OldPath: "old.go", Path: "new.go", Added: true}
+	if got := relocationContentlessPaths([]FilePatch{patch}, nil); got[patch.Path] {
+		t.Fatalf("ordinary rename destination %q was marked contentless: %#v", patch.Path, got)
+	}
+	if got := relocationReviewablePatchPaths([]FilePatch{patch}, nil); len(got) != 1 || got[0] != patch.Path {
+		t.Fatalf("ordinary rename assignment = %#v, want destination %q", got, patch.Path)
 	}
 }
 
