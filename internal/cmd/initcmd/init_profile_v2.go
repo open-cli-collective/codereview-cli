@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 type bubbleTeaInitProfileV2Prompter struct {
@@ -110,6 +111,7 @@ func (p bubbleTeaInitProfileV2Prompter) runProfileEditor(ctx initPromptContext, 
 			llmRuntimePrompter := huhInitLLMRuntimePrompter{
 				stdin:           p.stdin,
 				stderr:          p.stderr,
+				catalog:         editorCtx.ExistingConfig.Catalog(),
 				checker:         defaultInitLLMRuntimeAvailabilityNote,
 				inventoryRunner: p.inventoryRunner,
 			}
@@ -178,6 +180,7 @@ type initProfileV2ReadOnlyState struct {
 	gitScopes              map[string]initGitScopeDraft
 	reviewerEntities       map[string]initReviewerEntityDraft
 	llmRuntimes            map[string]initLLMRuntimeDraft
+	catalog                *modelcatalog.Catalog
 	credentialStoreOptions []huh.Option[string]
 	selectedGitScope       string
 	result                 initProfileV2EditorResult
@@ -193,6 +196,7 @@ func newInitProfileV2ReadOnlyModel(editor initProfileV2Editor, width, height int
 		gitScopes:              maps.Clone(editor.GitScopes),
 		reviewerEntities:       maps.Clone(editor.ReviewerEntities),
 		llmRuntimes:            maps.Clone(editor.LLMRuntimes),
+		catalog:                editor.catalog,
 		credentialStoreOptions: append([]huh.Option[string](nil), editor.CredentialStoreOptions...),
 		selectedGitScope:       selectedGitScope,
 	}
@@ -311,7 +315,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 		llmRuntimes = map[string]initLLMRuntimeDraft{}
 	}
 	llmRuntimeOptions, selectedLLMRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, ctx.ProfileLLMRuntimes[selectedProfileName], draft)
-	modelMapLLM := initProfileEditorModelMapLLM(draft, selectedLLMRuntime, llmRuntimes)
+	modelMapLLM := initProfileEditorModelMapLLM(draft, selectedLLMRuntime, llmRuntimes, ctx.ExistingConfig.Catalog())
 
 	standardLLMCredentialRef, err := initStandardLLMCredentialRef(draft.ProfileName, selectedLLMRuntime, llmRuntimes)
 	if err != nil {
@@ -350,6 +354,7 @@ func initProfileV2ReadOnlyEditor(ctx initPromptContext, selection string) (initP
 		GitScopes:              maps.Clone(ctx.GitScopes),
 		ReviewerEntities:       maps.Clone(ctx.ReviewerEntities),
 		LLMRuntimes:            maps.Clone(llmRuntimes),
+		catalog:                ctx.ExistingConfig.Catalog(),
 		CredentialStoreOptions: storeOptions,
 		SelectedGitScope:       selectedGitScope,
 		Document:               document,
@@ -418,6 +423,7 @@ type initProfileV2Editor struct {
 	GitScopes              map[string]initGitScopeDraft
 	ReviewerEntities       map[string]initReviewerEntityDraft
 	LLMRuntimes            map[string]initLLMRuntimeDraft
+	catalog                *modelcatalog.Catalog
 	CredentialStoreOptions []huh.Option[string]
 	SelectedGitScope       string
 	Document               initProfileV2Document
@@ -492,7 +498,7 @@ func initProfileV2AppendModelMapSection(document *initProfileV2Document, llm con
 	document.addSection("Model tier mapping", "")
 	existing := copyModelMap(modelMap)
 	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, existing))
-	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	builtIns := config.BuiltInModelMapFor(llm.Catalog(), llm.Provider, llm.Adapter)
 	for _, tier := range config.ModelTiers() {
 		value := initEffectiveModelMapInputValue(effective, tier)
 		description := initModelMapInputDescription(tier, strings.TrimSpace(existing[string(tier)]), strings.TrimSpace(builtIns[string(tier)]))
@@ -727,7 +733,7 @@ func (m initProfileV2ReadOnlyModel) validatedDraft() (initDraft, error) {
 			Provider: config.LLMProvider(draft.LLMProvider),
 			Auth:     config.LLMAuth(draft.LLMAuth),
 			Adapter:  config.LLMAdapter(draft.LLMAdapter),
-		}
+		}.WithCatalog(m.catalog)
 		draft.ModelMapSet = true
 		draft.ModelMap = initProfileV2ModelMapFromDocument(llm, m.document)
 	}
@@ -875,10 +881,10 @@ func (m *initProfileV2ReadOnlyModel) syncModelMapFields() {
 		return
 	}
 	selectedLLMRuntime := m.document.selectedValue(initProfileV2FieldLLMRuntime)
-	llm := initProfileEditorModelMapLLM(m.draft, selectedLLMRuntime, m.llmRuntimes)
+	llm := initProfileEditorModelMapLLM(m.draft, selectedLLMRuntime, m.llmRuntimes, m.catalog)
 	existing := copyModelMap(m.draft.ModelMap)
 	effective := config.EffectiveModelMap(applyModelMapToLLM(llm, existing))
-	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	builtIns := config.BuiltInModelMapFor(llm.Catalog(), llm.Provider, llm.Adapter)
 	for _, tier := range config.ModelTiers() {
 		index := m.document.fieldIndexByID(initProfileV2FieldModelMap(tier))
 		if index < 0 {

@@ -29,10 +29,14 @@ The runtime sequence for checkout-native review is:
    - final dossier artifacts
 4. Run orchestrator selection from dossier/workbench inputs, selecting every
    applicable repo-local reviewer before optional shared reviewers.
-5. Run specialist reviewers against per-reviewer disposable workspaces, then one
-   focused coverage-repair pass for each reviewer that reported assigned
-   readable files as skipped.
-6. Run rollup from findings, reviewer failures, and inspected coverage.
+5. Certify exact unchanged-blob/mode rename pairs against the pinned base and
+   head Git trees, and publish the complete proof in run-owned
+   `relocations.json`.
+6. Run specialist reviewers against per-reviewer disposable workspaces, then at
+   most one focused coverage-repair pass for each reviewer with unresolved
+   assigned readable-file obligations.
+7. Write complete typed coverage to run-owned `coverage.json` before posting,
+   then run rollup from findings, reviewer failures, and complete coverage.
 
 This order is load-bearing. Discussion summarization happens before final
 dossier assembly, and the dossier is assembled before orchestrator selection.
@@ -50,6 +54,8 @@ runs/<run-id>/
   diff.patch
   findings.json
   rollup.md
+  relocations.json
+  coverage.json
   llm-tasks/
   dossier/
     raw/
@@ -91,6 +97,10 @@ Notes:
   SHA inside the workspace. That is a decision, not an oversight -- add
   `refs/heads/cr-review-base` if a reviewer ever needs `git log base..HEAD`.
 - `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
+  Clone it through Git transport (`--no-local`) rather than copying the
+  canonical object directory: background repacking can replace pack files
+  during a local-copy clone. Each checkout has its own object database and
+  receives only history reachable from the canonical refs.
 - `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
   cache roots.
 - A coverage-repair pass runs under the derived identity
@@ -177,10 +187,35 @@ payload.
 Checkout-native specialist reviewers receive a compact prompt contract plus a
 prepared reviewer workspace. The prompt payload is reviewer-facing context only:
 
-- assignment metadata, including selected files and any `allowed_files`
+- a compact columnar `file_manifest` containing the full changed-file metadata
+  rows in the provider's original order, plus assignment indices
 - reviewer instructions
 - reviewer-facing dossier content
 - pinned workbench identity metadata
+
+The manifest is input-only. Its columns are `path`, `old_path`, `status`,
+`additions`, `deletions`, `hunk_count`, `binary`, `reviewable`, and
+`verified_relocation`; each row retains the complete raw path strings and
+statistics. A verified relocation is an explicit unique provider rename pair
+whose pinned base/head entries are regular blobs with the same full object ID
+and mode, with the old path absent at head and the new path absent at base.
+Distinct certified moves may share a blob ID. The full sorted move proof and
+manifest digest live only in `relocations.json`; reviewer prompts carry the
+manifest digest, assigned move count, and assignment digest rather than
+repeating old/new paths, object IDs, or modes. Selection, reviewer, and
+coverage-repair prompts use compact JSON. Repeated assignment references use
+zero-based row indices rather than repeating path arrays. The public selection
+and findings schemas continue to use literal path strings.
+
+For reviewer prompts, `scope_indices` is the authoritative set of paths the
+reviewer may inspect and report for coverage. `file_indices` and
+`allowed_file_indices` preserve the original assignment as context and do not
+widen that scope. A reviewer may cite an otherwise out-of-scope removed or
+renamed path only through the explicit `extra_citation_refs` cells derived
+from the existing citation allowance. Coverage repair is restricted to its
+scope path cells and receives no extra citation references. Rollup coverage
+context carries counts and status rather than duplicate path arrays; durable
+coverage and approval decisions continue to use the full local path data.
 
 The prompt payload must not embed:
 
@@ -251,6 +286,9 @@ This is a contract requirement:
 
 - Any task that reads dossier or workbench artifacts by path must include
   content digests for those artifacts in its `input_fingerprint`.
+- Selection must also include a digest of the exact raw
+  `dossier/raw/changed-files.json` bytes. This invalidates reuse when raw file
+  metadata changes even if the scoped prompt is unchanged.
 - Dependency task IDs alone are not sufficient when the prompt references
   generated files outside the prompt body.
 - Resume must reject stale artifacts the same way it rejects stale prompt
@@ -337,6 +375,21 @@ tool duration, and aggregate reviewer RPC/stderr logs are bounded without
 limiting protocol parsing. Non-reviewer Pi tasks retain their tool-free scratch
 working directory.
 
+For a changed symlink assigned to a Pi reviewer, `cr_read` also accepts the
+explicit `view="symlink"` option. That view reads a run-owned, digest-validated
+artifact built from the pinned base/head Git trees; it returns the exact link
+payload and lexical target status without following the link or reading the
+destination body. Its output uses the same bounded range/continuation contract.
+Assignments distinguish head-tree symlinks from paths that were symlinks only
+in the base tree and are regular files in the head tree. For the latter, base
+symlink metadata is historical context only; complete coverage still requires
+an ordinary `cr_read` of the pinned head regular-file body.
+Payloads larger than the inspection cap are represented with their size and an
+omission reason without fetching their contents, so the link payload remains a
+skipped review obligation. An explicit empty payload and its zero-byte size are
+preserved distinctly from an omitted payload. The default file view, search,
+and list continue to deny symlink traversal.
+
 Unsupported adapters must fail clearly. They must not silently fall back to
 stuffed diffs or full file bodies.
 
@@ -347,22 +400,65 @@ Specialist reviewers must return structured output that includes:
 - `findings`, each with severity, changed-file path, anchor, and body
 - `inspected_files`, listing assigned changed files the reviewer actually inspected
 - `skipped_files`, listing assigned changed files the reviewer intentionally did not or could not inspect
+- `context_files`, listing safe pinned-head repository paths actually read as
+  supporting context, including paths outside the assigned changed-file set
+- an optional `relocation_assessment` with exact manifest and assignment
+  digests, `path_impact_reviewed: true`, nonempty evidence paths, and a concise
+  basis for assessing assigned certified moves without rereading their bodies
 - `constraints`, listing material scope, context, or tool constraints
 
-Rollup receives compact reviewer coverage summaries derived from those fields.
-`allowed_files` is assignment focus, not incomplete coverage by itself. Isolated
-reviewer failures, skipped files, missing reviewer results, and unassigned
-changed files are incomplete coverage and must not turn into a clean approval
-silently.
+The relocation assessment must discuss imports and relative references,
+workspace membership, build/CI/scripts, runtime assets/routes, guidance, and
+ownership as relevant. Its evidence must be in `context_files` or
+`inspected_files`, and must exist in the pinned head tree. It credits only the
+reviewer's certified assigned moves. Explicit skips override relocation credit;
+they represent unresolved coverage/path-impact obligations, not a requirement
+to reread a certified move's body. Certified moves with valid impact review are
+not to be falsely claimed as body-inspected. Changed residual files still
+require actual inspection. Safe out-of-assignment paths may be preserved as
+context without receiving assignment coverage; invalid, nonexistent, absolute,
+traversing, or `.git` paths are rejected. Findings and citations remain subject
+to the existing strict assignment and anchor allowlists.
+
+Rollup receives compact reviewer coverage summaries derived from body
+inspection, valid relocation-impact review, context, skips, failures, and typed
+missing-file lists. `allowed_files` is assignment focus, not incomplete coverage
+by itself. Isolated reviewer failures, unresolved skips or residuals, missing
+reviewer results, and unassigned changed files are incomplete coverage and must
+not turn into a clean approval silently.
+
+Before the final post is prepared, `coverage.json` records the complete local
+coverage collections, failures, constraints, relocation assessment records,
+and manifest digest. Dry-run JSON exposes complete collections and artifact
+paths. Public summaries use deterministic counts and at most five examples per
+path list with explicit omitted counts; diagnostic prose is sampled to 500
+Unicode runes. The complete details remain local in the run artifacts. Never
+put private absolute paths in public provider bodies. Preserve the existing
+finding-body clipping policy; do not add new clipping of finding bodies or
+anchors, and never clip gate data. The final marker-bearing REST body is
+preflighted at 60,000 UTF-8 bytes; an oversized body is rejected before an HTTP
+write while local artifacts remain available. This conservative limit does not
+assert a confirmed cause for any earlier provider rejection.
+
+Coverage repair targets each assigned readable file not actually body-inspected
+and not covered by a valid relocation-impact assessment, including omitted
+files and explicit skips. It uses one focused workspace/session per reviewer;
+the repair has its own assignment digest. Deleted, binary, and configured
+generated-lockfile exclusions continue to apply. A repair merges findings and
+coverage while preserving primary findings and primary tool evidence. A failed
+primary required tool remains a gate even if a later response reports broad
+coverage.
 
 When incomplete coverage is what downgraded an approving review to a comment,
 the rollup says so under an **Approval Withheld** heading, naming the reviewers
 that produced no result, the coverage diagnostics behind any other incomplete
-status, and every changed file no reviewer inspected. Without it, a review that
+status, and every changed file no reviewer body-inspected or validly
+impact-reviewed. Without it, a review that
 approved and a review that found nothing but could not approve render
 identically as a table of zeros. Re-running is not a remedy either: the focused
-coverage-repair pass has already re-inspected every readable skipped file it
-could, so what the section names is what stayed skipped after that second look.
+coverage-repair pass has already attempted each eligible unresolved readable
+obligation once, so what the section names is what stayed incomplete after that
+second look.
 
 The section renders whenever that coercion fired, rather than deciding again
 from the evidence, so it cannot disagree with the gate about whether coverage
@@ -372,13 +468,13 @@ toward withholding approval and toward being explained.
 
 Every reviewer with a non-complete status gets a line, so the section always
 carries evidence. That includes a reviewer whose skipped file another reviewer
-read: the gate is evaluated one reviewer at a time while the unread-file list is
-computed across the review, and in that state no file is unread yet approval is
-still withheld. The section says so outright rather than introducing a list and
-listing nothing.
+covered: the gate is evaluated one reviewer at a time while the uncovered-file
+list is computed across the review, and in that state no file is uncovered yet
+approval is still withheld. The section says so outright rather than
+introducing a list and listing nothing.
 
-The unread-file list is each reviewer's obligation minus what some reviewer
-inspected. Obligation is the reviewer's scope, not its skip list: a reviewer
+The uncovered-file list is each reviewer's obligation minus what some reviewer
+body-inspected or validly impact-reviewed. Obligation is the reviewer's scope, not its skip list: a reviewer
 that failed carries a scope and no file lists, and one that omitted a file from
 both lists carries the paths only in its diagnostic. A reviewer's skipped paths
 are spelled out on its own line only where the unread list does not already

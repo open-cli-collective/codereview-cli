@@ -401,6 +401,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 	pipelineOpts := pipeline.Options{
 		Provider:            repoProvider,
 		Adapter:             adapter,
+		Catalog:             profile.LLM.Catalog(),
 		Store:               ledgerStore,
 		NamedSessions:       ledgerStore,
 		Layout:              layout,
@@ -732,7 +733,7 @@ func newAdapter(llmConfig config.LLMConfig, store credentials.Reader) (llm.Adapt
 	if !ok {
 		return nil, fmt.Errorf("%w: unsupported LLM adapter %q", config.ErrUnsupported, llmConfig.Adapter)
 	}
-	spec, ok := config.FindLLMRuntimeSpec(llmConfig.Provider, llmConfig.Auth, llmConfig.Adapter)
+	spec, ok := config.FindLLMRuntimeSpecFor(llmConfig.Catalog(), llmConfig.Provider, llmConfig.Auth, llmConfig.Adapter)
 	if !ok {
 		return nil, fmt.Errorf("%w: unsupported LLM runtime %s/%s/%s", config.ErrUnsupported, llmConfig.Provider, llmConfig.Auth, llmConfig.Adapter)
 	}

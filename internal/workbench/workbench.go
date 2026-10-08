@@ -3,6 +3,8 @@ package workbench
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +21,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
-	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
+	"github.com/open-cli-collective/codereview-cli/internal/symlinkmetadata"
 )
 
 const (
@@ -358,11 +360,11 @@ func verifyClean(ctx context.Context, deps Deps, repoDir string, headSHA string)
 }
 
 // PrepareReviewerRequest creates a disposable reviewer workspace and LLM request.
-func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, model, effort, prompt, logPath string) (llm.Request, func() error, error) {
+func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, model, effort, prompt, logPath string, symlinkMetadata ...symlinkmetadata.Artifact) (llm.Request, func() error, error) {
 	if err := llm.RequireReviewerWorkspace(adapter); err != nil {
 		return llm.Request{}, nil, fmt.Errorf("pipeline: %w", err)
 	}
-	workspace, cleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes)
+	workspace, cleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, symlinkMetadata...)
 	if err != nil {
 		return llm.Request{}, nil, err
 	}
@@ -385,7 +387,7 @@ func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter,
 			if err := cleanupCurrent(); err != nil {
 				return fmt.Errorf("pipeline: cleanup reviewer workspace before retry: %w", err)
 			}
-			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes)
+			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, symlinkMetadata...)
 			if err != nil {
 				return err
 			}
@@ -397,7 +399,31 @@ func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter,
 	}, cleanupCurrent, nil
 }
 
-func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int) (llm.ReviewerWorkspaceRequest, func() error, error) {
+// ReviewerWorkspaceSegment names a reviewer's workspace and scratch directories.
+// These paths are handed to the model, which writes its result file under the
+// scratch directory, so the segment carries no escape sequences: a model that
+// reads "%3A" in a path can write to the decoded ":" path instead, and the result
+// then lands where the adapter never looks. Runes outside [A-Za-z0-9._-] become
+// "-", and a changed ID gets a hash suffix so distinct IDs keep distinct paths.
+func ReviewerWorkspaceSegment(agentID string) string {
+	var b strings.Builder
+	for _, r := range agentID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	segment := b.String()
+	if segment == agentID && strings.Trim(segment, ".") != "" {
+		return segment
+	}
+	sum := sha256.Sum256([]byte(agentID))
+	return segment + "-" + hex.EncodeToString(sum[:])[:8]
+}
+
+func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int, symlinkMetadata ...symlinkmetadata.Artifact) (llm.ReviewerWorkspaceRequest, func() error, error) {
 	if strings.TrimSpace(artifacts.WorkbenchRepoDir) == "" {
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: workbench repo dir is required for reviewer workspace")
 	}
@@ -407,10 +433,10 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 	if strings.TrimSpace(agentID) == "" {
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: agent ID is required for reviewer workspace")
 	}
-	encodedAgentID := statepaths.Encode(agentID)
-	workspaceRoot := filepath.Join(artifacts.WorkbenchDir, "reviewers", encodedAgentID)
+	segment := ReviewerWorkspaceSegment(agentID)
+	workspaceRoot := filepath.Join(artifacts.WorkbenchDir, "reviewers", segment)
 	workspaceRepo := filepath.Join(workspaceRoot, "repo")
-	workspaceScratch := filepath.Join(artifacts.WorkbenchScratch, encodedAgentID)
+	workspaceScratch := filepath.Join(artifacts.WorkbenchScratch, segment)
 	for _, dir := range []string{workspaceRoot, workspaceScratch} {
 		if err := os.RemoveAll(dir); err != nil {
 			return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: reset reviewer workspace: %w", err)
@@ -430,7 +456,9 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		}
 		return cleanupErr
 	}
-	if _, err := deps.gitCommand(ctx, "", "clone", "--no-hardlinks", artifacts.WorkbenchRepoDir, workspaceRepo); err != nil {
+	// Use Git transport instead of copying the source object directory. A
+	// background repack can remove a pack while local-copy cloning reads it.
+	if _, err := deps.gitCommand(ctx, "", "clone", "--no-local", artifacts.WorkbenchRepoDir, workspaceRepo); err != nil {
 		_ = cleanup()
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: clone reviewer workspace: %w", err)
 	}
@@ -451,13 +479,27 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 			}
 		}
 	}
-	return llm.ReviewerWorkspaceRequest{
+	workspace := llm.ReviewerWorkspaceRequest{
 		RepoDir:            workspaceRepo,
 		ScratchDir:         workspaceScratch,
 		DiffPath:           artifacts.DiffPatch,
 		AllowedFiles:       append([]string(nil), allowedFiles...),
 		MaxToolOutputBytes: maxToolOutputBytes,
-	}, cleanup, nil
+	}
+	if len(symlinkMetadata) > 0 {
+		metadata := symlinkMetadata[0]
+		if metadata.Digest != "" || metadata.BaseSHA != "" || metadata.HeadSHA != "" || len(metadata.Links) > 0 {
+			if strings.TrimSpace(artifacts.SymlinkMetadataJSON) == "" || metadata.Digest == "" || metadata.BaseSHA == "" || metadata.HeadSHA == "" {
+				_ = cleanup()
+				return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: pinned symlink metadata identity is required for reviewer workspace")
+			}
+			workspace.SymlinkMetadataPath = artifacts.SymlinkMetadataJSON
+			workspace.SymlinkMetadataDigest = metadata.Digest
+			workspace.BaseSHA = metadata.BaseSHA
+			workspace.HeadSHA = metadata.HeadSHA
+		}
+	}
+	return workspace, cleanup, nil
 }
 
 func isReviewerWorkspaceEscapePath(clean string) bool {

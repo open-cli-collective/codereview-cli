@@ -109,11 +109,7 @@ func addCommonFlags(cmd *cobra.Command, flags *commandFlags) {
 // buildCatalog loads config, resolves the active profile, optionally resolves a PR,
 // manages provider lifetime, and loads the trusted agent catalog.
 func buildCatalog(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory ProviderFactory, flags commandFlags, prArg string) (agents.Catalog, error) {
-	path, err := cmdruntime.ConfigPath(opts)
-	if err != nil {
-		return agents.Catalog{}, exitcode.AuthConfig(err)
-	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if err != nil {
 		return agents.Catalog{}, cmderr.Config(err)
 	}

@@ -242,6 +242,34 @@ func TestPrepareReusesValidV1WorkbenchWithoutRewritingMetadata(t *testing.T) {
 	}
 }
 
+// A transport clone copies reachable Git objects rather than the source's
+// object directory. Besides avoiding races with automatic repacking, this
+// keeps private/unreachable source objects out of each disposable workspace.
+func TestReviewerWorkspaceDoesNotCopyUnreachableObjects(t *testing.T) {
+	fixture, artifacts, deps := prepareReviewerFixture(t)
+	payload := filepath.Join(t.TempDir(), "unreachable")
+	if err := os.WriteFile(payload, []byte("canonical-only object"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	object := strings.TrimSpace(gitCommandOutput(t, artifacts.WorkbenchRepoDir, "hash-object", "-w", payload))
+	if !gitCommandSucceeds(artifacts.WorkbenchRepoDir, "cat-file", "-e", object) {
+		t.Fatal("fixture object missing from canonical workbench")
+	}
+	adapter := &reviewerWorkspaceSmokeAdapter{}
+	req, cleanup, err := PrepareReviewerRequest(context.Background(), deps, adapter, artifacts, fixture.headSHA, "harness:transport", nil, "gpt-5.5", "medium", "transport", filepath.Join(t.TempDir(), "transport.jsonl"))
+	if err != nil {
+		t.Fatalf("PrepareReviewerRequest: %v", err)
+	}
+	t.Cleanup(cleanupForTest(t, cleanup))
+	repo := req.ReviewerWorkspace.RepoDir
+	if gitCommandSucceeds(repo, "cat-file", "-e", object) {
+		t.Fatal("reviewer clone copied an unreachable canonical object")
+	}
+	if got := strings.TrimSpace(gitCommandOutput(t, repo, "rev-parse", "HEAD")); got != fixture.headSHA {
+		t.Fatalf("reviewer HEAD = %q, want %q", got, fixture.headSHA)
+	}
+}
+
 func TestReviewerWorkspaceSmokeAllowsReadAndWorkspaceWrites(t *testing.T) {
 	ctx := context.Background()
 	fixture, artifacts, deps := prepareReviewerFixture(t)
@@ -441,7 +469,7 @@ func TestReviewerWorkspaceAllowedFilesRejectsEscapePathsAndCleansUp(t *testing.T
 		if cleanup != nil {
 			t.Fatalf("prepareReviewerWorkspace(%q) cleanup = non-nil, want nil on setup failure", path)
 		}
-		encoded := statepaths.Encode(agentID)
+		encoded := ReviewerWorkspaceSegment(agentID)
 		if _, statErr := os.Stat(filepath.Join(artifacts.WorkbenchDir, "reviewers", encoded)); !errors.Is(statErr, os.ErrNotExist) {
 			t.Fatalf("reviewer workspace for %q stat err = %v, want cleaned", path, statErr)
 		}
@@ -811,7 +839,7 @@ func TestPrepareRestoresHeadRefOnReuse(t *testing.T) {
 // tests assert the property rather than a proxy for it.
 func cloneWorkbench(t *testing.T, src, dest string) {
 	t.Helper()
-	cmd := exec.Command("git", "clone", "--no-hardlinks", src, dest) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+	cmd := exec.Command("git", "clone", "--no-local", src, dest) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
 	cmd.Env = gittest.Env()
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("clone workbench: %v: %s", err, out)
@@ -825,4 +853,43 @@ func gitCommandSucceeds(dir string, args ...string) bool {
 	cmd.Env = gittest.Env()
 	cmd.Dir = dir
 	return cmd.Run() == nil
+}
+
+func TestReviewerWorkspaceSegmentCarriesNoEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		agentID string
+		want    string
+	}{
+		{agentID: "plain-reviewer_1.v2", want: "plain-reviewer_1.v2"},
+		{agentID: "go:implementation-tests"},
+		{agentID: "go%3Aimplementation-tests"},
+		{agentID: "../escape"},
+		{agentID: ".."},
+		{agentID: "a/b"},
+	} {
+		got := ReviewerWorkspaceSegment(tc.agentID)
+		if tc.want != "" && got != tc.want {
+			t.Fatalf("ReviewerWorkspaceSegment(%q) = %q, want %q", tc.agentID, got, tc.want)
+		}
+		if strings.ContainsAny(got, "%:/\\") || strings.Trim(got, ".") == "" {
+			t.Fatalf("ReviewerWorkspaceSegment(%q) = %q, want a single plain path segment", tc.agentID, got)
+		}
+	}
+	if ReviewerWorkspaceSegment("go:tests") == ReviewerWorkspaceSegment("go-tests") {
+		t.Fatal("distinct agent IDs mapped to the same workspace segment")
+	}
+}
+
+func TestReviewerWorkspaceScratchPathHasNoEscapes(t *testing.T) {
+	fixture, artifacts, deps := prepareReviewerFixture(t)
+	workspace, cleanup, err := prepareReviewerWorkspace(context.Background(), deps, artifacts, fixture.headSHA, "harness:colon-id", nil, 1024)
+	if err != nil {
+		t.Fatalf("prepareReviewerWorkspace: %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+	for label, dir := range map[string]string{"repo": workspace.RepoDir, "scratch": workspace.ScratchDir} {
+		if strings.Contains(dir, "%") {
+			t.Fatalf("reviewer %s dir = %q, want no percent escapes the model could decode", label, dir)
+		}
+	}
 }

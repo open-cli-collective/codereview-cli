@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 func TestResolveStageModelUsesConfiguredTierMapping(t *testing.T) {
@@ -62,14 +63,41 @@ func TestResolveStageModelAppliesEffortOverrideWithoutBypassingTier(t *testing.T
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
 	}
-	if got.Model != "gpt-6-sol" {
-		t.Fatalf("Model = %q, want gpt-6-sol", got.Model)
+	if got.Model != "gpt-6.1-sol" {
+		t.Fatalf("Model = %q, want gpt-6.1-sol", got.Model)
 	}
 	if got.Effort != "high" {
 		t.Fatalf("Effort = %q, want high", got.Effort)
 	}
 	if got.Source != config.ModelMapSourceBuiltIn {
 		t.Fatalf("Source = %q, want %q", got.Source, config.ModelMapSourceBuiltIn)
+	}
+}
+
+func TestResolveStageModelUsesBuiltInModelAndEffort(t *testing.T) {
+	for _, adapter := range []config.LLMAdapter{config.LLMAdapterCodexCLI, config.LLMAdapterOpenAIAPI} {
+		profile := config.Profile{LLM: config.LLMConfig{Provider: config.LLMProviderOpenAI, Adapter: adapter}}
+		for _, tt := range []struct {
+			tier   config.ModelTier
+			model  string
+			effort string
+		}{{config.ModelTierSmall, "gpt-6-luna", "max"}, {config.ModelTierMedium, "gpt-6.1-sol", "low"}, {config.ModelTierLarge, "gpt-6.1-sol", "medium"}} {
+			got, err := ResolveStageModel(Request{Profile: profile, Stage: StageReviewer, Tier: tt.tier, DefaultEffort: "high"})
+			if err != nil || got.Model != tt.model || got.Effort != tt.effort {
+				t.Fatalf("%s/%s: result=%#v err=%v, want %s/%s", adapter, tt.tier, got, err, tt.model, tt.effort)
+			}
+		}
+	}
+	profile := config.Profile{LLM: config.LLMConfig{Provider: config.LLMProviderAnthropic, Adapter: config.LLMAdapterClaudeCLI}}
+	for _, tt := range []struct {
+		tier   config.ModelTier
+		model  string
+		effort string
+	}{{config.ModelTierSmall, "claude-sonnet-5-5", "low"}, {config.ModelTierMedium, "claude-sonnet-5-5", "medium"}, {config.ModelTierLarge, "claude-opus-5-5", "medium"}} {
+		got, err := ResolveStageModel(Request{Profile: profile, Stage: StageReviewer, Tier: tt.tier, DefaultEffort: "high"})
+		if err != nil || got.Model != tt.model || got.Effort != tt.effort {
+			t.Fatalf("anthropic/%s: result=%#v err=%v, want %s/%s", tt.tier, got, err, tt.model, tt.effort)
+		}
 	}
 }
 
@@ -138,6 +166,41 @@ func TestResolveStageModelBypassesTierForExplicitOverride(t *testing.T) {
 	}
 }
 
+func TestResolveStageModelUsesCatalogEffortsForKnownModelsAndAllowsUnknownExplicitModels(t *testing.T) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatalf("LoadBundled: %v", err)
+	}
+	profile := config.Profile{LLM: config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthAPIKey,
+		Adapter:  config.LLMAdapterOpenAIAPI,
+	}.WithCatalog(catalog)}
+
+	unknown, err := ResolveStageModel(Request{
+		Profile:        profile,
+		Stage:          StageReviewer,
+		ModelOverride:  "operator-model-not-in-catalog",
+		EffortOverride: "high",
+	})
+	if err != nil {
+		t.Fatalf("unknown explicit model: %v", err)
+	}
+	if unknown.Model != "operator-model-not-in-catalog" || unknown.Effort != "high" {
+		t.Fatalf("unknown explicit result = %#v, want model and standard usable effort", unknown)
+	}
+
+	_, err = ResolveStageModel(Request{
+		Profile:        profile,
+		Stage:          StageReviewer,
+		ModelOverride:  "gpt-5.4",
+		EffortOverride: "max",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not verified for model gpt-5.4") {
+		t.Fatalf("known model effort error = %v, want catalog restriction", err)
+	}
+}
+
 func TestResolveStageModelAllowsExtendedPiEffort(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderPi,
@@ -159,21 +222,21 @@ func TestResolveStageModelAllowsExtendedPiEffort(t *testing.T) {
 	}
 }
 
-func TestResolveStageModelRejectsExtendedEffortForUnsupportedRuntime(t *testing.T) {
+func TestResolveStageModelAllowsExtendedClaudeCLIEffort(t *testing.T) {
 	profile := config.Profile{LLM: config.LLMConfig{
 		Provider: config.LLMProviderAnthropic,
 		Auth:     config.LLMAuthSubscription,
 		Adapter:  config.LLMAdapterClaudeCLI,
 	}}
 
-	_, err := ResolveStageModel(Request{
+	got, err := ResolveStageModel(Request{
 		Profile:        profile,
 		Stage:          StageReviewer,
 		ModelOverride:  "claude-opus-5",
 		EffortOverride: "xhigh",
 	})
-	if err == nil || !strings.Contains(err.Error(), `stage reviewer: config: unsupported effort: effort "xhigh" is unsupported`) {
-		t.Fatalf("ResolveStageModel error = %v", err)
+	if err != nil || got.Effort != "xhigh" {
+		t.Fatalf("ResolveStageModel = (%+v, %v), want xhigh effort", got, err)
 	}
 }
 
@@ -219,7 +282,7 @@ func TestResolveStageModelMapsSmallTierForClaudeCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveStageModel: %v", err)
 	}
-	if resolved.Model != "claude-haiku-4-5" || resolved.Source != config.ModelMapSourceBuiltIn {
+	if resolved.Model != "claude-sonnet-5-5" || resolved.Source != config.ModelMapSourceBuiltIn {
 		t.Fatalf("resolved = %#v, want the built-in Claude CLI small model", resolved)
 	}
 }

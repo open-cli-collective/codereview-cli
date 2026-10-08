@@ -19,6 +19,7 @@ type FilePatch struct {
 	Patch   string
 	Binary  bool
 	Deleted bool
+	Added   bool
 	Hunks   []reviewplan.DiffHunk
 }
 
@@ -84,6 +85,8 @@ func parseUnifiedDiff(raw string) (ParsedDiff, error) {
 			}
 		case strings.HasPrefix(trimmed, "deleted file mode"):
 			current.Deleted = true
+		case strings.HasPrefix(trimmed, "new file mode"):
+			current.Added = true
 		case strings.HasPrefix(trimmed, "rename from "):
 			current.OldPath = strings.TrimPrefix(trimmed, "rename from ")
 		case strings.HasPrefix(trimmed, "rename to "):

@@ -3,6 +3,8 @@ package config
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -13,12 +15,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedir"
 	"go.yaml.in/yaml/v3"
 
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 )
 
@@ -72,6 +76,10 @@ func (e RepositoryProfileAmbiguityError) Unwrap() error {
 
 // File is the root config.yml schema.
 type File struct {
+	sourcePath   string
+	sourceDigest [sha256.Size]byte
+	catalog      *modelcatalog.Catalog
+
 	Secrets            SecretsConfig                     `yaml:"secrets,omitempty" json:"secrets,omitempty"`
 	RepositoryAccess   map[string]RepositoryAccessConfig `yaml:"repository_access,omitempty" json:"repository_access,omitempty"`
 	LLMRuntimes        map[string]LLMConfig              `yaml:"llm_runtimes,omitempty" json:"llm_runtimes,omitempty"`
@@ -361,15 +369,29 @@ type LLMConfig struct {
 	Adapter           LLMAdapter         `yaml:"adapter" json:"adapter"`
 	Credential        CredentialLocation `yaml:"credential,omitempty" json:"credential,omitempty"`
 	ModelMap          ModelMap           `yaml:"model_map,omitempty" json:"model_map,omitempty"`
+	EffortMap         EffortMap          `yaml:"effort_map,omitempty" json:"effort_map,omitempty"`
 	MaxEffort         EffortMap          `yaml:"max_effort,omitempty" json:"max_effort,omitempty"`
 	ReviewerModelTier ModelTier          `yaml:"reviewer_model_tier,omitempty" json:"reviewer_model_tier,omitempty"`
+	DefaultsVersion   int                `yaml:"review_defaults_version,omitempty" json:"review_defaults_version,omitempty"`
+	catalog           *modelcatalog.Catalog
+}
+
+// Catalog returns the immutable catalog snapshot attached to this runtime.
+func (l LLMConfig) Catalog() *modelcatalog.Catalog { return l.catalog }
+
+// WithCatalog returns this runtime attached to one immutable catalog snapshot.
+// It is useful when comparing or carrying an already-resolved profile through
+// a command boundary without changing the serialized configuration.
+func (l LLMConfig) WithCatalog(catalog *modelcatalog.Catalog) LLMConfig {
+	l.catalog = catalog
+	return l
 }
 
 // ModelMap maps portable model tiers to provider-specific model identifiers.
 type ModelMap map[string]string
 
-// EffortMap caps reasoning effort per model tier. A tier absent from the map is
-// uncapped, so the agent-declared or stage-default effort applies unchanged.
+// EffortMap maps portable tiers to reasoning effort values. Missing entries
+// preserve the agent-declared or stage-default effort.
 type EffortMap map[string]string
 
 // ModelTier is a provider-neutral model slot.
@@ -538,81 +560,80 @@ type LLMRuntimeSpec struct {
 	SuggestedName         string
 	DisplayName           string
 	BuiltInModelMap       ModelMap
+	BuiltInEffort         EffortMap
+	BuiltInMaxEffort      EffortMap
 	FastModeModels        []string
 	MaximumEffort         modelprefs.Effort
 	RequiresCredentialRef bool
 }
 
-var llmRuntimeSpecs = []LLMRuntimeSpec{
-	{
-		Provider:      LLMProviderAnthropic,
-		Auth:          LLMAuthSubscription,
-		Adapter:       LLMAdapterClaudeCLI,
-		SuggestedName: "claude-cli",
-		DisplayName:   "Claude CLI",
-		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "claude-haiku-4-5",
-			string(ModelTierMedium): "claude-sonnet-5",
-			string(ModelTierLarge):  "claude-opus-5-5",
-		},
-		FastModeModels: []string{"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"},
-		MaximumEffort:  modelprefs.EffortHigh,
-	},
-	{
-		Provider:              LLMProviderAnthropic,
-		Auth:                  LLMAuthAPIKey,
-		Adapter:               LLMAdapterAnthropicAPI,
-		SuggestedName:         "anthropic-api-key",
-		DisplayName:           "Anthropic API",
-		BuiltInModelMap:       ModelMap{},
-		FastModeModels:        []string{"claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"},
-		MaximumEffort:         modelprefs.EffortHigh,
-		RequiresCredentialRef: true,
-	},
-	{
-		Provider:      LLMProviderOpenAI,
-		Auth:          LLMAuthSubscription,
-		Adapter:       LLMAdapterCodexCLI,
-		SuggestedName: "codex-cli",
-		DisplayName:   "Codex CLI",
-		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "gpt-6-luna",
-			string(ModelTierMedium): "gpt-6-sol",
-			string(ModelTierLarge):  "gpt-6-sol",
-		},
-		FastModeModels: []string{"gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"},
-		MaximumEffort:  modelprefs.EffortHigh,
-	},
-	{
-		Provider:      LLMProviderOpenAI,
-		Auth:          LLMAuthAPIKey,
-		Adapter:       LLMAdapterOpenAIAPI,
-		SuggestedName: "openai-api-key",
-		DisplayName:   "OpenAI API",
-		BuiltInModelMap: ModelMap{
-			string(ModelTierSmall):  "gpt-6-luna",
-			string(ModelTierMedium): "gpt-6-sol",
-			string(ModelTierLarge):  "gpt-6-sol",
-		},
-		RequiresCredentialRef: true,
-		MaximumEffort:         modelprefs.EffortHigh,
-	},
-	{
-		Provider:        LLMProviderPi,
-		Auth:            LLMAuthSubscription,
-		Adapter:         LLMAdapterPiRPC,
-		SuggestedName:   "pi-local",
-		DisplayName:     "Pi RPC",
-		BuiltInModelMap: ModelMap{},
-		MaximumEffort:   modelprefs.EffortMax,
-	},
+var bundledRuntimeSpecs = sync.OnceValue(func() []LLMRuntimeSpec {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		panic(err)
+	}
+	return runtimeSpecsFromCatalog(catalog)
+})
+
+func runtimeSpecsFromCatalog(catalog *modelcatalog.Catalog) []LLMRuntimeSpec {
+	if catalog == nil {
+		return nil
+	}
+	specs := make([]LLMRuntimeSpec, 0, len(catalog.Runtimes()))
+	for _, runtime := range catalog.Runtimes() {
+		spec := LLMRuntimeSpec{
+			Provider:              LLMProvider(runtime.Provider),
+			Auth:                  LLMAuth(runtime.Auth),
+			Adapter:               LLMAdapter(runtime.Adapter),
+			SuggestedName:         runtime.SuggestedName,
+			DisplayName:           runtime.DisplayName,
+			BuiltInModelMap:       ModelMap{},
+			BuiltInEffort:         EffortMap{},
+			BuiltInMaxEffort:      EffortMap{},
+			MaximumEffort:         modelprefs.Effort(runtime.MaximumEffort),
+			RequiresCredentialRef: runtime.RequiresCredentialRef,
+		}
+		for _, value := range catalog.Defaults() {
+			if value.RuntimeID != runtime.ID {
+				continue
+			}
+			spec.BuiltInModelMap[value.Tier] = value.ModelID
+			spec.BuiltInEffort[value.Tier] = value.Effort
+			if value.MaxEffort != "" {
+				spec.BuiltInMaxEffort[value.Tier] = value.MaxEffort
+			}
+		}
+		for _, model := range catalog.ModelsForRuntime(runtime.ID) {
+			// Pi RPC validates the catalog claim but has no transport mapping for
+			// fast mode. Keep raw catalog capability visible through catalog show,
+			// while never passing it to the adapter or selected-fast resolver.
+			if spec.Adapter == LLMAdapterPiRPC {
+				continue
+			}
+			if model.FastKnown && model.Fast {
+				spec.FastModeModels = append(spec.FastModeModels, model.ModelID)
+			}
+		}
+		specs = append(specs, spec)
+	}
+	return specs
+}
+
+func runtimeSpecsFor(catalog *modelcatalog.Catalog) []LLMRuntimeSpec {
+	if catalog == nil {
+		return bundledRuntimeSpecs()
+	}
+	return runtimeSpecsFromCatalog(catalog)
 }
 
 // LLMRuntimeSpecs returns the built-in LLM runtime specifications.
 func LLMRuntimeSpecs() []LLMRuntimeSpec {
-	specs := make([]LLMRuntimeSpec, len(llmRuntimeSpecs))
-	for i, spec := range llmRuntimeSpecs {
+	base := bundledRuntimeSpecs()
+	specs := make([]LLMRuntimeSpec, len(base))
+	for i, spec := range base {
 		spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+		spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
+		spec.BuiltInMaxEffort = maps.Clone(spec.BuiltInMaxEffort)
 		spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 		specs[i] = spec
 	}
@@ -622,9 +643,39 @@ func LLMRuntimeSpecs() []LLMRuntimeSpec {
 // FindLLMRuntimeSpec finds a built-in runtime matching provider, auth, and
 // adapter. A spec with empty Auth matches either supported auth mode.
 func FindLLMRuntimeSpec(provider LLMProvider, auth LLMAuth, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
-	for _, spec := range llmRuntimeSpecs {
+	for _, spec := range bundledRuntimeSpecs() {
 		if spec.Provider == provider && (spec.Auth == "" || spec.Auth == auth) && spec.Adapter == adapter {
 			spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+			spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
+			spec.BuiltInMaxEffort = maps.Clone(spec.BuiltInMaxEffort)
+			spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
+			return spec, true
+		}
+	}
+	return LLMRuntimeSpec{}, false
+}
+
+// LLMRuntimeSpecsFor returns runtime specifications from one snapshot.
+func LLMRuntimeSpecsFor(catalog *modelcatalog.Catalog) []LLMRuntimeSpec {
+	base := runtimeSpecsFor(catalog)
+	specs := make([]LLMRuntimeSpec, len(base))
+	for i, spec := range base {
+		spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+		spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
+		spec.BuiltInMaxEffort = maps.Clone(spec.BuiltInMaxEffort)
+		spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
+		specs[i] = spec
+	}
+	return specs
+}
+
+// FindLLMRuntimeSpecFor finds a runtime in one immutable catalog snapshot.
+func FindLLMRuntimeSpecFor(catalog *modelcatalog.Catalog, provider LLMProvider, auth LLMAuth, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
+	for _, spec := range runtimeSpecsFor(catalog) {
+		if spec.Provider == provider && (spec.Auth == "" || spec.Auth == auth) && spec.Adapter == adapter {
+			spec.BuiltInModelMap = maps.Clone(spec.BuiltInModelMap)
+			spec.BuiltInEffort = maps.Clone(spec.BuiltInEffort)
+			spec.BuiltInMaxEffort = maps.Clone(spec.BuiltInMaxEffort)
 			spec.FastModeModels = append([]string(nil), spec.FastModeModels...)
 			return spec, true
 		}
@@ -654,9 +705,9 @@ func ValidateEffortForRuntime(llm LLMConfig, effort string) error {
 	if !requested.Valid() {
 		return fmt.Errorf("%w: effort %q is invalid; must be one of low, medium, high, xhigh, max", ErrInvalid, effort)
 	}
-	spec, ok := FindLLMRuntimeSpec(llm.Provider, llm.Auth, llm.Adapter)
+	spec, ok := FindLLMRuntimeSpecFor(llm.catalog, llm.Provider, llm.Auth, llm.Adapter)
 	if !ok && llm.Auth == "" {
-		spec, ok = findLLMRuntimeSpecByProviderAdapter(llm.Provider, llm.Adapter)
+		spec, ok = findLLMRuntimeSpecByProviderAdapterFor(llm.catalog, llm.Provider, llm.Adapter)
 	}
 	if !ok {
 		return fmt.Errorf("%w: effort %q cannot be validated for unknown runtime %s/%s/%s", ErrInvalid, effort, llm.Provider, llm.Auth, llm.Adapter)
@@ -667,8 +718,61 @@ func ValidateEffortForRuntime(llm LLMConfig, effort string) error {
 	return nil
 }
 
+// ValidateEffortForModel applies a catalog model's explicit effort list after
+// runtime-level validation. Models absent from the catalog remain usable at
+// standard speed with no catalog-enforced effort restriction.
+func ValidateEffortForModel(llm LLMConfig, modelID, effort string) error {
+	if llm.catalog == nil || strings.TrimSpace(modelID) == "" || strings.TrimSpace(effort) == "" {
+		return nil
+	}
+	runtimeID := ""
+	for _, runtime := range llm.catalog.Runtimes() {
+		if runtime.Provider == string(llm.Provider) && runtime.Adapter == string(llm.Adapter) && (llm.Auth == "" || runtime.Auth == string(llm.Auth)) {
+			runtimeID = runtime.ID
+			break
+		}
+	}
+	if runtimeID == "" {
+		return nil
+	}
+	for _, model := range llm.catalog.ModelsForRuntime(runtimeID) {
+		if model.ModelID != strings.TrimSpace(modelID) {
+			continue
+		}
+		// An empty effort list records that the source did not publish a
+		// portable effort control for this model. Preserve the existing runtime
+		// behavior and let the adapter decide how its ordinary request runs.
+		if len(model.SupportedEfforts) == 0 {
+			return nil
+		}
+		if !containsString(model.SupportedEfforts, strings.TrimSpace(effort)) {
+			return fmt.Errorf("%w: effort %q is not verified for model %s on runtime %s/%s/%s", ErrUnsupportedEffort, effort, modelID, llm.Provider, llm.Auth, llm.Adapter)
+		}
+		return nil
+	}
+	return nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func findLLMRuntimeSpecByProviderAdapter(provider LLMProvider, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
-	for _, spec := range llmRuntimeSpecs {
+	for _, spec := range bundledRuntimeSpecs() {
+		if spec.Provider == provider && spec.Adapter == adapter {
+			return spec, true
+		}
+	}
+	return LLMRuntimeSpec{}, false
+}
+
+func findLLMRuntimeSpecByProviderAdapterFor(catalog *modelcatalog.Catalog, provider LLMProvider, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
+	for _, spec := range runtimeSpecsFor(catalog) {
 		if spec.Provider == provider && spec.Adapter == adapter {
 			return spec, true
 		}
@@ -677,7 +781,16 @@ func findLLMRuntimeSpecByProviderAdapter(provider LLMProvider, adapter LLMAdapte
 }
 
 func findLLMRuntimeSpecByAdapter(adapter LLMAdapter) (LLMRuntimeSpec, bool) {
-	for _, spec := range llmRuntimeSpecs {
+	for _, spec := range bundledRuntimeSpecs() {
+		if spec.Adapter == adapter {
+			return spec, true
+		}
+	}
+	return LLMRuntimeSpec{}, false
+}
+
+func findLLMRuntimeSpecByAdapterFor(catalog *modelcatalog.Catalog, adapter LLMAdapter) (LLMRuntimeSpec, bool) {
+	for _, spec := range runtimeSpecsFor(catalog) {
 		if spec.Adapter == adapter {
 			return spec, true
 		}
@@ -699,11 +812,45 @@ func BuiltInModelMap(provider LLMProvider, adapter LLMAdapter) ModelMap {
 	return ModelMap{}
 }
 
+// BuiltInModelMapFor returns defaults from one catalog snapshot.
+func BuiltInModelMapFor(catalog *modelcatalog.Catalog, provider LLMProvider, adapter LLMAdapter) ModelMap {
+	if spec, ok := FindLLMRuntimeSpecFor(catalog, provider, "", adapter); ok {
+		return maps.Clone(spec.BuiltInModelMap)
+	}
+	for _, spec := range runtimeSpecsFor(catalog) {
+		if spec.Provider == provider && spec.Adapter == adapter {
+			return maps.Clone(spec.BuiltInModelMap)
+		}
+	}
+	return ModelMap{}
+}
+
+// BuiltInEffort returns the effort paired with a built-in model tier.
+func BuiltInEffort(provider LLMProvider, adapter LLMAdapter, tier ModelTier) (modelprefs.Effort, bool) {
+	if spec, ok := findLLMRuntimeSpecByProviderAdapter(provider, adapter); ok {
+		effort := modelprefs.Effort(spec.BuiltInEffort[string(tier)])
+		return effort, effort.Valid()
+	}
+	return "", false
+}
+
+// BuiltInEffortFor returns the effort default from one catalog snapshot.
+func BuiltInEffortFor(catalog *modelcatalog.Catalog, provider LLMProvider, adapter LLMAdapter, tier ModelTier) (modelprefs.Effort, bool) {
+	for _, spec := range runtimeSpecsFor(catalog) {
+		if spec.Provider != provider || spec.Adapter != adapter {
+			continue
+		}
+		effort := modelprefs.Effort(spec.BuiltInEffort[string(tier)])
+		return effort, effort.Valid()
+	}
+	return "", false
+}
+
 // EffectiveModelMap merges built-in defaults with profile model_map overrides.
 func EffectiveModelMap(llm LLMConfig) map[ModelTier]ModelMapResolution {
 	llm = llm.normalized()
 	out := map[ModelTier]ModelMapResolution{}
-	for tier, model := range BuiltInModelMap(llm.Provider, llm.Adapter) {
+	for tier, model := range BuiltInModelMapFor(llm.catalog, llm.Provider, llm.Adapter) {
 		model = strings.TrimSpace(model)
 		parsed := ModelTier(strings.TrimSpace(tier))
 		if parsed.Valid() && model != "" {
@@ -747,6 +894,12 @@ func ResolveMaxEffort(llm LLMConfig, tier ModelTier) (modelprefs.Effort, bool) {
 			return "", false
 		}
 		return effort, true
+	}
+	if spec, ok := FindLLMRuntimeSpecFor(llm.catalog, llm.Provider, llm.Auth, llm.Adapter); ok {
+		effort := modelprefs.Effort(strings.TrimSpace(spec.BuiltInMaxEffort[string(tier)]))
+		if effort.Valid() {
+			return effort, true
+		}
 	}
 	return "", false
 }
@@ -872,8 +1025,18 @@ func Path() (string, error) {
 	return filepath.Join(dir, fileName), nil
 }
 
-// Load reads and validates config.yml.
+// Load reads and validates config.yml against the embedded catalog baseline.
 func Load(path string) (File, error) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		return File{}, fmt.Errorf("config: load bundled model catalog: %w", err)
+	}
+	return LoadWithCatalog(path, catalog)
+}
+
+// LoadWithCatalog reads and validates config.yml against one immutable catalog
+// snapshot selected by the command root.
+func LoadWithCatalog(path string, catalog *modelcatalog.Catalog) (File, error) {
 	// #nosec G304 -- path is the resolved cr config path or an injected test path.
 	body, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -905,14 +1068,26 @@ func Load(path string) (File, error) {
 		return File{}, invalid("parse %s: multiple YAML documents are not supported", path)
 	}
 
+	cfg.catalog = catalog
 	if err := Validate(cfg); err != nil {
 		return File{}, err
 	}
 	cfg = cfg.normalized()
+	cfg.sourcePath = path
+	cfg.sourceDigest = sha256.Sum256(body)
 	return cfg, nil
 }
 
-// Save validates and atomically writes config.yml.
+// Catalog returns the snapshot attached to cfg.
+func (cfg File) Catalog() *modelcatalog.Catalog { return cfg.catalog }
+
+// WithCatalog returns cfg attached to one immutable catalog snapshot.
+func (cfg File) WithCatalog(catalog *modelcatalog.Catalog) File {
+	cfg.catalog = catalog
+	return cfg.normalized()
+}
+
+// Save validates and atomically writes config.yml, rejecting stale loaded drafts.
 func Save(path string, cfg File) error {
 	if strings.TrimSpace(path) == "" {
 		return invalid("path is required")
@@ -924,6 +1099,21 @@ func Save(path string, cfg File) error {
 		return err
 	}
 	cfg = cfg.normalized()
+	lock, err := lockFile(context.Background(), path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+	if cfg.sourcePath == path {
+		// #nosec G304 -- path is the caller-selected config file.
+		body, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) || (err == nil && sha256.Sum256(body) != cfg.sourceDigest) {
+			return ErrChanged
+		}
+		if err != nil {
+			return err
+		}
+	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -1444,7 +1634,7 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 	if !llm.Adapter.Valid() {
 		return invalid("%s.adapter %q is invalid", field, llm.Adapter)
 	}
-	runtimeSpec, runtimeKnown := FindLLMRuntimeSpec(llm.Provider, llm.Auth, llm.Adapter)
+	runtimeSpec, runtimeKnown := FindLLMRuntimeSpecFor(llm.catalog, llm.Provider, llm.Auth, llm.Adapter)
 	if llm.Provider == LLMProviderPi {
 		if !runtimeKnown || runtimeSpec.Adapter != LLMAdapterPiRPC {
 			return invalid("%s provider pi requires auth subscription and adapter pi_rpc", field)
@@ -1455,7 +1645,7 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 			return invalid("%s adapter pi_rpc requires provider pi and auth subscription", field)
 		}
 	}
-	adapterSpec, _ := findLLMRuntimeSpecByAdapter(llm.Adapter)
+	adapterSpec, _ := findLLMRuntimeSpecByAdapterFor(llm.catalog, llm.Adapter)
 	if !adapterSpec.RequiresCredentialRef && adapterSpec.Auth != "" && !runtimeKnown {
 		return invalid("%s adapter %s requires provider %s and auth %s", field, llm.Adapter, adapterSpec.Provider, adapterSpec.Auth)
 	}
@@ -1479,17 +1669,22 @@ func validateLLMConfig(field string, llm LLMConfig) error {
 			return invalid("%s.model_map.%s is required", field, tier)
 		}
 	}
-	for tier, ceiling := range llm.MaxEffort {
-		modelTier := ModelTier(tier)
-		if !modelTier.Valid() {
-			return invalid("%s.max_effort tier %q is invalid", field, tier)
+	for name, efforts := range map[string]EffortMap{"effort_map": llm.EffortMap, "max_effort": llm.MaxEffort} {
+		for tier, ceiling := range efforts {
+			modelTier := ModelTier(tier)
+			if !modelTier.Valid() {
+				return invalid("%s.%s tier %q is invalid", field, name, tier)
+			}
+			if strings.TrimSpace(ceiling) == "" {
+				return invalid("%s.%s.%s is required", field, name, tier)
+			}
+			if err := ValidateEffortForRuntime(llm, ceiling); err != nil {
+				return invalid("%s.%s.%s: %v", field, name, tier, err)
+			}
 		}
-		if strings.TrimSpace(ceiling) == "" {
-			return invalid("%s.max_effort.%s is required", field, tier)
-		}
-		if err := ValidateEffortForRuntime(llm, ceiling); err != nil {
-			return invalid("%s.max_effort.%s: %v", field, tier, err)
-		}
+	}
+	if llm.DefaultsVersion < 0 {
+		return invalid("%s.review_defaults_version must be non-negative", field)
 	}
 	if llm.ReviewerModelTier != "" && !llm.ReviewerModelTier.Valid() {
 		return invalid("%s.reviewer_model_tier %q is invalid; must be one of small, medium, large", field, llm.ReviewerModelTier)
@@ -1840,6 +2035,7 @@ func (cfg File) normalized() File {
 	if cfg.LLMRuntimes != nil {
 		runtimes := make(map[string]LLMConfig, len(cfg.LLMRuntimes))
 		for name, runtime := range cfg.LLMRuntimes {
+			runtime.catalog = cfg.catalog
 			runtimes[strings.TrimSpace(name)] = runtime.normalized()
 		}
 		cfg.LLMRuntimes = runtimes
@@ -1922,6 +2118,9 @@ func (cfg File) projectProfileComponentReferences() File {
 		}
 		if strings.TrimSpace(profile.LLMRuntime) == "" && !profile.LLM.empty() {
 			runtime := profile.LLM.normalized()
+			// Projection of legacy inline profile fields creates a new runtime;
+			// carry the command-selected snapshot across that boundary.
+			runtime.catalog = cfg.catalog
 			key := llmRuntimeIdentityKey(runtime)
 			runtimeName, ok := runtimeNamesByKey[key]
 			if !ok {
@@ -2026,6 +2225,15 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 	for _, tier := range effortKeys {
 		efforts = append(efforts, tier+"="+strings.TrimSpace(llm.MaxEffort[tier]))
 	}
+	preferenceKeys := make([]string, 0, len(llm.EffortMap))
+	for tier := range llm.EffortMap {
+		preferenceKeys = append(preferenceKeys, tier)
+	}
+	sort.Strings(preferenceKeys)
+	preferences := make([]string, 0, len(preferenceKeys))
+	for _, tier := range preferenceKeys {
+		preferences = append(preferences, tier+"="+strings.TrimSpace(llm.EffortMap[tier]))
+	}
 	return strings.Join([]string{
 		string(llm.Provider),
 		string(llm.Auth),
@@ -2034,12 +2242,14 @@ func llmRuntimeIdentityKey(llm LLMConfig) string {
 		llm.Credential.Name,
 		strings.Join(models, "\x1f"),
 		strings.Join(efforts, "\x1f"),
+		strings.Join(preferences, "\x1f"),
 		string(llm.ReviewerModelTier),
+		strconv.Itoa(llm.DefaultsVersion),
 	}, "\x00")
 }
 
 func suggestedLLMRuntimeName(llm LLMConfig) string {
-	if spec, ok := FindLLMRuntimeSpec(llm.Provider, llm.Auth, llm.Adapter); ok &&
+	if spec, ok := FindLLMRuntimeSpecFor(llm.catalog, llm.Provider, llm.Auth, llm.Adapter); ok &&
 		(spec.Auth == llm.Auth || spec.Auth == "" && llm.Auth == LLMAuthSubscription) {
 		return spec.SuggestedName
 	}
@@ -2337,6 +2547,13 @@ func (l LLMConfig) normalized() LLMConfig {
 		}
 		l.MaxEffort = maxEffort
 	}
+	if len(l.EffortMap) > 0 {
+		effortMap := make(EffortMap, len(l.EffortMap))
+		for tier, effort := range l.EffortMap {
+			effortMap[strings.TrimSpace(tier)] = strings.TrimSpace(effort)
+		}
+		l.EffortMap = effortMap
+	}
 	return l
 }
 
@@ -2347,6 +2564,8 @@ func (l LLMConfig) empty() bool {
 		l.Credential.empty() &&
 		len(l.ModelMap) == 0 &&
 		len(l.MaxEffort) == 0 &&
+		len(l.EffortMap) == 0 &&
+		l.DefaultsVersion == 0 &&
 		strings.TrimSpace(string(l.ReviewerModelTier)) == ""
 }
 

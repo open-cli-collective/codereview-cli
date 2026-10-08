@@ -19,15 +19,30 @@ func TestValidateEffortForRuntimeAllowsExtendedPiEffort(t *testing.T) {
 	}
 }
 
-func TestValidateEffortForRuntimeRejectsExtendedEffortForOtherRuntimes(t *testing.T) {
+func TestValidateEffortForRuntimeAllowsExtendedClaudeCLIEffort(t *testing.T) {
 	llm := LLMConfig{
 		Provider: LLMProviderAnthropic,
 		Auth:     LLMAuthSubscription,
 		Adapter:  LLMAdapterClaudeCLI,
 	}
-	err := ValidateEffortForRuntime(llm, "xhigh")
-	if err == nil || !errors.Is(err, ErrUnsupportedEffort) || !strings.Contains(err.Error(), `effort "xhigh" is unsupported`) || !strings.Contains(err.Error(), "claude_cli") {
-		t.Fatalf("ValidateEffortForRuntime error = %v", err)
+	for _, effort := range []string{"low", "medium", "high", "xhigh", "max"} {
+		if err := ValidateEffortForRuntime(llm, effort); err != nil {
+			t.Fatalf("ValidateEffortForRuntime(%q): %v", effort, err)
+		}
+	}
+}
+
+func TestValidateEffortForRuntimeRejectsExtendedEffortForAnthropicAPI(t *testing.T) {
+	llm := LLMConfig{
+		Provider: LLMProviderAnthropic,
+		Auth:     LLMAuthAPIKey,
+		Adapter:  LLMAdapterAnthropicAPI,
+	}
+	for _, effort := range []string{"xhigh", "max"} {
+		err := ValidateEffortForRuntime(llm, effort)
+		if err == nil || !errors.Is(err, ErrUnsupportedEffort) || !strings.Contains(err.Error(), `effort "`+effort+`" is unsupported`) || !strings.Contains(err.Error(), "anthropic_api") {
+			t.Fatalf("ValidateEffortForRuntime(%q) error = %v", effort, err)
+		}
 	}
 }
 

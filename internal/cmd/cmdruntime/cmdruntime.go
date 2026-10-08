@@ -23,6 +23,21 @@ func ConfigPath(opts *root.Options) (string, error) {
 	return config.Path()
 }
 
+// LoadConfig resolves the command's immutable catalog snapshot and loads the
+// config against it. Keeping this in one helper prevents sibling commands from
+// observing different installed revisions during one invocation.
+func LoadConfig(opts *root.Options) (config.File, error) {
+	path, err := ConfigPath(opts)
+	if err != nil {
+		return config.File{}, err
+	}
+	catalog, err := opts.CatalogSnapshot()
+	if err != nil {
+		return config.File{}, err
+	}
+	return config.LoadWithCatalog(path, catalog)
+}
+
 // ReadSecretIngress reads a required secret from stdin or an environment variable.
 func ReadSecretIngress(r io.Reader, stdin bool, envVar, stdinFlag, envFlag string) (string, error) {
 	value, ok, err := ReadOptionalSecretIngress(r, stdin, envVar, stdinFlag, envFlag)

@@ -66,8 +66,8 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	adapter := newClaudeHelperAdapter("success", recordPath, configDir, 5*time.Second)
 
 	stream, err := adapter.Start(context.Background(), Request{
-		Model:   "claude-sonnet-4-6",
-		Effort:  "high",
+		Model:   "claude-opus-5-5",
+		Effort:  "max",
 		Prompt:  "prompt",
 		LogPath: logPath,
 	})
@@ -98,8 +98,8 @@ func TestSubprocessClaudeBackgroundLaunchSafety(t *testing.T) {
 	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", "Read,Write")
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "auto")
-	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-4-6")
-	assertFlagValue(t, record.AdapterArgs, "--effort", "high")
+	assertFlagValue(t, record.AdapterArgs, "--model", "claude-opus-5-5")
+	assertFlagValue(t, record.AdapterArgs, "--effort", "max")
 	if containsFlag(record.AdapterArgs, "--settings") {
 		t.Fatalf("args = %#v, want no --settings without fast request", record.AdapterArgs)
 	}

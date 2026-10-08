@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,8 +13,11 @@ import (
 	"github.com/open-cli-collective/cli-common/credstore"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/marker"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
+
+const testGitHubWriteBodyLimit = 60_000
 
 func TestRESTWriteMethodsMapRequests(t *testing.T) {
 	ref := testPRRef()
@@ -176,6 +180,157 @@ func TestRESTWritesValidateBeforeRequest(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("requests = %d, want no requests for invalid inputs", requests)
+	}
+}
+
+func TestRESTWritesAcceptMarkerBodiesAtUTF8ByteLimit(t *testing.T) {
+	inlineBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit, marker.ActionKindInlineComment, "")
+	issueBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit, marker.ActionKindRollupComment, marker.RollupOutcomeRequestChanges)
+	reviewBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit, marker.ActionKindSubmitReview, "")
+	bundledBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit, marker.ActionKindInlineComment, "")
+
+	calls := make(chan struct{}, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requireJSONWrite(t, r)
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("Read request body: %v", err)
+		}
+		if len(raw) <= testGitHubWriteBodyLimit {
+			t.Fatalf("serialized JSON body is %d bytes, want it to exceed the %d-byte content limit", len(raw), testGitHubWriteBodyLimit)
+		}
+		var payload struct {
+			Body     string `json:"body"`
+			Event    string `json:"event"`
+			Comments []struct {
+				Body string `json:"body"`
+			} `json:"comments"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("Decode request body: %v", err)
+		}
+		switch r.URL.EscapedPath() {
+		case "/repos/open%20cli/repo+name/pulls/42/comments":
+			requirePreservedMarkerBody(t, payload.Body, inlineBody)
+		case "/repos/open%20cli/repo+name/issues/42/comments":
+			requirePreservedMarkerBody(t, payload.Body, issueBody)
+		case "/repos/open%20cli/repo+name/pulls/42/reviews":
+			requirePreservedMarkerBody(t, payload.Body, reviewBody)
+			if payload.Event != "REQUEST_CHANGES" {
+				t.Fatalf("review event = %q, want REQUEST_CHANGES", payload.Event)
+			}
+			if len(payload.Comments) != 1 {
+				t.Fatalf("bundled review comments = %d, want 1", len(payload.Comments))
+			}
+			requirePreservedMarkerBody(t, payload.Comments[0].Body, bundledBody)
+		default:
+			t.Fatalf("unexpected write path %s", r.URL.String())
+		}
+		calls <- struct{}{}
+		writeJSON(t, w, map[string]any{"id": 301})
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	inline := validLineComment()
+	inline.Body = inlineBody
+	if _, err := client.PostInlineComment(context.Background(), testPRRef(), inline); err != nil {
+		t.Fatalf("PostInlineComment at limit: %v", err)
+	}
+	if _, err := client.PostIssueComment(context.Background(), testPRRef(), issueBody); err != nil {
+		t.Fatalf("PostIssueComment at limit: %v", err)
+	}
+	reviewComment := validLineComment()
+	reviewComment.Body = bundledBody
+	if _, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+		CommitSHA: "head-sha",
+		Event:     review.ReviewEventRequestChanges,
+		Body:      reviewBody,
+		Comments:  []gitprovider.InlineComment{reviewComment},
+	}); err != nil {
+		t.Fatalf("SubmitReview at limit: %v", err)
+	}
+	if got := len(calls); got != 3 {
+		t.Fatalf("HTTP write calls = %d, want 3", got)
+	}
+}
+
+func TestRESTWritesRejectMarkerBodiesOverUTF8ByteLimitBeforeRequest(t *testing.T) {
+	inlineBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit+1, marker.ActionKindInlineComment, "")
+	issueBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit+1, marker.ActionKindRollupComment, marker.RollupOutcomeRequestChanges)
+	reviewBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit+1, marker.ActionKindSubmitReview, "")
+	bundledBody := markerBodyAtUTF8Size(t, testGitHubWriteBodyLimit+1, marker.ActionKindInlineComment, "")
+
+	calls := make(chan struct{}, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls <- struct{}{}
+		writeJSON(t, w, map[string]any{"id": 301})
+	}))
+	defer server.Close()
+	client := mustClient(t, Options{Token: "token", BaseURL: server.URL, GraphQLURL: server.URL + "/graphql"})
+
+	inline := validLineComment()
+	inline.Body = inlineBody
+	reviewComment := validLineComment()
+	reviewComment.Body = bundledBody
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "inline comment",
+			call: func() error {
+				_, err := client.PostInlineComment(context.Background(), testPRRef(), inline)
+				return err
+			},
+		},
+		{
+			name: "issue comment",
+			call: func() error {
+				_, err := client.PostIssueComment(context.Background(), testPRRef(), issueBody)
+				return err
+			},
+		},
+		{
+			name: "review body",
+			call: func() error {
+				_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+					CommitSHA: "head-sha",
+					Event:     review.ReviewEventRequestChanges,
+					Body:      reviewBody,
+				})
+				return err
+			},
+		},
+		{
+			name: "bundled review comment",
+			call: func() error {
+				_, err := client.SubmitReview(context.Background(), testPRRef(), gitprovider.ReviewRequest{
+					CommitSHA: "head-sha",
+					Event:     review.ReviewEventRequestChanges,
+					Body:      "review body",
+					Comments:  []gitprovider.InlineComment{reviewComment},
+				})
+				return err
+			},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("error = %v, want ErrValidation", err)
+			}
+			if !strings.Contains(err.Error(), "60001 UTF-8 bytes") || !strings.Contains(err.Error(), "60000") {
+				t.Fatalf("error = %q, want actual and maximum body byte counts", err)
+			}
+			if strings.Contains(err.Error(), "Preserve this complete finding") {
+				t.Fatalf("error exposed review body content: %q", err)
+			}
+		})
+	}
+	if got := len(calls); got != 0 {
+		t.Fatalf("HTTP write calls = %d, want none for oversized bodies", got)
 	}
 }
 
@@ -358,6 +513,50 @@ func validLineComment() gitprovider.InlineComment {
 		Side:        review.DiffSideRight,
 		Line:        9,
 		SubjectType: review.AnchorKindLine,
+	}
+}
+
+func markerBodyAtUTF8Size(t *testing.T, size int, kind string, outcome string) string {
+	t.Helper()
+	actionMarker, err := marker.RenderAction(marker.ActionMarker{
+		RunID:    "test-run",
+		ActionID: "test-action",
+		Kind:     kind,
+		SHA:      strings.Repeat("a", 40),
+		BaseSHA:  strings.Repeat("b", 40),
+		Outcome:  outcome,
+	})
+	if err != nil {
+		t.Fatalf("RenderAction: %v", err)
+	}
+	prefix := marker.RenderSkip() + "\n" + actionMarker + "\n\n## Verdict: REQUEST_CHANGES\n\n## Findings\n\n- [P1] Preserve this complete finding.\n\n"
+	if len(prefix) > size {
+		t.Fatalf("marker body prefix is %d bytes, exceeds requested %d-byte body", len(prefix), size)
+	}
+	paddingBytes := size - len(prefix)
+	body := prefix + strings.Repeat("é", paddingBytes/2)
+	if paddingBytes%2 == 1 {
+		body += "x"
+	}
+	if got := len(body); got != size {
+		t.Fatalf("body size = %d UTF-8 bytes, want %d", got, size)
+	}
+	if !strings.Contains(body, "é") {
+		t.Fatal("body does not contain multibyte UTF-8 content")
+	}
+	return body
+}
+
+func requirePreservedMarkerBody(t *testing.T, got, want string) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("captured body size = %d UTF-8 bytes, want %d; body was truncated or changed", len(got), len(want))
+	}
+	if !strings.Contains(got, marker.RenderSkip()) || len(marker.FindActions(got)) != 1 {
+		t.Fatal("captured body is missing its outbox markers")
+	}
+	if !strings.Contains(got, "## Verdict: REQUEST_CHANGES") || !strings.Contains(got, "[P1] Preserve this complete finding.") {
+		t.Fatal("captured body is missing its verdict or finding")
 	}
 }
 

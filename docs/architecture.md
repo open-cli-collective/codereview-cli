@@ -58,14 +58,16 @@ review stages. Runtime hard-coding bypasses user preference and is a bug.
 
 For reviewer tier-based requests, the resolver's authoritative ordering is:
 resolve the effective tier after applying the profile reviewer-tier floor and
-agent floor; resolve the model for that tier; cap the default effort with the
-selected runtime's `max_effort` entry for that final tier; then apply
+agent floor; resolve the model for that tier; select the runtime `effort_map`
+entry for that tier (falling back to built-in presets for built-in models, then agent/stage effort); cap that
+effort with the selected runtime's `max_effort` entry for that final tier; then apply
 `EffortOverride`. This means `--reviewer-model-tier` is still capped at the tier
 it ultimately resolves, while `--selection-effort` and `--reviewer-effort` win
 after the ceiling. Other tier-resolved internal stages use their own stage
 tier before applying `max_effort` at that final tier.
 
-An explicit `ModelOverride` bypasses model-map resolution. Explicit effort
+An explicit `ModelOverride` bypasses model-map resolution, but a request with
+a tier still uses its independent `effort_map` preference. Explicit effort
 still bypasses `max_effort`; inherited reviewer effort is capped when the
 request carries an effective reviewer tier. `--reviewer-model` uses that tier,
 including benchmark reviewer model overrides. `--selection-model` and agent
