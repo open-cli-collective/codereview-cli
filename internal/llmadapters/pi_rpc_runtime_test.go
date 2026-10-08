@@ -82,6 +82,47 @@ func TestPiRPCRuntimeStructuredJSONWithoutTools(t *testing.T) {
 	}
 }
 
+// Plant each instruction independently so Pi's AGENTS/CLAUDE precedence cannot
+// hide an uncovered source. The selected directory also contains the fixture's
+// real models.json and dummy auth.json, which must continue to be used.
+func TestPiRPCRuntimeSelectedAgentInstructionIsolation(t *testing.T) {
+	for _, reviewer := range []bool{false, true} {
+		mode := "structured"
+		if reviewer {
+			mode = "reviewer"
+		}
+		t.Run(mode, func(t *testing.T) {
+			for _, filename := range []string{"AGENTS.md", "CLAUDE.md", "AGENTS.override.md", "SYSTEM.md", "APPEND_SYSTEM.md"} {
+				t.Run(filename, func(t *testing.T) {
+					fixture := newPiRuntimeFixture(t, piRuntimeAnswer(`{"ok":true}`, piRuntimeUsage{prompt: 10, completion: 1}))
+					for _, candidate := range []string{"AGENTS.md", "CLAUDE.md", "SYSTEM.md", "APPEND_SYSTEM.md"} {
+						if err := os.Remove(filepath.Join(fixture.agentDir, candidate)); err != nil { // #nosec G703 -- synthetic instruction fixtures only.
+							t.Fatalf("Remove(selected instruction): %v", err)
+						}
+					}
+					fixture.writeFile(filepath.Join(fixture.agentDir, filename), piRuntimeHostileMarker+" selected "+filename+"\n")
+					req := Request{Model: piRuntimeModel, Prompt: `Return {"ok":true}.`}
+					wantPrompt := piRPCSystemPrompt
+					if reviewer {
+						req.ReviewerWorkspace = fixture.reviewerWorkspace()
+						wantPrompt = piRPCReviewerSystemPrompt
+					}
+					response, err := fixture.run(fixture.adapter(piRuntimeTaskTimeout), req)
+					if err != nil || string(response.StructuredOutput) != `{"ok":true}` {
+						t.Fatalf("run output = %q (err %v), want CR response", response.StructuredOutput, err)
+					}
+					requests := fixture.provider.requests()
+					if len(requests) != 1 || !strings.Contains(requests[0].systemText(), wantPrompt) {
+						t.Fatalf("provider requests = %d, want one with the CR prompt", len(requests))
+					}
+					// assertIsolated checks every request for the marker and the
+					// dummy selected-store authorization, including tool turns.
+				})
+			}
+		})
+	}
+}
+
 func TestPiRPCRuntimeRecoversTransientProviderFailure(t *testing.T) {
 	fixture := newPiRuntimeFixture(t,
 		piRuntimeFailure(http.StatusServiceUnavailable, "fixture transient overload"),
@@ -374,7 +415,6 @@ func newPiRuntimeFixture(t *testing.T, steps ...piRuntimeStep) *piRuntimeFixture
 			piRuntimeProviderName: map[string]any{
 				"baseUrl": fixture.provider.server.URL + "/v1",
 				"api":     "openai-completions",
-				"apiKey":  piRuntimeAPIKey,
 				"models": []any{map[string]any{
 					"id":            piRuntimeModelID,
 					"name":          "CR runtime fixture",
@@ -389,10 +429,16 @@ func newPiRuntimeFixture(t *testing.T, steps ...piRuntimeStep) *piRuntimeFixture
 			},
 		},
 	})
+	fixture.writeJSON(filepath.Join(fixture.agentDir, "auth.json"), map[string]any{
+		piRuntimeProviderName: map[string]any{"type": "api_key", "key": piRuntimeAPIKey},
+	})
 	fixture.writeJSON(filepath.Join(fixture.agentDir, "settings.json"), map[string]any{
 		"retry":                  map[string]any{"enabled": true, "maxRetries": 1, "baseDelayMs": 10},
 		"enableInstallTelemetry": false,
 	})
+	// The actual selected directory must reject instruction resources without
+	// hiding its model configuration, credentials, or refresh destination.
+	fixture.plantHostileResources(fixture.agentDir, "selected-agent")
 	// Resources at Pi's default global location. The agent directory override
 	// must keep every one of them out of the run.
 	fixture.plantHostileResources(filepath.Join(home, ".pi", "agent"), "global")
