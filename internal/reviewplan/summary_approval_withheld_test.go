@@ -165,7 +165,7 @@ func TestRollupApprovalWithheld(t *testing.T) {
 			"### Approval Withheld",
 			"No blocking or major findings were reported.",
 			"`structure:repo-health` — ⚠️ incomplete (skipped files)",
-			"1 file inspected by no reviewer:",
+			"1 file not body-inspected by any reviewer; examples: `big_test.py`",
 			"`big_test.py`",
 			"Re-running the same review reproduces this",
 		)
@@ -234,7 +234,7 @@ func TestRollupApprovalWithheld(t *testing.T) {
 		mustContain(t, md,
 			"### Approval Withheld",
 			"`structure:repo-health` did not produce a result: adapter exited 1",
-			"1 file inspected by no reviewer:",
+			"1 file not body-inspected by any reviewer; examples: `deploy.sh`",
 			"`deploy.sh`",
 		)
 		// Within this section the crash is one event: it is reported as a
@@ -308,10 +308,10 @@ func TestRollupApprovalWithheld(t *testing.T) {
 		md := plan.RollupMarkdown
 		mustContain(t, md,
 			"### Approval Withheld",
-			"`structure:repo-health` — ⚠️ incomplete (skipped files); skipped: `f.go`",
-			"Every changed file was read by some reviewer.",
+			"`structure:repo-health` — ⚠️ incomplete (skipped files); skipped: 1 file; examples: `f.go`",
+			"Every changed file was body-inspected by some reviewer.",
 		)
-		if strings.Contains(md, "inspected by no reviewer") {
+		if strings.Contains(md, "not body-inspected by any reviewer") {
 			t.Fatalf("claims unread files when every file was read:\n%s", md)
 		}
 		if strings.Contains(md, "the change:\n\n\n") {

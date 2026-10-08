@@ -32,17 +32,20 @@ type ReviewerSummary struct {
 	Findings int
 }
 
-// ReviewerCoverageSummary describes whether a selected reviewer actually
-// covered its assignment. It is compact by design so rollups can include it
-// without pulling diff or file content into context.
+// ReviewerCoverageSummary retains the complete path and diagnostic evidence
+// for one selected reviewer. Public rollup rendering samples this evidence so
+// large reviews stay readable without changing the typed source data.
 type ReviewerCoverageSummary struct {
-	AgentID        string
-	Status         string
-	Scope          []string
-	InspectedFiles []string
-	SkippedFiles   []string
-	Constraints    []string
-	Diagnostic     string
+	AgentID                 string
+	Status                  string
+	Scope                   []string
+	InspectedFiles          []string
+	SkippedFiles            []string
+	MissingFiles            []string
+	ContextFiles            []string
+	RelocationReviewedFiles []string
+	Constraints             []string
+	Diagnostic              string
 }
 
 // ThreadCounts summarizes PR discussion thread handling.
@@ -310,30 +313,35 @@ func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFa
 
 // GitHub tables offer no column-width control, so variable-length values
 // (paths, constraint prose) wrap mid-word and repeat per row. Coverage is
-// rendered as a list instead: shared inspected files collapse into one
-// details block, per-reviewer lines carry only deviations, and unknown
-// fields are omitted rather than rendered as "unavailable".
+// rendered as a list instead, with bounded path examples and unknown fields
+// omitted rather than rendered as "unavailable".
 func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerCoverageSummary) {
 	if len(coverage) == 0 {
 		return
 	}
 	out.WriteString("### Reviewer Coverage\n\n")
-	union := inspectedFileUnion(coverage)
 	for _, entry := range coverage {
 		fmt.Fprintf(out, "- %s — %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status))
 		var notes []string
-		if len(entry.InspectedFiles) > 0 && !stringSetsEqual(entry.InspectedFiles, union) {
-			assignedNoun := "files"
-			if len(entry.InspectedFiles) == 1 {
-				assignedNoun = "file"
-			}
-			notes = append(notes, fmt.Sprintf("inspected %d assigned %s (%d inspected across reviewers): %s",
-				len(entry.InspectedFiles), assignedNoun, len(union), codeSpanList(entry.InspectedFiles)))
+		if len(entry.Scope) > 0 {
+			notes = append(notes, formatPathList("scope", entry.Scope))
+		}
+		if len(entry.InspectedFiles) > 0 {
+			notes = append(notes, formatPathList("body-inspected", entry.InspectedFiles))
 		}
 		if len(entry.SkippedFiles) > 0 {
-			notes = append(notes, "skipped: "+codeSpanList(entry.SkippedFiles))
+			notes = append(notes, formatPathList("skipped", entry.SkippedFiles))
 		} else if coverageResultProduced(entry.Status) {
 			notes = append(notes, "skipped: none")
+		}
+		if len(entry.MissingFiles) > 0 {
+			notes = append(notes, formatPathList("missing", entry.MissingFiles))
+		}
+		if len(entry.ContextFiles) > 0 {
+			notes = append(notes, formatPathList("context (not coverage)", entry.ContextFiles))
+		}
+		if len(entry.RelocationReviewedFiles) > 0 {
+			notes = append(notes, formatPathList("relocation-impact-reviewed (not body-inspected)", entry.RelocationReviewedFiles))
 		}
 		if len(entry.Constraints) > 0 {
 			// Constraints are independent sentences of reviewer prose; a
@@ -343,20 +351,13 @@ func writeReviewerCoverageDiagnostics(out *strings.Builder, coverage []ReviewerC
 			notes = append(notes, "constraints: none")
 		}
 		if strings.TrimSpace(entry.Diagnostic) != "" {
-			notes = append(notes, escapeCell(entry.Diagnostic))
+			notes = append(notes, "diagnostic: "+escapeCell(samplePublicDiagnostic(entry.Diagnostic)))
 		}
 		if len(notes) > 0 {
 			out.WriteString("; ")
 			out.WriteString(strings.Join(notes, "; "))
 		}
 		out.WriteString("\n")
-	}
-	if len(union) > 0 {
-		fmt.Fprintf(out, "\n<details>\n<summary>Inspected files (%d)</summary>\n\n", len(union))
-		for _, file := range union {
-			fmt.Fprintf(out, "- %s\n", codeSpan(file))
-		}
-		out.WriteString("\n</details>\n")
 	}
 	out.WriteString("\n")
 }
@@ -436,6 +437,8 @@ func coverageStatusComplete(status string) bool {
 func uninspectedFiles(coverage []ReviewerCoverageSummary) []string {
 	inspected := map[string]bool{}
 	for _, entry := range coverage {
+		// Only body inspection satisfies coverage. Context files and files
+		// reviewed for relocation impact are reported separately, not counted.
 		for _, file := range entry.InspectedFiles {
 			inspected[file] = true
 		}
@@ -485,9 +488,9 @@ func incompleteCoverageLines(coverage []ReviewerCoverageSummary, failures []Revi
 		}
 		line := fmt.Sprintf("- %s — %s", codeSpan(entry.AgentID), coverageStatusLabel(entry.Status))
 		if diagnostic := strings.TrimSpace(entry.Diagnostic); diagnostic != "" {
-			line += ": " + escapeCell(diagnostic)
+			line += ": " + escapeCell(samplePublicDiagnostic(diagnostic))
 		} else if listed := filesNotIn(entry.SkippedFiles, unread); len(listed) > 0 {
-			line += "; skipped: " + codeSpanList(listed)
+			line += "; " + formatPathList("skipped", listed)
 		}
 		out = append(out, line)
 	}
@@ -532,10 +535,7 @@ func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSumma
 		out.WriteString("\n")
 	}
 	if len(uninspected) > 0 {
-		fmt.Fprintf(out, "- %s inspected by no reviewer:\n", pluralFiles(len(uninspected)))
-		for _, file := range uninspected {
-			fmt.Fprintf(out, "  - %s\n", codeSpan(file))
-		}
+		fmt.Fprintf(out, "- %s not body-inspected by any reviewer; %s\n", pluralFiles(len(uninspected)), formatPathExamples(uninspected))
 	}
 	out.WriteString("\n")
 	if len(uninspected) == 0 && len(failures) == 0 {
@@ -543,61 +543,85 @@ func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSumma
 		// missing, and the answer is none. The gate is per reviewer while
 		// coverage is per review, so a reviewer's declined file that another
 		// reviewer read still withholds approval.
-		out.WriteString("Every changed file was read by some reviewer. The withhold comes from the per-reviewer statuses above, which are evaluated one reviewer at a time.\n\n")
+		out.WriteString("Every changed file was body-inspected by some reviewer. The withhold comes from the per-reviewer statuses above, which are evaluated one reviewer at a time.\n\n")
 		return
 	}
 	out.WriteString("Re-running the same review reproduces this: a reviewer that declined a file declines it again. Closing the gap means bringing these paths into the remit of a reviewer that will read them, or establishing that they need no review.\n\n")
 }
 
 func pluralFiles(n int) string {
+	return fmt.Sprintf("%d %s", n, fileNoun(n))
+}
+
+func fileNoun(n int) string {
 	if n == 1 {
-		return "1 file"
+		return "file"
 	}
-	return fmt.Sprintf("%d files", n)
-}
-
-func inspectedFileUnion(coverage []ReviewerCoverageSummary) []string {
-	seen := map[string]bool{}
-	var union []string
-	for _, entry := range coverage {
-		for _, file := range entry.InspectedFiles {
-			if !seen[file] {
-				seen[file] = true
-				union = append(union, file)
-			}
-		}
-	}
-	sort.Strings(union)
-	return union
-}
-
-func stringSetsEqual(a, b []string) bool {
-	set := map[string]bool{}
-	for _, value := range a {
-		set[value] = true
-	}
-	if len(set) != len(b) {
-		return false
-	}
-	for _, value := range b {
-		if !set[value] {
-			return false
-		}
-	}
-	return true
+	return "files"
 }
 
 // codeSpan wraps a dynamic value in a markdown code span; backticks are
 // replaced so the value cannot terminate the span early.
 func codeSpan(value string) string {
+	value = strings.ToValidUTF8(value, "�")
 	cleaned := strings.NewReplacer("`", "'", "\n", " ", "\r", " ").Replace(sanitize(value))
 	return "`" + strings.TrimSpace(cleaned) + "`"
 }
 
-func codeSpanList(values []string) string {
+func pathCodeSpan(value string) string {
+	value = strings.ToValidUTF8(value, "�")
+	return codeSpan(redactAbsolutePaths(value))
+}
+
+const maxPublicPathExamples = 5
+
+func formatPathList(label string, files []string) string {
+	paths := append([]string(nil), files...)
+	sort.Strings(paths)
+	count := len(paths)
+	examples := paths
+	if len(examples) > maxPublicPathExamples {
+		examples = examples[:maxPublicPathExamples]
+	}
+	result := fmt.Sprintf("%s: %d %s", label, count, fileNoun(count))
+	if len(examples) > 0 {
+		result += "; examples: " + pathCodeSpanList(examples)
+	}
+	if omitted := count - len(examples); omitted > 0 {
+		result += fmt.Sprintf("; %d omitted", omitted)
+	}
+	return result
+}
+
+func formatPathExamples(files []string) string {
+	paths := append([]string(nil), files...)
+	sort.Strings(paths)
+	examples := paths
+	if len(examples) > maxPublicPathExamples {
+		examples = examples[:maxPublicPathExamples]
+	}
+	result := "examples: " + pathCodeSpanList(examples)
+	if omitted := len(paths) - len(examples); omitted > 0 {
+		result += fmt.Sprintf("; %d omitted", omitted)
+	}
+	return result
+}
+
+func samplePublicDiagnostic(value string) string {
+	const maxPublicDiagnosticRunes = 500
+	value = strings.ToValidUTF8(value, "�")
+	value = redactAbsolutePaths(sanitize(value))
+	runes := []rune(value)
+	if len(runes) <= maxPublicDiagnosticRunes {
+		return value
+	}
+	return string(runes[:maxPublicDiagnosticRunes-1]) + "…"
+}
+
+func pathCodeSpanList(values []string) string {
 	spans := make([]string, 0, len(values))
 	for _, value := range values {
-		spans = append(spans, codeSpan(value))
+		spans = append(spans, pathCodeSpan(value))
 	}
 	return strings.Join(spans, ", ")
 }
@@ -691,6 +715,7 @@ var cellEscaper = strings.NewReplacer(
 // escapeCell makes a dynamic value safe for the public rollup comment:
 // marker-prefix escaping plus markdown-table and HTML neutralization.
 func escapeCell(value string) string {
+	value = strings.ToValidUTF8(value, "�")
 	return strings.TrimSpace(cellEscaper.Replace(sanitize(value)))
 }
 
