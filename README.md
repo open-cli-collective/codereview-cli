@@ -119,14 +119,22 @@ cr init --non-interactive \
 ```
 
 Setup with Pi's local RPC runtime. Install Pi's coding agent and make sure the
-`pi` binary is available on `PATH` before running `cr review`. New installs
-should use the current npm package (`@earendil-works/pi-coding-agent`); existing
-installs from the previous npm scope can also work when CR's compatibility
-preflight confirms the reviewer controls it requires: RPC/system-prompt mode;
-`--no-builtin-tools` with an exact `--tools` allowlist; explicit `--extension` loading while
-`--no-extensions` disables discovery; and `--no-context-files`, `--no-approve`,
-`--no-skills`, `--no-prompt-templates`, `--no-themes`, and `--no-session`.
-CR preflights these capabilities before starting a Pi reviewer and returns an
+`pi` binary is available on `PATH` before running `cr review`. Use Pi 1.0 or
+newer from the current npm package (`@earendil-works/pi-coding-agent`). CR
+relies on Pi 1.0's RPC completion contract: it keeps reading events through
+automatic retries and compaction recovery until `agent_settled`, takes the
+answer only from the final completed assistant message, and sums usage from
+each completed assistant message and compaction summary. A final provider
+error or abort fails the task with Pi's diagnostic. Older runtimes, including
+installs from the previous npm scope, that end a run without `agent_settled`
+fail with an incompatible-runtime error after a short grace period instead of
+returning a result.
+
+CR also preflights the reviewer controls it requires before starting a Pi
+reviewer: RPC/system-prompt mode; `--no-builtin-tools` with an exact `--tools`
+allowlist; explicit `--extension` loading while `--no-extensions` disables
+discovery; and `--no-context-files`, `--no-approve`, `--no-skills`,
+`--no-prompt-templates`, `--no-themes`, and `--no-session`. It returns an
 incompatible-runtime error when any control is unavailable.
 
 ```bash
