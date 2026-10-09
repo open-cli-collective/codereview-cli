@@ -1,16 +1,88 @@
 package pipeline
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/open-cli-collective/codereview-cli/internal/agents"
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 )
+
+// ReviewerRelocationAssessments stores relocation assessments for one reviewer.
+type ReviewerRelocationAssessments struct {
+	AgentID     string                           `json:"agent_id"`
+	Assessments []llm.RelocationAssessmentRecord `json:"assessments"`
+}
+
+type coverageArtifact struct {
+	SchemaVersion         int                                  `json:"schema_version"`
+	BaseSHA               string                               `json:"base_sha"`
+	HeadSHA               string                               `json:"head_sha"`
+	ManifestDigest        string                               `json:"manifest_digest"`
+	SymlinkMetadataDigest string                               `json:"symlink_metadata_digest"`
+	Moves                 []relocationMove                     `json:"moves"`
+	Reviewers             []reviewplan.ReviewerCoverageSummary `json:"reviewers"`
+	Assessments           []ReviewerRelocationAssessments      `json:"relocation_assessments"`
+	Failures              []ReviewerFailure                    `json:"failures"`
+}
+
+func relocationAssessmentArtifacts(results []llm.Findings, evidenceByAgent ...map[string]*llm.ReviewerToolEvidence) []ReviewerRelocationAssessments {
+	var out []ReviewerRelocationAssessments
+	var evidence map[string]*llm.ReviewerToolEvidence
+	if len(evidenceByAgent) > 0 {
+		evidence = evidenceByAgent[0]
+	}
+	for _, result := range results {
+		if len(result.RelocationAssessments) == 0 {
+			continue
+		}
+		records := append([]llm.RelocationAssessmentRecord(nil), result.RelocationAssessments...)
+		if reviewerToolEvidenceForcesIncomplete(evidence[result.AgentID]) {
+			for i := range records {
+				records[i].Valid = false
+				records[i].ReviewedFiles = nil
+				records[i].Diagnostic = "primary reviewer tool evidence was incomplete"
+			}
+		}
+		out = append(out, ReviewerRelocationAssessments{AgentID: result.AgentID, Assessments: records})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AgentID < out[j].AgentID })
+	return out
+}
+
+func writeCoverageArtifact(paths ArtifactPaths, relocations relocationReviewState, reviewers []reviewplan.ReviewerCoverageSummary, assessments []ReviewerRelocationAssessments, failures []ReviewerFailure) (string, error) {
+	if strings.TrimSpace(paths.CoverageJSON) == "" {
+		return "", fmt.Errorf("pipeline: coverage artifact path is required")
+	}
+	artifact := coverageArtifact{
+		SchemaVersion: 1, BaseSHA: relocations.Manifest.BaseSHA, HeadSHA: relocations.Manifest.HeadSHA,
+		ManifestDigest: relocations.Manifest.Digest, SymlinkMetadataDigest: relocations.Symlinks.Digest,
+		Moves:       append([]relocationMove(nil), relocations.Manifest.Moves...),
+		Reviewers:   append([]reviewplan.ReviewerCoverageSummary(nil), reviewers...),
+		Assessments: append([]ReviewerRelocationAssessments(nil), assessments...),
+		Failures:    append([]ReviewerFailure(nil), failures...),
+	}
+	data, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	if err := fsatomic.WriteFileAtomic(paths.CoverageJSON, data, 0o600); err != nil {
+		return "", fmt.Errorf("pipeline: write coverage artifact: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
+}
 
 func writeReviewerInputArtifacts(paths ArtifactPaths, rawDiff string) error {
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
@@ -22,14 +94,14 @@ func writeReviewerInputArtifacts(paths ArtifactPaths, rawDiff string) error {
 	return nil
 }
 
-func writeArtifacts(paths ArtifactPaths, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string, reviewerRuntime map[string]reviewerRuntimeResolution) error {
+func writeArtifacts(paths ArtifactPaths, patches []FilePatch, catalog agents.Catalog, selection llm.Selection, findings []review.Finding, rollup string, reviewerRuntime map[string]reviewerRuntimeResolution, modelCatalog *modelcatalog.Catalog) error {
 	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create artifact dir: %w", err)
 	}
 	if err := os.MkdirAll(paths.SlicesDir, 0o700); err != nil {
 		return fmt.Errorf("pipeline: create slices dir: %w", err)
 	}
-	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog, reviewerRuntime), "", "  ")
+	sourceJSON, err := json.MarshalIndent(agentSourcesArtifactFromCatalog(catalog, reviewerRuntime, modelCatalog), "", "  ")
 	if err != nil {
 		return err
 	}
@@ -106,10 +178,14 @@ type workbenchFingerprintInputs struct {
 	SourceRepoRoot string              `json:"source_repo_root"`
 }
 
-func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map[string]reviewerRuntimeResolution) agentSourcesArtifact {
+func agentSourcesArtifactFromCatalog(catalog agents.Catalog, reviewerRuntime map[string]reviewerRuntimeResolution, modelCatalog *modelcatalog.Catalog) agentSourcesArtifact {
 	artifact := agentSourcesArtifact{
 		Sources: append([]agents.SourceInfo(nil), catalog.Sources...),
 		Agents:  make([]agentProvenanceArtifact, 0, len(catalog.Agents)),
+	}
+	if modelCatalog != nil {
+		artifact.CatalogRevision = modelCatalog.Revision()
+		artifact.CatalogSource = modelCatalog.Source().Kind
 	}
 	for i := range artifact.Sources {
 		artifact.Sources[i].Warnings = append([]string(nil), catalog.Sources[i].Warnings...)

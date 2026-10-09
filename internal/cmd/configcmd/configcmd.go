@@ -375,7 +375,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 			if err != nil {
 				return exitcode.AuthConfig(loadSpan.End(err))
 			}
-			cfg, err := config.Load(path)
+			cfg, err := cmdruntime.LoadConfig(opts)
 			if err != nil {
 				return cmderr.Config(loadSpan.End(err))
 			}
@@ -772,7 +772,7 @@ func loadConfig(opts *root.Options) (string, config.File, error) {
 	if err != nil {
 		return "", config.File{}, exitcode.AuthConfig(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := cmdruntime.LoadConfig(opts)
 	if err != nil {
 		return "", config.File{}, cmderr.Config(err)
 	}

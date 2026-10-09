@@ -10,6 +10,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
+const maxRESTWriteBodyBytes = 60_000
+
 type pullCommentRequest struct {
 	Body        string `json:"body"`
 	CommitID    string `json:"commit_id"`
@@ -53,6 +55,9 @@ func (c *Client) PostInlineComment(ctx context.Context, ref gitprovider.PRRef, c
 	if err := comment.Validate(); err != nil {
 		return "", err
 	}
+	if err := requireRESTWriteBodySize("inline comment body", comment.Body); err != nil {
+		return "", err
+	}
 	payload := pullCommentRequest{
 		Body:     comment.Body,
 		CommitID: comment.CommitSHA,
@@ -87,6 +92,9 @@ func (c *Client) PostIssueComment(ctx context.Context, ref gitprovider.PRRef, bo
 	if err := requireWriteValue("issue comment body", body); err != nil {
 		return "", err
 	}
+	if err := requireRESTWriteBodySize("issue comment body", body); err != nil {
+		return "", err
+	}
 	var response commentWriteResponse
 	endpoint := restURL(c.baseURL, "repos", ref.Owner, ref.Repo, "issues", fmt.Sprint(ref.Number), "comments")
 	if err := c.doRESTJSON(ctx, gitprovider.OperationPostIssueComment, http.MethodPost, endpoint, issueCommentRequest{Body: body}, &response); err != nil {
@@ -106,6 +114,14 @@ func (c *Client) SubmitReview(ctx context.Context, ref gitprovider.PRRef, reques
 	}
 	if err := request.Validate(); err != nil {
 		return "", err
+	}
+	if err := requireRESTWriteBodySize("review body", request.Body); err != nil {
+		return "", err
+	}
+	for i, comment := range request.Comments {
+		if err := requireRESTWriteBodySize(fmt.Sprintf("review comment %d body", i+1), comment.Body); err != nil {
+			return "", err
+		}
 	}
 	event, err := reviewEvent(request.Event)
 	if err != nil {
@@ -159,6 +175,13 @@ func reviewEvent(event review.ReviewEvent) (string, error) {
 func requireWriteValue(name string, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%w: %s is required", ErrValidation, name)
+	}
+	return nil
+}
+
+func requireRESTWriteBodySize(name string, body string) error {
+	if size := len(body); size > maxRESTWriteBodyBytes {
+		return fmt.Errorf("%w: GitHub REST %s is %d UTF-8 bytes, exceeding the local %d-byte write-body limit", ErrValidation, name, size, maxRESTWriteBodyBytes)
 	}
 	return nil
 }

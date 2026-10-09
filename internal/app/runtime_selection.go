@@ -62,6 +62,7 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 			return pipeline.SelectionOnly(ctx, pipeline.Options{
 				Provider:        provider,
 				Adapter:         adapter,
+				Catalog:         profile.LLM.Catalog(),
 				GitCommand:      gitCommand,
 				ResolveRepoRoot: deps.ResolveRepoRoot,
 				MaxAgents:       selection.MaxAgents,

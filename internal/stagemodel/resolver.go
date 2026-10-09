@@ -84,6 +84,9 @@ func ResolveStageModel(req Request) (Result, error) {
 		if err := config.ValidateEffortForRuntime(req.Profile.LLM, effort); err != nil {
 			return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
 		}
+		if err := config.ValidateEffortForModel(req.Profile.LLM, model, effort); err != nil {
+			return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
+		}
 		return Result{
 			Stage:    stage,
 			Tier:     tier,
@@ -100,7 +103,7 @@ func ResolveStageModel(req Request) (Result, error) {
 	}
 	effort := strings.TrimSpace(req.DefaultEffort)
 	if resolved.Source == config.ModelMapSourceBuiltIn {
-		if builtIn, ok := config.BuiltInEffort(req.Profile.LLM.Provider, req.Profile.LLM.Adapter, resolved.Tier); ok {
+		if builtIn, ok := config.BuiltInEffortFor(req.Profile.LLM.Catalog(), req.Profile.LLM.Provider, req.Profile.LLM.Adapter, resolved.Tier); ok {
 			effort = string(builtIn)
 		}
 	}
@@ -110,6 +113,9 @@ func ResolveStageModel(req Request) (Result, error) {
 		effort = effortOverride
 	}
 	if err := config.ValidateEffortForRuntime(req.Profile.LLM, effort); err != nil {
+		return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
+	}
+	if err := config.ValidateEffortForModel(req.Profile.LLM, resolved.Model, effort); err != nil {
 		return Result{}, fmt.Errorf("stagemodel: stage %s: %w", stage, err)
 	}
 	return Result{
