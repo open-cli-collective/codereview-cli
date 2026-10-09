@@ -112,9 +112,9 @@ missing, or if `pi --version` reports any other version. When it is unset, as in
 `make test`, they skip. To install the pinned runtime:
 
 ```bash
-pi_version="$(make -s pi-runtime-version)"
-npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${pi_version}"
-make test-pi-runtime
+pi_version="$(make -s pi-runtime-version)" && \
+  npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${pi_version}" && \
+  make test-pi-runtime
 ```
 
 The tests make no paid or external calls:
