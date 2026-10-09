@@ -41,6 +41,49 @@ func promptManifestPathsAtIndices(t *testing.T, manifest promptFileManifest, ind
 	return paths
 }
 
+func TestSelectionInstructionsDefaultAndOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		instructions string
+		wantOverride string
+	}{
+		{name: "default"},
+		{name: "whitespace uses default", instructions: " \n\t "},
+		{name: "override replaces default", instructions: "  Route only by the supplied experiment. \n", wantOverride: "Route only by the supplied experiment."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prompt, err := buildSelectionPrompt(agents.Catalog{}, selectionPromptInput{FileManifest: testPromptFileManifest("main.go")}, 4, tc.instructions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+				t.Fatal(err)
+			}
+			instructions, ok := payload["selection_instructions"].(string)
+			if !ok {
+				t.Fatal("selection instructions missing from structured payload")
+			}
+			if tc.wantOverride != "" {
+				if instructions != tc.wantOverride {
+					t.Fatalf("override = %q, want %q", instructions, tc.wantOverride)
+				}
+				return
+			}
+			for _, contract := range []string{
+				"Consider relevance for each changed file independently",
+				"including small edits and mirrored implementations",
+				"respect the existing reviewer budget, globs, required-agent rules and schema",
+				"Reviewer bodies and runtime settings remain private to the reviewer stage",
+			} {
+				if !strings.Contains(instructions, contract) {
+					t.Fatalf("default instructions missing %q", contract)
+				}
+			}
+		})
+	}
+}
+
 func TestDryRunSelectionPromptInstructionsStayInsideStructuredPayload(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)
