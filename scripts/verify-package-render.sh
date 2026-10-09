@@ -34,13 +34,74 @@ done
 
 cask="$dist_dir/homebrew/Casks/codereview-cli.rb"
 require_file "$cask"
+ruby -c "$cask" >/dev/null || fail "invalid rendered Homebrew cask Ruby"
 require_grep 'cask "codereview-cli"' "$cask"
 require_grep 'binary "cr"' "$cask"
 require_grep 'open-cli-collective/codereview-cli/releases/download/v' "$cask"
 require_grep 'cr_v#{version}_darwin_arm64.tar.gz' "$cask"
 require_grep 'cr_v#{version}_darwin_amd64.tar.gz' "$cask"
+require_grep 'args: ["catalog", "update"]' "$cask"
+require_grep 'must_succeed: false' "$cask"
+require_grep 'cr catalog update failed; run `cr catalog update`' "$cask"
 
-for kind in deb rpm; do
+# Exercise the rendered Ruby control flow as well as checking its source. The
+# updater is warning-only during package installation, so a failed refresh
+# must call opoo without raising or skipping the command.
+ruby - "$cask" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.read(path)
+body = source[/  postflight do\n(.*?)\n  end/m, 1]
+raise "postflight body missing" unless body
+
+HookResult = Struct.new(:ok) do
+  def success?
+    ok
+  end
+end
+
+class HookHarness
+  attr_reader :calls, :warnings
+
+  def initialize(fail_refresh)
+    @fail_refresh = fail_refresh
+    @calls = []
+    @warnings = []
+  end
+
+  def staged_path
+    "/tmp/staged"
+  end
+
+  def system_command(command, args:, must_succeed: true)
+    @calls << {command: command, args: args, must_succeed: must_succeed}
+    failed_refresh = @fail_refresh && command == "#{staged_path}/cr"
+    HookResult.new(!failed_refresh)
+  end
+
+  def opoo(message)
+    @warnings << message
+  end
+
+  def run(rendered_body)
+    instance_eval(rendered_body, "rendered-cask", 1)
+  end
+end
+
+success = HookHarness.new(false)
+success.run(body)
+raise "success path did not invoke both commands" unless success.calls.length == 2
+raise "success path emitted a warning" unless success.warnings.empty?
+raise "refresh command is not warning-only" unless success.calls.last[:must_succeed] == false
+
+failure = HookHarness.new(true)
+failure.run(body)
+raise "failure path did not invoke both commands" unless failure.calls.length == 2
+raise "failure path did not warn" unless failure.warnings.length == 1
+raise "failure path did not keep refresh warning-only" unless failure.calls.last[:must_succeed] == false
+puts "rendered package hook behavior check OK"
+RUBY
+
+for kind in deb rpm pkg.tar.zst; do
   for arch in amd64 arm64; do
     jq -e --arg kind "$kind" --arg dotted ".$kind" --arg arch "$arch" '
       .[] | select(

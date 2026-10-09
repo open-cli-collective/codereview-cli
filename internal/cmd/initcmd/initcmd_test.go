@@ -3,6 +3,7 @@ package initcmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
@@ -913,6 +915,7 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 	expected := existing
 	expected.ReviewerCredentials = nil
 	expected = normalizeTestProfileNamed("work", expected)
+	expected.LLM = expected.LLM.WithCatalog(got.Catalog())
 	if !reflect.DeepEqual(got.Profiles["work"], expected) {
 		t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 	}
@@ -1030,6 +1033,7 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 		expected := existing
 		expected.LLM.ReviewerModelTier = ""
 		expected = normalizeTestProfileNamed("work", expected)
+		expected.LLM = expected.LLM.WithCatalog(got.Catalog())
 		if !reflect.DeepEqual(got.Profiles["work"], expected) {
 			t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 		}
@@ -10249,6 +10253,29 @@ func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
 	}
 }
 
+func TestInitProfileV2ModelMapPreservesOverrideAgainstSelectedCatalogDefault(t *testing.T) {
+	catalog := initProfileTestCatalogWithMediumDefault(t, "gpt-6-luna")
+	llm := config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterOpenAIAPI,
+	}.WithCatalog(catalog)
+	editor := newTestInitProfileV2EditorWithModelMap("monit", "github.com/SignalFT", llm, config.ModelMap{
+		string(config.ModelTierMedium): "gpt-6.1-sol",
+	})
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 40)
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6.1-sol" {
+		t.Fatalf("medium model field = %q, want explicit override retained against selected catalog default", got)
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if got := draft.ModelMap[string(config.ModelTierMedium)]; got != "gpt-6.1-sol" {
+		t.Fatalf("medium model override = %q, want gpt-6.1-sol", got)
+	}
+}
+
 func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 	llmRuntimes := map[string]initLLMRuntimeDraft{
 		"claude-work": {
@@ -10265,10 +10292,10 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap("monit", "github.com/SignalFT", llmRuntimes, "claude-work"), 160, 24)
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-sonnet-5" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-sonnet-5-5" {
 		t.Fatalf("initial small model = %q, want Claude built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5-5" {
 		t.Fatalf("initial medium model = %q, want Claude built-in", got)
 	}
 
@@ -10277,7 +10304,7 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-6-luna" {
 		t.Fatalf("small model after runtime change = %q, want OpenAI built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6-sol" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6.1-sol" {
 		t.Fatalf("medium model after runtime change = %q, want OpenAI built-in", got)
 	}
 	smallIndex := model.document.fieldIndexByID(initProfileV2FieldModelMap(config.ModelTierSmall))
@@ -11096,8 +11123,58 @@ func newTestInitProfileV2EditorWithModelMap(profileName string, routeText string
 		Draft:            draft,
 		GitScopes:        testInitProfileV2GitScopes(),
 		SelectedGitScope: testInitProfileV2GitScopeName,
+		catalog:          llm.Catalog(),
 		Document:         document,
 	}
+}
+
+func initProfileTestCatalogWithMediumDefault(t *testing.T, modelID string) *modelcatalog.Catalog {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := t.TempDir()
+	dataDir := filepath.Join(filepath.Dir(testFile), "..", "..", "modelcatalog", "data")
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository fixture.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		if name == "defaults.csv" {
+			body = []byte(strings.Replace(string(body), "openai-api-key,medium,gpt-6.1-sol,low,", "openai-api-key,medium,"+modelID+",low,", 1))
+		}
+		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+	manifestPath := filepath.Join(source, "manifest.json")
+	manifestBody, err := os.ReadFile(manifestPath) // #nosec G304 -- manifestPath is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest modelcatalog.Manifest
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	manifest.Revision = "init-profile-custom-default"
+	defaultsBody, err := os.ReadFile(filepath.Join(source, "defaults.csv")) // #nosec G304 -- source is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read changed defaults: %v", err)
+	}
+	manifest.Files["defaults.csv"] = fmt.Sprintf("%x", sha256.Sum256(defaultsBody))
+	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, append(manifestBody, '\n'), 0o600); err != nil { // #nosec G703 -- manifestPath is under t.TempDir.
+		t.Fatalf("write manifest: %v", err)
+	}
+	catalog, err := modelcatalog.LoadPath(source)
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	return catalog
 }
 
 func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeText string, llmRuntimes map[string]initLLMRuntimeDraft, selectedRuntime string) initProfileV2Editor {
@@ -11127,7 +11204,7 @@ func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeT
 	llmRuntimeOptions, normalizedRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, selectedRuntime, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, normalizedRuntime)
 	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(normalizedRuntime, llmRuntimes))
-	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes), draft.ModelMap)
+	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes, nil), draft.ModelMap)
 	return initProfileV2Editor{
 		Draft:                  draft,
 		GitScopes:              testInitProfileV2GitScopes(),
@@ -12617,6 +12694,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 14/at_write", cfg.Data.Retention)
 	}
+	wantProfile.LLM = wantProfile.LLM.WithCatalog(cfg.Catalog())
 	if !reflect.DeepEqual(cfg.Profiles["work"], wantProfile) {
 		t.Fatalf("profile = %#v, want unchanged %#v", cfg.Profiles["work"], wantProfile)
 	}

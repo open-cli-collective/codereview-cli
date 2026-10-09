@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -75,11 +76,37 @@ type SelectionOptions struct {
 
 // Findings is validated reviewer findings output.
 type Findings struct {
-	AgentID        string
-	Findings       []review.Finding
-	InspectedFiles []string
-	SkippedFiles   []string
-	Constraints    []string
+	AgentID                 string
+	Findings                []review.Finding
+	InspectedFiles          []string
+	ContextFiles            []string
+	SkippedFiles            []string
+	Constraints             []string
+	RelocationAssessment    *RelocationAssessment
+	RelocationReviewedFiles []string
+	RelocationDiagnostic    string
+	RelocationAssessments   []RelocationAssessmentRecord `json:"-"`
+}
+
+// RelocationAssessment is a reviewer claim about impact across a certified
+// same-content move assignment. The pipeline validates its digests and evidence.
+type RelocationAssessment struct {
+	ManifestDigest     string   `json:"manifest_digest"`
+	AssignmentDigest   string   `json:"assignment_digest"`
+	PathImpactReviewed bool     `json:"path_impact_reviewed"`
+	EvidenceFiles      []string `json:"evidence_files"`
+	Basis              string   `json:"basis"`
+}
+
+// RelocationAssessmentRecord preserves the validation outcome for each pass,
+// including the focused repair, without merging away its assignment digest.
+type RelocationAssessmentRecord struct {
+	Assessment       *RelocationAssessment `json:"assessment,omitempty"`
+	ManifestDigest   string                `json:"manifest_digest"`
+	AssignmentDigest string                `json:"assignment_digest"`
+	ReviewedFiles    []string              `json:"reviewed_files,omitempty"`
+	Valid            bool                  `json:"valid"`
+	Diagnostic       string                `json:"diagnostic,omitempty"`
 }
 
 // FindingIDGenerator assigns harness-owned finding IDs.
@@ -89,6 +116,12 @@ type FindingIDGenerator func() (review.FindingID, error)
 type FindingsOptions struct {
 	KnownAgents  map[string]bool
 	ChangedFiles map[string]bool
+	// AssignmentFiles narrows coverage claims when ChangedFiles also contains
+	// citation-only paths. Nil preserves the historical ChangedFiles behavior.
+	AssignmentFiles map[string]bool
+	// HeadFiles contains safe, existing paths from the pinned head tree. Such
+	// paths may be cited as context but never count as assignment coverage.
+	HeadFiles    map[string]bool
 	NewFindingID FindingIDGenerator
 	// MaxFindingsPerAgent uses DefaultMaxFindingsPerAgent when zero.
 	MaxFindingsPerAgent int
@@ -125,12 +158,14 @@ type threadActionWire struct {
 }
 
 type findingsWire struct {
-	SchemaVersion  int           `json:"schema_version"`
-	AgentID        string        `json:"agent_id"`
-	InspectedFiles []string      `json:"inspected_files"`
-	SkippedFiles   []string      `json:"skipped_files,omitempty"`
-	Constraints    []string      `json:"constraints,omitempty"`
-	Findings       []findingWire `json:"findings"`
+	SchemaVersion        int                   `json:"schema_version"`
+	AgentID              string                `json:"agent_id"`
+	InspectedFiles       []string              `json:"inspected_files"`
+	ContextFiles         []string              `json:"context_files,omitempty"`
+	SkippedFiles         []string              `json:"skipped_files,omitempty"`
+	Constraints          []string              `json:"constraints,omitempty"`
+	RelocationAssessment *RelocationAssessment `json:"relocation_assessment,omitempty"`
+	Findings             []findingWire         `json:"findings"`
 }
 
 type findingWire struct {
@@ -259,27 +294,39 @@ func DecodeFindings(data []byte, opts FindingsOptions) (Findings, error) {
 		return Findings{}, fmt.Errorf("llm: finding ID generator is required")
 	}
 
-	seenIDs := map[review.FindingID]bool{}
-	severityCounts := map[review.Severity]int{}
-	inspected, inspectedErr := decodeCoverageFiles("inspected_files", wire.InspectedFiles, opts.ChangedFiles)
-	skipped, skippedErr := decodeCoverageFiles("skipped_files", wire.SkippedFiles, opts.ChangedFiles)
-	if err := errors.Join(inspectedErr, skippedErr); err != nil {
+	assignmentFiles := opts.AssignmentFiles
+	if assignmentFiles == nil {
+		assignmentFiles = opts.ChangedFiles
+	}
+	inspected, contextFiles, convertedInspection, inspectedErr := partitionInspectedFiles(wire.InspectedFiles, assignmentFiles, opts.HeadFiles)
+	skipped, skippedErr := decodeCoverageFiles("skipped_files", wire.SkippedFiles, assignmentFiles)
+	explicitContext, contextErr := decodeContextFiles(wire.ContextFiles, assignmentFiles, opts.HeadFiles)
+	if err := errors.Join(inspectedErr, skippedErr, contextErr); err != nil {
 		return Findings{}, err
 	}
-	if len(inspected) == 0 && len(skipped) == 0 {
+	contextFiles = append(contextFiles, explicitContext...)
+	contextFiles = sortedUniqueFiles(contextFiles)
+	if len(inspected) == 0 && len(skipped) == 0 && len(contextFiles) == 0 {
 		return Findings{}, fmt.Errorf("llm: inspected_files or skipped_files must contain at least one changed file")
 	}
 	if err := validateCoverageFileDisjoint(inspected, skipped); err != nil {
 		return Findings{}, err
 	}
 	constraints := decodeCoverageConstraints(wire.Constraints)
+	if convertedInspection {
+		constraints = appendUniqueConstraint(constraints, "out-of-assignment inspected paths are context only and do not count toward assignment coverage")
+	}
 
 	result := Findings{
-		AgentID:        wire.AgentID,
-		InspectedFiles: inspected,
-		SkippedFiles:   skipped,
-		Constraints:    constraints,
+		AgentID:              wire.AgentID,
+		InspectedFiles:       inspected,
+		ContextFiles:         contextFiles,
+		SkippedFiles:         skipped,
+		Constraints:          constraints,
+		RelocationAssessment: wire.RelocationAssessment,
 	}
+	seenIDs := map[review.FindingID]bool{}
+	severityCounts := map[review.Severity]int{}
 	for _, found := range wire.Findings {
 		if len(found.FindingID) > 0 {
 			return Findings{}, fmt.Errorf("llm: model-supplied finding_id is not allowed")
@@ -337,8 +384,7 @@ func decodeCoverageFiles(name string, files []string, changedFiles map[string]bo
 	seen := map[string]bool{}
 	var invalid []error
 	for index, file := range files {
-		file = strings.TrimSpace(file)
-		if file == "" || !changedFiles[file] {
+		if strings.TrimSpace(file) == "" || !changedFiles[file] {
 			// Positions survive retry-prompt redaction without echoing model-controlled paths.
 			invalid = append(invalid, fmt.Errorf("llm: %s entry at %s[%d] is outside the allowed reviewer assignment (zero-based index)", name, name, index))
 			continue
@@ -353,6 +399,89 @@ func decodeCoverageFiles(name string, files []string, changedFiles map[string]bo
 		return nil, err
 	}
 	return out, nil
+}
+
+func partitionInspectedFiles(files []string, assignmentFiles, headFiles map[string]bool) (inspected, contextFiles []string, converted bool, err error) {
+	seenInspected := map[string]bool{}
+	seenContext := map[string]bool{}
+	var invalid []error
+	for index, file := range files {
+		if strings.TrimSpace(file) == "" {
+			invalid = append(invalid, fmt.Errorf("llm: inspected_files entry at inspected_files[%d] is outside the allowed reviewer assignment (zero-based index)", index))
+			continue
+		}
+		if assignmentFiles[file] {
+			if !seenInspected[file] {
+				inspected = append(inspected, file)
+				seenInspected[file] = true
+			}
+			continue
+		}
+		if headFiles[file] && safeContextFilePath(file) {
+			if !seenContext[file] {
+				contextFiles = append(contextFiles, file)
+				seenContext[file] = true
+			}
+			converted = true
+			continue
+		}
+		invalid = append(invalid, fmt.Errorf("llm: inspected_files entry at inspected_files[%d] is outside the allowed reviewer assignment (zero-based index)", index))
+	}
+	return inspected, contextFiles, converted, errors.Join(invalid...)
+}
+
+func decodeContextFiles(files []string, assignmentFiles, headFiles map[string]bool) ([]string, error) {
+	var invalid []error
+	var out []string
+	for index, file := range files {
+		if strings.TrimSpace(file) == "" || assignmentFiles[file] || !headFiles[file] || !safeContextFilePath(file) {
+			invalid = append(invalid, fmt.Errorf("llm: context_files entry at context_files[%d] is not an existing out-of-assignment head path (zero-based index)", index))
+			continue
+		}
+		out = append(out, file)
+	}
+	return sortedUniqueFiles(out), errors.Join(invalid...)
+}
+
+func safeContextFilePath(value string) bool {
+	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, "\\") {
+		return false
+	}
+	if len(value) >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && value[2] == '/' {
+		return false
+	}
+	for _, part := range strings.Split(value, "/") {
+		if part == "" || part == "." || part == ".." || part == ".git" {
+			return false
+		}
+	}
+	return true
+}
+
+func sortedUniqueFiles(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			out = append(out, value)
+			seen[value] = true
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func appendUniqueConstraint(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	if len(values) >= defaultMaxCoverageConstraints {
+		values[len(values)-1] = value
+		return values
+	}
+	return append(values, value)
 }
 
 // decodeCoverageConstraints cleans reviewer coverage constraints. These are

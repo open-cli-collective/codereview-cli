@@ -257,11 +257,15 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 	stream, err := adapter.Start(context.Background(), Request{
 		Prompt: "review assigned files",
 		ReviewerWorkspace: &ReviewerWorkspaceRequest{
-			RepoDir:            repoDir,
-			ScratchDir:         scratchDir,
-			DiffPath:           diffPath,
-			AllowedFiles:       []string{"assigned.go"},
-			MaxToolOutputBytes: 2048,
+			RepoDir:               repoDir,
+			ScratchDir:            scratchDir,
+			DiffPath:              diffPath,
+			SymlinkMetadataPath:   filepath.Join(tempDir, "symlink-metadata.json"),
+			SymlinkMetadataDigest: strings.Repeat("c", 64),
+			BaseSHA:               strings.Repeat("a", 40),
+			HeadSHA:               strings.Repeat("b", 40),
+			AllowedFiles:          []string{"assigned.go"},
+			MaxToolOutputBytes:    2048,
 		},
 	})
 	if err != nil {
@@ -281,7 +285,7 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
 	assertPiRPCEmptyAppend(t, record.AdapterArgs)
 	reviewerPrompt := flagValue(record.AdapterArgs, "--system-prompt")
-	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails"} {
+	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails", "view=symlink", "assignment.base_only_symlink_paths", "ordinary cr_read and no view", "payload_omitted_reason", "keep that path skipped", "payload_size=0 is an inspected empty payload"} {
 		if !strings.Contains(reviewerPrompt, instruction) {
 			t.Fatalf("reviewer system prompt = %q, want instruction %q", reviewerPrompt, instruction)
 		}
@@ -301,6 +305,9 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 			t.Fatalf("extension does not register %s:\n%s", tool, extension)
 		}
 	}
+	if !strings.Contains(string(extension), `enum: ["symlink"]`) {
+		t.Fatalf("extension omitted optional symlink view schema:\n%s", extension)
+	}
 	for _, forbidden := range []string{"workspace_write", `name: "bash"`, `name: "edit"`, `name: "write"`} {
 		if strings.Contains(strings.ToLower(string(extension)), forbidden) {
 			t.Fatalf("extension contains forbidden capability %q:\n%s", forbidden, extension)
@@ -311,6 +318,54 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 		if value == "" || !pathWithin(t, scratchDir, value) {
 			t.Fatalf("%s = %q, want scratch-rooted path under %q", key, value, scratchDir)
 		}
+	}
+}
+
+func TestPiRPCReviewerToolConfigPinsSymlinkArtifact(t *testing.T) {
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "repo")
+	scratchDir := filepath.Join(root, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diffPath := filepath.Join(root, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("diff\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &ReviewerWorkspaceRequest{
+		RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		SymlinkMetadataPath:   filepath.Join(root, "symlink-metadata.json"),
+		SymlinkMetadataDigest: strings.Repeat("c", 64), BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40),
+	}
+	adapter := NewPiRPCAdapter(PiRPCOptions{})
+	invocationScratch, cleanup, _, extensionPath, err := adapter.prepareInvocation(Request{ReviewerWorkspace: workspace})
+	if err != nil {
+		t.Fatalf("prepareInvocation: %v", err)
+	}
+	t.Cleanup(func() { _ = cleanup() })
+	configData, err := os.ReadFile(filepath.Join(invocationScratch, "review-tools.json")) // #nosec G304 -- path is the generated invocation config.
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(configData, &config); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"symlink_metadata_path":   workspace.SymlinkMetadataPath,
+		"symlink_metadata_digest": workspace.SymlinkMetadataDigest,
+		"base_sha":                workspace.BaseSHA,
+		"head_sha":                workspace.HeadSHA,
+	} {
+		if config[key] != want {
+			t.Fatalf("tool config %s = %#v, want %q", key, config[key], want)
+		}
+	}
+	extension, err := os.ReadFile(extensionPath) // #nosec G304 -- path is the generated extension.
+	if err != nil || !strings.Contains(string(extension), "cr_read") || !strings.Contains(string(extension), `enum: ["symlink"]`) {
+		t.Fatalf("generated extension missing bounded symlink view: err=%v content=%s", err, extension)
 	}
 }
 
@@ -1323,6 +1378,8 @@ func TestPiRPCSettlementContract(t *testing.T) {
 	overloaded := piRPCTestTurn{stopReason: "error", errorMessage: "503 overloaded", usage: piRPCTestUsage(7, 0, nil, 0.25)}
 	final := piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(100, 10, map[string]any{"cacheRead": 3, "cacheWrite": 4}, 0.5)}
 	finalUsage := Usage{TokensIn: piRPCTestPtr(100), TokensOut: piRPCTestPtr(10), CacheRead: piRPCTestPtr(3), CacheCreate: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.5)}
+	invalidFinalUsage := Usage{TokensIn: piRPCTestPtr(9), TokensOut: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.125)}
+	invalidFinalUsageReport := piRPCTestUsage(9, 4, nil, 0.125)
 	for _, tt := range []struct {
 		name       string
 		script     []string
@@ -1430,6 +1487,54 @@ func TestPiRPCSettlementContract(t *testing.T) {
 			},
 			wantErr:   "Request was aborted",
 			wantUsage: Usage{TokensIn: piRPCTestPtr(5), TokensOut: piRPCTestPtr(1), CostUSD: piRPCTestPtr(0.0)},
+		},
+		{
+			name: "length stop reason rejects truncated final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, stopReason: "length", usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, stopReason: "length", usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "truncated",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "missing stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestLine(map[string]any{"type": "message_end", "message": map[string]any{
+					"role":    "assistant",
+					"content": []map[string]any{{"type": "text", "text": answer}},
+					"usage":   invalidFinalUsageReport,
+				}}),
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "missing a stop reason",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "empty stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "missing a stop reason",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "unknown stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, stopReason: "future_reason", usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, stopReason: "future_reason", usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "unsupported final assistant stop reason",
+			wantUsage: invalidFinalUsage,
 		},
 		{
 			name: "earlier valid answer then final provider error fails",
