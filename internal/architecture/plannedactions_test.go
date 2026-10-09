@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestPayloadStructsAreOwnedByPlannedActions(t *testing.T) {
+func TestPayloadStructsAreDefinedOnceInPlannedActions(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
 	want := map[string]bool{
 		"InlineCommentPayload": false,
@@ -44,12 +44,12 @@ func TestPayloadStructsAreOwnedByPlannedActions(t *testing.T) {
 				if _, tracked := want[typeSpec.Name.Name]; !tracked {
 					continue
 				}
-				rel := filepath.ToSlash(mustRel(t, repoRoot, path))
-				if rel != "internal/plannedactions/plannedactions.go" {
-					t.Fatalf("%s declares %s; payload structs belong in internal/plannedactions", rel, typeSpec.Name.Name)
+				relDir := filepath.ToSlash(mustRel(t, repoRoot, filepath.Dir(path)))
+				if relDir != "internal/plannedactions" {
+					t.Fatalf("%s declares %s; payload structs belong in the internal/plannedactions package", relDir, typeSpec.Name.Name)
 				}
 				if want[typeSpec.Name.Name] {
-					t.Fatalf("%s declares %s more than once", rel, typeSpec.Name.Name)
+					t.Fatalf("%s declares %s more than once", relDir, typeSpec.Name.Name)
 				}
 				want[typeSpec.Name.Name] = true
 			}
@@ -109,6 +109,7 @@ func TestPlannedActionPayloadJSONIsLedgerPrivate(t *testing.T) {
 			return err
 		}
 		rel := filepath.ToSlash(mustRel(t, repoRoot, path))
+		relDir := filepath.ToSlash(mustRel(t, repoRoot, filepath.Dir(path)))
 		ast.Inspect(parsed, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.SelectorExpr:
@@ -116,8 +117,8 @@ func TestPlannedActionPayloadJSONIsLedgerPrivate(t *testing.T) {
 					t.Fatalf("%s exposes raw planned-action payload JSON", rel)
 				}
 			case *ast.BasicLit:
-				if strings.Contains(node.Value, "payload_json") && rel != "internal/ledger/ledger.go" {
-					t.Fatalf("%s accesses ledger payload_json outside ledger", rel)
+				if strings.Contains(node.Value, "payload_json") && relDir != "internal/ledger" {
+					t.Fatalf("%s accesses ledger payload_json outside the internal/ledger package", rel)
 				}
 			}
 			return true

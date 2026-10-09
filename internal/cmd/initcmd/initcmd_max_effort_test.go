@@ -14,14 +14,19 @@ import (
 // hand-written cost ceiling.
 func TestLLMRuntimeDraftRoundTripPreservesMaxEffort(t *testing.T) {
 	original := config.LLMConfig{
-		Provider:  config.LLMProviderOpenAI,
-		Auth:      config.LLMAuthSubscription,
-		Adapter:   config.LLMAdapterCodexCLI,
-		ModelMap:  config.ModelMap{"large": "gpt-5.6-sol"},
-		MaxEffort: config.EffortMap{"large": "medium"},
+		Provider:        config.LLMProviderOpenAI,
+		Auth:            config.LLMAuthSubscription,
+		Adapter:         config.LLMAdapterCodexCLI,
+		ModelMap:        config.ModelMap{"large": "gpt-5.6-sol"},
+		MaxEffort:       config.EffortMap{"large": "medium"},
+		EffortMap:       config.EffortMap{"small": "max", "medium": "low"},
+		DefaultsVersion: config.CurrentReviewDefaultsVersion,
 	}
 
 	got := initLLMRuntimeDraftFromConfig(original).exportConfig()
+	if got.EffortMap["small"] != "max" || got.EffortMap["medium"] != "low" || got.DefaultsVersion != config.CurrentReviewDefaultsVersion {
+		t.Fatalf("effort_map after round trip = %#v", got.EffortMap)
+	}
 
 	if len(got.MaxEffort) != 1 || got.MaxEffort["large"] != "medium" {
 		t.Fatalf("max_effort after round trip = %#v, want large=medium", got.MaxEffort)
@@ -61,6 +66,8 @@ func TestInitNonInteractivePreservesMaxEffortThroughConfigRoundTrip(t *testing.T
 	existing := basicProfile("work")
 	existing.LLM.ModelMap = config.ModelMap{"large": "gpt-5.6-sol"}
 	existing.LLM.MaxEffort = config.EffortMap{"large": "medium"}
+	existing.LLM.EffortMap = config.EffortMap{"small": "high"}
+	existing.LLM.DefaultsVersion = config.CurrentReviewDefaultsVersion
 	if err := config.Save(path, config.File{Profiles: map[string]config.Profile{"work": existing}}); err != nil {
 		t.Fatalf("Save initial config: %v", err)
 	}
@@ -82,7 +89,33 @@ func TestInitNonInteractivePreservesMaxEffortThroughConfigRoundTrip(t *testing.T
 	if err != nil {
 		t.Fatalf("Load saved config: %v", err)
 	}
+	if loaded.Profiles["work"].LLM.DefaultsVersion != config.CurrentReviewDefaultsVersion {
+		t.Fatal("init discarded the one-time upgrade marker")
+	}
+	if got := loaded.Profiles["work"].LLM.EffortMap["small"]; got != "high" {
+		t.Fatalf("saved effort_map.small = %q, want high", got)
+	}
 	if got := loaded.Profiles["work"].LLM.MaxEffort["large"]; got != "medium" {
 		t.Fatalf("saved max_effort.large = %q, want medium", got)
+	}
+}
+
+func TestEffortMapSurvivesInteractiveDraftAndDoesNotAlias(t *testing.T) {
+	profile := basicProfile("work")
+	profile.LLM.EffortMap = config.EffortMap{"small": "high"}
+	profile.LLM.DefaultsVersion = config.CurrentReviewDefaultsVersion
+	draft := seedInteractiveInitDraft("work", "work", &profile)
+	if draft.EffortMap["small"] != "high" || !draft.EffortMapSet || draft.DefaultsVersion != config.CurrentReviewDefaultsVersion {
+		t.Fatalf("seeded effort map = %#v", draft.EffortMap)
+	}
+	cloned := cloneInitLLMConfig(profile.LLM)
+	cloned.EffortMap["small"] = "low"
+	if profile.LLM.EffortMap["small"] != "high" {
+		t.Fatal("clone aliases the effort map")
+	}
+	base := initLLMRuntimeDraftFromConfig(profile.LLM)
+	changed := initLLMRuntimeDraftFromConfig(cloned)
+	if base.identityKey() == changed.identityKey() {
+		t.Fatal("runtime identity ignores effort_map")
 	}
 }

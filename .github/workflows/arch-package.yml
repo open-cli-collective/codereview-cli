@@ -1,0 +1,64 @@
+name: Arch package
+
+on:
+  pull_request:
+    paths:
+      - .goreleaser.yml
+      - .github/workflows/arch-package.yml
+      - scripts/verify-package-render.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: v2.18.2
+          args: release --snapshot --clean --skip=before
+      - name: Verify rendered packages
+        run: scripts/verify-package-render.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arch-packages
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+
+  install:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: arch-packages
+          path: packages
+      - name: Install, verify and remove in Arch Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/packages:/packages:ro" archlinux:base bash -c '
+            set -euo pipefail
+            package=(/packages/*amd64.pkg.tar.zst)
+            test "${#package[@]}" -eq 1
+            pacman -U --noconfirm "${package[0]}"
+            cr --version
+            cr --help > /tmp/cr-help
+            grep -q review /tmp/cr-help
+            pacman -Qo /usr/bin/cr
+            pacman -Qkk cr
+            pacman -R --noconfirm cr
+            test ! -e /usr/bin/cr
+            pacman -U --noconfirm "${package[0]}"
+            cr --version
+          '

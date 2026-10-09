@@ -25,6 +25,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmlifecycle"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
@@ -154,6 +155,7 @@ type ContextBudget struct {
 type Options struct {
 	Provider         ReadProvider
 	Adapter          llm.Adapter
+	Catalog          *modelcatalog.Catalog
 	Store            Store
 	NamedSessions    NamedSessionStore
 	Layout           statepaths.Layout
@@ -268,31 +270,33 @@ func (e *llmTaskError) Is(target error) bool {
 
 // Result is the completed dry-run pipeline output.
 type Result struct {
-	Run                   ledger.Run
-	PR                    gitprovider.PR
-	PRKey                 string
-	Artifacts             ArtifactPaths
-	Quota                 llm.Quota
-	QuotaSupported        bool
-	QuotaLow              bool
-	Catalog               agents.Catalog
-	Selection             llm.Selection
-	Findings              []review.Finding
-	Rollup                review.Rollup
-	Plan                  reviewplan.Plan
-	Sessions              []ledger.Session
-	PlannedActions        []ledger.PlannedAction
-	NamedSessionCandidate *ledger.NamedSession
-	FailOnTriggered       bool
-	EffectiveCaps         reviewplan.ProviderCaps
-	AgentDefsChanged      bool
-	CurrentBaseSHA        string
-	CurrentHeadSHA        string
-	ReviewBaseSHA         string
-	ReviewHeadSHA         string
-	ReviewerFailures      []ReviewerFailure
-	ReviewerCoverage      []reviewplan.ReviewerCoverageSummary
-	reviewerFastDelivered string
+	Run                    ledger.Run
+	PR                     gitprovider.PR
+	PRKey                  string
+	Artifacts              ArtifactPaths
+	Quota                  llm.Quota
+	QuotaSupported         bool
+	QuotaLow               bool
+	Catalog                agents.Catalog
+	Selection              llm.Selection
+	Findings               []review.Finding
+	Rollup                 review.Rollup
+	Plan                   reviewplan.Plan
+	Sessions               []ledger.Session
+	PlannedActions         []ledger.PlannedAction
+	NamedSessionCandidate  *ledger.NamedSession
+	FailOnTriggered        bool
+	EffectiveCaps          reviewplan.ProviderCaps
+	AgentDefsChanged       bool
+	CurrentBaseSHA         string
+	CurrentHeadSHA         string
+	ReviewBaseSHA          string
+	ReviewHeadSHA          string
+	ReviewerFailures       []ReviewerFailure
+	ReviewerCoverage       []reviewplan.ReviewerCoverageSummary
+	RelocationAssessments  []ReviewerRelocationAssessments
+	coverageArtifactDigest string
+	reviewerFastDelivered  string
 }
 
 // ReviewerFailure records an isolated reviewer LLM task failure that should not
@@ -403,6 +407,7 @@ type preparedSelectionContext struct {
 	currentHeadSHA   string
 	reviewBaseSHA    string
 	reviewHeadSHA    string
+	relocations      relocationReviewState
 	fastRequested    bool
 	fastIgnored      bool
 }
@@ -417,6 +422,8 @@ type selectionPhaseRequest struct {
 	ReviewPR                    gitprovider.PR
 	Catalog                     agents.Catalog
 	ParsedDiff                  ParsedDiff
+	RelocationMoves             []relocationMove
+	RelocationManifestDigest    string
 	Threads                     []gitprovider.InlineThread
 	ThreadContext               []threadcontext.Thread
 	Artifacts                   ArtifactPaths
@@ -434,6 +441,7 @@ type reviewPRContext struct {
 
 // DryRun executes the dry-run review pipeline.
 func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if err := validate(opts, req); err != nil {
 		return Result{}, err
 	}
@@ -448,6 +456,7 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 
 // Live executes the review planning phases into a gate-allocated live run.
 func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if hasDryRunStageOverrides(req) {
 		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review"))
 	}
@@ -472,6 +481,7 @@ func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Resul
 
 // SelectionOnly executes only the selection phase using caller-owned artifacts.
 func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (SelectionResult, error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if err := validateSelectionOnly(opts, req); err != nil {
 		return SelectionResult{}, err
 	}
@@ -517,7 +527,17 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}); err != nil {
 		return SelectionResult{}, err
 	}
-	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
+	manifest, baseTree, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
+	if err != nil {
+		return SelectionResult{}, Failure(FailureTerminal, err)
+	}
+	symlinks, err := prepareSymlinkMetadata(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, baseTree, headTree, prepared.parsed.Patches)
+	if err != nil {
+		return SelectionResult{}, Failure(FailureTerminal, err)
+	}
+	prepared.relocations = relocationReviewState{Manifest: manifest, BaseTree: baseTree, HeadTree: headTree, Symlinks: symlinks}
+	prepared.changedFiles = relocationReviewablePatchPaths(prepared.parsed.Patches, manifest.Moves)
+	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
 		SelectionEffortOverride: req.SelectionEffortOverride,
@@ -540,6 +560,8 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 		ReviewPR:                    prepared.reviewPR,
 		Catalog:                     prepared.catalog,
 		ParsedDiff:                  prepared.parsed,
+		RelocationMoves:             prepared.relocations.Manifest.Moves,
+		RelocationManifestDigest:    prepared.relocations.Manifest.Digest,
 		Threads:                     prepared.threads,
 		ThreadContext:               prepared.threadContext,
 		Artifacts:                   prepared.artifacts,
@@ -560,7 +582,15 @@ func selectionMaxAgents(requested, fallback int) int {
 	return fallback
 }
 
+func profileWithCatalog(opts Options, profile config.Profile) config.Profile {
+	if opts.Catalog != nil {
+		profile.LLM = profile.LLM.WithCatalog(opts.Catalog)
+	}
+	return profile
+}
+
 func execute(ctx context.Context, opts Options, req Request, mode executionMode) (out Result, err error) {
+	req.Profile = profileWithCatalog(opts, req.Profile)
 	if err := validate(opts, req); err != nil {
 		if mode.live {
 			return Result{}, Failure(FailureTerminal, err)
@@ -646,13 +676,6 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	prepared.fastRequested = req.ReviewerFast
-	effectiveFast, warning, err := resolveReviewerFastMode(req, prepared.catalog)
-	if err != nil {
-		return Result{}, err
-	}
-	prepared.fastIgnored = req.ReviewerFast && !effectiveFast
-	req.ReviewerFast = effectiveFast
-	opts.emitWarning(warning)
 
 	result := prepared.reviewResult()
 	run := mode.run
@@ -699,7 +722,17 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		return Result{}, err
 	}
-	if err := dossier.Prepare(ctx, dossierEnv(opts), dossier.PreparationRequest{
+	manifest, baseTree, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
+	if err != nil {
+		return Result{}, Failure(FailureTerminal, err)
+	}
+	symlinks, err := prepareSymlinkMetadata(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, baseTree, headTree, prepared.parsed.Patches)
+	if err != nil {
+		return Result{}, Failure(FailureTerminal, err)
+	}
+	prepared.relocations = relocationReviewState{Manifest: manifest, BaseTree: baseTree, HeadTree: headTree, Symlinks: symlinks}
+	prepared.changedFiles = relocationReviewablePatchPaths(prepared.parsed.Patches, manifest.Moves)
+	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		RunID:                   run.RunID,
 		Profile:                 req.Profile,
 		SelectionModelOverride:  req.SelectionModelOverride,
@@ -712,7 +745,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 
-	findingSessions, blockingFailure, err := executePlanPhases(ctx, opts, req, mode, run, prepared, now, maxAgents, maxConcurrency, &result)
+	findingSessions, blockingFailure, err := executePlanPhases(ctx, opts, req, mode, run, &prepared, now, maxAgents, maxConcurrency, &result)
 	if err != nil {
 		if blockingFailure {
 			failureOutcome = ledger.OutcomeIncomplete
@@ -742,7 +775,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 	return result, nil
 }
 
-func executePlanPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
+func executePlanPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared *preparedSelectionContext, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
 	repoSources := append([]agents.SourceInfo(nil), prepared.catalog.Sources...)
 	if len(prepared.parsed.Patches) == 0 {
 		if sessionName := strings.TrimSpace(req.SessionName); sessionName != "" {
@@ -775,7 +808,7 @@ func executePlanPhases(ctx context.Context, opts Options, req Request, mode exec
 	return executeLLMPhases(ctx, opts, req, mode, run, prepared, repoSources, now, maxAgents, maxConcurrency, result)
 }
 
-func executeLLMPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared preparedSelectionContext, repoSources []agents.SourceInfo, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
+func executeLLMPhases(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, prepared *preparedSelectionContext, repoSources []agents.SourceInfo, now time.Time, maxAgents, maxConcurrency int, result *Result) (map[review.FindingID]string, bool, error) {
 	runtimeConfig, err := resolveSelectionRuntimeConfig(req.Profile, req.SelectionModelOverride, req.SelectionEffortOverride)
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
@@ -786,7 +819,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	}
 
 	cohortScope := ledger.ReviewerCohortScope{PRKey: prepared.prKey, Profile: req.ProfileName, PostingIdentity: runlifecycle.PostingKey(req.PostingIdentity)}
-	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, reviewablePatchPaths(prepared.parsed.Patches), maxAgents)
+	selection, reviewerResumeIDs, reusedCohort, err := loadReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, relocationReviewablePatchPaths(prepared.parsed.Patches, prepared.relocations.Manifest.Moves), maxAgents)
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
@@ -822,6 +855,8 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 			ReviewPR:                    prepared.reviewPR,
 			Catalog:                     prepared.catalog,
 			ParsedDiff:                  prepared.parsed,
+			RelocationMoves:             prepared.relocations.Manifest.Moves,
+			RelocationManifestDigest:    prepared.relocations.Manifest.Digest,
 			Threads:                     prepared.threads,
 			ThreadContext:               prepared.threadContext,
 			Artifacts:                   prepared.artifacts,
@@ -834,16 +869,27 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		if err != nil {
 			return executionPhaseFailure(err)
 		}
-		if !reusedCohort {
-			if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
-				return nil, false, err
-			}
-		}
 	} else {
 		opts.emitReviewerSelection(prepared.catalog, selection)
 	}
 	result.Selection = selection
 	result.Sessions = appendSessionIfPresent(result.Sessions, selectionLedgerSession)
+
+	// Fast capability is a property of the resolved reviewers that were
+	// selected for this run. Check after selection so an unsupported offer that
+	// was not selected cannot disable fast mode for the whole review.
+	effectiveFast, warning, err := resolveReviewerFastMode(req, selection, prepared.catalog)
+	if err != nil {
+		return nil, false, err
+	}
+	prepared.fastIgnored = req.ReviewerFast && !effectiveFast
+	req.ReviewerFast = effectiveFast
+	opts.emitWarning(warning)
+	if !reusedCohort {
+		if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
+			return nil, false, err
+		}
+	}
 
 	selectionTaskIDs := []string{orchestratorSelectionStage}
 	if reusedCohort && !selectionInRun {
@@ -860,15 +906,22 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return nil, false, err
 	}
 	reviewerThreadResponses, reviewerCheckpointActions := recoverCheckpointThreadResponses(threadResponses, prepared.threadContext, checkpointActions)
-	reviewerRun, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, reviewerDiscussionCheckpoint{responses: reviewerThreadResponses, actions: reviewerCheckpointActions})
+	reviewerRun, err := runReviewers(ctx, opts, req, run.RunID, prepared.reviewPR, prepared.catalog, prepared.parsed, prepared.artifacts, selection, selectionTaskIDs, maxConcurrency, cohortScope, reviewerResumeIDs, prepared.relocations, reviewerDiscussionCheckpoint{responses: reviewerThreadResponses, actions: reviewerCheckpointActions})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
 	result.Findings = reviewerRun.findings
 	result.ReviewerFailures = reviewerRun.failures
 	result.reviewerFastDelivered = reviewerFastDelivery(prepared.fastRequested, reviewerRun.sessions)
-	reviewerCoverage := buildReviewerCoverage(selection.SelectedAgents, reviewerRun.results, reviewerRun.failures, prepared.changedFiles, deletedPatchPaths(prepared.parsed.Patches), reviewerToolEvidenceByAgent(reviewerRun.primarySessions))
+	primaryToolEvidence := reviewerToolEvidenceByAgent(reviewerRun.primarySessions)
+	reviewerCoverage := buildReviewerCoverageWithRelocations(selection.SelectedAgents, reviewerRun.results, reviewerRun.failures, prepared.changedFiles, relocationContentlessPaths(prepared.parsed.Patches, prepared.relocations.Manifest.Moves), primaryToolEvidence)
 	result.ReviewerCoverage = reviewerCoverage
+	result.RelocationAssessments = relocationAssessmentArtifacts(reviewerRun.results, primaryToolEvidence)
+	coverageDigest, err := writeCoverageArtifact(prepared.artifacts, prepared.relocations, reviewerCoverage, result.RelocationAssessments, reviewerRun.failures)
+	if err != nil {
+		return nil, false, err
+	}
+	result.coverageArtifactDigest = coverageDigest
 	result.Sessions = appendSessionsIfPresent(result.Sessions, reviewerRun.ledgerSessions...)
 
 	rollupRuntimeConfig, err := resolveSynthesisRuntimeConfig(req)
@@ -880,7 +933,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
-	if err := opts.checkPromptBudget("rollup", "", rollupModel, "", rollupPrompt); err != nil {
+	if err := opts.checkAndPersistPromptBudget(prepared.artifacts, orchestratorRollupStage, "rollup", rollupPrompt); err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupLog, err := prepared.artifacts.AgentLog(orchestratorRollupStage)
@@ -890,12 +943,14 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	reviewerDeps := reviewerRun.taskIDs
 	rollupDeps := append([]string(nil), selectionTaskIDs...)
 	rollupDeps = append(rollupDeps, reviewerDeps...)
+	rollupFingerprintDeps := append([]string(nil), rollupDeps...)
+	rollupFingerprintDeps = append(rollupFingerprintDeps, "coverage-artifact="+coverageDigest, "relocation-manifest="+prepared.relocations.Manifest.Digest, "symlink-metadata="+prepared.relocations.Symlinks.Digest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
 	rollup, rollupSession, rollupLedgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             run.RunID,
 		taskID:            orchestratorRollupStage,
 		phase:             "rollup",
 		dependencyTaskIDs: rollupDeps,
-		inputFingerprint:  llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupDeps),
+		inputFingerprint:  llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorRollupStage, "rollup", rollupModel, rollupEffort, rollupPrompt, rollupFingerprintDeps),
 		artifacts:         prepared.artifacts,
 		role:              ledger.SessionRoleOrchestrator,
 		model:             rollupModel,
@@ -978,7 +1033,12 @@ func persistExecutionResult(ctx context.Context, opts Options, req Request, run 
 		return err
 	}
 	result.PlannedActions = plannedActions
-	return writeArtifacts(prepared.artifacts, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored))
+	digest, err := writeCoverageArtifact(prepared.artifacts, prepared.relocations, result.ReviewerCoverage, result.RelocationAssessments, result.ReviewerFailures)
+	if err != nil {
+		return err
+	}
+	result.coverageArtifactDigest = digest
+	return writeArtifacts(prepared.artifacts, prepared.parsed.Patches, result.Catalog, result.Selection, result.Findings, result.Plan.RollupMarkdown, reviewerRuntimeArtifact(req, prepared.catalog, result.Selection, result.reviewerFastDelivered, prepared.fastRequested, prepared.fastIgnored), opts.Catalog)
 }
 
 func findIncompleteDryRun(ctx context.Context, store Store, req Request, pr gitprovider.PR) (ledger.Run, bool, error) {
@@ -1251,20 +1311,22 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
 
-	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads)
+	// Deleted files remain visible in the manifest but are not reviewer obligations.
+	reviewerFiles := relocationReviewablePatchPaths(req.ParsedDiff.Patches, req.RelocationMoves)
+	promptInput, promptDeps, err := selectionPromptInputFromArtifacts(req.Artifacts, req.Threads, reviewerFiles)
 	knownThreadIDs := knownThreads(req.Threads)
 	if len(req.ThreadContext) > 0 {
-		promptInput, promptDeps, err = selectionPromptInputFromThreadContext(req.Artifacts, req.ThreadContext)
+		promptInput, promptDeps, err = selectionPromptInputFromThreadContext(req.Artifacts, req.ThreadContext, reviewerFiles)
 		knownThreadIDs = knownThreadContext(req.ThreadContext)
 	}
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, err
 	}
-	// Deleted files remain in the dossier so the change is visible to the
-	// orchestrator, but they are not reviewer obligations: there is no file at
-	// the head for a reviewer to inspect. Keep them out of the assignment
-	// contract and the post-selection backstops, matching buildReviewerCoverage.
-	reviewerFiles := reviewablePatchPaths(req.ParsedDiff.Patches)
+	verifiedMoves := relocationMovePaths(req.RelocationMoves)
+	for i := range promptInput.ManifestRows {
+		promptInput.ManifestRows[i].VerifiedRelocation = verifiedMoves[promptInput.ManifestRows[i].Path]
+	}
+	promptInput.FileManifest = makePromptFileManifest(promptInput.ManifestRows, reviewerFiles)
 	// Citing a removed or pre-rename path must not fail the whole selection.
 	selectableFiles := append(append([]string(nil), reviewerFiles...), mentionableExtraPaths(req.ParsedDiff.Patches)...)
 	promptInput.ChangedFiles = append([]string(nil), reviewerFiles...)
@@ -1274,7 +1336,7 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	if err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
-	if err := opts.checkPromptBudget("selection", "", model, "", selectionPrompt); err != nil {
+	if err := opts.checkAndPersistPromptBudget(req.Artifacts, orchestratorSelectionStage, "selection", selectionPrompt); err != nil {
 		return llm.Selection{}, sessionDraft{}, ledger.Session{}, Failure(FailureTerminal, err)
 	}
 	selectionLog, err := req.Artifacts.AgentLog(orchestratorSelectionStage)
@@ -1288,7 +1350,9 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 			KnownThreads: knownThreadIDs,
 		})
 	}
-	selectionFingerprint := llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, fingerprintDeps)
+	selectionFingerprintDeps := append([]string(nil), fingerprintDeps...)
+	selectionFingerprintDeps = append(selectionFingerprintDeps, "relocation-manifest="+req.RelocationManifestDigest, "context-contract="+reviewerContextContractVersion)
+	selectionFingerprint := llmlifecycle.Fingerprint(opts.Adapter.Name(), orchestratorSelectionStage, "selection", model, effort, selectionPrompt, selectionFingerprintDeps)
 	hasRun := strings.TrimSpace(req.RunID) != ""
 	if !hasRun {
 		if err := llmlifecycle.ResetIfInputFingerprintChanged(lifecyclePaths(req.Artifacts), orchestratorSelectionStage, selectionFingerprint); err != nil {
@@ -1711,7 +1775,7 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 		if err != nil {
 			return llm.Selection{}, nil, err
 		}
-		if runtimeConfig.model != member.Model || runtimeConfig.effort != member.Effort || req.ReviewerFast != member.Fast {
+		if runtimeConfig.model != member.Model || runtimeConfig.effort != member.Effort {
 			return freshError("saved reviewer %q runtime is incompatible with the current runtime", member.AgentID)
 		}
 		fileGlobs, err := agents.CompileFileGlobs(agent.FileGlobs)
@@ -1780,6 +1844,15 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 	selectedIDs := map[string]bool{}
 	for _, selected := range selection.SelectedAgents {
 		selectedIDs[selected.AgentID] = true
+	}
+	effectiveFast, _, err := resolveReviewerFastMode(req, selection, catalog)
+	if err != nil {
+		return llm.Selection{}, nil, err
+	}
+	for _, candidate := range candidates {
+		if selectedIDs[candidate.member.AgentID] && candidate.member.Fast != effectiveFast {
+			return freshError("saved reviewer %q fast-mode setting is incompatible with the current reviewer selection", candidate.member.AgentID)
+		}
 	}
 	for agentID := range resumes {
 		if !selectedIDs[agentID] {
@@ -1996,7 +2069,7 @@ type reviewerExecution struct {
 	taskIDs         []string
 }
 
-func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int, cohortScope ledger.ReviewerCohortScope, reviewerResumeIDs map[string]string, discussion reviewerDiscussionCheckpoint) (reviewerBatchResult, error) {
+func runReviewers(ctx context.Context, opts Options, req Request, runID string, pr gitprovider.PR, catalog agents.Catalog, parsed ParsedDiff, artifacts ArtifactPaths, selection llm.Selection, dependencyTaskIDs []string, maxConcurrency int, cohortScope ledger.ReviewerCohortScope, reviewerResumeIDs map[string]string, relocations relocationReviewState, discussion reviewerDiscussionCheckpoint) (reviewerBatchResult, error) {
 	type job struct {
 		selected llm.SelectedAgent
 		agent    agents.Agent
@@ -2032,7 +2105,7 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 				return
 			}
 			defer func() { <-sem }()
-			execution, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs, reviewerResume{scope: cohortScope, sessionID: reviewerResumeIDs[current.agent.ID], discussion: discussion})
+			execution, err := runReviewer(reviewCtx, opts, req, runID, pr, parsed, artifacts, current.selected, current.agent, dependencyTaskIDs, reviewerResume{scope: cohortScope, sessionID: reviewerResumeIDs[current.agent.ID], discussion: discussion, relocations: relocations})
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -2070,9 +2143,10 @@ func runReviewers(ctx context.Context, opts Options, req Request, runID string, 
 }
 
 type reviewerResume struct {
-	scope      ledger.ReviewerCohortScope
-	sessionID  string
-	discussion reviewerDiscussionCheckpoint
+	scope       ledger.ReviewerCohortScope
+	sessionID   string
+	discussion  reviewerDiscussionCheckpoint
+	relocations relocationReviewState
 }
 
 type reviewerDiscussionCheckpoint struct {
@@ -2090,15 +2164,19 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
 	model, effort := runtimeConfig.model, runtimeConfig.effort
-	changedFilePaths := reviewablePatchPaths(parsed.Patches)
+	changedFilePaths := relocationReviewablePatchPaths(parsed.Patches, resumeState.relocations.Manifest.Moves)
 	selected = filterSelectedReviewerAssignment(selected, changedFilePaths)
 	// A reviewer may cite its own assignment plus unassignable paths, nothing else.
-	citableFiles := append(append([]string(nil), reviewerAssignmentScope(selected, changedFilePaths)...), mentionableExtraPaths(parsed.Patches)...)
-	prompt, promptDeps, err := buildReviewerPrompt(artifacts, pr, selected, agent, changedFilePaths, resumeState.discussion)
+	assignmentScope := reviewerAssignmentScope(selected, changedFilePaths)
+	assignment := resumeState.relocations.assignment(agent.ID, assignmentScope)
+	citableFiles := append(append([]string(nil), assignmentScope...), mentionableExtraPaths(parsed.Patches)...)
+	mentionablePaths := mentionableExtraPaths(parsed.Patches)
+	prompt, promptDeps, err := buildReviewerPromptWithRelocationAssignment(artifacts, pr, selected, agent, changedFilePaths, mentionablePaths, assignment, resumeState.discussion)
 	if err != nil {
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
-	if err := opts.checkPromptBudget("reviewer", agent.ID, model, strings.Join(selected.Files, ","), prompt); err != nil {
+	taskID := reviewerTaskID(agent.ID)
+	if err := opts.checkAndPersistPromptBudget(artifacts, taskID, "reviewer", prompt); err != nil {
 		return reviewerExecution{}, Failure(FailureTerminal, err)
 	}
 	logPath, err := artifacts.AgentLog(agent.ID)
@@ -2106,8 +2184,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return reviewerExecution{}, err
 	}
 	agentID := agent.ID
-	taskID := reviewerTaskID(agent.ID)
-	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
+	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, resumeState.relocations.Symlinks)
 	if err != nil {
 		return reviewerExecution{}, err
 	}
@@ -2125,6 +2202,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if req.ReviewerFast {
 		fingerprintDeps = append(fingerprintDeps, "fast=true")
 	}
+	fingerprintDeps = append(fingerprintDeps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "symlink-metadata="+assignment.SymlinkMetadataDigest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            taskID,
@@ -2142,11 +2220,25 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		resumeSessionID:   resumeState.sessionID,
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
-		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(citableFiles),
-			NewFindingID: opts.newFindingID,
+		decoded, err := llm.DecodeFindings(data, llm.FindingsOptions{
+			KnownAgents:     map[string]bool{agent.ID: true},
+			ChangedFiles:    stringSet(citableFiles),
+			AssignmentFiles: stringSet(assignmentScope),
+			HeadFiles:       safeHeadContextPaths(resumeState.relocations.HeadTree),
+			NewFindingID:    opts.newFindingID,
 		})
+		if err != nil {
+			return llm.Findings{}, err
+		}
+		decoded.RelocationReviewedFiles, decoded.RelocationDiagnostic = validateRelocationAssessment(decoded, assignment, resumeState.relocations.HeadTree)
+		if assignment.MoveCount > 0 {
+			decoded.RelocationAssessments = []llm.RelocationAssessmentRecord{{
+				Assessment: decoded.RelocationAssessment, ManifestDigest: assignment.ManifestDigest,
+				AssignmentDigest: assignment.AssignmentDigest, ReviewedFiles: append([]string(nil), decoded.RelocationReviewedFiles...),
+				Valid: decoded.RelocationDiagnostic == "", Diagnostic: decoded.RelocationDiagnostic,
+			}}
+		}
+		return decoded, nil
 	})
 	execution := reviewerExecution{
 		sessions:        []sessionDraft{session},
@@ -2175,7 +2267,8 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		execution.findingSessions[finding.ID] = session.RowID
 	}
 
-	repairFiles := reviewerCoverageRepairFiles(findings.SkippedFiles, parsed.Patches)
+	missingForRepair := coverageMissingFiles(assignmentScope, findings.InspectedFiles, findings.SkippedFiles, findings.RelocationReviewedFiles)
+	repairFiles := reviewerCoverageRepairFiles(missingForRepair, parsed.Patches, resumeState.relocations.Manifest.Moves)
 	if len(repairFiles) == 0 {
 		return execution, nil
 	}
@@ -2189,6 +2282,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		Files:        append([]string(nil), repairFiles...),
 		AllowedFiles: append([]string(nil), repairFiles...),
 	}
+	repairAssignment := resumeState.relocations.assignment(agent.ID, repairFiles)
 	repairTaskID := reviewerCoverageRepairTaskID(agent.ID)
 	// The repair only adds coverage, so its setup failures are isolated like its execution failures.
 	repairSetupFailed := func(err error) (reviewerExecution, error) {
@@ -2199,11 +2293,11 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		}
 		return execution, nil
 	}
-	repairPrompt, repairPromptDeps, err := buildReviewerCoverageRepairPrompt(artifacts, pr, repairSelected, agent, changedFilePaths)
+	repairPrompt, repairPromptDeps, err := buildReviewerCoverageRepairPromptWithRelocationAssignment(artifacts, pr, repairSelected, agent, changedFilePaths, repairAssignment)
 	if err != nil {
 		return repairSetupFailed(err)
 	}
-	if err := opts.checkPromptBudget("reviewer coverage repair", agent.ID, model, strings.Join(repairFiles, ","), repairPrompt); err != nil {
+	if err := opts.checkAndPersistPromptBudget(artifacts, repairTaskID, "reviewer coverage repair", repairPrompt); err != nil {
 		return repairSetupFailed(err)
 	}
 	repairIdentity := reviewerCoverageRepairIdentity(agent.ID)
@@ -2212,7 +2306,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return repairSetupFailed(err)
 	}
 	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
-	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, resumeState.relocations.Symlinks)
 	if err != nil {
 		return repairSetupFailed(err)
 	}
@@ -2231,6 +2325,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if req.ReviewerFast {
 		repairFingerprintDeps = append(repairFingerprintDeps, "fast=true")
 	}
+	repairFingerprintDeps = append(repairFingerprintDeps, "relocation-manifest="+repairAssignment.ManifestDigest, "relocation-assignment="+repairAssignment.AssignmentDigest, "symlink-metadata="+repairAssignment.SymlinkMetadataDigest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
 	repair, repairSession, repairLedgerSession, repairErr := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            repairTaskID,
@@ -2248,11 +2343,25 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		resumeSessionID:   session.ProviderReportedSessionID,
 		llmFailureStatus:  llmTaskStatusFailedIsolated,
 	}, func(data []byte) (llm.Findings, error) {
-		return llm.DecodeFindings(data, llm.FindingsOptions{
-			KnownAgents:  map[string]bool{agent.ID: true},
-			ChangedFiles: stringSet(repairFiles),
-			NewFindingID: opts.newFindingID,
+		decoded, err := llm.DecodeFindings(data, llm.FindingsOptions{
+			KnownAgents:     map[string]bool{agent.ID: true},
+			ChangedFiles:    stringSet(repairFiles),
+			AssignmentFiles: stringSet(repairFiles),
+			HeadFiles:       safeHeadContextPaths(resumeState.relocations.HeadTree),
+			NewFindingID:    opts.newFindingID,
 		})
+		if err != nil {
+			return llm.Findings{}, err
+		}
+		decoded.RelocationReviewedFiles, decoded.RelocationDiagnostic = validateRelocationAssessment(decoded, repairAssignment, resumeState.relocations.HeadTree)
+		if repairAssignment.MoveCount > 0 {
+			decoded.RelocationAssessments = []llm.RelocationAssessmentRecord{{
+				Assessment: decoded.RelocationAssessment, ManifestDigest: repairAssignment.ManifestDigest,
+				AssignmentDigest: repairAssignment.AssignmentDigest, ReviewedFiles: append([]string(nil), decoded.RelocationReviewedFiles...),
+				Valid: decoded.RelocationDiagnostic == "", Diagnostic: decoded.RelocationDiagnostic,
+			}}
+		}
+		return decoded, nil
 	})
 	// No cohort session update here: that slot seeds the next run's primary review.
 	execution.sessions = append(execution.sessions, repairSession)
@@ -2273,6 +2382,14 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if reviewerToolEvidenceForcesIncomplete(repairSession.Response.ReviewerToolEvidence) {
 		// A repair that never proved its own tool use inspected nothing, so its claim cannot clear a skip.
 		repair.InspectedFiles = nil
+		repair.ContextFiles = nil
+		repair.RelocationReviewedFiles = nil
+		repair.RelocationDiagnostic = "coverage repair tool evidence was incomplete"
+		for i := range repair.RelocationAssessments {
+			repair.RelocationAssessments[i].Valid = false
+			repair.RelocationAssessments[i].ReviewedFiles = nil
+			repair.RelocationAssessments[i].Diagnostic = repair.RelocationDiagnostic
+		}
 	}
 	execution.result = mergeReviewerFindings(findings, repair)
 	for _, finding := range repair.Findings {
@@ -2309,15 +2426,20 @@ func reviewerCoverageRepairTaskID(agentID string) string {
 // reviewerCoverageRepairFiles returns skipped assignment paths whose head
 // content can be inspected. Deleted and binary patches retain their existing
 // fail-closed coverage state without spending a semantic repair pass.
-func reviewerCoverageRepairFiles(skipped []string, patches []FilePatch) []string {
+func reviewerCoverageRepairFiles(missing []string, patches []FilePatch, moveSets ...[]relocationMove) []string {
 	repairable := make(map[string]bool, len(patches))
+	var moves []relocationMove
+	if len(moveSets) > 0 {
+		moves = moveSets[0]
+	}
+	contentless := relocationContentlessPaths(patches, moves)
 	for _, patch := range patches {
-		if !patch.Deleted && !patch.Binary {
+		if !patch.Deleted && !patch.Binary && !contentless[patch.Path] {
 			repairable[patch.Path] = true
 		}
 	}
 	var files []string
-	for _, file := range skipped {
+	for _, file := range missing {
 		if repairable[file] && !slices.Contains(files, file) {
 			files = append(files, file)
 		}
@@ -2327,14 +2449,28 @@ func reviewerCoverageRepairFiles(skipped []string, patches []FilePatch) []string
 
 func mergeReviewerFindings(primary, repair llm.Findings) llm.Findings {
 	merged := llm.Findings{
-		AgentID:        primary.AgentID,
-		Findings:       append(append([]review.Finding(nil), primary.Findings...), repair.Findings...),
-		InspectedFiles: appendUniqueStrings(nil, primary.InspectedFiles...),
-		SkippedFiles:   appendUniqueStrings(nil, primary.SkippedFiles...),
-		Constraints:    appendUniqueStrings(nil, primary.Constraints...),
+		AgentID:                 primary.AgentID,
+		Findings:                append(append([]review.Finding(nil), primary.Findings...), repair.Findings...),
+		InspectedFiles:          appendUniqueStrings(nil, primary.InspectedFiles...),
+		ContextFiles:            appendUniqueStrings(nil, primary.ContextFiles...),
+		SkippedFiles:            appendUniqueStrings(nil, primary.SkippedFiles...),
+		Constraints:             appendUniqueStrings(nil, primary.Constraints...),
+		RelocationAssessment:    primary.RelocationAssessment,
+		RelocationReviewedFiles: appendUniqueStrings(nil, primary.RelocationReviewedFiles...),
+		RelocationDiagnostic:    primary.RelocationDiagnostic,
+		RelocationAssessments:   append([]llm.RelocationAssessmentRecord(nil), primary.RelocationAssessments...),
 	}
 	merged.InspectedFiles = appendUniqueStrings(merged.InspectedFiles, repair.InspectedFiles...)
-	inspected := stringSet(repair.InspectedFiles)
+	merged.ContextFiles = appendUniqueStrings(merged.ContextFiles, repair.ContextFiles...)
+	merged.RelocationReviewedFiles = appendUniqueStrings(merged.RelocationReviewedFiles, repair.RelocationReviewedFiles...)
+	merged.RelocationAssessments = append(merged.RelocationAssessments, repair.RelocationAssessments...)
+	if repair.RelocationAssessment != nil {
+		merged.RelocationAssessment = repair.RelocationAssessment
+	}
+	if repair.RelocationDiagnostic != "" && merged.RelocationDiagnostic == "" {
+		merged.RelocationDiagnostic = repair.RelocationDiagnostic
+	}
+	inspected := stringSet(append(append([]string(nil), repair.InspectedFiles...), repair.RelocationReviewedFiles...))
 	remainingSkipped := merged.SkippedFiles[:0]
 	for _, file := range merged.SkippedFiles {
 		if !inspected[file] {
@@ -2343,6 +2479,9 @@ func mergeReviewerFindings(primary, repair llm.Findings) llm.Findings {
 	}
 	merged.SkippedFiles = appendUniqueStrings(remainingSkipped, repair.SkippedFiles...)
 	merged.Constraints = appendUniqueStrings(merged.Constraints, repair.Constraints...)
+	if repair.RelocationDiagnostic != "" {
+		merged.Constraints = appendUniqueStrings(merged.Constraints, repair.RelocationDiagnostic)
+	}
 	return merged
 }
 
@@ -2691,17 +2830,17 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 
 	workstreams := make([]reviewplan.WorkstreamUsage, 0, len(inputs.reviewers)+2)
 	if sessionDraftExecuted(inputs.selection) {
-		workstreams = append(workstreams, workstreamUsage(orchestratorSelectionStage, inputs.selection))
+		workstreams = append(workstreams, opts.workstreamUsage(orchestratorSelectionStage, inputs.selection))
 	}
 	selectedIDs := make([]string, 0, len(inputs.selectedAgents))
 	for _, selected := range inputs.selectedAgents {
 		selectedIDs = append(selectedIDs, selected.AgentID)
 		if drafts := reviewerByAgent[selected.AgentID]; slices.ContainsFunc(drafts, sessionDraftExecuted) {
-			workstreams = append(workstreams, workstreamUsageFromTotals(selected.AgentID, combineReviewerWorkstreamTotals(drafts)))
+			workstreams = append(workstreams, opts.workstreamUsageFromTotals(selected.AgentID, combineReviewerWorkstreamTotals(drafts)))
 		}
 	}
 	if sessionDraftExecuted(inputs.rollup) {
-		workstreams = append(workstreams, workstreamUsage(orchestratorRollupStage, inputs.rollup))
+		workstreams = append(workstreams, opts.workstreamUsage(orchestratorRollupStage, inputs.rollup))
 	}
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
@@ -2953,22 +3092,23 @@ func filterReviewableFiles(files []string) []string {
 	return out
 }
 
-// deletedPatchPaths returns the set of paths removed by the diff. A deleted file
-// has no content at head for a reviewer to inspect, so it is exempt from
-// coverage accounting just like a generated lockfile — otherwise a skipped
-// deletion marks the reviewer incomplete_skipped and blocks approval on an
-// otherwise clean review.
-func deletedPatchPaths(patches []FilePatch) map[string]bool {
-	var deleted map[string]bool
+// contentlessPatchPaths returns the set of changed paths with no content at
+// head for a reviewer to inspect: files removed by the diff, and files the diff
+// adds empty. They are exempt from coverage accounting just like a generated
+// lockfile; otherwise a skipped deletion marks the reviewer incomplete_skipped,
+// and an empty file no reviewer is selected for is incomplete_unassigned, each
+// blocking approval on an otherwise clean review.
+func contentlessPatchPaths(patches []FilePatch) map[string]bool {
+	var contentless map[string]bool
 	for _, patch := range patches {
-		if patch.Deleted {
-			if deleted == nil {
-				deleted = map[string]bool{}
+		if patch.Deleted || (patch.Added && !patch.Binary && len(patch.Hunks) == 0) {
+			if contentless == nil {
+				contentless = map[string]bool{}
 			}
-			deleted[patch.Path] = true
+			contentless[patch.Path] = true
 		}
 	}
-	return deleted
+	return contentless
 }
 
 // renamedPatchOldPaths returns the pre-rename paths still present in the diff.
@@ -2987,12 +3127,12 @@ func renamedPatchOldPaths(patches []FilePatch) []string {
 }
 
 // mentionableExtraPaths returns paths a model may cite but is never assigned:
-// removed files and the pre-rename sources still visible in the diff.
+// contentless files and the pre-rename sources still visible in the diff.
 func mentionableExtraPaths(patches []FilePatch) []string {
-	deleted := deletedPatchPaths(patches)
-	seen := make(map[string]bool, len(deleted))
+	contentless := contentlessPatchPaths(patches)
+	seen := make(map[string]bool, len(contentless))
 	paths := make([]string, 0, len(patches))
-	for path := range deleted {
+	for path := range contentless {
 		seen[path] = true
 		paths = append(paths, path)
 	}
@@ -3008,10 +3148,10 @@ func mentionableExtraPaths(patches []FilePatch) []string {
 }
 
 // reviewablePatchPaths returns changed paths that a reviewer can inspect at
-// the head. Deleted paths remain in ParsedDiff and the dossier, but are not a
-// reviewer assignment or coverage obligation.
+// the head. Deleted and empty added paths remain in ParsedDiff and the dossier,
+// but are not a reviewer assignment or coverage obligation.
 func reviewablePatchPaths(patches []FilePatch) []string {
-	return excludeFiles(patchPaths(patches), deletedPatchPaths(patches))
+	return excludeFiles(patchPaths(patches), contentlessPatchPaths(patches))
 }
 
 // excludeFiles returns values with any member of exclude removed, preserving order.
@@ -3045,9 +3185,9 @@ func filterSelectedReviewerAssignment(selected llm.SelectedAgent, changedFiles [
 	return selected
 }
 
-// filterSelectedReviewerAssignments removes deleted paths from explicit
+// filterSelectedReviewerAssignments removes contentless paths from explicit
 // assignments and drops a selected reviewer whose only assignment was
-// deleted. Broad selections remain broad when reviewable paths exist.
+// contentless. Broad selections remain broad when reviewable paths exist.
 func filterSelectedReviewerAssignments(selection llm.Selection, changedFiles []string) llm.Selection {
 	filtered := selection
 	filtered.SelectedAgents = nil
@@ -3065,14 +3205,18 @@ func filterSelectedReviewerAssignments(selection llm.Selection, changedFiles []s
 	return filtered
 }
 
-func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, deleted map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
+func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, contentless map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
+	return buildReviewerCoverageWithRelocations(selected, results, failures, changedFiles, contentless, toolEvidence...)
+}
+
+func buildReviewerCoverageWithRelocations(selected []llm.SelectedAgent, results []llm.Findings, failures []ReviewerFailure, changedFiles []string, contentless map[string]bool, toolEvidence ...map[string]*llm.ReviewerToolEvidence) []reviewplan.ReviewerCoverageSummary {
 	if len(selected) == 0 && len(changedFiles) == 0 {
 		return nil
 	}
-	// Generated lockfiles and deleted files are not a review obligation: exclude
-	// them so neither a reviewer that skips one nor an unassigned one blocks
-	// approval. (Deleted files have no content at head to inspect.)
-	changedFiles = excludeFiles(filterReviewableFiles(changedFiles), deleted)
+	// Generated lockfiles and contentless files (deleted, or added empty) are not
+	// a review obligation: exclude them so neither a reviewer that skips one nor
+	// an unassigned one blocks approval.
+	changedFiles = excludeFiles(filterReviewableFiles(changedFiles), contentless)
 	resultByAgent := make(map[string]llm.Findings, len(results))
 	for _, result := range results {
 		resultByAgent[result.AgentID] = result
@@ -3084,10 +3228,10 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 	assigned := map[string]bool{}
 	out := make([]reviewplan.ReviewerCoverageSummary, 0, len(selected)+1)
 	for _, agent := range selected {
-		// A lockfile or deleted file explicitly assigned to an agent is exempt
-		// too — the scope is what the reviewer is held to, and neither is
+		// A lockfile or contentless file explicitly assigned to an agent is
+		// exempt too — the scope is what the reviewer is held to, and neither is
 		// reviewable content at head.
-		scope := excludeFiles(filterReviewableFiles(reviewerAssignmentScope(agent, changedFiles)), deleted)
+		scope := excludeFiles(filterReviewableFiles(reviewerAssignmentScope(agent, changedFiles)), contentless)
 		for _, file := range scope {
 			assigned[file] = true
 		}
@@ -3101,8 +3245,13 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			// so a reviewer that did read a lockfile doesn't emit an inspected file
 			// outside its scope.
 			entry.InspectedFiles = filterReviewableFiles(copySortedStrings(result.InspectedFiles))
+			entry.ContextFiles = copySortedStrings(result.ContextFiles)
+			entry.RelocationReviewedFiles = sortedIntersection(result.RelocationReviewedFiles, scope)
 			entry.SkippedFiles = sortedIntersection(result.SkippedFiles, scope)
 			entry.Constraints = copySortedStrings(result.Constraints)
+			if result.RelocationDiagnostic != "" {
+				entry.Constraints = appendUniqueStrings(entry.Constraints, result.RelocationDiagnostic)
+			}
 		}
 		if failure, ok := failureByAgent[agent.AgentID]; ok {
 			// A reviewer that failed only its coverage repair keeps what the primary pass proved.
@@ -3118,18 +3267,19 @@ func buildReviewerCoverage(selected []llm.SelectedAgent, results []llm.Findings,
 			continue
 		}
 		if evidence := reviewerToolEvidenceForAgent(toolEvidence, agent.AgentID); reviewerToolEvidenceForcesIncomplete(evidence) {
+			entry.RelocationReviewedFiles = nil
+			entry.MissingFiles = coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
 			entry.Status = reviewerCoverageIncompleteTool
 			entry.Diagnostic = reviewerToolDiagnostic(evidence, "")
 			out = append(out, entry)
 			continue
 		}
-		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles)
+		missing := coverageMissingFiles(scope, entry.InspectedFiles, entry.SkippedFiles, entry.RelocationReviewedFiles)
+		entry.MissingFiles = missing
 		switch {
 		case len(entry.SkippedFiles) > 0 || len(missing) > 0:
 			entry.Status = reviewerCoverageIncompleteSkipped
-			if len(missing) > 0 {
-				entry.Diagnostic = "assigned files were neither inspected nor skipped: " + strings.Join(missing, ", ")
-			}
+			entry.Diagnostic = "assigned review coverage remains unresolved"
 		case len(agent.AllowedFiles) > 0:
 			entry.Status = reviewerCoverageCompleteConstrained
 		default:
@@ -3173,10 +3323,15 @@ func reviewerAssignmentScope(agent llm.SelectedAgent, changedFiles []string) []s
 	return copySortedStrings(changedFiles)
 }
 
-func coverageMissingFiles(scope, inspected, skipped []string) []string {
+func coverageMissingFiles(scope, inspected, skipped []string, relocationReviewed ...[]string) []string {
 	covered := stringSet(inspected)
-	for _, file := range skipped {
-		covered[file] = true
+	explicitlySkipped := stringSet(skipped)
+	for _, files := range relocationReviewed {
+		for _, file := range files {
+			if !explicitlySkipped[file] {
+				covered[file] = true
+			}
+		}
 	}
 	var missing []string
 	for _, file := range scope {
@@ -3265,6 +3420,18 @@ func workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage
 }
 
 func workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.WorkstreamUsage {
+	return workstreamUsageFromTotalsForCatalog(name, totals, nil)
+}
+
+func (opts Options) workstreamUsage(name string, draft sessionDraft) reviewplan.WorkstreamUsage {
+	return workstreamUsageFromTotalsForCatalog(name, draftWorkstreamTotals(draft), opts.Catalog)
+}
+
+func (opts Options) workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.WorkstreamUsage {
+	return workstreamUsageFromTotalsForCatalog(name, totals, opts.Catalog)
+}
+
+func workstreamUsageFromTotalsForCatalog(name string, totals workstreamTotals, catalog *modelcatalog.Catalog) reviewplan.WorkstreamUsage {
 	usage := totals.usage
 	workstream := reviewplan.WorkstreamUsage{
 		Name:          name,
@@ -3281,14 +3448,25 @@ func workstreamUsageFromTotals(name string, totals workstreamTotals) reviewplan.
 	// tokens at public list prices — only for models the price table knows, so an
 	// agent's unpriced model leaves cost unavailable rather than wrong.
 	if workstream.CostUSD == nil {
-		if est, ok := pricing.EstimateUsageUSD(totals.model, pricing.Usage{
+		priceUsage := pricing.Usage{
 			TokensIn: usage.TokensIn, TokensOut: usage.TokensOut, CacheRead: usage.CacheRead,
 			CacheCreate5m: usage.CacheCreate5m, CacheCreate1h: usage.CacheCreate1h,
 			CacheCreateTotal: usage.CacheCreate, Speed: usage.Speed,
-		}); ok {
+		}
+		var est float64
+		var ok bool
+		if catalog == nil {
+			est, ok = pricing.EstimateUsageUSD(totals.model, priceUsage)
+		} else {
+			est, ok = pricing.EstimateUsageUSDFor(catalog, totals.model, priceUsage)
+		}
+		if ok {
 			workstream.CostUSD = &est
 			workstream.CostEstimated = true
-			workstream.CostEstimateBasis = pricing.TableVersion
+			workstream.CostEstimateBasis = pricing.EstimateBasis(catalog)
+			if catalog == nil {
+				workstream.CostEstimateBasis = pricing.TableVersion
+			}
 		}
 	}
 	// Zero means the adapter never reported a duration; fall back to the
@@ -3544,27 +3722,6 @@ func effectiveCaps(caps gitprovider.ProviderCaps, noResolve bool) reviewplan.Pro
 	}
 }
 
-func (opts Options) checkPromptBudget(phase, agentID, model, filePath, prompt string) error {
-	limit := opts.Budget.MaxPromptBytes
-	if limit == 0 {
-		limit = defaultMaxPromptBytes
-	}
-	if limit < 0 || len(prompt) <= limit {
-		return nil
-	}
-	target := phase
-	if agentID != "" {
-		target += " agent " + agentID
-	}
-	if filePath != "" {
-		target += " file " + filePath
-	}
-	if model != "" {
-		target += " model " + model
-	}
-	return fmt.Errorf("pipeline: context budget exceeded for %s: %d bytes > %d", target, len(prompt), limit)
-}
-
 func (opts Options) now() time.Time {
 	if opts.Now != nil {
 		return opts.Now().UTC()
@@ -3628,15 +3785,15 @@ func workbenchDeps(opts Options) workbench.Deps {
 	return workbench.Deps{GitCommand: opts.GitCommand}
 }
 
-func dossierEnv(opts Options) dossier.Env {
+func dossierEnv(opts Options, paths ArtifactPaths) dossier.Env {
 	return dossier.Env{
 		Adapter:         opts.Adapter,
 		Store:           opts.Store,
 		TaskProgress:    opts.TaskProgress,
 		Now:             opts.now,
 		NewSessionRowID: opts.newSessionRowID,
-		CheckPromptBudget: func(model, prompt string) error {
-			return opts.checkPromptBudget("dossier-summary", "", model, "", prompt)
+		CheckPromptBudget: func(_ string, prompt string) error {
+			return opts.checkAndPersistPromptBudget(paths, dossier.SummaryTaskID, "dossier-summary", prompt)
 		},
 	}
 }
@@ -3822,22 +3979,26 @@ func resolveReviewerRuntime(req Request, agent agents.Agent) (reviewerRuntimeRes
 	return resolved, nil
 }
 
-func resolveReviewerFastMode(req Request, catalog agents.Catalog) (bool, string, error) {
+func resolveReviewerFastMode(req Request, selection llm.Selection, catalog agents.Catalog) (bool, string, error) {
 	if !req.ReviewerFast {
 		return false, "", nil
 	}
-	spec, ok := config.FindLLMRuntimeSpec(req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
+	spec, runtimeKnown := config.FindLLMRuntimeSpecFor(req.Profile.LLM.Catalog(), req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	runtimeName := fmt.Sprintf("%s/%s/%s", req.Profile.LLM.Provider, req.Profile.LLM.Auth, req.Profile.LLM.Adapter)
 	warning := ""
-	if !ok || len(spec.FastModeModels) == 0 {
+	if !runtimeKnown || len(spec.FastModeModels) == 0 {
 		warning = fmt.Sprintf("warning: fast mode is unsupported for %s; continuing at normal speed", runtimeName)
 	}
-	for _, agent := range catalog.Agents {
+	for _, selected := range selection.SelectedAgents {
+		agent, found := catalog.Find(selected.AgentID)
+		if !found {
+			return false, "", fmt.Errorf("pipeline: selected reviewer %q is missing from the current catalog", selected.AgentID)
+		}
 		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
 		if err != nil {
 			return false, "", err
 		}
-		if warning == "" && (!ok || !spec.SupportsFastMode(runtimeConfig.model)) {
+		if warning == "" && (!runtimeKnown || !spec.SupportsFastMode(runtimeConfig.model)) {
 			warning = fmt.Sprintf("warning: fast mode is unsupported for %s model %s; continuing at normal speed", runtimeName, runtimeConfig.model)
 		}
 	}

@@ -1,7 +1,10 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +14,8 @@ import (
 
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/open-cli-collective/cli-common/statedirtest"
+
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 func TestPathUsesCodereviewConfigScope(t *testing.T) {
@@ -39,9 +44,58 @@ func TestPathUsesCodereviewConfigScope(t *testing.T) {
 	}
 }
 
+func TestRuntimeSpecsIgnorePiFastCatalogClaim(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourceDir := filepath.Join(filepath.Dir(sourceFile), "..", "modelcatalog", "data")
+	catalogDir := t.TempDir()
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(sourceDir, name)) // #nosec G304 -- sourceDir is the repository's bundled test catalog.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		if name == "models.csv" {
+			body = append(body, []byte("pi-subscription-rpc,pi-fast-claim,low,Y,,,https://example.invalid/pi,2026-10-02\n")...)
+		}
+		if name == "manifest.json" {
+			var manifest modelcatalog.Manifest
+			if err := json.Unmarshal(body, &manifest); err != nil {
+				t.Fatalf("decode manifest: %v", err)
+			}
+			models, err := os.ReadFile(filepath.Join(sourceDir, "models.csv")) // #nosec G304 -- sourceDir is the repository's bundled test catalog.
+			if err != nil {
+				t.Fatalf("read source models: %v", err)
+			}
+			models = append(models, []byte("pi-subscription-rpc,pi-fast-claim,low,Y,,,https://example.invalid/pi,2026-10-02\n")...)
+			manifest.Files["models.csv"] = fmt.Sprintf("%x", sha256.Sum256(models))
+			body, err = json.Marshal(manifest)
+			if err != nil {
+				t.Fatalf("encode manifest: %v", err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(catalogDir, name), body, 0o600); err != nil { // #nosec G703 -- test path is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+	catalog, err := modelcatalog.LoadPath(catalogDir)
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	for _, spec := range LLMRuntimeSpecsFor(catalog) {
+		if spec.Adapter == LLMAdapterPiRPC && len(spec.FastModeModels) != 0 {
+			t.Fatalf("Pi RPC fast models = %#v, want empty without transport mapping", spec.FastModeModels)
+		}
+	}
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	want := validFile()
+	llm := want.LLMRuntimes["home-llm"]
+	llm.EffortMap = EffortMap{"small": "high", "medium": "low"}
+	want.LLMRuntimes["home-llm"] = llm
 
 	if err := Save(path, want); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -50,8 +104,32 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	got.sourcePath, got.sourceDigest = "", [32]byte{}
+	want.catalog, err = modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatalf("LoadBundled: %v", err)
+	}
 	if !reflect.DeepEqual(got, want.normalized()) {
 		t.Fatalf("Load = %#v, want %#v", got, want.normalized())
+	}
+}
+
+func TestNormalizedLegacyInlineProfileKeepsSelectedCatalog(t *testing.T) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatalf("LoadBundled: %v", err)
+	}
+	cfg := validFile()
+	profile := cfg.Profiles["home"]
+	profile.LLMRuntime = ""
+	profile.LLM = cfg.LLMRuntimes["home-llm"]
+	cfg.Profiles["home"] = profile
+	cfg.catalog = catalog
+
+	normalized := cfg.normalized()
+	got := normalized.Profiles["home"].LLM.Catalog()
+	if got != catalog {
+		t.Fatalf("legacy inline profile catalog pointer = %p, want selected snapshot %p", got, catalog)
 	}
 }
 
@@ -387,14 +465,14 @@ func TestModelMapValidationAndResolution(t *testing.T) {
 		t.Fatalf("ResolveProfile: %v", err)
 	}
 	effective := EffectiveModelMap(resolved.LLM)
-	if effective[ModelTierSmall].Model != "gpt-5.4-mini" || effective[ModelTierSmall].Source != ModelMapSourceBuiltIn {
-		t.Fatalf("small resolution = %#v, want built-in gpt-5.4-mini", effective[ModelTierSmall])
+	if effective[ModelTierSmall].Model != "gpt-6-luna" || effective[ModelTierSmall].Source != ModelMapSourceBuiltIn {
+		t.Fatalf("small resolution = %#v, want built-in gpt-6-luna", effective[ModelTierSmall])
 	}
 	if effective[ModelTierMedium].Model != "gpt-custom" || effective[ModelTierMedium].Source != ModelMapSourceConfig {
 		t.Fatalf("medium resolution = %#v, want config override", effective[ModelTierMedium])
 	}
-	if got, ok := ResolveModelTier(resolved.LLM, ModelTierLarge); !ok || got.Model != "gpt-5.5" || got.Source != ModelMapSourceBuiltIn {
-		t.Fatalf("ResolveModelTier large = %#v ok=%t, want built-in gpt-5.5", got, ok)
+	if got, ok := ResolveModelTier(resolved.LLM, ModelTierLarge); !ok || got.Model != "gpt-6.1-sol" || got.Source != ModelMapSourceBuiltIn {
+		t.Fatalf("ResolveModelTier large = %#v ok=%t, want built-in gpt-6.1-sol", got, ok)
 	}
 	if resolved.LLM.ReviewerModelTier != "" {
 		t.Fatalf("ReviewerModelTier = %q, want empty by default", resolved.LLM.ReviewerModelTier)
@@ -446,9 +524,9 @@ func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
 			provider: LLMProviderOpenAI,
 			adapter:  LLMAdapterCodexCLI,
 			want: ModelMap{
-				"small":  "gpt-5.4-mini",
-				"medium": "gpt-5.4",
-				"large":  "gpt-5.5",
+				"small":  "gpt-6-luna",
+				"medium": "gpt-6.1-sol",
+				"large":  "gpt-6.1-sol",
 			},
 		},
 		{
@@ -456,9 +534,9 @@ func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
 			provider: LLMProviderOpenAI,
 			adapter:  LLMAdapterOpenAIAPI,
 			want: ModelMap{
-				"small":  "gpt-5.4-mini",
-				"medium": "gpt-5.4",
-				"large":  "gpt-5.5",
+				"small":  "gpt-6-luna",
+				"medium": "gpt-6.1-sol",
+				"large":  "gpt-6.1-sol",
 			},
 		},
 		{
@@ -466,9 +544,9 @@ func TestBuiltInModelMapIsProviderAdapterSpecific(t *testing.T) {
 			provider: LLMProviderAnthropic,
 			adapter:  LLMAdapterClaudeCLI,
 			want: ModelMap{
-				"small":  "claude-haiku-4-5",
-				"medium": "claude-sonnet-5",
-				"large":  "claude-opus-5",
+				"small":  "claude-sonnet-5-5",
+				"medium": "claude-sonnet-5-5",
+				"large":  "claude-opus-5-5",
 			},
 		},
 		{name: "anthropic api", provider: LLMProviderAnthropic, adapter: LLMAdapterAnthropicAPI, want: ModelMap{}},

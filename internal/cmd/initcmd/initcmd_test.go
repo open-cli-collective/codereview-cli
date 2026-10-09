@@ -3,6 +3,8 @@ package initcmd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +22,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
@@ -30,6 +33,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 )
 
 func TestInitNonInteractiveWritesConfigAndSecret(t *testing.T) {
@@ -911,6 +915,7 @@ func TestInitDisableReviewerClearsReviewerCredentials(t *testing.T) {
 	expected := existing
 	expected.ReviewerCredentials = nil
 	expected = normalizeTestProfileNamed("work", expected)
+	expected.LLM = expected.LLM.WithCatalog(got.Catalog())
 	if !reflect.DeepEqual(got.Profiles["work"], expected) {
 		t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 	}
@@ -1028,6 +1033,7 @@ func TestInitLLMReviewerModelTierFlags(t *testing.T) {
 		expected := existing
 		expected.LLM.ReviewerModelTier = ""
 		expected = normalizeTestProfileNamed("work", expected)
+		expected.LLM = expected.LLM.WithCatalog(got.Catalog())
 		if !reflect.DeepEqual(got.Profiles["work"], expected) {
 			t.Fatalf("saved profile = %#v, want %#v", got.Profiles["work"], expected)
 		}
@@ -1126,7 +1132,15 @@ func TestInitPlanApplyPreservesUnrelatedExistingConfig(t *testing.T) {
 		want.LLMRuntimes[name] = runtime
 	}
 	want.LLMRuntimes[after.Profiles["work"].LLMRuntime] = after.LLMRuntimes[after.Profiles["work"].LLMRuntime]
-	if !reflect.DeepEqual(after, want) {
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterJSON, wantJSON) {
 		t.Fatalf("config after init = %#v, want only work profile/runtime added to %#v", after, before)
 	}
 }
@@ -6855,7 +6869,7 @@ func TestNormalizeInitModelMapDropsBuiltInsAndBlanks(t *testing.T) {
 		Adapter:  config.LLMAdapterCodexCLI,
 	}
 	got := normalizeInitModelMap(llm, config.ModelMap{
-		"small":  "gpt-5.4-mini",
+		"small":  "gpt-6-luna",
 		"medium": " custom-medium ",
 		"large":  " \t ",
 	})
@@ -7135,6 +7149,103 @@ func TestInitLinearEditorSpaceKeyEditsFocusedInputInsteadOfPagingDown(t *testing
 	}
 	if got := model.viewport.YOffset; got != beforeOffset {
 		t.Fatalf("viewport YOffset after input space = %d, want unchanged %d", got, beforeOffset)
+	}
+}
+
+func TestInitLinearEditorEditableFieldsConsumeReservedLetters(t *testing.T) {
+	const (
+		inputField    initLinearFieldID = "input"
+		textareaField initLinearFieldID = "textarea"
+	)
+	var document initLinearDocument
+	document.addEditableInput(inputField, "Input", "", "", nil)
+	document.addEditableTextarea(textareaField, "Textarea", "", "")
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 12)
+	want := "qbfjkgG "
+
+	model = typeInitLinearText(t, model, want)
+	inputIndex := model.document.fieldIndexByID(inputField)
+	if got := model.document.fieldValue(inputField); got != want {
+		t.Fatalf("input value = %q, want %q", got, want)
+	}
+	if model.focused != inputIndex || model.quitting {
+		t.Fatalf("after input typing focused=%d quitting=%t, want focused=%d and not quitting", model.focused, model.quitting, inputIndex)
+	}
+
+	model = focusInitLinearField(t, model, textareaField)
+	model = typeInitLinearText(t, model, want)
+	textareaIndex := model.document.fieldIndexByID(textareaField)
+	if got := model.document.fieldValue(textareaField); got != want {
+		t.Fatalf("textarea value = %q, want %q", got, want)
+	}
+	if model.focused != textareaIndex || model.quitting {
+		t.Fatalf("after textarea typing focused=%d quitting=%t, want focused=%d and not quitting", model.focused, model.quitting, textareaIndex)
+	}
+}
+
+func TestInitLinearEditorTextareaEditsFirstAndMiddleLines(t *testing.T) {
+	const textareaField initLinearFieldID = "textarea"
+	var document initLinearDocument
+	document.addEditableTextarea(textareaField, "Textarea", "", "alpha\nbravo\ncharlie")
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 12)
+
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlHome})
+	model = typeInitLinearText(t, model, "A")
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlN})
+	model = updateInitLinearEditorModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlA})
+	model = typeInitLinearText(t, model, "B")
+
+	if got, want := model.document.fieldValue(textareaField), "Aalpha\nBbravo\ncharlie"; got != want {
+		t.Fatalf("textarea value = %q, want %q", got, want)
+	}
+	if got, want := model.document[model.document.fieldIndexByID(textareaField)].Cursor, len([]rune("Aalpha\nB")); got != want {
+		t.Fatalf("textarea cursor = %d, want cursor after middle-line edit", got)
+	}
+}
+
+func TestInitLinearEditorBracketedPastePreservesMultilineSecretAndMasksIt(t *testing.T) {
+	const textareaField initLinearFieldID = "secret"
+	var document initLinearDocument
+	document.addEditableSecretTextarea(textareaField, "Secret", "", "")
+	model := newInitLinearEditorModel(initLinearEditor{Document: document}, 120, 12)
+	pasted := strings.Repeat("known-line\n", 120) + "suffix"
+
+	updated, cmd := model.Update(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(pasted),
+		Paste: true,
+	})
+	next, ok := updated.(initLinearEditorModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want initLinearEditorModel", updated)
+	}
+	if cmd != nil {
+		t.Fatalf("bracketed paste returned command %v, want no clipboard command", cmd)
+	}
+	if got := next.document.fieldValue(textareaField); got != pasted {
+		t.Fatalf("pasted secret = %q, want %q", got, pasted)
+	}
+	view := next.View()
+	for _, plaintext := range []string{"known-line", "suffix"} {
+		if strings.Contains(view, plaintext) {
+			t.Fatalf("secret value leaked through view (%q):\n%s", plaintext, view)
+		}
+	}
+	if !strings.Contains(view, "*") {
+		t.Fatalf("masked secret view contains no mask characters:\n%s", view)
+	}
+}
+
+func TestInitLinearEditorWrapsWideRunesByTerminalCells(t *testing.T) {
+	var lines []string
+	initLinearAppendWrappedLineWithPrefix(&lines, "> ", strings.Repeat("界", 12), 20)
+	if len(lines) < 2 {
+		t.Fatalf("wide text produced %d line(s), want wrapping:\n%v", len(lines), lines)
+	}
+	for _, line := range lines {
+		if got := ansi.StringWidth(line); got > 20 {
+			t.Fatalf("wrapped line cell width = %d, want <= 20 for %q", got, line)
+		}
 	}
 }
 
@@ -8038,45 +8149,8 @@ func TestHuhInitKeyringBackendPrompterLinearCanDeleteConfiguredSecretsStore(t *t
 	}
 }
 
-func TestInitSecretsManagementTargetOptionsMovesPendingDeletesToBottomInDeletionOrder(t *testing.T) {
-	cfg := config.File{
-		Profiles: map[string]config.Profile{"default": basicProfile("default")},
-		Secrets: config.SecretsConfig{
-			Stores: map[string]config.SecretsStore{
-				"personal": {
-					DisplayName: "Personal",
-					Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-				},
-			},
-		},
-	}
-	pendingDeletes := map[string]initPendingSecretsManagementDelete{
-		"alpha": {ID: "alpha", Profile: config.SecretsStore{
-			DisplayName: "Alpha",
-			Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-		}},
-		"beta": {ID: "beta", Profile: config.SecretsStore{
-			DisplayName: "Beta",
-			Backend:     config.SecretsStoreBackend{Kind: config.SecretsBackendKind(credstore.BackendFile)},
-		}},
-	}
-
-	options := initSecretsManagementTargetOptions(cfg, pendingDeletes, []string{"alpha", "beta"})
-	values := make([]string, 0, len(options))
-	for _, option := range options {
-		values = append(values, option.Value)
-	}
-	wantSuffix := []string{
-		initLinearRestoreSelection("secrets_management", "alpha"),
-		initLinearRestoreSelection("secrets_management", "beta"),
-	}
-	if len(values) < len(wantSuffix) || !reflect.DeepEqual(values[len(values)-len(wantSuffix):], wantSuffix) {
-		t.Fatalf("target option values = %#v, want pending deletes last in staging order %#v", values, wantSuffix)
-	}
-}
-
 func TestInitSecretsManagementTargetOptionsExcludeBuiltInOSStore(t *testing.T) {
-	options := initSecretsManagementTargetOptions(config.File{}, nil, nil)
+	options := initSecretsManagementTargetOptions(config.File{})
 	for _, option := range options {
 		if option.Value == config.LocalOSCredentialStoreID {
 			t.Fatalf("target options include built-in OS store as selectable row: %#v", options)
@@ -8475,7 +8549,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountVault(t 
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 32)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
@@ -8536,7 +8610,7 @@ func TestInitSecretsManagementLinearEditorCanCreateStoreBeforeReviewProfile(t *t
 			Name: "Private",
 		}},
 	}}}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(config.File{}, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(config.File{}, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = focusInitLinearField(t, model, initSecretsManagementFieldAction)
@@ -8592,7 +8666,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoverySelectsAccountThenVaul
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 
@@ -8650,7 +8724,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryIncludesAccountWithout
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 
@@ -8696,7 +8770,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualVaultInSel
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopVault, initOnePasswordManualSelection)
@@ -8743,7 +8817,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryAllowsManualAccount(t 
 	cfg := config.File{
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 40)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldDesktopAccount, initOnePasswordManualSelection)
@@ -8784,7 +8858,7 @@ func TestInitSecretsManagementLinearEditorDesktopDiscoveryFailureAllowsManualPro
 		Profiles: map[string]config.Profile{"default": basicProfile("default")},
 	}
 	discovery := initOnePasswordDesktopDiscovery{Err: os.ErrNotExist}
-	editor := initSecretsManagementLinearEditorWithPendingOrderAndDiscovery(cfg, nil, nil, discovery)
+	editor := initSecretsManagementLinearEditorWithDiscovery(cfg, discovery)
 	model := newInitLinearEditorModel(editor, 180, 32)
 	model = selectInitLinearFieldValue(t, model, initSecretsManagementFieldTarget, initConfigureSecretsStoreSelectionPrefix+string(credstore.BackendOPDesktop))
 	out := model.layout.Content
@@ -9658,184 +9732,6 @@ func TestInitProfileV2ReadOnlyModelFocusNavigationPreservesRouteGuidance(t *test
 	}
 }
 
-func TestInitProfileV2ArrowKeysChangeSelectNotFocus(t *testing.T) {
-	const choiceField initProfileV2FieldID = "choice"
-	const inputField initProfileV2FieldID = "input"
-	var document initProfileV2Document
-	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
-		huh.NewOption("Alpha", "alpha"),
-		huh.NewOption("Beta", "beta"),
-	}, "alpha")
-	document.addEditableInput(inputField, "Input", "", "value", nil)
-	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 120, 12)
-	choiceIndex := model.document.fieldIndexByID(choiceField)
-
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
-	if got := model.document.selectedValue(choiceField); got != "beta" {
-		t.Fatalf("selected value after down = %q, want beta", got)
-	}
-	if model.focused != choiceIndex {
-		t.Fatalf("focused after select down = %d, want unchanged choice index %d", model.focused, choiceIndex)
-	}
-
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
-	if got := model.document.selectedValue(choiceField); got != "alpha" {
-		t.Fatalf("selected value after up = %q, want alpha", got)
-	}
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
-	inputIndex := model.document.fieldIndexByID(inputField)
-	if model.focused != inputIndex {
-		t.Fatalf("focused after tab = %d, want input index %d", model.focused, inputIndex)
-	}
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
-	if model.focused != inputIndex {
-		t.Fatalf("focused after input down = %d, want unchanged input index %d", model.focused, inputIndex)
-	}
-}
-
-func TestInitProfileV2ArrowKeysDoNotScrollFocusedInput(t *testing.T) {
-	const inputField initProfileV2FieldID = "input"
-	var document initProfileV2Document
-	document.addEditableInput(inputField, "Input", "", "value", nil)
-	for i := 0; i < 20; i++ {
-		document.addSection(fmt.Sprintf("Section %02d", i), "Context line")
-	}
-	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 120, 5)
-	model.viewport.SetYOffset(1)
-
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyDown})
-	if got := model.viewport.YOffset; got != 1 {
-		t.Fatalf("viewport YOffset after input down = %d, want unchanged 1", got)
-	}
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyUp})
-	if got := model.viewport.YOffset; got != 1 {
-		t.Fatalf("viewport YOffset after input up = %d, want unchanged 1", got)
-	}
-}
-
-func TestInitProfileV2SpaceKeyEditsFocusedInputInsteadOfPagingDown(t *testing.T) {
-	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithSelections("monit", "github.com/rianjs", nil, nil), 120, 8)
-	model = focusInitProfileV2Field(t, model, initProfileV2FieldRoutes)
-	beforeOffset := model.viewport.YOffset
-	beforeFocus := model.focused
-
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeySpace})
-
-	if model.focused != beforeFocus {
-		t.Fatalf("focused field = %d, want unchanged %d", model.focused, beforeFocus)
-	}
-	if got, want := model.document.fieldValue(initProfileV2FieldRoutes), "github.com/rianjs "; got != want {
-		t.Fatalf("route field value = %q, want %q", got, want)
-	}
-	if got := model.viewport.YOffset; got != beforeOffset {
-		t.Fatalf("viewport YOffset after input space = %d, want unchanged %d", got, beforeOffset)
-	}
-}
-
-func TestInitProfileV2OnlyFocusedSelectedFieldShowsCaret(t *testing.T) {
-	const firstField initProfileV2FieldID = "first"
-	const secondField initProfileV2FieldID = "second"
-	var document initProfileV2Document
-	document.addEditableSelect(firstField, "First", "", []huh.Option[string]{
-		huh.NewOption("Alpha", "alpha"),
-		huh.NewOption("Beta", "beta"),
-	}, "alpha")
-	document.addEditableSelect(secondField, "Second", "", []huh.Option[string]{
-		huh.NewOption("Gamma", "gamma"),
-		huh.NewOption("Delta", "delta"),
-	}, "delta")
-
-	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 120, 12)
-	if got := strings.Count(model.layout.Content, "> "); got != 1 {
-		t.Fatalf("initial caret count = %d, want 1:\n%s", got, model.layout.Content)
-	}
-	if !strings.Contains(model.layout.Content, "> [x] Alpha") {
-		t.Fatalf("initial content missing focused selected option:\n%s", model.layout.Content)
-	}
-	if !strings.Contains(model.layout.Content, "  [x] Delta") {
-		t.Fatalf("initial content missing unfocused selected option marker:\n%s", model.layout.Content)
-	}
-	if !strings.Contains(model.layout.Content, "  [ ] Beta") {
-		t.Fatalf("initial content missing unselected option marker:\n%s", model.layout.Content)
-	}
-	if strings.Contains(model.layout.Content, "> [x] Delta") {
-		t.Fatalf("initial content shows caret on unfocused selected option:\n%s", model.layout.Content)
-	}
-
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyTab})
-	if got := strings.Count(model.layout.Content, "> "); got != 1 {
-		t.Fatalf("caret count after tab = %d, want 1:\n%s", got, model.layout.Content)
-	}
-	if !strings.Contains(model.layout.Content, "> [x] Delta") {
-		t.Fatalf("content after tab missing focused selected option:\n%s", model.layout.Content)
-	}
-	if !strings.Contains(model.layout.Content, "  [x] Alpha") {
-		t.Fatalf("content after tab missing unfocused selected option marker:\n%s", model.layout.Content)
-	}
-	if strings.Contains(model.layout.Content, "> [x] Alpha") {
-		t.Fatalf("content after tab shows caret on unfocused selected option:\n%s", model.layout.Content)
-	}
-}
-
-func TestInitProfileV2SelectMarkerWrapsUnfocusedSelectedOption(t *testing.T) {
-	const inputField initProfileV2FieldID = "input"
-	const choiceField initProfileV2FieldID = "choice"
-	const width = 24
-	var document initProfileV2Document
-	document.addEditableInput(inputField, "Input", "", "value", nil)
-	document.addEditableSelect(choiceField, "Choice", "", []huh.Option[string]{
-		huh.NewOption("Alpha selected option wraps cleanly", "alpha"),
-		huh.NewOption("Beta", "beta"),
-	}, "alpha")
-
-	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, width, 12)
-	want := "  [x] Alpha selected\n      option wraps\n      cleanly"
-	if !strings.Contains(model.layout.Content, want) {
-		t.Fatalf("wrapped unfocused selected option missing marker or aligned continuations:\n%s", model.layout.Content)
-	}
-	if strings.Contains(model.layout.Content, "> [x] Alpha selected") {
-		t.Fatalf("wrapped unfocused selected option shows caret:\n%s", model.layout.Content)
-	}
-	for _, line := range strings.Split(model.layout.Content, "\n") {
-		if len(line) > width {
-			t.Fatalf("wrapped line length = %d, want <= %d for %q\n%s", len(line), width, line, model.layout.Content)
-		}
-	}
-}
-
-func TestInitProfileV2LayoutWrapsAndMeasuresSmallViewport(t *testing.T) {
-	var document initProfileV2Document
-	document.addSection("Profile", "This section has enough words to wrap across multiple lines in a narrow terminal.")
-	document.addInputField(initLinearFieldInput, "", "Profile name", "Short field that should remain measurable.", "monit", false, nil, initLinearFieldOptions{})
-	document.addInputField(initLinearFieldInput, "", "Route entries", "Routes tell cr when to use this profile automatically in a narrow viewport.", "github.com/SignalFT", false, nil, initLinearFieldOptions{})
-	document.addInputField(initLinearFieldInput, "", "Git credential name", "Full credential name under the selected store.", "codereview/monit", false, nil, initLinearFieldOptions{})
-
-	layout := initProfileV2LayoutDocument(document, 32, document.firstFocusableField())
-	if len(layout.Bounds) != len(document) {
-		t.Fatalf("bounds count = %d, want %d", len(layout.Bounds), len(document))
-	}
-	if layout.Lines <= len(document) {
-		t.Fatalf("layout lines = %d, want wrapped content larger than document length %d", layout.Lines, len(document))
-	}
-	for _, line := range strings.Split(layout.Content, "\n") {
-		if len(line) > 32 {
-			t.Fatalf("line length = %d, want <= 32 for %q\n%s", len(line), line, layout.Content)
-		}
-	}
-	for index, bounds := range layout.Bounds {
-		if bounds.Start < 0 || bounds.End <= bounds.Start || bounds.End > layout.Lines {
-			t.Fatalf("bounds[%d] = %#v outside layout with %d lines", index, bounds, layout.Lines)
-		}
-	}
-
-	model := newInitProfileV2ReadOnlyModel(initProfileV2Editor{Document: document}, 32, 6)
-	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyEnd})
-	bounds := model.layout.Bounds[model.focused]
-	if bounds.Start < model.viewport.YOffset || bounds.Start >= model.viewport.YOffset+model.viewport.Height {
-		t.Fatalf("focused field start line %d not visible in viewport [%d,%d)", bounds.Start, model.viewport.YOffset, model.viewport.YOffset+model.viewport.Height)
-	}
-}
-
 func TestInitProfileV2TextInputsDraftProfileNameAndRoutes(t *testing.T) {
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2Editor("monit", "github.com/SignalFT; github.com/OtherMonitOrg"), 160, 24)
 	model = updateInitProfileV2ReadOnlyModel(t, model, tea.KeyMsg{Type: tea.KeyCtrlU})
@@ -10306,8 +10202,8 @@ func TestInitProfileV2NoRuntimeBootstrapRequestsExistingFlow(t *testing.T) {
 	if !ok {
 		t.Fatalf("Update returned %T, want initProfileV2ReadOnlyModel", updated)
 	}
-	if !next.requestLLMRuntimeBootstrap {
-		t.Fatal("requestLLMRuntimeBootstrap = false, want existing runtime flow request")
+	if !next.result.BootstrapLLMRuntime {
+		t.Fatal("BootstrapLLMRuntime = false, want existing runtime flow request")
 	}
 	if cmd == nil {
 		t.Fatal("Update returned nil command, want quit command for runtime bootstrap handoff")
@@ -10357,6 +10253,29 @@ func TestInitProfileV2ModelMapInputsDraftOverridesAndClears(t *testing.T) {
 	}
 }
 
+func TestInitProfileV2ModelMapPreservesOverrideAgainstSelectedCatalogDefault(t *testing.T) {
+	catalog := initProfileTestCatalogWithMediumDefault(t, "gpt-6-luna")
+	llm := config.LLMConfig{
+		Provider: config.LLMProviderOpenAI,
+		Auth:     config.LLMAuthSubscription,
+		Adapter:  config.LLMAdapterOpenAIAPI,
+	}.WithCatalog(catalog)
+	editor := newTestInitProfileV2EditorWithModelMap("monit", "github.com/SignalFT", llm, config.ModelMap{
+		string(config.ModelTierMedium): "gpt-6.1-sol",
+	})
+	model := newInitProfileV2ReadOnlyModel(editor, 160, 40)
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6.1-sol" {
+		t.Fatalf("medium model field = %q, want explicit override retained against selected catalog default", got)
+	}
+	draft, err := model.validatedDraft()
+	if err != nil {
+		t.Fatalf("validatedDraft: %v", err)
+	}
+	if got := draft.ModelMap[string(config.ModelTierMedium)]; got != "gpt-6.1-sol" {
+		t.Fatalf("medium model override = %q, want gpt-6.1-sol", got)
+	}
+}
+
 func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 	llmRuntimes := map[string]initLLMRuntimeDraft{
 		"claude-work": {
@@ -10373,23 +10292,23 @@ func TestInitProfileV2LLMRuntimeSelectionRefreshesModelMapFields(t *testing.T) {
 		},
 	}
 	model := newInitProfileV2ReadOnlyModel(newTestInitProfileV2EditorWithRuntimeAndModelMap("monit", "github.com/SignalFT", llmRuntimes, "claude-work"), 160, 24)
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-haiku-4-5" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "claude-sonnet-5-5" {
 		t.Fatalf("initial small model = %q, want Claude built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "claude-sonnet-5-5" {
 		t.Fatalf("initial medium model = %q, want Claude built-in", got)
 	}
 
 	model = selectInitProfileV2FieldValue(t, model, initProfileV2FieldLLMRuntime, "openai-work")
 
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-5.4-mini" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierSmall)); got != "gpt-6-luna" {
 		t.Fatalf("small model after runtime change = %q, want OpenAI built-in", got)
 	}
-	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-5.4" {
+	if got := model.document.fieldValue(initProfileV2FieldModelMap(config.ModelTierMedium)); got != "gpt-6.1-sol" {
 		t.Fatalf("medium model after runtime change = %q, want OpenAI built-in", got)
 	}
 	smallIndex := model.document.fieldIndexByID(initProfileV2FieldModelMap(config.ModelTierSmall))
-	if smallIndex < 0 || !strings.Contains(model.document[smallIndex].Description, "Built-in small model for this runtime: gpt-5.4-mini.") {
+	if smallIndex < 0 || !strings.Contains(model.document[smallIndex].Description, "Built-in small model for this runtime: gpt-6-luna.") {
 		t.Fatalf("small model description after runtime change = %q", model.document[smallIndex].Description)
 	}
 }
@@ -10444,7 +10363,6 @@ func TestInitProfileV2ReviewPolicyDraftsSelections(t *testing.T) {
 		"github.com/SignalFT",
 		config.ReviewPolicy{},
 		"codereview/monit",
-		true,
 		testInitProfileV2GitScopes(),
 		testInitProfileV2GitScopeName,
 	), 160, 40)
@@ -10538,7 +10456,6 @@ func TestInitProfileV2GitCredentialNameFollowsChangedScopeDefaultWhenUnedited(t 
 		"github.com/SignalFT",
 		config.ReviewPolicy{},
 		"codereview/old-git",
-		true,
 		gitScopes,
 		"old-git",
 	), 160, 24)
@@ -11206,8 +11123,58 @@ func newTestInitProfileV2EditorWithModelMap(profileName string, routeText string
 		Draft:            draft,
 		GitScopes:        testInitProfileV2GitScopes(),
 		SelectedGitScope: testInitProfileV2GitScopeName,
+		catalog:          llm.Catalog(),
 		Document:         document,
 	}
+}
+
+func initProfileTestCatalogWithMediumDefault(t *testing.T, modelID string) *modelcatalog.Catalog {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	source := t.TempDir()
+	dataDir := filepath.Join(filepath.Dir(testFile), "..", "..", "modelcatalog", "data")
+	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
+		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository fixture.
+		if err != nil {
+			t.Fatalf("read catalog %s: %v", name, err)
+		}
+		if name == "defaults.csv" {
+			body = []byte(strings.Replace(string(body), "openai-api-key,medium,gpt-6.1-sol,low,", "openai-api-key,medium,"+modelID+",low,", 1))
+		}
+		if err := os.WriteFile(filepath.Join(source, name), body, 0o600); err != nil { // #nosec G703 -- source is under t.TempDir.
+			t.Fatalf("write catalog %s: %v", name, err)
+		}
+	}
+	manifestPath := filepath.Join(source, "manifest.json")
+	manifestBody, err := os.ReadFile(manifestPath) // #nosec G304 -- manifestPath is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest modelcatalog.Manifest
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	manifest.Revision = "init-profile-custom-default"
+	defaultsBody, err := os.ReadFile(filepath.Join(source, "defaults.csv")) // #nosec G304 -- source is under t.TempDir.
+	if err != nil {
+		t.Fatalf("read changed defaults: %v", err)
+	}
+	manifest.Files["defaults.csv"] = fmt.Sprintf("%x", sha256.Sum256(defaultsBody))
+	manifestBody, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	if err := os.WriteFile(manifestPath, append(manifestBody, '\n'), 0o600); err != nil { // #nosec G703 -- manifestPath is under t.TempDir.
+		t.Fatalf("write manifest: %v", err)
+	}
+	catalog, err := modelcatalog.LoadPath(source)
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	return catalog
 }
 
 func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeText string, llmRuntimes map[string]initLLMRuntimeDraft, selectedRuntime string) initProfileV2Editor {
@@ -11237,7 +11204,7 @@ func newTestInitProfileV2EditorWithRuntimeAndModelMap(profileName string, routeT
 	llmRuntimeOptions, normalizedRuntime := initProfileEditorLLMRuntimeSelection(llmRuntimes, selectedRuntime, draft)
 	document.addEditableSelect(initProfileV2FieldLLMRuntime, "LLM runtime", "Choose how reviewer agents run for this profile.", llmRuntimeOptions, normalizedRuntime)
 	initProfileV2AppendLLMStorageSection(&document, storeOptions, draft.LLMCredentialStore, draft.LLMCredentialRef, !initLLMStorageLabelRelevant(normalizedRuntime, llmRuntimes))
-	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes), draft.ModelMap)
+	initProfileV2AppendModelMapSection(&document, initProfileEditorModelMapLLM(draft, normalizedRuntime, llmRuntimes, nil), draft.ModelMap)
 	return initProfileV2Editor{
 		Draft:                  draft,
 		GitScopes:              testInitProfileV2GitScopes(),
@@ -11272,7 +11239,7 @@ func newTestInitProfileV2EditorWithAgentSources(profileName string, routeText st
 	}
 }
 
-func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string, routeText string, policy config.ReviewPolicy, gitStorageLabel string, gitLabelUsesDefault bool, gitScopes map[string]initGitScopeDraft, selectedGitScope string) initProfileV2Editor {
+func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string, routeText string, policy config.ReviewPolicy, gitStorageLabel string, gitScopes map[string]initGitScopeDraft, selectedGitScope string) initProfileV2Editor {
 	draft := initDraft{
 		OriginalProfileName: profileName,
 		ProfileName:         profileName,
@@ -11298,13 +11265,11 @@ func newTestInitProfileV2EditorWithReviewPolicyAndGitStorage(profileName string,
 	initProfileV2AppendReviewPolicySection(&document, policy, false)
 	initProfileV2AppendGitStorageSection(&document, storeOptions, config.LocalOSCredentialStoreID, gitStorageLabel)
 	return initProfileV2Editor{
-		Draft:                      draft,
-		GitScopes:                  gitScopes,
-		CredentialStoreOptions:     storeOptions,
-		SelectedGitScope:           selectedGitScope,
-		InitialGitStorageLabel:     gitStorageLabel,
-		GitStorageLabelUsesDefault: gitLabelUsesDefault,
-		Document:                   document,
+		Draft:                  draft,
+		GitScopes:              gitScopes,
+		CredentialStoreOptions: storeOptions,
+		SelectedGitScope:       selectedGitScope,
+		Document:               document,
 	}
 }
 
@@ -12729,6 +12694,7 @@ func TestInitInteractiveMenuFocusedLLMRuntimeNoOpSkipsStoreOnSaveAndPersistsGlob
 	if cfg.Data.Retention.MaxAgeDaysValue() != 14 || cfg.Data.Retention.Enforcement != config.RetentionAtWrite {
 		t.Fatalf("retention = %#v, want 14/at_write", cfg.Data.Retention)
 	}
+	wantProfile.LLM = wantProfile.LLM.WithCatalog(cfg.Catalog())
 	if !reflect.DeepEqual(cfg.Profiles["work"], wantProfile) {
 		t.Fatalf("profile = %#v, want unchanged %#v", cfg.Profiles["work"], wantProfile)
 	}

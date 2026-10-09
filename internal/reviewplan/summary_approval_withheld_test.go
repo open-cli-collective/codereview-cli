@@ -165,9 +165,9 @@ func TestRollupApprovalWithheld(t *testing.T) {
 			"### Approval Withheld",
 			"No blocking or major findings were reported.",
 			"`structure:repo-health` — ⚠️ incomplete (skipped files)",
-			"1 file inspected by no reviewer:",
+			"1 file had no body inspection or relocation-impact review by any reviewer; examples: `big_test.py`",
 			"`big_test.py`",
-			"Re-running the same review reproduces this",
+			"Re-running the same review may reproduce this",
 		)
 		// The path is the unread-file list's to state; repeating it on the
 		// attribution line above prints it twice in a four-line block.
@@ -234,7 +234,7 @@ func TestRollupApprovalWithheld(t *testing.T) {
 		mustContain(t, md,
 			"### Approval Withheld",
 			"`structure:repo-health` did not produce a result: adapter exited 1",
-			"1 file inspected by no reviewer:",
+			"1 file had no body inspection or relocation-impact review by any reviewer; examples: `deploy.sh`",
 			"`deploy.sh`",
 		)
 		// Within this section the crash is one event: it is reported as a
@@ -308,14 +308,53 @@ func TestRollupApprovalWithheld(t *testing.T) {
 		md := plan.RollupMarkdown
 		mustContain(t, md,
 			"### Approval Withheld",
-			"`structure:repo-health` — ⚠️ incomplete (skipped files); skipped: `f.go`",
-			"Every changed file was read by some reviewer.",
+			"`structure:repo-health` — ⚠️ incomplete (skipped files); skipped: 1 file; examples: `f.go`",
+			"Every changed file was either body-inspected or received relocation-impact review by some reviewer.",
 		)
-		if strings.Contains(md, "inspected by no reviewer") {
+		if strings.Contains(md, "had no body inspection or relocation-impact review by any reviewer") {
 			t.Fatalf("claims unread files when every file was read:\n%s", md)
 		}
 		if strings.Contains(md, "the change:\n\n\n") {
 			t.Fatalf("section introduces its list and then lists nothing:\n%s", md)
+		}
+	})
+
+	t.Run("relocation impact counts while an uncovered residual remains named", func(t *testing.T) {
+		req := cleanApproveRequest()
+		req.RunSummary = RunSummary{
+			SelectedReviewers: []string{"go:implementation-tests"},
+			ReviewerCoverage: []ReviewerCoverageSummary{{
+				AgentID:                 "go:implementation-tests",
+				Status:                  "incomplete_skipped",
+				Scope:                   []string{"old/module.go", "src/router.go"},
+				RelocationReviewedFiles: []string{"old/module.go"},
+				SkippedFiles:            []string{"src/router.go"},
+				MissingFiles:            []string{"src/router.go"},
+			}},
+		}
+		plan, err := Build(req)
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if plan.Outcome != OutcomeComment {
+			t.Fatalf("outcome = %q, want comment", plan.Outcome)
+		}
+		section := plan.RollupMarkdown[strings.Index(plan.RollupMarkdown, "### Approval Withheld"):]
+		if end := strings.Index(section[1:], "\n### "); end >= 0 {
+			section = section[:end+1]
+		}
+		for _, want := range []string{
+			"1 file had no body inspection or relocation-impact review by any reviewer; examples: `src/router.go`",
+		} {
+			if !strings.Contains(section, want) {
+				t.Errorf("withheld section missing %q:\n%s", want, section)
+			}
+		}
+		if strings.Contains(section, "old/module.go") {
+			t.Fatalf("relocation was counted as uncovered or path reporting was malformed:\n%s", section)
+		}
+		if !strings.Contains(plan.RollupMarkdown, "relocation-impact-reviewed (not body-inspected): 1 file; examples: `old/module.go`") {
+			t.Fatalf("valid relocation is not separately reported:\n%s", plan.RollupMarkdown)
 		}
 	})
 

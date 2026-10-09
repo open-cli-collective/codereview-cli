@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -277,6 +278,158 @@ func TestEvaluateActivePostingIdentityApprovalExitsBeforeOverrideReads(t *testin
 	}
 }
 
+func TestEvaluateNewerCommentedReviewDoesNotUseApprovalFastPath(t *testing.T) {
+	fixture := newFixture(t)
+	submit := mustRenderAction(t, marker.ActionMarker{
+		RunID:    "run-approved",
+		ActionID: "submit-1",
+		Kind:     marker.ActionKindSubmitReview,
+		SHA:      testHeadSHA,
+		BaseSHA:  testBaseSHA,
+	})
+	setReviews(t, fixture, []gitprovider.Review{
+		{
+			ID:          "review-approved",
+			Author:      fixture.req.PostingIdentity,
+			Body:        submit,
+			State:       gitprovider.ReviewStateApproved,
+			SubmittedAt: testNow.Add(-time.Minute),
+		},
+		{
+			ID:          "review-commented",
+			Author:      fixture.req.PostingIdentity,
+			State:       gitprovider.ReviewStateCommented,
+			SubmittedAt: testNow,
+		},
+	})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review after newer commented review", result)
+	}
+}
+
+func TestEvaluateMarkedCommentedVerdictRemainsComplete(t *testing.T) {
+	fixture := newFixture(t)
+	submit := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-commented", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testBaseSHA,
+	})
+	setReviews(t, fixture, []gitprovider.Review{{
+		ID: "review-commented", Author: fixture.req.PostingIdentity, Body: submit,
+		State: gitprovider.ReviewStateCommented, SubmittedAt: testNow,
+	}})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusEarlyExit || result.Decision.Kind != gate.DecisionEarlyExit {
+		t.Fatalf("Evaluate = %#v, want completed comment verdict to remain idempotent", result)
+	}
+}
+
+func TestEvaluateNewerMarkedCommentCompletesReplyRecovery(t *testing.T) {
+	fixture := newFixture(t)
+	submit := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-recovered", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testBaseSHA,
+	})
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "99", Author: fixture.req.PostingIdentity,
+			State: gitprovider.ReviewStateCommented, SubmittedAt: testNow.Add(-time.Minute)},
+		{ID: "100", Author: fixture.req.PostingIdentity, Body: submit,
+			State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+	})
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusEarlyExit || result.Decision.Kind != gate.DecisionEarlyExit {
+		t.Fatalf("Evaluate = %#v, want newer completed verdict to end reply recovery", result)
+	}
+}
+
+func TestEvaluateTiedApprovalsRemainIdempotent(t *testing.T) {
+	fixture := newFixture(t)
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "99", Author: fixture.req.PostingIdentity,
+			State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+		{ID: "100", Author: fixture.req.PostingIdentity,
+			State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+	})
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusEarlyExit || result.Decision.Kind != gate.DecisionEarlyExit {
+		t.Fatalf("Evaluate = %#v, want unanimous tied approvals to remain idempotent", result)
+	}
+}
+
+func TestEvaluateTiedEmptyCommentPreventsMarkedCommentCompletion(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse=%t", reverse), func(t *testing.T) {
+			fixture := newFixture(t)
+			submit := mustRenderAction(t, marker.ActionMarker{
+				RunID: "run-commented", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+				SHA: testHeadSHA, BaseSHA: testBaseSHA,
+			})
+			reviews := []gitprovider.Review{
+				{ID: "99", Author: fixture.req.PostingIdentity, Body: submit,
+					State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+				{ID: "100", Author: fixture.req.PostingIdentity,
+					State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+			}
+			if reverse {
+				reviews[0], reviews[1] = reviews[1], reviews[0]
+			}
+			setReviews(t, fixture, reviews)
+			result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer releaseResultLock(t, result)
+			if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+				t.Fatalf("Evaluate = %#v, want fresh review after an ambiguous empty comment", result)
+			}
+		})
+	}
+}
+
+func TestEvaluateCommentedVerdictOnOldBaseRequiresFreshReview(t *testing.T) {
+	fixture := newFixture(t)
+	current := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-approved", ActionID: "submit-1", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testBaseSHA,
+	})
+	stale := mustRenderAction(t, marker.ActionMarker{
+		RunID: "run-commented", ActionID: "submit-2", Kind: marker.ActionKindSubmitReview,
+		SHA: testHeadSHA, BaseSHA: testOldBase,
+	})
+	setReviews(t, fixture, []gitprovider.Review{
+		{ID: "review-approved", Author: fixture.req.PostingIdentity, Body: current,
+			State: gitprovider.ReviewStateApproved, SubmittedAt: testNow.Add(-time.Minute)},
+		{ID: "review-commented", Author: fixture.req.PostingIdentity, Body: stale,
+			State: gitprovider.ReviewStateCommented, SubmittedAt: testNow},
+	})
+
+	result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseResultLock(t, result)
+	if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+		t.Fatalf("Evaluate = %#v, want fresh review after a stale-base comment verdict", result)
+	}
+}
+
 func TestEvaluateRetryPostsIgnoresActiveApprovalAndOverride(t *testing.T) {
 	fixture := newFixture(t)
 	run := fixture.allocateRun(t, "run-retry", testBaseSHA, ledger.PostModeLive)
@@ -443,6 +596,32 @@ func TestEvaluateSameTimestampChangesRequestedPreventsActiveApprovalExit(t *test
 				t.Fatalf("Evaluate = %#v, want fresh review when tied active verdict requests changes", result)
 			}
 		})
+	}
+}
+
+func TestEvaluateTiedNumericReviewIDsDoNotEstablishApproval(t *testing.T) {
+	for _, state := range []gitprovider.ReviewState{gitprovider.ReviewStateChangesRequested, gitprovider.ReviewStateCommented} {
+		for _, reverse := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reverse=%t", state, reverse), func(t *testing.T) {
+				fixture := newFixture(t)
+				reviews := []gitprovider.Review{
+					{ID: "99", Author: fixture.req.PostingIdentity, State: gitprovider.ReviewStateApproved, SubmittedAt: testNow},
+					{ID: "100", Author: fixture.req.PostingIdentity, State: state, SubmittedAt: testNow},
+				}
+				if reverse {
+					reviews[0], reviews[1] = reviews[1], reviews[0]
+				}
+				setReviews(t, fixture, reviews)
+				result, err := Evaluate(context.Background(), fixture.opts(), fixture.req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer releaseResultLock(t, result)
+				if result.Status != StatusContinue || result.Decision.Kind != gate.DecisionFresh {
+					t.Fatalf("Evaluate = %#v, want fresh review for ambiguous tied verdicts", result)
+				}
+			})
+		}
 	}
 }
 

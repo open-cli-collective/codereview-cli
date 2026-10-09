@@ -1,0 +1,20 @@
+[
+  {
+    "pid": 10240,
+    "cwd": "/home/dev/projects/service-a",
+    "kind": "interactive",
+    "startedAt": 1789704757845,
+    "sessionId": "0a119af3-fa96-44b8-b975-e69936e7d0e2",
+    "name": "service-a-3b",
+    "status": "idle"
+  },
+  {
+    "pid": 75433,
+    "cwd": "/home/dev/projects/service-b",
+    "kind": "interactive",
+    "startedAt": 1789732852316,
+    "sessionId": "ad2fba54-17c1-4fe0-af6b-1722fbf5a636",
+    "name": "service-b-9f",
+    "status": "busy"
+  }
+]

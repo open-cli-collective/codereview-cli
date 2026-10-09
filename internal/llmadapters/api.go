@@ -95,24 +95,25 @@ func NewAPIAdapterFromConfig(llmConfig config.LLMConfig, store credentials.Reade
 }
 
 func apiKindFromConfig(llmConfig config.LLMConfig) (apiKind, error) {
-	var spec config.LLMRuntimeSpec
-	found := false
-	for _, candidate := range config.LLMRuntimeSpecs() {
-		if candidate.Adapter == llmConfig.Adapter {
-			spec, found = candidate, true
-			break
+	// The adapter's transport endpoint and credential namespace are fixed Go
+	// behavior. Catalog metadata may describe capabilities and defaults, but it
+	// must not be able to relabel an adapter into another provider.
+	switch llmConfig.Adapter {
+	case config.LLMAdapterAnthropicAPI:
+		if llmConfig.Provider != config.LLMProviderAnthropic {
+			return "", fmt.Errorf("%w: %s requires provider %s", ErrAPIAdapterConfig, llmConfig.Adapter, config.LLMProviderAnthropic)
 		}
-	}
-	if !found {
+		return apiAnthropic, nil
+	case config.LLMAdapterOpenAIAPI:
+		if llmConfig.Provider != config.LLMProviderOpenAI {
+			return "", fmt.Errorf("%w: %s requires provider %s", ErrAPIAdapterConfig, llmConfig.Adapter, config.LLMProviderOpenAI)
+		}
+		return apiOpenAI, nil
+	case config.LLMAdapterClaudeCLI, config.LLMAdapterCodexCLI, config.LLMAdapterPiRPC:
+		return "", fmt.Errorf("%w: adapter %q is not an API adapter", ErrAPIAdapterConfig, llmConfig.Adapter)
+	default:
 		return "", fmt.Errorf("%w: unsupported API adapter %q", ErrAPIAdapterConfig, llmConfig.Adapter)
 	}
-	if !spec.RequiresCredentialRef {
-		return "", fmt.Errorf("%w: adapter %q is not an API adapter", ErrAPIAdapterConfig, llmConfig.Adapter)
-	}
-	if llmConfig.Provider != spec.Provider {
-		return "", fmt.Errorf("%w: %s requires provider %s", ErrAPIAdapterConfig, llmConfig.Adapter, spec.Provider)
-	}
-	return apiKind(llmConfig.Adapter), nil
 }
 
 func newAPIAdapter(kind apiKind, opts APIOptions) (*APIAdapter, error) {
@@ -305,6 +306,9 @@ func (a *APIAdapter) buildProviderRequest(req Request) (string, []byte, error) {
 		if strings.TrimSpace(req.Effort) != "" {
 			payload.Reasoning = &openAIReasoning{Effort: req.Effort}
 		}
+		if req.Fast {
+			payload.ServiceTier = "fast"
+		}
 		body, err := json.Marshal(payload)
 		return a.url("v1/responses"), body, err
 	default:
@@ -413,6 +417,7 @@ type openAIRequest struct {
 	Store           bool             `json:"store"`
 	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
 	Reasoning       *openAIReasoning `json:"reasoning,omitempty"`
+	ServiceTier     string           `json:"service_tier,omitempty"`
 }
 
 type openAIReasoning struct {
@@ -420,10 +425,11 @@ type openAIReasoning struct {
 }
 
 type openAIResponse struct {
-	ID         string         `json:"id"`
-	OutputText string         `json:"output_text"`
-	Output     []openAIOutput `json:"output"`
-	Usage      openAIUsage    `json:"usage"`
+	ID          string         `json:"id"`
+	OutputText  string         `json:"output_text"`
+	Output      []openAIOutput `json:"output"`
+	Usage       openAIUsage    `json:"usage"`
+	ServiceTier string         `json:"service_tier"`
 }
 
 type openAIOutput struct {
@@ -465,12 +471,20 @@ func parseOpenAIResponse(body []byte) (string, Response, error) {
 	if text.Len() == 0 {
 		return payload.ID, Response{}, errors.New("llm api openai_api: no text output")
 	}
+	speed := ""
+	switch strings.ToLower(strings.TrimSpace(payload.ServiceTier)) {
+	case "fast", "priority":
+		speed = "fast"
+	case "standard", "default":
+		speed = "standard"
+	}
 	return payload.ID, Response{
 		StructuredOutput: []byte(text.String()),
 		Usage: Usage{
 			TokensIn:  payload.Usage.InputTokens,
 			TokensOut: payload.Usage.OutputTokens,
 			CacheRead: payload.Usage.InputTokensDetails.CachedTokens,
+			Speed:     speed,
 		},
 	}, nil
 }

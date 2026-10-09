@@ -189,7 +189,10 @@ The canonical ceiling path is `llm_runtimes.<name>.max_effort`, and
 `profiles.<name>.llm.max_effort` path is compatibility/projection only, not the
 canonical storage location. The map accepts `small`, `medium`, and `large`
 tier keys with `low`, `medium`, or `high` ceiling values for all runtimes;
-`pi_rpc` also accepts `xhigh` and `max`. Interactive and
+`claude_cli`, `codex_cli`, `openai_api`, and `pi_rpc` also accept `xhigh` and
+`max`. `anthropic_api` supports through `high`. Effective extended-effort
+support depends on the selected model and, for CLI adapters, the installed
+CLI. Interactive and
 non-interactive `cr init` must preserve an existing map, including when the
 profile or selected LLM runtime is staged and saved; init does not edit or
 remove it. Configure it by editing `config.yml` directly. Model-map JSON-row
@@ -273,3 +276,44 @@ The following flags are intentionally not durable init configuration.
 - #185: interactive repository routes and host reconciliation.
 - #186: scripted installer documentation.
 - #187: maintainable non-interactive init parity flags.
+
+## Independent Reasoning Effort Preferences
+
+`llm_runtimes.<name>.effort_map` selects reasoning effort independently of
+`model_map`. It uses the same tier keys and runtime effort validation as
+`max_effort`. A configured preference replaces the agent/stage effort before
+applying the ceiling; an explicit CLI effort override wins over both. Exact
+model overrides with no tier retain the agent/stage effort.
+
+```yaml
+model_map:
+  small: gpt-6-luna
+  medium: gpt-6.1-sol
+  large: gpt-6.1-sol
+effort_map:
+  small: max
+  medium: low
+  large: medium
+```
+
+Inspect with `cr config llm efforts list --json`, set an entry with
+`cr config llm efforts set small max`, or remove it with
+`cr config llm efforts unset small`. These commands edit the selected profile's
+shared LLM runtime, so other profiles referencing it see the same changes.
+Both interactive and non-interactive init preserve the map.
+
+The first normal live `cr review` for a Codex CLI runtime automatically sets
+small to `gpt-6-luna` / `max`, medium to `gpt-6.1-sol` / `low`, and large to
+`gpt-6.1-sol` / `medium`. It removes the old effort ceilings, saves the original
+config beside `config.yml` as `config.yml.before-review-defaults-v1`, and saves
+`review_defaults_version: 1` on the shared runtime. A one-time stderr notice
+reports the changes and the model/effort edit commands before runtime startup.
+The notice stays off JSON stdout and is shown even with `--quiet`.
+
+The version marker survives init, so later model pins, effort edits, unsets,
+and ceilings are preserved. Other profiles using that runtime share the upgrade.
+Dry-run/no-post, posting recovery, other commands, and non-Codex runtimes do not
+trigger it. A backup or save failure stops before starting the review; the next
+invocation can retry the upgrade.
+
+Config saves serialize writes and reject stale loaded drafts with a retry message, so a concurrent edit cannot undo migration or be erased by it. The automatic migration reloads and retries when another config edit wins.

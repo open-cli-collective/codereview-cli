@@ -18,7 +18,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmdruntime"
@@ -28,6 +28,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/configedit"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
+	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 )
 
@@ -164,6 +165,9 @@ type initDraft struct {
 	Routes                            []configedit.RepositoryRouteSpec
 	ModelMapSet                       bool
 	ModelMap                          config.ModelMap
+	DefaultsVersion                   int
+	EffortMapSet                      bool
+	EffortMap                         config.EffortMap
 	MaxEffortSet                      bool
 	MaxEffort                         config.EffortMap
 	AgentSourcesSet                   bool
@@ -432,8 +436,10 @@ type initLLMRuntimeDraft struct {
 	CredentialStore   string
 	CredentialRef     string
 	ModelMap          config.ModelMap
+	EffortMap         config.EffortMap
 	MaxEffort         config.EffortMap
 	ReviewerModelTier config.ModelTier
+	DefaultsVersion   int
 }
 
 type initStore interface {
@@ -613,7 +619,15 @@ func newInitCommand(opts *root.Options) *cobra.Command {
 }
 
 func runInit(cmd *cobra.Command, opts *root.Options, flags initOptions) error {
-	return runInitWithDeps(cmd, opts, flags, defaultInitDeps())
+	catalog, err := opts.CatalogSnapshot()
+	if err != nil {
+		return cmderr.Config(err)
+	}
+	deps := defaultInitDeps()
+	deps.loadConfig = func(path string) (config.File, bool, error) {
+		return loadConfigForInitWithCatalog(path, catalog)
+	}
+	return runInitWithDeps(cmd, opts, flags, deps)
 }
 
 func runInitWithDeps(cmd *cobra.Command, opts *root.Options, flags initOptions, deps initDeps) error {
@@ -719,6 +733,7 @@ type huhInitMenuPrompter struct {
 type huhInitLLMRuntimePrompter struct {
 	stdin           io.Reader
 	stderr          io.Writer
+	catalog         *modelcatalog.Catalog
 	checker         func(initLLMRuntimePreset) string
 	inventoryRunner initInventoryRunner
 	editorRunner    initEditorRunner
@@ -748,6 +763,7 @@ func newHuhInitPrompters(opts *root.Options, mode initSecretsBackendDiscoveryMod
 	llmRuntime := huhInitLLMRuntimePrompter{
 		stdin:           opts.Stdin,
 		stderr:          opts.Stderr,
+		catalog:         func() *modelcatalog.Catalog { catalog, _ := opts.CatalogSnapshot(); return catalog }(),
 		inventoryRunner: runInitInventory,
 		checker:         defaultInitLLMRuntimeAvailabilityNote,
 	}
@@ -830,6 +846,11 @@ func bootstrapInteractiveInitSession(cmd *cobra.Command, opts *root.Options, fla
 	if err != nil {
 		return initSessionDraft{}, cmderr.Config(err)
 	}
+	catalog, err := opts.CatalogSnapshot()
+	if err != nil {
+		return initSessionDraft{}, cmderr.Config(err)
+	}
+	cfg = cfg.WithCatalog(catalog)
 	if cfg.Profiles == nil {
 		cfg.Profiles = map[string]config.Profile{}
 	}
@@ -1124,6 +1145,13 @@ func completeInteractiveInitProfileV2Draft(ctx initPromptContext, draft initDraf
 			draft.MaxEffort = copyEffortMap(ctx.ExistingProfile.LLM.MaxEffort)
 		}
 		draft.MaxEffortSet = true
+	}
+	if !draft.EffortMapSet {
+		if ctx.ExistingProfile != nil {
+			draft.EffortMap = copyEffortMap(ctx.ExistingProfile.LLM.EffortMap)
+			draft.DefaultsVersion = ctx.ExistingProfile.LLM.DefaultsVersion
+		}
+		draft.EffortMapSet = true
 	}
 	if !draft.AgentSourcesSet {
 		if ctx.ExistingProfile != nil {
@@ -2340,14 +2368,15 @@ func initReviewerModelTierOptions() []huh.Option[string] {
 	}
 }
 
-func initProfileEditorModelMapLLM(draft initDraft, selectedLLMRuntime string, runtimes map[string]initLLMRuntimeDraft) config.LLMConfig {
+func initProfileEditorModelMapLLM(draft initDraft, selectedLLMRuntime string, runtimes map[string]initLLMRuntimeDraft, catalog *modelcatalog.Catalog) config.LLMConfig {
 	llm := config.LLMConfig{
 		Provider:  config.LLMProvider(draft.LLMProvider),
 		Auth:      config.LLMAuth(draft.LLMAuth),
 		Adapter:   config.LLMAdapter(draft.LLMAdapter),
 		ModelMap:  copyModelMap(draft.ModelMap),
 		MaxEffort: copyEffortMap(draft.MaxEffort),
-	}
+		EffortMap: copyEffortMap(draft.EffortMap),
+	}.WithCatalog(catalog)
 	if runtime, ok := runtimes[selectedLLMRuntime]; ok {
 		llm.Provider = runtime.Provider
 		llm.Auth = runtime.Auth
@@ -2551,7 +2580,9 @@ func initLLMRuntimeDraftFromSeedDraft(draft initDraft) initLLMRuntimeDraft {
 		Credential:        initCredentialLocationIfName(draft.LLMCredentialStore, draft.LLMCredentialRef),
 		ModelMap:          copyModelMap(draft.ModelMap),
 		MaxEffort:         copyEffortMap(draft.MaxEffort),
+		EffortMap:         copyEffortMap(draft.EffortMap),
 		ReviewerModelTier: config.ModelTier(strings.TrimSpace(draft.LLMReviewerModelTier)),
+		DefaultsVersion:   draft.DefaultsVersion,
 	})
 }
 
@@ -2711,8 +2742,11 @@ func applyLLMRuntimeInventorySelection(draft *initDraft, selection string, runti
 		draft.ModelMap = copyModelMap(runtime.ModelMap)
 		draft.ModelMapSet = true
 		draft.MaxEffort = copyEffortMap(runtime.MaxEffort)
+		draft.EffortMap = copyEffortMap(runtime.EffortMap)
 		draft.MaxEffortSet = true
+		draft.EffortMapSet = true
 		draft.LLMReviewerModelTier = string(runtime.ReviewerModelTier)
+		draft.DefaultsVersion = runtime.DefaultsVersion
 		if !draft.AdvancedStorageLabels {
 			draft.LLMCredentialStore = initCredentialStoreDraftValue(runtime.CredentialStore)
 			draft.LLMCredentialRef = runtime.CredentialRef
@@ -3115,11 +3149,14 @@ func seedInteractiveInitDraft(requestedProfileName string, existingProfileName s
 		draft.LLMAuth = string(existingProfile.LLM.Auth)
 		draft.LLMAdapter = string(existingProfile.LLM.Adapter)
 		draft.LLMReviewerModelTier = string(existingProfile.LLM.ReviewerModelTier)
+		draft.DefaultsVersion = existingProfile.LLM.DefaultsVersion
 		draft.LLMCredentialStore = initCredentialStoreDraftValue(existingProfile.LLM.Credential.Store)
 		draft.LLMCredentialRef = existingProfile.LLM.Credential.Name
 		draft.ModelMap = copyModelMap(existingProfile.LLM.ModelMap)
 		draft.MaxEffort = copyEffortMap(existingProfile.LLM.MaxEffort)
+		draft.EffortMap = copyEffortMap(existingProfile.LLM.EffortMap)
 		draft.MaxEffortSet = true
+		draft.EffortMapSet = true
 		draft.AgentSources = append([]string(nil), existingProfile.AgentSources...)
 		draft.ReviewPolicy = existingProfile.ReviewPolicy
 		if existingProfile.Reviewer.GitHubAppInstallation != nil {
@@ -3228,6 +3265,11 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	if err != nil {
 		return initPlan{}, cmderr.Config(err)
 	}
+	catalog, err := opts.CatalogSnapshot()
+	if err != nil {
+		return initPlan{}, cmderr.Config(err)
+	}
+	cfg = cfg.WithCatalog(catalog)
 	if exists {
 		if err := config.Validate(cfg); err != nil {
 			return initPlan{}, cmderr.Config(err)
@@ -3411,6 +3453,7 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	if previousProfile != nil {
 		profile.LLMRuntime = previousProfile.LLMRuntime
+		profile.LLM.DefaultsVersion = previousProfile.LLM.DefaultsVersion
 		profile.Git.IdentityCache = previousProfile.Git.IdentityCache
 		if previousProfile.LLM.ModelMap != nil {
 			modelMap := make(config.ModelMap, len(previousProfile.LLM.ModelMap))
@@ -3421,6 +3464,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 		}
 		if previousProfile.LLM.MaxEffort != nil {
 			profile.LLM.MaxEffort = copyEffortMap(previousProfile.LLM.MaxEffort)
+		}
+		if previousProfile.LLM.EffortMap != nil {
+			profile.LLM.EffortMap = copyEffortMap(previousProfile.LLM.EffortMap)
 		}
 		if !cmd.Flags().Changed("agent-source") {
 			profile.AgentSources = append([]string(nil), previousProfile.AgentSources...)
@@ -4560,9 +4606,11 @@ func initLLMRuntimeDraftFromConfig(llm config.LLMConfig) initLLMRuntimeDraft {
 		CredentialRef:     strings.TrimSpace(llm.Credential.Name),
 		ModelMap:          copyModelMap(llm.ModelMap),
 		MaxEffort:         copyEffortMap(llm.MaxEffort),
+		EffortMap:         copyEffortMap(llm.EffortMap),
 		ReviewerModelTier: llm.ReviewerModelTier,
+		DefaultsVersion:   llm.DefaultsVersion,
 	}
-	if spec, ok := config.FindLLMRuntimeSpec(runtime.Provider, runtime.Auth, runtime.Adapter); ok &&
+	if spec, ok := config.FindLLMRuntimeSpecFor(llm.Catalog(), runtime.Provider, runtime.Auth, runtime.Adapter); ok &&
 		(spec.Auth == runtime.Auth || spec.Auth == "" && runtime.Auth == config.LLMAuthSubscription) {
 		runtime.Preset = initLLMRuntimePresetByAdapter[spec.Adapter]
 	}
@@ -4579,7 +4627,9 @@ func (runtime initLLMRuntimeDraft) exportConfig() config.LLMConfig {
 		Adapter:           runtime.Adapter,
 		ModelMap:          copyModelMap(runtime.ModelMap),
 		MaxEffort:         copyEffortMap(runtime.MaxEffort),
+		EffortMap:         copyEffortMap(runtime.EffortMap),
 		ReviewerModelTier: runtime.ReviewerModelTier,
+		DefaultsVersion:   runtime.DefaultsVersion,
 	}
 	if runtime.Auth == config.LLMAuthAPIKey {
 		llm.Credential = initCredentialLocation(runtime.CredentialStore, runtime.CredentialRef)
@@ -4606,6 +4656,15 @@ func (runtime initLLMRuntimeDraft) identityKey() string {
 	for _, tier := range effortKeys {
 		efforts = append(efforts, tier+"="+strings.TrimSpace(runtime.MaxEffort[tier]))
 	}
+	preferenceKeys := make([]string, 0, len(runtime.EffortMap))
+	for tier := range runtime.EffortMap {
+		preferenceKeys = append(preferenceKeys, tier)
+	}
+	sort.Strings(preferenceKeys)
+	preferences := make([]string, 0, len(preferenceKeys))
+	for _, tier := range preferenceKeys {
+		preferences = append(preferences, tier+"="+strings.TrimSpace(runtime.EffortMap[tier]))
+	}
 	return strings.Join([]string{
 		string(runtime.Provider),
 		string(runtime.Auth),
@@ -4614,7 +4673,9 @@ func (runtime initLLMRuntimeDraft) identityKey() string {
 		strings.TrimSpace(runtime.CredentialRef),
 		strings.Join(models, "\x1f"),
 		strings.Join(efforts, "\x1f"),
+		strings.Join(preferences, "\x1f"),
 		string(runtime.ReviewerModelTier),
+		strconv.Itoa(runtime.DefaultsVersion),
 	}, "\x00")
 }
 
@@ -4793,6 +4854,7 @@ func cloneInitLLMConfig(llm config.LLMConfig) config.LLMConfig {
 		}
 	}
 	cloned.MaxEffort = copyEffortMap(llm.MaxEffort)
+	cloned.EffortMap = copyEffortMap(llm.EffortMap)
 	return cloned
 }
 
@@ -4879,8 +4941,12 @@ func synthesizeInteractiveProfile(flags initOptions, profileName string, previou
 	profile.LLM.Auth = config.LLMAuth(draft.LLMAuth)
 	profile.LLM.Adapter = config.LLMAdapter(draft.LLMAdapter)
 	profile.LLM.ReviewerModelTier = config.ModelTier(strings.TrimSpace(draft.LLMReviewerModelTier))
+	profile.LLM.DefaultsVersion = draft.DefaultsVersion
 	if draft.MaxEffortSet {
 		profile.LLM.MaxEffort = copyEffortMap(draft.MaxEffort)
+	}
+	if draft.EffortMapSet {
+		profile.LLM.EffortMap = copyEffortMap(draft.EffortMap)
 	}
 	if profile.LLM.Auth == config.LLMAuthAPIKey {
 		llmRef := strings.TrimSpace(draft.LLMCredentialRef)
@@ -6023,7 +6089,7 @@ func normalizeInitModelMap(llm config.LLMConfig, modelMap config.ModelMap) confi
 	if len(modelMap) == 0 {
 		return nil
 	}
-	builtIns := config.BuiltInModelMap(llm.Provider, llm.Adapter)
+	builtIns := config.BuiltInModelMapFor(llm.Catalog(), llm.Provider, llm.Adapter)
 	normalized := config.ModelMap{}
 	for _, tier := range config.ModelTiers() {
 		model, ok := modelMap[string(tier)]
@@ -6593,7 +6659,17 @@ func initSecretPasteDescription(prompt initSecretValuePrompt) string {
 }
 
 func loadConfigForInit(path string) (config.File, bool, error) {
-	cfg, err := config.Load(path)
+	return loadConfigForInitWithCatalog(path, nil)
+}
+
+func loadConfigForInitWithCatalog(path string, catalog *modelcatalog.Catalog) (config.File, bool, error) {
+	var cfg config.File
+	var err error
+	if catalog == nil {
+		cfg, err = config.Load(path)
+	} else {
+		cfg, err = config.LoadWithCatalog(path, catalog)
+	}
 	if errors.Is(err, config.ErrNotConfigured) {
 		return config.File{Profiles: map[string]config.Profile{}}, false, nil
 	}
@@ -6602,7 +6678,7 @@ func loadConfigForInit(path string) (config.File, bool, error) {
 		if recoverErr != nil {
 			return config.File{}, true, recoverErr
 		}
-		return recovered, true, nil
+		return recovered.WithCatalog(catalog), true, nil
 	}
 	return cfg, true, err
 }

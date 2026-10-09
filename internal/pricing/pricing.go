@@ -1,41 +1,14 @@
-// Package pricing derives an approximate USD cost for a model's token usage at
-// public list prices. It exists so adapters that do not report a cost (e.g.
-// subscription auth) can still surface an estimate instead of "unavailable".
-//
-// Estimates are intentionally best-effort: a model the table does not know
-// returns ok=false so callers leave the cost unavailable rather than render a
-// wrong number. cr supports anyone's agents and any model, so unknown models
-// degrading gracefully is the point — extend the table to price more models.
+// Package pricing derives an approximate USD cost from one model catalog.
+// A catalog row is only estimated when it has one context-independent rate;
+// context-banded rows remain visible through `cr catalog show` but are not
+// applied without reliable context metadata.
 package pricing
 
-// TableVersion identifies the public list-price snapshot used by estimates.
-const TableVersion = "anthropic-public-2026-09-02"
+import "github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 
-// rate is the USD list price per 1,000,000 tokens for each billable category.
-type rate struct {
-	in          float64
-	out         float64
-	cacheRead   float64
-	cacheWrite5 float64
-	cacheWrite1 float64
-}
-
-// rates maps a concrete model id to its list price. Add entries to price more
-// models; absent models simply return no estimate.
-var rates = map[string]rate{
-	"claude-fable-5-1":          {in: 10, out: 50, cacheRead: 0.25, cacheWrite5: 12.5, cacheWrite1: 20},
-	"claude-opus-5":             {in: 5, out: 25, cacheRead: 0.5, cacheWrite5: 6.25, cacheWrite1: 10},
-	"claude-opus-4-8":           {in: 5, out: 25, cacheRead: 0.5, cacheWrite5: 6.25, cacheWrite1: 10},
-	"claude-sonnet-5":           {in: 2, out: 10, cacheRead: 0.2, cacheWrite5: 2.5, cacheWrite1: 4},
-	"claude-sonnet-4-6":         {in: 3, out: 15, cacheRead: 0.3, cacheWrite5: 3.75, cacheWrite1: 6},
-	"claude-haiku-4-5":          {in: 1, out: 5, cacheRead: 0.1, cacheWrite5: 1.25, cacheWrite1: 2},
-	"claude-haiku-4-5-20251001": {in: 1, out: 5, cacheRead: 0.1, cacheWrite5: 1.25, cacheWrite1: 2},
-}
-
-var fastRates = map[string]rate{
-	"claude-opus-5":   {in: 10, out: 50, cacheRead: 1, cacheWrite5: 12.5, cacheWrite1: 20},
-	"claude-opus-4-8": {in: 10, out: 50, cacheRead: 1, cacheWrite5: 12.5, cacheWrite1: 20},
-}
+// TableVersion identifies the bundled public list-price snapshot used by the
+// compatibility wrapper. Catalog-aware callers should use EstimateBasis.
+const TableVersion = "model-catalog"
 
 const perMillion = 1_000_000.0
 
@@ -51,33 +24,59 @@ type Usage struct {
 	Speed            string
 }
 
-// EstimateUsageUSD estimates cost for usage whose billable token categories
-// are known. A nonzero cache write with unknown TTL cannot be priced exactly.
-func EstimateUsageUSD(model string, usage Usage) (cost float64, ok bool) {
-	r, known := rates[model]
-	if !known {
+// EstimateUsageUSD uses the bundled catalog for callers that have no command
+// snapshot. Command paths should use EstimateUsageUSDFor.
+func EstimateUsageUSD(model string, usage Usage) (float64, bool) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
 		return 0, false
 	}
-	switch usage.Speed {
-	case "standard":
-	case "fast":
-		var fastKnown bool
-		r, fastKnown = fastRates[model]
-		if !fastKnown {
-			return 0, false
-		}
-	default:
+	return EstimateUsageUSDFor(catalog, model, usage)
+}
+
+// EstimateUsageUSDFor estimates usage against one immutable catalog snapshot.
+// Context-banded rows are intentionally unavailable because the current usage
+// record does not identify the context band or provider token normalization.
+func EstimateUsageUSDFor(catalog *modelcatalog.Catalog, model string, usage Usage) (cost float64, ok bool) {
+	if catalog == nil {
 		return 0, false
 	}
+	prices := catalog.PricesFor(model, usage.Speed)
+	if len(prices) != 1 || prices[0].ContextBand != "all" {
+		return 0, false
+	}
+	price := prices[0]
 	if usage.CacheCreateTotal != nil && deref(usage.CacheCreateTotal) != deref(usage.CacheCreate5m)+deref(usage.CacheCreate1h) {
 		return 0, false
 	}
-	cost = float64(deref(usage.TokensIn))*r.in/perMillion +
-		float64(deref(usage.TokensOut))*r.out/perMillion +
-		float64(deref(usage.CacheRead))*r.cacheRead/perMillion +
-		float64(deref(usage.CacheCreate5m))*r.cacheWrite5/perMillion +
-		float64(deref(usage.CacheCreate1h))*r.cacheWrite1/perMillion
+	if nonzeroWithoutRate(usage.TokensIn, price.Input) || nonzeroWithoutRate(usage.TokensOut, price.Output) || nonzeroWithoutRate(usage.CacheRead, price.CacheRead) || nonzeroWithoutRate(usage.CacheCreate5m, price.CacheWrite5m) || nonzeroWithoutRate(usage.CacheCreate1h, price.CacheWrite1h) {
+		return 0, false
+	}
+	cost = float64(deref(usage.TokensIn))*value(price.Input)/perMillion +
+		float64(deref(usage.TokensOut))*value(price.Output)/perMillion +
+		float64(deref(usage.CacheRead))*value(price.CacheRead)/perMillion +
+		float64(deref(usage.CacheCreate5m))*value(price.CacheWrite5m)/perMillion +
+		float64(deref(usage.CacheCreate1h))*value(price.CacheWrite1h)/perMillion
 	return cost, true
+}
+
+// EstimateBasis identifies the catalog revision used for a computed estimate.
+func EstimateBasis(catalog *modelcatalog.Catalog) string {
+	if catalog == nil {
+		return ""
+	}
+	return catalog.Revision() + "/pricing"
+}
+
+func nonzeroWithoutRate(tokens *int, rate *float64) bool {
+	return deref(tokens) != 0 && rate == nil
+}
+
+func value(rate *float64) float64 {
+	if rate == nil {
+		return 0
+	}
+	return *rate
 }
 
 func deref(p *int) int {
