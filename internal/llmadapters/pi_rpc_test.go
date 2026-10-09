@@ -1295,6 +1295,8 @@ func TestPiRPCSettlementContract(t *testing.T) {
 	overloaded := piRPCTestTurn{stopReason: "error", errorMessage: "503 overloaded", usage: piRPCTestUsage(7, 0, nil, 0.25)}
 	final := piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(100, 10, map[string]any{"cacheRead": 3, "cacheWrite": 4}, 0.5)}
 	finalUsage := Usage{TokensIn: piRPCTestPtr(100), TokensOut: piRPCTestPtr(10), CacheRead: piRPCTestPtr(3), CacheCreate: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.5)}
+	invalidFinalUsage := Usage{TokensIn: piRPCTestPtr(9), TokensOut: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.125)}
+	invalidFinalUsageReport := piRPCTestUsage(9, 4, nil, 0.125)
 	for _, tt := range []struct {
 		name       string
 		script     []string
@@ -1402,6 +1404,54 @@ func TestPiRPCSettlementContract(t *testing.T) {
 			},
 			wantErr:   "Request was aborted",
 			wantUsage: Usage{TokensIn: piRPCTestPtr(5), TokensOut: piRPCTestPtr(1), CostUSD: piRPCTestPtr(0.0)},
+		},
+		{
+			name: "length stop reason rejects truncated final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, stopReason: "length", usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, stopReason: "length", usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "truncated",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "missing stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestLine(map[string]any{"type": "message_end", "message": map[string]any{
+					"role":    "assistant",
+					"content": []map[string]any{{"type": "text", "text": answer}},
+					"usage":   invalidFinalUsageReport,
+				}}),
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "missing a stop reason",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "empty stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "missing a stop reason",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "unknown stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, stopReason: "future_reason", usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, stopReason: "future_reason", usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "unsupported final assistant stop reason",
+			wantUsage: invalidFinalUsage,
 		},
 		{
 			name: "earlier valid answer then final provider error fails",

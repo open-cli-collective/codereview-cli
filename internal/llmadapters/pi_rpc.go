@@ -666,8 +666,14 @@ func piRPCFinalAnswer(final *piRPCAssistantMessage, retryFailure string) ([]byte
 		return nil, fmt.Errorf("llm pi rpc: final assistant message %s: %s", final.stopReason, boundPiRPCDiagnostic(diagnostic, piRPCErrorMaxRunes))
 	case final.stopReason == "toolUse":
 		return nil, errors.New("llm pi rpc: run settled without a final answer after tool use")
-	default:
+	case final.stopReason == "length":
+		return nil, errors.New("llm pi rpc: final assistant message was truncated by the length limit")
+	case final.stopReason == "stop":
 		return final.output, nil
+	case final.stopReason == "":
+		return nil, errors.New("llm pi rpc: final assistant message is missing a stop reason")
+	default:
+		return nil, fmt.Errorf("llm pi rpc: unsupported final assistant stop reason %q", final.stopReason)
 	}
 }
 
