@@ -241,6 +241,7 @@ func (a *PiRPCAdapter) preflightReviewerRuntime(parent context.Context) error {
 	args := append(append([]string(nil), a.commandArgsPrefix...),
 		"--mode", "rpc",
 		"--system-prompt", piRPCReviewerSystemPrompt,
+		"--append-system-prompt", "",
 		"--no-builtin-tools",
 		"--tools", piRPCReviewerToolNames,
 		"--extension", extensionPath,
@@ -401,6 +402,13 @@ func (a *PiRPCAdapter) buildArgs(req Request, extensionPath string) ([]string, e
 	args := []string{
 		"--mode", "rpc",
 		"--system-prompt", systemPrompt,
+		// An explicit empty CLI append source suppresses APPEND_SYSTEM.md
+		// discovery in Pi 1.0. --no-context-files separately suppresses
+		// AGENTS.md/CLAUDE.md; --system-prompt overrides SYSTEM.md discovery.
+		// Keep the selected agent directory intact so authentication refreshes
+		// continue to persist in the user's original credential store.
+		"--append-system-prompt", "",
+		"--no-context-files",
 		"--no-extensions",
 		"--no-skills",
 		"--no-prompt-templates",
@@ -411,7 +419,7 @@ func (a *PiRPCAdapter) buildArgs(req Request, extensionPath string) ([]string, e
 		args = append(args, "--no-tools")
 	} else {
 		args[3] = piRPCReviewerSystemPrompt
-		args = append(args, "--no-builtin-tools", "--no-context-files", "--no-approve", "--tools", piRPCReviewerToolNames, "--extension", extensionPath)
+		args = append(args, "--no-builtin-tools", "--no-approve", "--tools", piRPCReviewerToolNames, "--extension", extensionPath)
 	}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
@@ -424,21 +432,22 @@ func (a *PiRPCAdapter) buildArgs(req Request, extensionPath string) ([]string, e
 
 func (a *PiRPCAdapter) validateArgs(args []string, req Request, extensionPath string) error {
 	allowedFlags := map[string]bool{
-		"--mode":                true,
-		"--system-prompt":       true,
-		"--no-tools":            false,
-		"--no-builtin-tools":    false,
-		"--no-context-files":    false,
-		"--no-approve":          false,
-		"--tools":               true,
-		"--no-extensions":       false,
-		"--extension":           true,
-		"--no-skills":           false,
-		"--no-prompt-templates": false,
-		"--no-themes":           false,
-		"--no-session":          false,
-		"--model":               true,
-		"--thinking":            true,
+		"--mode":                 true,
+		"--system-prompt":        true,
+		"--append-system-prompt": true,
+		"--no-tools":             false,
+		"--no-builtin-tools":     false,
+		"--no-context-files":     false,
+		"--no-approve":           false,
+		"--tools":                true,
+		"--no-extensions":        false,
+		"--extension":            true,
+		"--no-skills":            false,
+		"--no-prompt-templates":  false,
+		"--no-themes":            false,
+		"--no-session":           false,
+		"--model":                true,
+		"--thinking":             true,
 	}
 	if err := validateAllowedFlags("pi_rpc", args, allowedFlags); err != nil {
 		return err
@@ -451,10 +460,13 @@ func (a *PiRPCAdapter) validateArgs(args []string, req Request, extensionPath st
 	if flagValue(args, "--mode") != "rpc" {
 		return fmt.Errorf("%w: pi_rpc must use rpc mode", ErrUnsafeSubprocessConfig)
 	}
-	for _, flag := range []string{"--system-prompt", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+	for _, flag := range []string{"--system-prompt", "--append-system-prompt", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(args, flag) {
 			return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 		}
+	}
+	if appendPrompt, ok := flagValueOK(args, "--append-system-prompt"); !ok || appendPrompt != "" {
+		return fmt.Errorf("%w: pi_rpc must use an explicit empty append system prompt", ErrUnsafeSubprocessConfig)
 	}
 	wantSystemPrompt := piRPCSystemPrompt
 	if req.ReviewerWorkspace == nil {

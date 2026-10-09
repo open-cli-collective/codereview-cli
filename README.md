@@ -137,6 +137,15 @@ discovery; and `--no-context-files`, `--no-approve`, `--no-skills`,
 `--no-prompt-templates`, `--no-themes`, and `--no-session`. It returns an
 incompatible-runtime error when any control is unavailable.
 
+Every CR-owned Pi request disables `AGENTS.md`/`CLAUDE.md` context discovery,
+supplies its own system prompt, and passes an explicit empty
+`--append-system-prompt` source. This also suppresses ambient `SYSTEM.md` and
+`APPEND_SYSTEM.md` inputs, including those in the selected agent directory.
+CR leaves Pi's selected agent directory and authentication storage in place;
+credentials are never copied into disposable scratch state, so Pi can persist
+OAuth refresh updates to its original store. Resource discovery remains
+disabled, and only reviewers load the CR-owned read-only tool extension.
+
 ```bash
 cr init --non-interactive \
   --llm-provider pi \

@@ -73,7 +73,8 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--model", "opencode-go/kimi-k2.6")
 	assertFlagValue(t, record.AdapterArgs, "--thinking", "max")
 	assertFlagValue(t, record.AdapterArgs, "--system-prompt", piRPCSystemPrompt)
-	for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+	assertPiRPCEmptyAppend(t, record.AdapterArgs)
+	for _, flag := range []string{"--no-tools", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(record.AdapterArgs, flag) {
 			t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 		}
@@ -118,6 +119,86 @@ func TestPiRPCStreamRecordsDuration(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 	assertSlowSuccessDuration(t, response)
+}
+
+// This subprocess double models an auth.json refresh without using credentials
+// or a provider. Prompt isolation must leave the selected store in place, so
+// its updated synthetic state survives invocation scratch cleanup.
+func TestPiRPCPreservesSelectedAgentAuthenticationState(t *testing.T) {
+	for _, reviewer := range []bool{false, true} {
+		name := "structured"
+		if reviewer {
+			name = "reviewer"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			agentDir := filepath.Join(root, "selected-agent")
+			home := filepath.Join(root, "home")
+			repoDir := filepath.Join(root, "repo")
+			scratchDir := filepath.Join(root, "scratch")
+			for _, dir := range []string{agentDir, home, repoDir, scratchDir} {
+				if err := os.Mkdir(dir, 0o700); err != nil {
+					t.Fatalf("Mkdir: %v", err)
+				}
+			}
+			authPath := filepath.Join(agentDir, "auth.json")
+			if err := os.WriteFile(authPath, []byte(`{"fixture":"initial synthetic auth state"}`), 0o600); err != nil {
+				t.Fatalf("WriteFile(synthetic auth): %v", err)
+			}
+			recordPath := filepath.Join(root, "record.json")
+			adapter := NewPiRPCAdapter(PiRPCOptions{
+				Command:           os.Args[0],
+				commandArgsPrefix: piRPCHelperPrefix(),
+				Env: append(piRPCHelperEnv("success", recordPath),
+					"PI_CODING_AGENT_DIR="+agentDir,
+					"HOME="+home,
+					"LLM_PI_RPC_SYNTHETIC_AUTH_REFRESH=1",
+				),
+				Timeout: 5 * time.Second,
+				ScratchDirFactory: func() (string, func() error, error) {
+					dir, err := os.MkdirTemp(scratchDir, "invocation-*")
+					return dir, func() error { return os.RemoveAll(dir) }, err
+				},
+			})
+			req := Request{Model: "fixture/model", Prompt: "fixture prompt"}
+			wantPrompt := piRPCSystemPrompt
+			if reviewer {
+				wantPrompt = piRPCReviewerSystemPrompt
+				diffPath := filepath.Join(root, "diff.patch")
+				if err := os.WriteFile(diffPath, []byte("fixture diff\n"), 0o600); err != nil {
+					t.Fatalf("WriteFile(diff): %v", err)
+				}
+				req.ReviewerWorkspace = &ReviewerWorkspaceRequest{
+					RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+				}
+			}
+			stream, err := adapter.Start(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, err := stream.Wait(context.Background()); err != nil {
+				t.Fatalf("Wait: %v", err)
+			}
+			record := readPiRPCRecord(t, recordPath)
+			if record.Env["PI_CODING_AGENT_DIR"] != agentDir || record.Env["HOME"] != home {
+				t.Fatalf("selected agent/home = %q/%q, want %q/%q", record.Env["PI_CODING_AGENT_DIR"], record.Env["HOME"], agentDir, home)
+			}
+			assertFlagValue(t, record.AdapterArgs, "--system-prompt", wantPrompt)
+			if appendPrompt, present := flagValueOK(record.AdapterArgs, "--append-system-prompt"); !present || appendPrompt != "" {
+				t.Fatalf("append system prompt = %q (present %v), want explicit empty input", appendPrompt, present)
+			}
+			if !containsFlag(record.AdapterArgs, "--no-context-files") {
+				t.Fatalf("args = %#v, want context discovery disabled", record.AdapterArgs)
+			}
+			data, err := os.ReadFile(authPath) // #nosec G304 -- synthetic test-owned auth state only.
+			if err != nil || string(data) != `{"fixture":"refreshed synthetic auth state"}` {
+				t.Fatalf("synthetic auth state = %q (err %v), want refresh in original selected store", data, err)
+			}
+			if entries, err := os.ReadDir(scratchDir); err != nil || len(entries) != 0 {
+				t.Fatalf("scratch entries = %v (err %v), want cleanup without auth state loss", entries, err)
+			}
+		})
+	}
 }
 
 func TestPiRPCFailureLeavesDurationZero(t *testing.T) {
@@ -202,6 +283,7 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 		t.Fatalf("args = %#v, reviewer extension tools must remain enabled", record.AdapterArgs)
 	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
+	assertPiRPCEmptyAppend(t, record.AdapterArgs)
 	reviewerPrompt := flagValue(record.AdapterArgs, "--system-prompt")
 	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails", "view=symlink", "assignment.base_only_symlink_paths", "ordinary cr_read and no view", "payload_omitted_reason", "keep that path skipped", "payload_size=0 is an inspected empty payload"} {
 		if !strings.Contains(reviewerPrompt, instruction) {
@@ -603,6 +685,7 @@ func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T)
 	}
 	assertFlagValue(t, record.AdapterArgs, "--mode", "rpc")
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
+	assertPiRPCEmptyAppend(t, record.AdapterArgs)
 	for _, flag := range []string{"--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session"} {
 		if !containsFlag(record.AdapterArgs, flag) {
 			t.Fatalf("preflight args = %#v, want %s", record.AdapterArgs, flag)
@@ -1791,6 +1874,10 @@ func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 		{name: "tools allowlist", args: append([]string{"--tools", "read"}, args...)},
 		{name: "missing no tools", args: removeFlag(args, "--no-tools")},
 		{name: "missing no extensions", args: removeFlag(args, "--no-extensions")},
+		{name: "missing context disable", args: removeFlag(args, "--no-context-files")},
+		{name: "missing append override", args: removeFlagWithValue(args, "--append-system-prompt")},
+		{name: "nonempty append override", args: replaceFlagValue(args, "--append-system-prompt", "ambient instructions")},
+		{name: "duplicate append override", args: append(append([]string(nil), args...), "--append-system-prompt", "")},
 		{name: "unexpected flag", args: append([]string{"--unexpected"}, args...)},
 		{name: "text mode", args: replaceFlagValue(args, "--mode", "text")},
 		{name: "wrong system prompt", args: replaceFlagValue(args, "--system-prompt", "be loose")},
@@ -1817,6 +1904,9 @@ func TestPiRPCRejectsUnsafeReviewerSpecs(t *testing.T) {
 	}{
 		{name: "missing builtin disable", args: removeFlag(args, "--no-builtin-tools")},
 		{name: "missing context disable", args: removeFlag(args, "--no-context-files")},
+		{name: "missing append override", args: removeFlagWithValue(args, "--append-system-prompt")},
+		{name: "nonempty append override", args: replaceFlagValue(args, "--append-system-prompt", "ambient instructions")},
+		{name: "duplicate append override", args: append(append([]string(nil), args...), "--append-system-prompt", "")},
 		{name: "missing project approval disable", args: removeFlag(args, "--no-approve")},
 		{name: "all tools disabled", args: append(removeFlagWithValue(args, "--tools"), "--no-tools")},
 		{name: "native bash added", args: replaceFlagValue(args, "--tools", piRPCReviewerToolNames+",bash")},
@@ -1905,6 +1995,14 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 			fmt.Println(`{"id":"state-1","success":true}`)
 		}
 		os.Exit(0)
+	}
+	if os.Getenv("LLM_PI_RPC_SYNTHETIC_AUTH_REFRESH") == "1" {
+		// Only this opt-in fixture passes a synthetic selected store and home.
+		record.Env["PI_CODING_AGENT_DIR"] = os.Getenv("PI_CODING_AGENT_DIR")
+		record.Env["HOME"] = os.Getenv("HOME")
+		data, _ := json.Marshal(record)
+		_ = os.WriteFile(recordPath, data, 0o600)                                                                                                      // #nosec G703 -- fixture-owned record path.
+		_ = os.WriteFile(filepath.Join(record.Env["PI_CODING_AGENT_DIR"], "auth.json"), []byte(`{"fixture":"refreshed synthetic auth state"}`), 0o600) // #nosec G703 -- opt-in synthetic fixture store, never real credentials.
 	}
 	// Pi RPC stays alive after agent_settled and shuts down when stdin closes.
 	stdinClosed := make(chan struct{})
@@ -2188,4 +2286,13 @@ func TestPiRPCToolUseKillsProcessGroup(t *testing.T) {
 	eventually(t, 2*time.Second, func() bool {
 		return !processExists(pid)
 	})
+}
+
+// Absence is distinct from an explicitly empty append source in Pi.
+func assertPiRPCEmptyAppend(t *testing.T, args []string) {
+	t.Helper()
+	value, present := flagValueOK(args, "--append-system-prompt")
+	if !present || value != "" || countPiRPCFlag(args, "--append-system-prompt") != 1 {
+		t.Fatalf("append system prompt = %q (present %v) in %#v, want exactly one empty source", value, present, args)
+	}
 }
