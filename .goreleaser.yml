@@ -115,11 +115,12 @@ homebrew_casks:
       post:
         install: |
           system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cr"]
-          result = system_command "#{staged_path}/cr", args: ["catalog", "update"], must_succeed: false
-          opoo "cr catalog update failed; run `cr catalog update` to refresh the model catalog." unless result&.success?
+          system_command "#{staged_path}/cr", args: ["catalog", "update"], must_succeed: false
     caveats: |
       To configure cr, follow the setup examples in the README:
         https://github.com/open-cli-collective/codereview-cli#authentication-and-setup
+
+      If the catalog refresh fails, run `cr catalog update` after installation.
 
       Secrets are stored in the OS credential store. They are never written to
       config.yml.

@@ -42,11 +42,13 @@ require_grep 'cr_v#{version}_darwin_arm64.tar.gz' "$cask"
 require_grep 'cr_v#{version}_darwin_amd64.tar.gz' "$cask"
 require_grep 'args: ["catalog", "update"]' "$cask"
 require_grep 'must_succeed: false' "$cask"
-require_grep 'cr catalog update failed; run `cr catalog update`' "$cask"
+require_grep 'If the catalog refresh fails, run `cr catalog update`' "$cask"
 
 # Exercise the rendered Ruby control flow as well as checking its source. The
 # updater is warning-only during package installation, so a failed refresh
-# must call opoo without raising or skipping the command.
+# must not raise or skip either command. Hooks use direct commands so the
+# Homebrew tap can convert them to declarative postflight_steps without Ruby
+# result assignments or conditionals that the declarative DSL cannot execute.
 ruby - "$cask" <<'RUBY'
 path = ARGV.fetch(0)
 source = File.read(path)
@@ -96,8 +98,32 @@ raise "refresh command is not warning-only" unless success.calls.last[:must_succ
 failure = HookHarness.new(true)
 failure.run(body)
 raise "failure path did not invoke both commands" unless failure.calls.length == 2
-raise "failure path did not warn" unless failure.warnings.length == 1
+raise "hook must not require imperative warning branches" unless failure.warnings.empty?
 raise "failure path did not keep refresh warning-only" unless failure.calls.last[:must_succeed] == false
+raise "hook must not assign command results" if body.match?(/\bresult\s*=/)
+# Model the tap's direct-command conversion with a strict declarative DSL.
+# A result assignment left behind would try to call unsupported system_command.
+# This narrow double mirrors Homebrew 7.0.9's InstallSteps::DSL#run contract:
+# https://github.com/Homebrew/brew/blob/7.0.9/Library/Homebrew/install_steps.rb
+# It is not an upstream compatibility test. Recheck the generated cask with
+# Homebrew's content loader and brew style when that DSL changes.
+class StepsHarness
+  attr_reader :calls
+  def initialize
+    @calls = []
+  end
+  def staged_path
+    "{{staged_path}}"
+  end
+  def run(command, args:, must_succeed: true)
+    @calls << {command: command, args: args, must_succeed: must_succeed}
+    nil
+  end
+end
+steps = StepsHarness.new
+steps.instance_eval(body.gsub(/^(\s*)system_command /, '\\1run '), "declarative-hook", 1)
+raise "declarative hook did not preserve both commands" unless steps.calls.length == 2
+raise "declarative catalog refresh must allow failure" unless steps.calls.last[:must_succeed] == false
 puts "rendered package hook behavior check OK"
 RUBY
 
