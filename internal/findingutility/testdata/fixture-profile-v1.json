@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "profile_id": "evaluator-advisory-fixture-v1",
+  "mode": "advisory",
+  "backend": "fixture",
+  "fixture_only": true,
+  "include_utility_score": false,
+  "threshold_set": null,
+  "eligibility_authorities": [],
+  "total_deadline_ms": 2500,
+  "max_concurrency": 1,
+  "numeric_tolerance": 0,
+  "protocol_version": "cr-finding-utility-fixture-v1",
+  "client_version": "cr-finding-utility-adapter-v1",
+  "vendor_permission": {
+    "data_class": "synthetic",
+    "permission_id": null,
+    "permission_digest": null,
+    "permitted": false
+  },
+  "bound_profile": {
+    "id": "evaluator-advisory-fixture-v1",
+    "digest": "",
+    "max_state_bytes": 49152,
+    "max_request_tokens": 65536,
+    "max_finding_bytes": 8192,
+    "max_evidence_items": 16,
+    "max_evidence_item_bytes": 4096,
+    "max_related_findings": 16,
+    "max_related_finding_bytes": 8192,
+    "tokenizer": "serialized-utf8",
+    "tokenizer_version": "v1",
+    "selection_rule_digest": ""
+  },
+  "requested_model": "fixture:utility-v1",
+  "allowed_resolved_models": ["fixture:utility-v1"]
+}
