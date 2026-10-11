@@ -122,7 +122,7 @@ func TestAnalyzeThreadsPreservesSingleThreadArtifactsAndOrder(t *testing.T) {
 		}
 		manualResults = append(manualResults, result)
 	}
-	batchResults, err := AnalyzeThreads(context.Background(), batchOpts, threads, func(thread threadcontext.Thread) (string, error) {
+	batchResults, _, err := AnalyzeThreads(context.Background(), batchOpts, threads, func(thread threadcontext.Thread) (string, error) {
 		return filepath.Join("logs", string(thread.ID)+".jsonl"), nil
 	})
 	if err != nil {
@@ -171,7 +171,7 @@ func TestAnalyzeThreadsChainsOneProviderSessionInOrder(t *testing.T) {
 		return nil
 	}
 
-	if _, err := AnalyzeThreads(context.Background(), opts, threads, func(thread threadcontext.Thread) (string, error) {
+	if _, _, err := AnalyzeThreads(context.Background(), opts, threads, func(thread threadcontext.Thread) (string, error) {
 		return string(thread.ID) + ".log", nil
 	}); err != nil {
 		t.Fatalf("AnalyzeThreads: %v", err)
@@ -196,7 +196,7 @@ func TestAnalyzeThreadsCheckpointsProviderSessionBeforeReturningFailure(t *testi
 		return nil
 	}
 
-	_, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, func(threadcontext.Thread) (string, error) {
+	_, _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, func(threadcontext.Thread) (string, error) {
 		return "thread.log", nil
 	})
 	if !errors.Is(err, providerErr) {
@@ -218,7 +218,7 @@ func TestAnalyzeThreadsPropagatesSessionCheckpointFailure(t *testing.T) {
 	checkpointErr := errors.New("persist checkpoint")
 	opts.OnSessionID = func(string) error { return checkpointErr }
 
-	_, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, func(threadcontext.Thread) (string, error) {
+	_, _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, func(threadcontext.Thread) (string, error) {
 		return "thread.log", nil
 	})
 	if !errors.Is(err, checkpointErr) {
@@ -232,16 +232,16 @@ func TestAnalyzeThreadsCacheHitAndStaleInputSkipAdapter(t *testing.T) {
 	seedAdapter.Queue(llm.FakeResult{SessionID: "session-1", Response: llm.Response{StructuredOutput: []byte(validSkipOutput("thread-1"))}})
 	opts := testOptions(t, store, seedAdapter)
 	logPath := func(thread threadcontext.Thread) (string, error) { return string(thread.ID) + ".log", nil }
-	if _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, logPath); err != nil {
+	if _, _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, logPath); err != nil {
 		t.Fatalf("AnalyzeThreads seed: %v", err)
 	}
 
 	adapter := &llm.FakeAdapter{NameValue: "fake"}
 	opts.Adapter = adapter
-	if _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, logPath); err != nil {
+	if _, _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("reply")}, logPath); err != nil {
 		t.Fatalf("AnalyzeThreads cache hit: %v", err)
 	}
-	_, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("changed reply")}, logPath)
+	_, _, err := AnalyzeThreads(context.Background(), opts, []threadcontext.Thread{promptThread("changed reply")}, logPath)
 	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
 		t.Fatalf("AnalyzeThreads stale context error = %v, want fingerprint error", err)
 	}
@@ -701,7 +701,7 @@ func TestAnalyzeThreadsSeparatesThreadIDsDifferingOnlyByCase(t *testing.T) {
 		t.Fatalf("task directories fold together: %q and %q", dirs[0], dirs[1])
 	}
 
-	results, err := AnalyzeThreads(context.Background(), opts, threads, func(thread threadcontext.Thread) (string, error) {
+	results, _, err := AnalyzeThreads(context.Background(), opts, threads, func(thread threadcontext.Thread) (string, error) {
 		return filepath.Join("logs", string(thread.ID)+".jsonl"), nil
 	})
 	if err != nil {
