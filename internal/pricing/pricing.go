@@ -37,12 +37,13 @@ func EstimateUsageUSD(model string, usage Usage) (float64, bool) {
 // EstimateUsageUSDFor estimates usage against one immutable catalog snapshot.
 // Context-banded rows are intentionally unavailable because the current usage
 // record does not identify the context band or provider token normalization.
+// Request-bound rows remain unavailable even when their context band is all.
 func EstimateUsageUSDFor(catalog *modelcatalog.Catalog, model string, usage Usage) (cost float64, ok bool) {
 	if catalog == nil {
 		return 0, false
 	}
 	prices := catalog.PricesFor(model, usage.Speed)
-	if len(prices) != 1 || prices[0].ContextBand != "all" {
+	if len(prices) != 1 || prices[0].ContextBand != "all" || prices[0].RequestPricing != nil {
 		return 0, false
 	}
 	price := prices[0]

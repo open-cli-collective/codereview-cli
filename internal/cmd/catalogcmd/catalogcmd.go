@@ -26,6 +26,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 }
 
 type catalogView struct {
+	Digest   string                 `json:"digest"`
 	Source   modelcatalog.Source    `json:"source"`
 	Manifest modelcatalog.Manifest  `json:"manifest"`
 	Runtimes []runtimeView          `json:"runtimes"`
@@ -164,5 +165,5 @@ func buildView(catalog *modelcatalog.Catalog) catalogView {
 		}
 		return modelViews[i].RuntimeID < modelViews[j].RuntimeID
 	})
-	return catalogView{Source: catalog.Source(), Manifest: catalog.Manifest(), Runtimes: runtimeViews, Models: modelViews, Defaults: catalog.Defaults(), Pricing: catalog.Pricing()}
+	return catalogView{Digest: catalog.Digest(), Source: catalog.Source(), Manifest: catalog.Manifest(), Runtimes: runtimeViews, Models: modelViews, Defaults: catalog.Defaults(), Pricing: catalog.Pricing()}
 }
