@@ -48,6 +48,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+  test-race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: "1" # Required by Go's race detector.
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: open-cli-collective/.github/actions/go-test@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
+        with:
+          go-version-file: go.mod
+          target: test-race
+
   test-no1password-optout:
     runs-on: ubuntu-latest
     env:
