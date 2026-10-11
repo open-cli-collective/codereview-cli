@@ -154,8 +154,9 @@ const (
 // ReviewerToolEvidence records bounded, machine-significant reviewer tool state.
 // It is absent when the adapter does not provide reviewer tool evidence.
 type ReviewerToolEvidence struct {
-	DiffStatus     DiffToolStatus `json:"diff_status"`
-	DiffDiagnostic string         `json:"diff_diagnostic,omitempty"`
+	DiffStatus     DiffToolStatus     `json:"diff_status"`
+	DiffDiagnostic string             `json:"diff_diagnostic,omitempty"`
+	Trace          *ReviewerToolTrace `json:"trace,omitempty"`
 }
 
 // Usage records nullable usage metrics.
@@ -373,6 +374,7 @@ func runOnceAttempt(ctx context.Context, adapter Adapter, resumeSessionID string
 
 func cloneResponse(response Response) Response {
 	response.StructuredOutput = append([]byte(nil), response.StructuredOutput...)
+	response.ReviewerToolEvidence = CloneReviewerToolEvidence(response.ReviewerToolEvidence)
 	return response
 }
 

@@ -3,6 +3,8 @@
 package llmadapters
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
 
 func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
@@ -109,5 +113,51 @@ func TestPiRPCReviewerExtensionRequiresDiffBeforeHeadTools(t *testing.T) {
 		if !strings.Contains(extension, want) {
 			t.Fatalf("extension missing diff-ordering enforcement %q:\n%s", want, extension)
 		}
+	}
+}
+
+func TestPiRPCReviewerExtensionReportsTransportTruncation(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is not installed")
+	}
+	for _, size := range []int{10, 128, 129} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			tempDir := t.TempDir()
+			helperPath := filepath.Join(tempDir, "helper.mjs")
+			helper := "#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdin.on('end', () => process.stdout.write('x'.repeat(" + strconv.Itoa(size) + ")));\n"
+			if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil { // #nosec G306,G703 -- executable helper is rooted in t.TempDir.
+				t.Fatal(err)
+			}
+			extensionPath := filepath.Join(tempDir, "extension.mjs")
+			extension := piRPCReviewerExtension(helperPath, filepath.Join(tempDir, "config.json"), tempDir, 128, 5*time.Second, "")
+			if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil { // #nosec G703 -- generated extension is rooted in t.TempDir.
+				t.Fatal(err)
+			}
+			runnerPath := filepath.Join(tempDir, "runner.mjs")
+			runner := "import extension from " + strconv.Quote(extensionPath) + ";\nconst tools = {}; extension({ registerTool(tool) { tools[tool.name] = tool; } });\nconsole.log(JSON.stringify(await tools.cr_diff.execute('diff', {}, new AbortController().signal)));\n"
+			if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, nodePath, runnerPath) // #nosec G204 -- discovered Node executable runs a test-owned script.
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("extension: %v\n%s", err, output)
+			}
+			var result struct {
+				Details json.RawMessage `json:"details"`
+				IsError bool            `json:"isError"`
+			}
+			if err := json.Unmarshal(output, &result); err != nil || result.IsError {
+				t.Fatalf("result = %s, err %v", output, err)
+			}
+			got := parsePiRPCToolOutput(result.Details)
+			want := llm.ReviewerToolOutput{Bytes: int64(min(size, 128)), Truncated: size > 128}
+			if got == nil || *got != want {
+				t.Fatalf("output = %#v, want %#v", got, want)
+			}
+		})
 	}
 }
