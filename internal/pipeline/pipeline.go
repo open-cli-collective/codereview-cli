@@ -292,6 +292,7 @@ type Result struct {
 	CurrentHeadSHA         string
 	ReviewBaseSHA          string
 	ReviewHeadSHA          string
+	ThreadAnalysisFailures []threadanalysis.Failure
 	ReviewerFailures       []ReviewerFailure
 	ReviewerCoverage       []reviewplan.ReviewerCoverageSummary
 	RelocationAssessments  []ReviewerRelocationAssessments
@@ -895,12 +896,13 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if reusedCohort && !selectionInRun {
 		selectionTaskIDs = nil
 	}
-	threadResponses, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext, namedSession.resumeID(), func(sessionID string) error {
+	threadResponses, threadFailures, err := analyzeReviewThreads(ctx, opts, req, run, prepared.artifacts, prepared.threadContext, namedSession.resumeID(), func(sessionID string) error {
 		return namedSession.checkpointProviderSessionID(ctx, sessionID, opts.now())
 	})
 	if err != nil {
 		return executionPhaseFailure(err)
 	}
+	result.ThreadAnalysisFailures = threadFailures
 	checkpointActions, err := checkpointThreadResponses(ctx, opts, req, mode, run, result.EffectiveCaps, threadResponses)
 	if err != nil {
 		return nil, false, err
@@ -929,7 +931,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
-	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, reviewerRun.findings, reviewerRun.failures, reviewerCoverage)
+	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, reviewerRun.findings, reviewerRun.failures, reviewerCoverage, threadFailureSummaries(threadFailures))
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
@@ -979,6 +981,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 
 	plan, err := opts.buildPlan(req, prepared.reviewPR, mode.planPostMode, result.EffectiveCaps, prepared.parsed.PlanDiff, reviewerRun.findings, rollup, selection.ThreadActions, false, result.AgentDefsChanged, planRunInputs{
 		threadResponses:  threadResponses,
+		threadFailures:   threadFailures,
 		repoSources:      repoSources,
 		hasRun:           true,
 		selection:        selectionSession,
@@ -1393,16 +1396,16 @@ func runSelectionPhase(ctx context.Context, opts Options, req selectionPhaseRequ
 	return selection, selectionSession, ledgerSession, nil
 }
 
-func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread, resumeSessionID string, onSessionID func(string) error) ([]review.ThreadResponseAction, error) {
+func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run ledger.Run, artifacts ArtifactPaths, threads []threadcontext.Thread, resumeSessionID string, onSessionID func(string) error) ([]review.ThreadResponseAction, []threadanalysis.Failure, error) {
 	eligible := threadcontext.PendingCRAuthoredFindingThreads(threads)
 	if len(eligible) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	runtimeConfig, err := resolveThreadAnalysisRuntimeConfig(req.Profile)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	results, err := threadanalysis.AnalyzeThreads(ctx, threadanalysis.Options{
+	results, failures, err := threadanalysis.AnalyzeThreads(ctx, threadanalysis.Options{
 		Store:           opts.Store,
 		RunID:           run.RunID,
 		Adapter:         opts.Adapter,
@@ -1414,13 +1417,17 @@ func analyzeReviewThreads(ctx context.Context, opts Options, req Request, run le
 		NewStepID:       opts.newSessionRowID,
 		ResumeSessionID: resumeSessionID,
 		OnSessionID:     onSessionID,
+		IsolateFailures: true,
 	}, eligible, func(thread threadcontext.Thread) (string, error) {
 		return artifacts.ThreadAnalysisLog(string(thread.ID))
 	})
 	if err != nil {
-		return nil, pipelineTaskError(err)
+		return nil, nil, pipelineTaskError(err)
 	}
-	return threadanalysis.ResponseActions(results), nil
+	for _, failure := range failures {
+		opts.emitWarning(fmt.Sprintf("thread %s was not analyzed: %s; isolated failures are cached on resume, use --rerun to retry", failure.ThreadID, failure.Error))
+	}
+	return threadanalysis.ResponseActions(results), failures, nil
 }
 
 func checkpointThreadResponses(ctx context.Context, opts Options, req Request, mode executionMode, run ledger.Run, caps reviewplan.ProviderCaps, responses []review.ThreadResponseAction) ([]ledger.PlannedAction, error) {
@@ -2775,6 +2782,7 @@ type planRunInputs struct {
 	rollup           sessionDraft
 	selectedAgents   []llm.SelectedAgent
 	threadResponses  []review.ThreadResponseAction
+	threadFailures   []threadanalysis.Failure
 	repoSources      []agents.SourceInfo
 	findingSessions  map[review.FindingID]string
 	reviewerFailures []ReviewerFailure
@@ -2845,15 +2853,16 @@ func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewpl
 
 	wallMS := opts.now().Sub(inputs.startedAt).Milliseconds()
 	summary := reviewplan.RunSummary{
-		ToolVersion:       req.ToolVersion,
-		Adapter:           runAdapter(inputs),
-		Model:             sharedWorkstreamModel(workstreams),
-		PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
-		SelectedReviewers: selectedIDs,
-		ReviewerFailures:  reviewerFailureSummaries(inputs.reviewerFailures),
-		ReviewerCoverage:  inputs.reviewerCoverage,
-		WallDurationMS:    &wallMS,
-		Workstreams:       workstreams,
+		ToolVersion:            req.ToolVersion,
+		Adapter:                runAdapter(inputs),
+		Model:                  sharedWorkstreamModel(workstreams),
+		PostingIdentity:        runlifecycle.PostingKey(req.PostingIdentity),
+		SelectedReviewers:      selectedIDs,
+		ReviewerFailures:       reviewerFailureSummaries(inputs.reviewerFailures),
+		ThreadAnalysisFailures: threadFailureSummaries(inputs.threadFailures),
+		ReviewerCoverage:       inputs.reviewerCoverage,
+		WallDurationMS:         &wallMS,
+		Workstreams:            workstreams,
 	}
 
 	findingReviewers := make(map[review.FindingID]string, len(inputs.findingSessions))
@@ -2989,6 +2998,14 @@ func runAdapter(inputs planRunInputs) string {
 		}
 	}
 	return strings.TrimSpace(inputs.rollup.Adapter)
+}
+
+func threadFailureSummaries(failures []threadanalysis.Failure) []reviewplan.ThreadAnalysisFailureSummary {
+	out := make([]reviewplan.ThreadAnalysisFailureSummary, 0, len(failures))
+	for _, failure := range failures {
+		out = append(out, reviewplan.ThreadAnalysisFailureSummary{ThreadID: failure.ThreadID, Error: failure.Error})
+	}
+	return out
 }
 
 func reviewerFailureSummaries(failures []ReviewerFailure) []reviewplan.ReviewerFailureSummary {
