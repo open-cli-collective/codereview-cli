@@ -527,11 +527,15 @@ func SelectionOnly(ctx context.Context, opts Options, req SelectionRequest) (Sel
 	}); err != nil {
 		return SelectionResult{}, err
 	}
-	manifest, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
+	manifest, baseTree, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
 	if err != nil {
 		return SelectionResult{}, Failure(FailureTerminal, err)
 	}
-	prepared.relocations = relocationReviewState{Manifest: manifest, HeadTree: headTree}
+	symlinks, err := prepareSymlinkMetadata(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, baseTree, headTree, prepared.parsed.Patches)
+	if err != nil {
+		return SelectionResult{}, Failure(FailureTerminal, err)
+	}
+	prepared.relocations = relocationReviewState{Manifest: manifest, BaseTree: baseTree, HeadTree: headTree, Symlinks: symlinks}
 	prepared.changedFiles = relocationReviewablePatchPaths(prepared.parsed.Patches, manifest.Moves)
 	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		Profile:                 req.Profile,
@@ -718,11 +722,15 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		return Result{}, err
 	}
-	manifest, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
+	manifest, baseTree, headTree, err := prepareRelocationManifest(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, prepared.parsed.Patches)
 	if err != nil {
 		return Result{}, Failure(FailureTerminal, err)
 	}
-	prepared.relocations = relocationReviewState{Manifest: manifest, HeadTree: headTree}
+	symlinks, err := prepareSymlinkMetadata(ctx, workbenchDeps(opts).GitCommand, prepared.artifacts, prepared.reviewPR.Base.SHA, prepared.reviewPR.Head.SHA, baseTree, headTree, prepared.parsed.Patches)
+	if err != nil {
+		return Result{}, Failure(FailureTerminal, err)
+	}
+	prepared.relocations = relocationReviewState{Manifest: manifest, BaseTree: baseTree, HeadTree: headTree, Symlinks: symlinks}
 	prepared.changedFiles = relocationReviewablePatchPaths(prepared.parsed.Patches, manifest.Moves)
 	if err := dossier.Prepare(ctx, dossierEnv(opts, prepared.artifacts), dossier.PreparationRequest{
 		RunID:                   run.RunID,
@@ -936,7 +944,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	rollupDeps := append([]string(nil), selectionTaskIDs...)
 	rollupDeps = append(rollupDeps, reviewerDeps...)
 	rollupFingerprintDeps := append([]string(nil), rollupDeps...)
-	rollupFingerprintDeps = append(rollupFingerprintDeps, "coverage-artifact="+coverageDigest, "relocation-manifest="+prepared.relocations.Manifest.Digest, "context-contract="+reviewerContextContractVersion)
+	rollupFingerprintDeps = append(rollupFingerprintDeps, "coverage-artifact="+coverageDigest, "relocation-manifest="+prepared.relocations.Manifest.Digest, "symlink-metadata="+prepared.relocations.Symlinks.Digest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
 	rollup, rollupSession, rollupLedgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             run.RunID,
 		taskID:            orchestratorRollupStage,
@@ -2176,7 +2184,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return reviewerExecution{}, err
 	}
 	agentID := agent.ID
-	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath)
+	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, resumeState.relocations.Symlinks)
 	if err != nil {
 		return reviewerExecution{}, err
 	}
@@ -2194,7 +2202,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if req.ReviewerFast {
 		fingerprintDeps = append(fingerprintDeps, "fast=true")
 	}
-	fingerprintDeps = append(fingerprintDeps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "context-contract="+reviewerContextContractVersion)
+	fingerprintDeps = append(fingerprintDeps, "relocation-manifest="+assignment.ManifestDigest, "relocation-assignment="+assignment.AssignmentDigest, "symlink-metadata="+assignment.SymlinkMetadataDigest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
 	findings, session, ledgerSession, err := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            taskID,
@@ -2298,7 +2306,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return repairSetupFailed(err)
 	}
 	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
-	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath)
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, resumeState.relocations.Symlinks)
 	if err != nil {
 		return repairSetupFailed(err)
 	}
@@ -2317,7 +2325,7 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 	if req.ReviewerFast {
 		repairFingerprintDeps = append(repairFingerprintDeps, "fast=true")
 	}
-	repairFingerprintDeps = append(repairFingerprintDeps, "relocation-manifest="+repairAssignment.ManifestDigest, "relocation-assignment="+repairAssignment.AssignmentDigest, "context-contract="+reviewerContextContractVersion)
+	repairFingerprintDeps = append(repairFingerprintDeps, "relocation-manifest="+repairAssignment.ManifestDigest, "relocation-assignment="+repairAssignment.AssignmentDigest, "symlink-metadata="+repairAssignment.SymlinkMetadataDigest, "symlink-contract="+symlinkInspectionContractVersion, "context-contract="+reviewerContextContractVersion)
 	repair, repairSession, repairLedgerSession, repairErr := runStructuredTask(ctx, opts, llmTaskSpec{
 		runID:             runID,
 		taskID:            repairTaskID,

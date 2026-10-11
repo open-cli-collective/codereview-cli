@@ -24,7 +24,7 @@ type lifecyclePayload struct {
 	OK bool `json:"ok"`
 }
 
-func TestFingerprintPreservesPipelineCacheKey(t *testing.T) {
+func TestFingerprintIncludesCurrentTaskSchemaVersion(t *testing.T) {
 	got := Fingerprint(
 		"fake",
 		"reviewer:harness:alpha",
@@ -34,9 +34,9 @@ func TestFingerprintPreservesPipelineCacheKey(t *testing.T) {
 		"review changed code",
 		[]string{"orchestrator-selection", "discussion=abc123"},
 	)
-	const want = "5a7c3a29a23d3fb2562f6ced535fdead984af8c79360d210c170ec263ba4e2a2"
+	const want = "119c25ca1cdbaffa98f09019140779be4802f63e96769568fac3d9aa35b4697e"
 	if got != want {
-		t.Fatalf("Fingerprint() = %q, want legacy pipeline cache key %q", got, want)
+		t.Fatalf("Fingerprint() = %q, want current schema-version cache key %q", got, want)
 	}
 }
 
@@ -426,6 +426,38 @@ func TestRunStructuredRejectsStaleMetadataBeforeProviderCall(t *testing.T) {
 	}
 	if len(staleAdapter.Requests()) != 0 {
 		t.Fatalf("adapter requests = %d, want no provider call", len(staleAdapter.Requests()))
+	}
+}
+
+func TestRunStructuredRejectsPreviousSchemaBeforeProviderCall(t *testing.T) {
+	ctx := context.Background()
+	store := newLifecycleStore()
+	seedAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	seedAdapter.Queue(llm.FakeResult{
+		SessionID: "provider-session-1",
+		Response:  llm.Response{StructuredOutput: []byte(`{"ok":true}`)},
+	})
+	req := lifecycleRequest(t, store, seedAdapter)
+	if _, err := RunStructured(ctx, req, decodeLifecyclePayload); err != nil {
+		t.Fatalf("RunStructured seed: %v", err)
+	}
+	metadata, ok, err := ReadMetadata(req.Paths, req.TaskID)
+	if err != nil || !ok {
+		t.Fatalf("ReadMetadata = %#v ok=%t err=%v", metadata, ok, err)
+	}
+	metadata.SchemaVersion = SchemaVersion - 1
+	if err := WriteMetadata(req.Paths, metadata); err != nil {
+		t.Fatalf("WriteMetadata stale schema: %v", err)
+	}
+
+	staleAdapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	req.Adapter = staleAdapter
+	_, err = RunStructured(ctx, req, decodeLifecyclePayload)
+	if err == nil || !strings.Contains(err.Error(), "schema version = 2, want 3") {
+		t.Fatalf("RunStructured previous schema error = %v, want fail-closed schema rejection", err)
+	}
+	if len(staleAdapter.Requests()) != 0 || len(staleAdapter.Resumes()) != 0 {
+		t.Fatalf("provider invoked for previous-schema cache: starts=%#v resumes=%#v", staleAdapter.Requests(), staleAdapter.Resumes())
 	}
 }
 

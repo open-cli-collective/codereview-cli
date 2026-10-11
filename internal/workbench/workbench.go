@@ -21,6 +21,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
+	"github.com/open-cli-collective/codereview-cli/internal/symlinkmetadata"
 )
 
 const (
@@ -359,11 +360,11 @@ func verifyClean(ctx context.Context, deps Deps, repoDir string, headSHA string)
 }
 
 // PrepareReviewerRequest creates a disposable reviewer workspace and LLM request.
-func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, model, effort, prompt, logPath string) (llm.Request, func() error, error) {
+func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, model, effort, prompt, logPath string, symlinkMetadata ...symlinkmetadata.Artifact) (llm.Request, func() error, error) {
 	if err := llm.RequireReviewerWorkspace(adapter); err != nil {
 		return llm.Request{}, nil, fmt.Errorf("pipeline: %w", err)
 	}
-	workspace, cleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes)
+	workspace, cleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, symlinkMetadata...)
 	if err != nil {
 		return llm.Request{}, nil, err
 	}
@@ -386,7 +387,7 @@ func PrepareReviewerRequest(ctx context.Context, deps Deps, adapter llm.Adapter,
 			if err := cleanupCurrent(); err != nil {
 				return fmt.Errorf("pipeline: cleanup reviewer workspace before retry: %w", err)
 			}
-			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes)
+			retryWorkspace, retryCleanup, err := prepareReviewerWorkspace(ctx, deps, artifacts, headSHA, agentID, allowedFiles, defaultReviewerWorkspaceToolOutputBytes, symlinkMetadata...)
 			if err != nil {
 				return err
 			}
@@ -422,7 +423,7 @@ func ReviewerWorkspaceSegment(agentID string) string {
 	return segment + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
-func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int) (llm.ReviewerWorkspaceRequest, func() error, error) {
+func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartifact.Paths, headSHA string, agentID string, allowedFiles []string, maxToolOutputBytes int, symlinkMetadata ...symlinkmetadata.Artifact) (llm.ReviewerWorkspaceRequest, func() error, error) {
 	if strings.TrimSpace(artifacts.WorkbenchRepoDir) == "" {
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: workbench repo dir is required for reviewer workspace")
 	}
@@ -478,13 +479,27 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 			}
 		}
 	}
-	return llm.ReviewerWorkspaceRequest{
+	workspace := llm.ReviewerWorkspaceRequest{
 		RepoDir:            workspaceRepo,
 		ScratchDir:         workspaceScratch,
 		DiffPath:           artifacts.DiffPatch,
 		AllowedFiles:       append([]string(nil), allowedFiles...),
 		MaxToolOutputBytes: maxToolOutputBytes,
-	}, cleanup, nil
+	}
+	if len(symlinkMetadata) > 0 {
+		metadata := symlinkMetadata[0]
+		if metadata.Digest != "" || metadata.BaseSHA != "" || metadata.HeadSHA != "" || len(metadata.Links) > 0 {
+			if strings.TrimSpace(artifacts.SymlinkMetadataJSON) == "" || metadata.Digest == "" || metadata.BaseSHA == "" || metadata.HeadSHA == "" {
+				_ = cleanup()
+				return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: pinned symlink metadata identity is required for reviewer workspace")
+			}
+			workspace.SymlinkMetadataPath = artifacts.SymlinkMetadataJSON
+			workspace.SymlinkMetadataDigest = metadata.Digest
+			workspace.BaseSHA = metadata.BaseSHA
+			workspace.HeadSHA = metadata.HeadSHA
+		}
+	}
+	return workspace, cleanup, nil
 }
 
 func isReviewerWorkspaceEscapePath(clean string) bool {

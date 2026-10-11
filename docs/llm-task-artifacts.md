@@ -42,12 +42,12 @@ trust the final `metadata.json` name, never a temporary metadata file.
 
 ## Schema Version
 
-`schema_version` is currently `2`. Version 2 adds the relocation/context
-coverage contract and makes its manifest, exact reviewer assignment, context
-contract, and complete coverage artifact digest load-bearing resume inputs.
-Version 1 task metadata is rejected for reuse and requires rerunning the task;
-old metadata is never treated as safe merely because the prompt or assignment
-count appears unchanged.
+`schema_version` is currently `3`. Version 2 added the relocation/context
+coverage contract. Version 3 adds the pinned symlink metadata digest and
+inspection-contract version to reviewer, coverage-repair, and rollup resume
+inputs. Schema versions 1 and 2 are rejected for reuse and require rerunning
+the task; old metadata is never treated as safe merely because the prompt or
+assignment count appears unchanged.
 
 Bump it when changing any load-bearing field, status value, fingerprint input,
 task identity, or resume rule in a way that could make an in-flight run unsafe
@@ -66,9 +66,11 @@ Load-bearing metadata fields are:
   task input.
 - `input_fingerprint`: hash of the task schema version, adapter, task identity,
   phase, model/effort, prompt, dependency task IDs, and every semantic artifact
-  dependency. Reviewer fingerprints include the relocation manifest digest,
-  exact assigned relocation digest, and context-contract version. Rollup also
-  includes the complete `coverage.json` content digest.
+  dependency. Reviewer and coverage-repair fingerprints include the relocation
+  manifest digest, exact assigned relocation digest, pinned symlink metadata
+  digest and inspection-contract version, and context-contract version. Rollup
+  also includes the complete `coverage.json` content digest and pinned symlink
+  metadata digest/contract version.
 - `agent_id`: reviewer agent ID for reviewer tasks.
 - `status`: one of `succeeded`, `failed_isolated`, or `failed_blocking`.
 - `session_row_id` and `provider_session_id`: ledger/provider session handles

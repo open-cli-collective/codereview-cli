@@ -3,6 +3,8 @@ package pireviewtool
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,8 @@ import (
 	"testing"
 	"testing/iotest"
 	"unicode/utf8"
+
+	"github.com/open-cli-collective/codereview-cli/internal/symlinkmetadata"
 )
 
 func TestRunDecodesOneStrictRequest(t *testing.T) {
@@ -45,6 +49,49 @@ func TestExecuteReadRejectsBinaryFiles(t *testing.T) {
 	_, err := Execute(context.Background(), Config{RepoDir: repo, DiffPath: diff, MaxOutputBytes: 1024}, Request{Tool: ToolRead, Path: "binary.bin"})
 	if !errors.Is(err, ErrDenied) {
 		t.Fatalf("Execute(binary read) error = %v, want ErrDenied", err)
+	}
+}
+
+func TestRunReadCanInspectPinnedSymlinkMetadataWithoutFollowingLink(t *testing.T) {
+	repo, diff := reviewerToolFixture(t)
+	if err := os.MkdirAll(filepath.Join(repo, "links"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../missing-target", filepath.Join(repo, "links", "current")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	baseSHA := strings.Repeat("a", 40)
+	headSHA := strings.Repeat("b", 40)
+	linkOID := strings.Repeat("c", 40)
+	canonical := []byte(`{"schema_version":1,"base_sha":"` + baseSHA + `","head_sha":"` + headSHA + `","links":[{"old_path":"links/current","path":"links/current","base":{"path":"links/current","mode":"120000","blob_oid":"` + linkOID + `","payload":"../missing-target","payload_size":17,"resolution":"missing","resolved_path":"missing-target"},"head":{"path":"links/current","mode":"120000","blob_oid":"` + linkOID + `","payload":"../missing-target","payload_size":17,"resolution":"missing","resolved_path":"missing-target"}}]}`)
+	digest := sha256.Sum256(canonical)
+	digestHex := hex.EncodeToString(digest[:])
+	artifact := append([]byte(strings.TrimSuffix(string(canonical), "}")+`,"digest":"`+digestHex+`"}`), '\n')
+	metadataPath := filepath.Join(t.TempDir(), "symlink-metadata.json")
+	if err := os.WriteFile(metadataPath, artifact, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	configJSON := `{"repo_dir":` + quoteJSON(t, repo) + `,"diff_path":` + quoteJSON(t, diff) + `,"max_output_bytes":4096,"timeout_ms":1000,"symlink_metadata_path":` + quoteJSON(t, metadataPath) + `,"symlink_metadata_digest":` + quoteJSON(t, digestHex) + `,"base_sha":` + quoteJSON(t, baseSHA) + `,"head_sha":` + quoteJSON(t, headSHA) + `}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--config", configPath}, strings.NewReader(`{"tool":"cr_read","path":"links/current","view":"symlink"}`), &stdout, &stderr)
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("Run(symlink metadata) = %d, stderr %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"payload": "../missing-target"`) || !strings.Contains(stdout.String(), `"resolution": "missing"`) {
+		t.Fatalf("symlink metadata output = %q, want exact payload and pinned missing-target status", stdout.String())
+	}
+
+	// The default body view must keep refusing the link; only the explicit
+	// metadata view may inspect it, and that view never reads its destination.
+	stdout.Reset()
+	stderr.Reset()
+	code = Run(context.Background(), []string{"--config", configPath}, strings.NewReader(`{"tool":"cr_read","path":"links/current"}`), &stdout, &stderr)
+	if code == 0 || !strings.Contains(stderr.String(), "denied") {
+		t.Fatalf("Run(default symlink body read) = %d, stdout %q, stderr %q; want denial", code, stdout.String(), stderr.String())
 	}
 }
 
@@ -204,12 +251,135 @@ func TestExecuteRejectsPathEscapesLinksAndUnknownTools(t *testing.T) {
 		{Tool: ToolRead, Path: "../outside.txt"},
 		{Tool: ToolRead, Path: "nested/../../outside.txt"},
 		{Tool: ToolRead, Path: "outside-link"},
+		{Tool: ToolSearch, Path: "outside-link", Query: "secret"},
 		{Tool: ToolList, Path: "outside-link"},
 		{Tool: "bash", Path: "nested/context.go"},
 	} {
 		if _, err := Execute(context.Background(), config, request); !errors.Is(err, ErrDenied) {
 			t.Errorf("Execute(%+v) error = %v, want ErrDenied", request, err)
 		}
+	}
+}
+
+func TestSymlinkMetadataViewNeverFollowsDestinationOrArtifactLink(t *testing.T) {
+	repo, diff := reviewerToolFixture(t)
+	linksDir := filepath.Join(repo, "links")
+	if err := os.MkdirAll(linksDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := "OUTSIDE_SENTINEL_MUST_NOT_BE_READ"
+	outside := filepath.Join(t.TempDir(), "outside-secret.txt")
+	if err := os.WriteFile(outside, []byte(sentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(linksDir, "external")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	baseSHA, headSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	artifact, err := symlinkmetadata.New(baseSHA, headSHA, []symlinkmetadata.Link{{
+		Path: "links/external",
+		Head: &symlinkmetadata.Side{
+			Path: "links/external", Mode: "120000", BlobOID: strings.Repeat("c", 40), Payload: outside, PayloadSize: len(outside),
+			Resolution: symlinkmetadata.ResolutionOutside,
+		},
+	}})
+	if err != nil {
+		t.Fatalf("build metadata: %v", err)
+	}
+	metadata, err := artifact.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(t.TempDir(), "symlink-metadata.json")
+	if err := os.WriteFile(metadataPath, metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{
+		RepoDir: repo, DiffPath: diff, MaxOutputBytes: 4096,
+		SymlinkMetadataPath: metadataPath, SymlinkMetadataDigest: artifact.Digest, BaseSHA: baseSHA, HeadSHA: headSHA,
+	}
+	output, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "links/external", View: "symlink"})
+	if err != nil || !strings.Contains(output, outside) || strings.Contains(output, sentinel) {
+		t.Fatalf("metadata view output = %q, err = %v; want path payload only, never destination body", output, err)
+	}
+
+	artifactLink := filepath.Join(t.TempDir(), "artifact-link.json")
+	if err := os.Symlink(outside, artifactLink); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	config.SymlinkMetadataPath = artifactLink
+	if output, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "links/external", View: "symlink"}); !errors.Is(err, ErrDenied) || strings.Contains(output, sentinel) {
+		t.Fatalf("symlink artifact path returned %q, err %v; want denial without reading target", output, err)
+	}
+}
+
+func TestSymlinkMetadataViewSupportsBoundedDeterministicRanges(t *testing.T) {
+	repo, diff := reviewerToolFixture(t)
+	baseSHA, headSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	payloadText := strings.Repeat("🙂", 128)
+	artifact, err := symlinkmetadata.New(baseSHA, headSHA, []symlinkmetadata.Link{{
+		Path: "links/current",
+		Head: &symlinkmetadata.Side{
+			Path: "links/current", Mode: "120000", BlobOID: strings.Repeat("c", 40),
+			Payload: payloadText, PayloadSize: len([]byte(payloadText)), Resolution: symlinkmetadata.ResolutionUnsupported,
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := artifact.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataPath := filepath.Join(t.TempDir(), "symlink-metadata.json")
+	if err := os.WriteFile(metadataPath, metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := Config{
+		RepoDir: repo, DiffPath: diff, MaxOutputBytes: 128,
+		SymlinkMetadataPath: metadataPath, SymlinkMetadataDigest: artifact.Digest, BaseSHA: baseSHA, HeadSHA: headSHA,
+	}
+	first, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "links/current", View: "symlink", Limit: 80})
+	if err != nil || !strings.HasPrefix(first, "[cr-range offset=0 ") || len(first) > config.MaxOutputBytes {
+		t.Fatalf("first bounded metadata range = %q, err %v; want capped range response", first, err)
+	}
+
+	config.MaxOutputBytes = 4096
+	want, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "links/current", View: "symlink"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxOutputBytes = 128
+	var reconstructed []byte
+	offset := int64(0)
+	for page := 0; page < 20; page++ {
+		got, err := Execute(context.Background(), config, Request{Tool: ToolRead, Path: "links/current", View: "symlink", Offset: offset})
+		if err != nil {
+			t.Fatalf("Execute(page %d): %v", page, err)
+		}
+		headerEnd := strings.IndexByte(got, '\n')
+		if headerEnd < 0 {
+			t.Fatalf("page %d = %q, want range header", page, got)
+		}
+		var start, end, total, next int64
+		if _, err := fmt.Sscanf(got[:headerEnd], "[cr-range offset=%d end=%d total=%d next_offset=%d]", &start, &end, &total, &next); err != nil {
+			t.Fatalf("parse page %d header %q: %v", page, got[:headerEnd], err)
+		}
+		payload := []byte(got[headerEnd+1:])
+		if !utf8.Valid(payload) {
+			t.Fatalf("page %d payload splits a UTF-8 sequence: %x", page, payload)
+		}
+		if start != offset || end != start+int64(len(payload)) || total != int64(len([]byte(want))) || len(got) > config.MaxOutputBytes {
+			t.Fatalf("page %d metadata = %d/%d/%d, body=%d bytes total=%d", page, start, end, total, len(payload), len(got))
+		}
+		reconstructed = append(reconstructed, payload...)
+		if next < 0 {
+			break
+		}
+		offset = next
+	}
+	if string(reconstructed) != want {
+		t.Fatalf("reconstructed %d metadata bytes, want exact %d-byte output", len(reconstructed), len([]byte(want)))
 	}
 }
 

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/open-cli-collective/codereview-cli/internal/symlinkmetadata"
 )
 
 const (
@@ -36,16 +38,28 @@ const (
 	maxConfiguredTimeoutMS   = 60_000
 )
 
+type symlinkMetadataOutput struct {
+	SchemaVersion int                  `json:"schema_version"`
+	BaseSHA       string               `json:"base_sha"`
+	HeadSHA       string               `json:"head_sha"`
+	Digest        string               `json:"digest"`
+	Link          symlinkmetadata.Link `json:"link"`
+}
+
 // ErrDenied marks tool requests outside the fixed read-only contract.
 var ErrDenied = errors.New("pi reviewer tool request denied")
 
 // Config fixes the roots and output limit for one reviewer invocation.
 type Config struct {
-	RepoDir        string   `json:"repo_dir"`
-	DiffPath       string   `json:"diff_path"`
-	AllowedFiles   []string `json:"allowed_files,omitempty"`
-	MaxOutputBytes int      `json:"max_output_bytes"`
-	TimeoutMS      int      `json:"timeout_ms"`
+	RepoDir               string   `json:"repo_dir"`
+	DiffPath              string   `json:"diff_path"`
+	AllowedFiles          []string `json:"allowed_files,omitempty"`
+	SymlinkMetadataPath   string   `json:"symlink_metadata_path,omitempty"`
+	SymlinkMetadataDigest string   `json:"symlink_metadata_digest,omitempty"`
+	BaseSHA               string   `json:"base_sha,omitempty"`
+	HeadSHA               string   `json:"head_sha,omitempty"`
+	MaxOutputBytes        int      `json:"max_output_bytes"`
+	TimeoutMS             int      `json:"timeout_ms"`
 }
 
 // Run implements the strict stdin/stdout protocol used by the generated Pi
@@ -111,6 +125,7 @@ func decodeStrictJSON(reader io.Reader, target any) error {
 type Request struct {
 	Tool   string `json:"tool"`
 	Path   string `json:"path,omitempty"`
+	View   string `json:"view,omitempty"`
 	Query  string `json:"query,omitempty"`
 	Offset int64  `json:"offset,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
@@ -136,6 +151,34 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 	defer rootHandle.Close()
 	switch request.Tool {
 	case ToolRead:
+		if request.View == "symlink" {
+			metadata, err := readPinnedSymlinkMetadata(config)
+			if err != nil {
+				return "", err
+			}
+			artifact, link, err := symlinkmetadata.Decode(metadata, config.SymlinkMetadataDigest, config.BaseSHA, config.HeadSHA, request.Path)
+			if err != nil {
+				return "", fmt.Errorf("%w: %w", ErrDenied, err)
+			}
+			output, err = json.MarshalIndent(symlinkMetadataOutput{
+				SchemaVersion: artifact.SchemaVersion,
+				BaseSHA:       artifact.BaseSHA,
+				HeadSHA:       artifact.HeadSHA,
+				Digest:        artifact.Digest,
+				Link:          link,
+			}, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			output, err = readBytesRange(output, request.Offset, request.Limit, config.MaxOutputBytes)
+			if err != nil {
+				return "", fmt.Errorf("read symlink metadata %q: %w", request.Path, err)
+			}
+			break
+		}
+		if request.View != "" {
+			return "", fmt.Errorf("%w: unsupported read view %q", ErrDenied, request.View)
+		}
 		path, err := confinedPath(root, request.Path, false)
 		if err != nil {
 			return "", err
@@ -186,6 +229,34 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 		return "", fmt.Errorf("%w: unknown tool %q", ErrDenied, request.Tool)
 	}
 	return boundOutput(output, config.MaxOutputBytes), nil
+}
+
+func readPinnedSymlinkMetadata(config Config) ([]byte, error) {
+	if strings.TrimSpace(config.SymlinkMetadataPath) == "" || !filepath.IsAbs(config.SymlinkMetadataPath) || config.SymlinkMetadataDigest == "" || config.BaseSHA == "" || config.HeadSHA == "" {
+		return nil, fmt.Errorf("%w: pinned symlink metadata is unavailable", ErrDenied)
+	}
+	path := filepath.Clean(config.SymlinkMetadataPath)
+	before, err := os.Lstat(path)
+	if err != nil || isLinkLike(before) || !before.Mode().IsRegular() || before.Size() > symlinkmetadata.MaxArtifactBytes {
+		return nil, fmt.Errorf("%w: fixed symlink metadata is not a bounded regular file", ErrDenied)
+	}
+	file, err := os.Open(path) // #nosec G304 -- fixed path is supplied by the CR-owned generated tool config and checked against symlink replacement.
+	if err != nil {
+		return nil, fmt.Errorf("%w: open fixed symlink metadata: %w", ErrDenied, err)
+	}
+	defer file.Close()
+	after, err := file.Stat()
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(before, after) {
+		return nil, fmt.Errorf("%w: fixed symlink metadata changed during open", ErrDenied)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, symlinkmetadata.MaxArtifactBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: read fixed symlink metadata: %w", ErrDenied, err)
+	}
+	if len(data) > symlinkmetadata.MaxArtifactBytes {
+		return nil, fmt.Errorf("%w: fixed symlink metadata exceeds its size bound", ErrDenied)
+	}
+	return data, nil
 }
 
 func rejectBinaryFile(ctx context.Context, file *os.File) error {
@@ -384,6 +455,54 @@ rangeLoop:
 			}
 		}
 		return append(header, data...), nil
+	}
+}
+
+func readBytesRange(data []byte, offset int64, limit, maxBytes int) ([]byte, error) {
+	if offset < 0 || limit < 0 {
+		return nil, fmt.Errorf("%w: range offset and limit must be non-negative", ErrDenied)
+	}
+	total := int64(len(data))
+	if offset > total {
+		return nil, fmt.Errorf("%w: range offset %d exceeds output size %d", ErrDenied, offset, total)
+	}
+	if offset == 0 && limit == 0 && total <= int64(maxBytes) {
+		return append([]byte(nil), data...), nil
+	}
+	want := limit
+	if want == 0 || want > maxBytes {
+		want = maxBytes
+	}
+	remaining := total - offset
+	if int64(want) > remaining {
+		want = int(remaining)
+	}
+rangeLoop:
+	for {
+		end := offset + int64(want)
+		next := end
+		if end >= total {
+			next = -1
+		}
+		header := []byte(fmt.Sprintf("[cr-range offset=%d end=%d total=%d next_offset=%d]\n", offset, end, total, next))
+		available := maxBytes - len(header)
+		if available < 0 || (available == 0 && end < total) {
+			return nil, fmt.Errorf("%w: output cap is too small for range metadata", ErrDenied)
+		}
+		if want > available {
+			want = available
+			continue
+		}
+		chunk := append([]byte(nil), data[int(offset):int(end)]...)
+		if end < total && !utf8.Valid(chunk) {
+			for trim := 1; trim < utf8.UTFMax && trim < len(chunk); trim++ {
+				if utf8.Valid(chunk[:len(chunk)-trim]) {
+					want = len(chunk) - trim
+					continue rangeLoop
+				}
+			}
+		}
+		return append(header, chunk...), nil
 	}
 }
 

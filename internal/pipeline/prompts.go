@@ -72,6 +72,8 @@ func buildReviewerPromptWithRelocationAssignment(paths ArtifactPaths, pr gitprov
 			AgentID: agent.ID, Rationale: selected.Rationale,
 			FileIndices: fileIndices, AllowedFileIndices: allowedFileIndices, ScopeIndices: scopeIndices, ExtraCitationRefs: extraCitationRefs,
 			ManifestDigest: relocation.ManifestDigest, RelocationCount: relocation.MoveCount, AssignmentDigest: relocation.AssignmentDigest,
+			SymlinkMetadataDigest: symlinkPromptDigest(relocation), SymlinkPaths: append([]string(nil), relocation.SymlinkPaths...),
+			BaseOnlySymlinkPaths: append([]string(nil), relocation.BaseOnlySymlinkPaths...),
 		},
 		"file_manifest": manifest,
 		"dossier":       input.Dossier,
@@ -121,6 +123,9 @@ func buildReviewerCoverageRepairPromptWithRelocationAssignment(paths ArtifactPat
 			"Return findings from this focused pass only; primary findings are retained separately and must not be repeated.",
 			"List a file in inspected_files only after actually inspecting its body. Keep any unresolved body-inspection or relocation-impact obligation in skipped_files so coverage remains incomplete.",
 			"For any verified relocation in this repair assignment, assess path impact using the supplied manifest and assignment digests; uncertainty or an explicit skip remains incomplete.",
+			"For each head-tree symlink in assignment.symlink_paths, inspect its pinned payload and lexical resolution with cr_read(view=symlink); this reads the link payload only, never the destination body. Only list the path as inspected after actually inspecting available payload bytes.",
+			"For each path in assignment.base_only_symlink_paths, the pinned base symlink payload is historical metadata only; the path is a regular file in the head tree. Read its head-tree regular body with ordinary cr_read (no view) before listing the path in inspected_files. Metadata-only inspection does not satisfy the head body obligation.",
+			"For a path in assignment.symlink_paths, if symlink metadata has payload_omitted_reason, the payload bytes were unavailable: metadata inspection alone does not count as payload inspection, so keep that symlink-payload obligation in skipped_files. payload=\"\" with payload_size=0 is an inspected empty payload, not an omitted payload.",
 		},
 	}
 	body, err := json.Marshal(payload)
@@ -128,6 +133,13 @@ func buildReviewerCoverageRepairPromptWithRelocationAssignment(paths ArtifactPat
 		return "", nil, err
 	}
 	return string(body), deps, nil
+}
+
+func symlinkPromptDigest(assignment relocationAssignment) string {
+	if len(assignment.SymlinkPaths) == 0 && len(assignment.BaseOnlySymlinkPaths) == 0 {
+		return ""
+	}
+	return assignment.SymlinkMetadataDigest
 }
 
 type reviewerDiscussionOutcome struct {
@@ -311,15 +323,18 @@ type reviewerPromptWorkbench struct {
 }
 
 type reviewerPromptAssignment struct {
-	AgentID            string  `json:"agent_id"`
-	Rationale          string  `json:"rationale,omitempty"`
-	ManifestDigest     string  `json:"manifest_digest,omitempty"`
-	RelocationCount    int     `json:"relocation_count,omitempty"`
-	AssignmentDigest   string  `json:"assignment_digest,omitempty"`
-	FileIndices        []int   `json:"file_indices"`
-	AllowedFileIndices []int   `json:"allowed_file_indices,omitempty"`
-	ScopeIndices       []int   `json:"scope_indices"`
-	ExtraCitationRefs  [][]int `json:"extra_citation_refs,omitempty"`
+	AgentID               string   `json:"agent_id"`
+	Rationale             string   `json:"rationale,omitempty"`
+	ManifestDigest        string   `json:"manifest_digest,omitempty"`
+	RelocationCount       int      `json:"relocation_count,omitempty"`
+	AssignmentDigest      string   `json:"assignment_digest,omitempty"`
+	SymlinkMetadataDigest string   `json:"symlink_metadata_digest,omitempty"`
+	SymlinkPaths          []string `json:"symlink_paths,omitempty"`
+	BaseOnlySymlinkPaths  []string `json:"base_only_symlink_paths,omitempty"`
+	FileIndices           []int    `json:"file_indices"`
+	AllowedFileIndices    []int    `json:"allowed_file_indices,omitempty"`
+	ScopeIndices          []int    `json:"scope_indices"`
+	ExtraCitationRefs     [][]int  `json:"extra_citation_refs,omitempty"`
 }
 
 type reviewerPromptInput struct {
@@ -997,8 +1012,10 @@ func findingsOutputContractWithRelocations(agentID string, changedFiles []string
 			"allowed_values is context only; do not include allowed_values keys in the response.",
 			"schema_version must be 1.",
 			"agent_id must match the provided agent id.",
-			"inspected_files must list assigned ordinary changed-file bodies you actually inspected, even when findings is empty. A certified relocation may be covered by its path-impact assessment without claiming the body was inspected.",
-			"skipped_files must list assigned body-inspection or relocation-impact obligations you intentionally did not complete or could not complete.",
+			"inspected_files must list assigned ordinary changed-file bodies or changed symlink payloads you actually inspected, even when findings is empty. A certified relocation may be covered by its path-impact assessment without claiming the body was inspected.",
+			"skipped_files must list assigned body-inspection, symlink-payload, or relocation-impact obligations you intentionally did not complete or could not complete.",
+			"For each head-tree symlink in assignment.symlink_paths, inspect its exact pinned link payload and resolution with cr_read using view=symlink. This inspects the symlink payload, not the destination body; list the path in inspected_files only after actually inspecting available payload bytes.",
+			"For a path in assignment.symlink_paths, if symlink metadata has payload_omitted_reason, the payload bytes were unavailable: metadata inspection alone does not count as payload inspection, so keep that symlink-payload obligation in skipped_files. payload=\"\" with payload_size=0 is an inspected empty payload, not an omitted payload.",
 			"At least one of inspected_files, skipped_files, or context_files must be non-empty; context evidence alone may support a valid relocation assessment.",
 			"constraints must list any material review constraints, such as intentionally narrow scope, missing context, or tool limitations.",
 			"assignment.scope_indices are the authoritative review scope; file_indices outside scope_indices are context only and do not expand inspected_files or skipped_files.",
@@ -1013,7 +1030,7 @@ func findingsOutputContractWithRelocations(agentID string, changedFiles []string
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
 			"agent_id":        "string, required",
-			"inspected_files": "string[], assigned changed files inspected by this reviewer",
+			"inspected_files": "string[], assigned ordinary changed-file bodies or changed symlink payloads actually inspected; symlink payload inspection does not mean the destination body was read",
 			"skipped_files":   "string[], assigned changed files intentionally not inspected or not inspectable",
 			"context_files":   "string[], safe existing pinned-head context paths outside assignment scope",
 			"constraints":     "string[], material scope/tool/context constraints",
@@ -1038,6 +1055,20 @@ func findingsOutputContractWithRelocations(agentID string, changedFiles []string
 				"body": "Explain the issue and the concrete impact. Include the suggested fix in the same body.",
 			}},
 		},
+	}
+	if len(relocation.SymlinkPaths) > 0 {
+		contract.Instructions = append(contract.Instructions,
+			"assignment.symlink_paths identifies paths that are symlinks in the head tree and are covered by the fixed pinned metadata artifact; use the exact assignment.symlink_metadata_digest when describing the evidence.",
+			"For each assigned symlink, consider how its payload and lexical resolution affect consumers, imports/relative references, workspaces, build/CI/scripts, runtime assets/routes, and guidance/ownership. Missing, linked, outside-repository, or unsupported target status is not evidence that a destination body was read; state unresolved uncertainty in skipped_files or constraints.",
+			"A payload_omitted_reason means the exact symlink payload bytes are unavailable, even though pinned metadata was read; do not claim that path as inspected and keep the payload obligation in skipped_files. An explicitly present empty payload with payload_size=0 is different and is inspectable.",
+			"If a pinned head target resolves to a regular repository file and its contents matter, inspect it with ordinary cr_read only when it is a safe regular path. Do not follow the symlink or claim the target body was inspected by view=symlink.",
+		)
+	}
+	if len(relocation.BaseOnlySymlinkPaths) > 0 {
+		contract.Instructions = append(contract.Instructions,
+			"assignment.base_only_symlink_paths identifies paths that were symlinks only in the base tree and are regular files in the head tree; their pinned base payload is historical metadata only.",
+			"For each base-only symlink path, read the head-tree regular body with ordinary cr_read (no view) before listing the path in inspected_files. Reading base symlink metadata does not satisfy the head body obligation; if you only inspect metadata, keep the path in skipped_files.",
+		)
 	}
 	if relocation.MoveCount > 0 {
 		contract.Instructions = append(contract.Instructions,
