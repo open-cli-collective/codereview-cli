@@ -1116,7 +1116,6 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		}
 		recordRequestDuration(&result.response, start, result.err)
 	}
-	s.runCleanup()
 	if jobID != "" {
 		if err := adapter.cleanupClaudeBGJob(context.WithoutCancel(ctx), jobID, result.err, workDir); err != nil {
 			s.writeCleanupWarning(err)
