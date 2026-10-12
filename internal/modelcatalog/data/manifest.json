@@ -1,19 +1,14 @@
 {
-  "schema_version": 1,
-  "revision": "baseline-2026-10-02",
-  "generated_at": "2026-10-02",
+  "schema_version": 2,
+  "revision": "baseline-request-bindings-2026-10-08",
+  "generated_at": "2026-10-08",
   "files": {
     "runtimes.csv": "c8259b7dd4ea3a9ab149656c74a3e37fa58874ecb57d75a59ff4b8642a32ff0d",
     "models.csv": "cc80619402a47d7338b8c70ffa190001a2247aedc3da00e76aeb9d2c31e6c2d8",
     "defaults.csv": "7d7ee13a060a70130597b35708d13baddd3f6576cf7aa7f986d7532918734531",
-    "pricing.csv": "236305213c9876472c4efad072e9c3bb07cbfe20276dd70b65d6fd9729131447"
+    "pricing.csv": "5a606456ff2449c79b97d8787893fa517de712e8aa2f221f159fa133378a1776"
   },
   "sources": [
-    {
-      "kind": "official",
-      "path": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-      "revision": "gpt-6.1-sol-2026-10-02"
-    },
     {
       "kind": "official",
       "path": "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
@@ -23,6 +18,61 @@
       "kind": "harness",
       "path": "https://learn.chatgpt.com/docs/agent-configuration/speed",
       "revision": "codex-speed-2026-10-02"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+      "revision": "gpt-5.6-luna-whole-request-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "revision": "gpt-5.6-sol-whole-request-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+      "revision": "gpt-5.6-terra-whole-request-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "revision": "gpt-6-astra-whole-request-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "revision": "gpt-6-luna-whole-request-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+      "revision": "gpt-6-sol-whole-request-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+      "revision": "gpt-6.1-sol-whole-request-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/pricing",
+      "revision": "absolute-rates-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/guides/fast-mode",
+      "revision": "observed-fast-priority-tiers-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/guides/ultrafast-mode",
+      "revision": "astra-ultrafast-tier-2026-10-08"
+    },
+    {
+      "kind": "official",
+      "path": "https://developers.openai.com/api/docs/guides/prompt-caching",
+      "revision": "inclusive-input-cache-categories-2026-10-08"
     }
   ]
 }
