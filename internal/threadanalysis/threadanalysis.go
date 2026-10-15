@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -56,6 +57,13 @@ type Result struct {
 	Rationale string   `json:"rationale,omitempty"`
 }
 
+// Failure records a thread whose isolated analysis produced no usable result.
+// A failed thread must not be replied to or resolved using an analysis result.
+type Failure struct {
+	ThreadID string `json:"thread_id"`
+	Error    string `json:"error"`
+}
+
 // Options are explicit call-site supplied dependencies for one analysis run.
 type Options struct {
 	Store           llmlifecycle.Store
@@ -70,6 +78,9 @@ type Options struct {
 	NewStepID       func() string
 	ResumeSessionID string
 	OnSessionID     func(string) error
+	// IsolateFailures allows a review to continue after task-local failures.
+	// Response-only callers leave this false to retain blocking/retry behavior.
+	IsolateFailures bool
 }
 
 // AnalyzeThread analyzes one normalized inline thread through the durable LLM lifecycle.
@@ -99,36 +110,57 @@ func analyzeThread(ctx context.Context, opts Options, thread threadcontext.Threa
 }
 
 // AnalyzeThreads analyzes normalized inline threads in order, using logPath to
-// select each thread's provider log artifact.
-func AnalyzeThreads(ctx context.Context, opts Options, threads []threadcontext.Thread, logPath func(threadcontext.Thread) (string, error)) ([]Result, error) {
+// select each thread's provider log artifact. Isolated failures are returned
+// separately from successful results; blocking failures still stop the batch.
+// Matching isolated failures are reused on resume, just like reviewer failures.
+func AnalyzeThreads(ctx context.Context, opts Options, threads []threadcontext.Thread, logPath func(threadcontext.Thread) (string, error)) ([]Result, []Failure, error) {
 	if err := validateOptions(opts); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if logPath == nil {
-		return nil, fmt.Errorf("threadanalysis: log path function is required")
+		return nil, nil, fmt.Errorf("threadanalysis: log path function is required")
 	}
 	results := make([]Result, 0, len(threads))
+	var failures []Failure
 	for _, thread := range threads {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		var err error
 		opts.LogPath, err = logPath(thread)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		result, draft, err := analyzeThread(ctx, opts, thread)
 		if sessionID := strings.TrimSpace(draft.ProviderReportedSessionID); sessionID != "" {
 			if opts.OnSessionID != nil {
 				if checkpointErr := opts.OnSessionID(sessionID); checkpointErr != nil {
-					return nil, checkpointErr
+					return nil, nil, checkpointErr
 				}
 			}
 			opts.ResumeSessionID = sessionID
 		}
 		if err != nil {
-			return nil, err
+			var taskErr *llmlifecycle.TaskError
+			if errors.As(err, &taskErr) && taskErr.Status() == llmlifecycle.StatusFailedIsolated {
+				failures = append(failures, Failure{ThreadID: strings.TrimSpace(string(thread.ID)), Error: failureDiagnostic(err)})
+				continue
+			}
+			return nil, nil, err
 		}
 		results = append(results, result)
 	}
-	return results, nil
+	return results, failures, nil
+}
+
+// failureDiagnostic is safe to publish. Provider errors and validation errors
+// can contain rejected model values or private output; preserve those details
+// only in the lifecycle artifacts, including when reusing a cached failure.
+func failureDiagnostic(err error) string {
+	if errors.Is(err, llm.ErrStructuredOutputInvalidAfterRetry) || strings.HasPrefix(err.Error(), llm.ErrStructuredOutputInvalidAfterRetry.Error()+":") {
+		return "structured output remained invalid after retry"
+	}
+	return "provider execution failed; see local task artifacts for details"
 }
 
 // ValidateCachedThread verifies that a cached analysis task still matches the
@@ -161,7 +193,12 @@ func lifecycleRequestForThread(opts Options, threadID string, thread threadconte
 	if err != nil {
 		return llmlifecycle.Request{}, err
 	}
+	failureStatus := llmlifecycle.Status("")
+	if opts.IsolateFailures {
+		failureStatus = llmlifecycle.StatusFailedIsolated
+	}
 	return llmlifecycle.Request{
+		FailureStatus:   failureStatus,
 		Store:           opts.Store,
 		Adapter:         opts.Adapter,
 		RunID:           opts.RunID,

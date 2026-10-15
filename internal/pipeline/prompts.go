@@ -822,7 +822,7 @@ func selectionThreadStatus(thread threadcontext.Thread) string {
 	}
 }
 
-func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary) (string, error) {
+func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary, threadFailures ...[]reviewplan.ThreadAnalysisFailureSummary) (string, error) {
 	payload := map[string]any{
 		"task":              "dedupe findings and return rollup JSON only",
 		"output_contract":   rollupOutputContract(findings),
@@ -832,11 +832,46 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFai
 		"reviewer_failures": reviewerFailures,
 		"reviewer_coverage": rollupCoveragePrompt(reviewerCoverage),
 	}
+	if len(threadFailures) > 0 && len(threadFailures[0]) > 0 {
+		payload["thread_analysis_failures"] = rollupThreadAnalysisFailurePrompt(threadFailures[0])
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("pipeline: build rollup prompt: %w", err)
 	}
 	return string(body), nil
+}
+
+type rollupThreadAnalysisFailureSummary struct {
+	Count          int                                       `json:"count"`
+	Examples       []reviewplan.ThreadAnalysisFailureSummary `json:"examples"`
+	Omitted        int                                       `json:"omitted"`
+	EvidenceDigest string                                    `json:"evidence_digest"`
+}
+
+func rollupThreadAnalysisFailurePrompt(failures []reviewplan.ThreadAnalysisFailureSummary) rollupThreadAnalysisFailureSummary {
+	// Bind the complete evidence independently of the sampled prompt. A changed
+	// omitted failure must invalidate cached synthesis just like a visible one.
+	complete := append([]reviewplan.ThreadAnalysisFailureSummary(nil), failures...)
+	slices.SortFunc(complete, func(a, b reviewplan.ThreadAnalysisFailureSummary) int {
+		if order := strings.Compare(a.ThreadID, b.ThreadID); order != 0 {
+			return order
+		}
+		return strings.Compare(a.Error, b.Error)
+	})
+	digest := sha256.New()
+	for _, failure := range complete {
+		// Length-prefix raw strings so even invalid UTF-8 repaired for display
+		// cannot make distinct complete evidence share a reuse fingerprint.
+		_, _ = fmt.Fprintf(digest, "%d:%s%d:%s", len(failure.ThreadID), failure.ThreadID, len(failure.Error), failure.Error)
+	}
+	examples := reviewplan.ThreadAnalysisFailureExamples(complete)
+	return rollupThreadAnalysisFailureSummary{
+		Count:          len(complete),
+		Examples:       examples,
+		Omitted:        len(complete) - len(examples),
+		EvidenceDigest: hex.EncodeToString(digest.Sum(nil)),
+	}
 }
 
 type rollupCoveragePromptEntry struct {

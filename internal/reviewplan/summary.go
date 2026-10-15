@@ -60,14 +60,15 @@ type ThreadCounts struct {
 type RunSummary struct {
 	// ToolVersion is the raw version string (e.g. "0.3.63"); the renderer
 	// adds the "cr " prefix.
-	ToolVersion       string
-	Adapter           string
-	Model             string
-	PostingIdentity   string
-	SelectedReviewers []string
-	ReviewerFailures  []ReviewerFailureSummary
-	ReviewerCoverage  []ReviewerCoverageSummary
-	WallDurationMS    *int64
+	ToolVersion            string
+	Adapter                string
+	Model                  string
+	PostingIdentity        string
+	SelectedReviewers      []string
+	ReviewerFailures       []ReviewerFailureSummary
+	ThreadAnalysisFailures []ThreadAnalysisFailureSummary
+	ReviewerCoverage       []ReviewerCoverageSummary
+	WallDurationMS         *int64
 	// Workstreams holds the stages that ran in this round; a stage skipped by
 	// reuse (e.g. selection under a reused reviewer cohort) is absent rather
 	// than present with empty usage, which is what lets AggregateUsage's
@@ -79,6 +80,13 @@ type RunSummary struct {
 type ReviewerFailureSummary struct {
 	AgentID string
 	Error   string
+}
+
+// ThreadAnalysisFailureSummary identifies an existing discussion that could not
+// be analyzed. Its absence from thread responses does not imply it was settled.
+type ThreadAnalysisFailureSummary struct {
+	ThreadID string `json:"thread_id"`
+	Error    string `json:"error"`
 }
 
 // WorkstreamUsage is adapter-reported usage for one workstream: the reserved
@@ -119,7 +127,7 @@ type AggregateUsage struct {
 func (r RunSummary) hasData() bool {
 	return r.ToolVersion != "" || r.Adapter != "" || r.Model != "" ||
 		r.PostingIdentity != "" || len(r.SelectedReviewers) > 0 ||
-		len(r.ReviewerFailures) > 0 || len(r.ReviewerCoverage) > 0 || r.WallDurationMS != nil ||
+		len(r.ReviewerFailures) > 0 || len(r.ThreadAnalysisFailures) > 0 || len(r.ReviewerCoverage) > 0 || r.WallDurationMS != nil ||
 		len(r.Workstreams) > 0
 }
 
@@ -309,6 +317,53 @@ func writeReviewerFailureDiagnostics(out *strings.Builder, failures []ReviewerFa
 		fmt.Fprintf(out, "- %s — failed: %s\n", codeSpan(failure.AgentID), escapeCell(samplePublicDiagnostic(failure.Error)))
 	}
 	out.WriteString("\n")
+}
+
+func writeThreadAnalysisDiagnostics(out *strings.Builder, failures []ThreadAnalysisFailureSummary) {
+	if len(failures) == 0 {
+		return
+	}
+	out.WriteString("### Unanalyzed Threads\n\n")
+	examples := ThreadAnalysisFailureExamples(failures)
+	out.WriteString(threadAnalysisFailureCount(len(failures)))
+	if omitted := len(failures) - len(examples); omitted > 0 {
+		fmt.Fprintf(out, "; showing %d examples; %d omitted", len(examples), omitted)
+	}
+	out.WriteString(".\n\n")
+	for _, failure := range examples {
+		fmt.Fprintf(out, "- %s — not analyzed: %s\n", codeSpan(failure.ThreadID), escapeCell(failure.Error))
+	}
+	out.WriteString("\nThese threads were left untouched. Complete failure evidence remains in the local task artifacts. Isolated analysis failures are cached on resume; use `--rerun` to retry with a fresh run.\n\n")
+}
+
+const maxPublicThreadExamples = 5
+
+// ThreadAnalysisFailureExamples returns deterministic, bounded display samples.
+// The complete typed failure collection is left unchanged for local evidence,
+// JSON presentation and safe cache fingerprinting.
+func ThreadAnalysisFailureExamples(failures []ThreadAnalysisFailureSummary) []ThreadAnalysisFailureSummary {
+	examples := append([]ThreadAnalysisFailureSummary(nil), failures...)
+	sort.Slice(examples, func(i, j int) bool {
+		if examples[i].ThreadID != examples[j].ThreadID {
+			return examples[i].ThreadID < examples[j].ThreadID
+		}
+		return examples[i].Error < examples[j].Error
+	})
+	if len(examples) > maxPublicThreadExamples {
+		examples = examples[:maxPublicThreadExamples]
+	}
+	for i := range examples {
+		examples[i].ThreadID = samplePublicDiagnostic(examples[i].ThreadID)
+		examples[i].Error = samplePublicDiagnostic(examples[i].Error)
+	}
+	return examples
+}
+
+func threadAnalysisFailureCount(count int) string {
+	if count == 1 {
+		return "1 thread was not analyzed"
+	}
+	return fmt.Sprintf("%d threads were not analyzed", count)
 }
 
 // GitHub tables offer no column-width control, so variable-length values
@@ -526,9 +581,30 @@ func filesNotIn(files []string, exclude map[string]bool) []string {
 // already knows that incomplete coverage downgrades the event. Re-running does
 // not clear it either, since a reviewer that declined a file declines it again,
 // so a reader given no cause has no next step.
-func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSummary, coverage []ReviewerCoverageSummary) {
+func writeApprovalWithheld(out *strings.Builder, failures []ReviewerFailureSummary, coverage []ReviewerCoverageSummary, threadFailures []ThreadAnalysisFailureSummary) {
 	out.WriteString("### Approval Withheld\n\n")
-	out.WriteString("No blocking or major findings were reported. Approval is withheld because at least one reviewer did not complete its assigned review obligations:\n\n")
+	threadOnly := len(failures) == 0 && !hasIncompleteReviewerCoverage(coverage) && len(threadFailures) > 0
+	if threadOnly {
+		out.WriteString("No blocking or major findings were reported. Approval is withheld because existing discussions could not be analyzed:\n\n")
+	} else {
+		out.WriteString("No blocking or major findings were reported. Approval is withheld because at least one reviewer did not complete its assigned review obligations:\n\n")
+	}
+	if len(threadFailures) > 0 {
+		examples := ThreadAnalysisFailureExamples(threadFailures)
+		ids := make([]string, 0, len(examples))
+		for _, failure := range examples {
+			ids = append(ids, codeSpan(failure.ThreadID))
+		}
+		fmt.Fprintf(out, "- %s; examples: %s", threadAnalysisFailureCount(len(threadFailures)), strings.Join(ids, ", "))
+		if omitted := len(threadFailures) - len(examples); omitted > 0 {
+			fmt.Fprintf(out, "; %d omitted", omitted)
+		}
+		out.WriteString(".\n")
+	}
+	if threadOnly {
+		out.WriteString("\nSee Unanalyzed Threads below for diagnostics and retry guidance.\n\n")
+		return
+	}
 	for _, failure := range failures {
 		fmt.Fprintf(out, "- %s did not produce a result: %s\n", codeSpan(failure.AgentID), escapeCell(samplePublicDiagnostic(failure.Error)))
 	}

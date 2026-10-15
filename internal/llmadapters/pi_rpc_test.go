@@ -73,7 +73,8 @@ func TestPiRPCLaunchSafetyAndSuccess(t *testing.T) {
 	assertFlagValue(t, record.AdapterArgs, "--model", "opencode-go/kimi-k2.6")
 	assertFlagValue(t, record.AdapterArgs, "--thinking", "max")
 	assertFlagValue(t, record.AdapterArgs, "--system-prompt", piRPCSystemPrompt)
-	for _, flag := range []string{"--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
+	assertPiRPCEmptyAppend(t, record.AdapterArgs)
+	for _, flag := range []string{"--no-tools", "--no-context-files", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-session"} {
 		if !containsFlag(record.AdapterArgs, flag) {
 			t.Fatalf("args = %#v, want %s", record.AdapterArgs, flag)
 		}
@@ -118,6 +119,86 @@ func TestPiRPCStreamRecordsDuration(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 	assertSlowSuccessDuration(t, response)
+}
+
+// This subprocess double models an auth.json refresh without using credentials
+// or a provider. Prompt isolation must leave the selected store in place, so
+// its updated synthetic state survives invocation scratch cleanup.
+func TestPiRPCPreservesSelectedAgentAuthenticationState(t *testing.T) {
+	for _, reviewer := range []bool{false, true} {
+		name := "structured"
+		if reviewer {
+			name = "reviewer"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			agentDir := filepath.Join(root, "selected-agent")
+			home := filepath.Join(root, "home")
+			repoDir := filepath.Join(root, "repo")
+			scratchDir := filepath.Join(root, "scratch")
+			for _, dir := range []string{agentDir, home, repoDir, scratchDir} {
+				if err := os.Mkdir(dir, 0o700); err != nil {
+					t.Fatalf("Mkdir: %v", err)
+				}
+			}
+			authPath := filepath.Join(agentDir, "auth.json")
+			if err := os.WriteFile(authPath, []byte(`{"fixture":"initial synthetic auth state"}`), 0o600); err != nil {
+				t.Fatalf("WriteFile(synthetic auth): %v", err)
+			}
+			recordPath := filepath.Join(root, "record.json")
+			adapter := NewPiRPCAdapter(PiRPCOptions{
+				Command:           os.Args[0],
+				commandArgsPrefix: piRPCHelperPrefix(),
+				Env: append(piRPCHelperEnv("success", recordPath),
+					"PI_CODING_AGENT_DIR="+agentDir,
+					"HOME="+home,
+					"LLM_PI_RPC_SYNTHETIC_AUTH_REFRESH=1",
+				),
+				Timeout: 5 * time.Second,
+				ScratchDirFactory: func() (string, func() error, error) {
+					dir, err := os.MkdirTemp(scratchDir, "invocation-*")
+					return dir, func() error { return os.RemoveAll(dir) }, err
+				},
+			})
+			req := Request{Model: "fixture/model", Prompt: "fixture prompt"}
+			wantPrompt := piRPCSystemPrompt
+			if reviewer {
+				wantPrompt = piRPCReviewerSystemPrompt
+				diffPath := filepath.Join(root, "diff.patch")
+				if err := os.WriteFile(diffPath, []byte("fixture diff\n"), 0o600); err != nil {
+					t.Fatalf("WriteFile(diff): %v", err)
+				}
+				req.ReviewerWorkspace = &ReviewerWorkspaceRequest{
+					RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+				}
+			}
+			stream, err := adapter.Start(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if _, err := stream.Wait(context.Background()); err != nil {
+				t.Fatalf("Wait: %v", err)
+			}
+			record := readPiRPCRecord(t, recordPath)
+			if record.Env["PI_CODING_AGENT_DIR"] != agentDir || record.Env["HOME"] != home {
+				t.Fatalf("selected agent/home = %q/%q, want %q/%q", record.Env["PI_CODING_AGENT_DIR"], record.Env["HOME"], agentDir, home)
+			}
+			assertFlagValue(t, record.AdapterArgs, "--system-prompt", wantPrompt)
+			if appendPrompt, present := flagValueOK(record.AdapterArgs, "--append-system-prompt"); !present || appendPrompt != "" {
+				t.Fatalf("append system prompt = %q (present %v), want explicit empty input", appendPrompt, present)
+			}
+			if !containsFlag(record.AdapterArgs, "--no-context-files") {
+				t.Fatalf("args = %#v, want context discovery disabled", record.AdapterArgs)
+			}
+			data, err := os.ReadFile(authPath) // #nosec G304 -- synthetic test-owned auth state only.
+			if err != nil || string(data) != `{"fixture":"refreshed synthetic auth state"}` {
+				t.Fatalf("synthetic auth state = %q (err %v), want refresh in original selected store", data, err)
+			}
+			if entries, err := os.ReadDir(scratchDir); err != nil || len(entries) != 0 {
+				t.Fatalf("scratch entries = %v (err %v), want cleanup without auth state loss", entries, err)
+			}
+		})
+	}
 }
 
 func TestPiRPCFailureLeavesDurationZero(t *testing.T) {
@@ -202,6 +283,7 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 		t.Fatalf("args = %#v, reviewer extension tools must remain enabled", record.AdapterArgs)
 	}
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
+	assertPiRPCEmptyAppend(t, record.AdapterArgs)
 	reviewerPrompt := flagValue(record.AdapterArgs, "--system-prompt")
 	for _, instruction := range []string{"Invoke cr_diff before cr_read, cr_search, or cr_list", "If cr_diff fails", "view=symlink", "assignment.base_only_symlink_paths", "ordinary cr_read and no view", "payload_omitted_reason", "keep that path skipped", "payload_size=0 is an inspected empty payload"} {
 		if !strings.Contains(reviewerPrompt, instruction) {
@@ -603,6 +685,7 @@ func TestPiRPCReviewerPreflightUsesEmptyDiscoveryDisabledDirectory(t *testing.T)
 	}
 	assertFlagValue(t, record.AdapterArgs, "--mode", "rpc")
 	assertFlagValue(t, record.AdapterArgs, "--tools", piRPCReviewerToolNames)
+	assertPiRPCEmptyAppend(t, record.AdapterArgs)
 	for _, flag := range []string{"--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--no-session"} {
 		if !containsFlag(record.AdapterArgs, flag) {
 			t.Fatalf("preflight args = %#v, want %s", record.AdapterArgs, flag)
@@ -1192,7 +1275,7 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("caller cancellation propagates before agent_end", func(t *testing.T) {
+	t.Run("caller cancellation propagates before any event", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		ctx, cancel := context.WithCancel(context.Background())
 		adapter := NewPiRPCAdapter(PiRPCOptions{
@@ -1233,7 +1316,7 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("missing agent_end fails stream", func(t *testing.T) {
+	t.Run("stream ending before agent_settled fails", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewPiRPCAdapter(PiRPCOptions{
 			Command:           os.Args[0],
@@ -1246,17 +1329,17 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 			t.Fatalf("Start: %v", err)
 		}
 		_, err = stream.Wait(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "agent_end") {
-			t.Fatalf("Wait error = %v, want missing agent_end", err)
+		if err == nil || !strings.Contains(err.Error(), "agent_settled") {
+			t.Fatalf("Wait error = %v, want missing agent_settled", err)
 		}
 	})
 
-	t.Run("non-zero exit after agent_end fails stream", func(t *testing.T) {
+	t.Run("non-zero exit after agent_settled fails stream", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewPiRPCAdapter(PiRPCOptions{
 			Command:           os.Args[0],
 			commandArgsPrefix: piRPCHelperPrefix(),
-			Env:               piRPCHelperEnv("agent-end-exit-failure", recordPath),
+			Env:               piRPCHelperEnv("settled-exit-failure", recordPath),
 			Timeout:           5 * time.Second,
 		})
 		stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
@@ -1269,7 +1352,7 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 		}
 	})
 
-	t.Run("non-zero exit before agent_end fails stream", func(t *testing.T) {
+	t.Run("non-zero exit before agent_settled fails stream", func(t *testing.T) {
 		recordPath := filepath.Join(t.TempDir(), "record.json")
 		adapter := NewPiRPCAdapter(PiRPCOptions{
 			Command:           os.Args[0],
@@ -1288,6 +1371,495 @@ func TestPiRPCProtocolFailures(t *testing.T) {
 	})
 }
 
+const piRPCTestPromptStarted = `{"id":"prompt-1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}`
+
+func TestPiRPCSettlementContract(t *testing.T) {
+	answer := `{"ok":true}`
+	overloaded := piRPCTestTurn{stopReason: "error", errorMessage: "503 overloaded", usage: piRPCTestUsage(7, 0, nil, 0.25)}
+	final := piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(100, 10, map[string]any{"cacheRead": 3, "cacheWrite": 4}, 0.5)}
+	finalUsage := Usage{TokensIn: piRPCTestPtr(100), TokensOut: piRPCTestPtr(10), CacheRead: piRPCTestPtr(3), CacheCreate: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.5)}
+	invalidFinalUsage := Usage{TokensIn: piRPCTestPtr(9), TokensOut: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.125)}
+	invalidFinalUsageReport := piRPCTestUsage(9, 4, nil, 0.125)
+	for _, tt := range []struct {
+		name       string
+		script     []string
+		wantOutput string
+		wantErr    string
+		wantUsage  Usage
+	}{
+		{
+			name: "recoverable agent_end continues through retry to settlement",
+			script: []string{
+				piRPCTestPromptStarted,
+				`{"type":"agent_start"}`,
+				overloaded.end(),
+				piRPCTestAgentEnd(true, overloaded),
+				`#pause`,
+				`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":100,"errorMessage":"503 overloaded"}`,
+				`{"type":"agent_start"}`,
+				`{"type":"message_update","usage":{"input":90,"output":5,"cost":{"total":9}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"{"}}`,
+				final.end(),
+				`{"type":"auto_retry_end","success":true,"attempt":1}`,
+				piRPCTestAgentEnd(false, final),
+				`{"type":"agent_settled"}`,
+			},
+			wantOutput: answer,
+			wantUsage:  Usage{TokensIn: piRPCTestPtr(107), TokensOut: piRPCTestPtr(10), CacheRead: piRPCTestPtr(3), CacheCreate: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.75)},
+		},
+		{
+			name: "overflow compaction recovery counts summary usage once",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{stopReason: "error", errorMessage: "context overflow", usage: piRPCTestUsage(0, 0, nil, 0)}.end(),
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"compaction_start","reason":"overflow"}`,
+				`{"type":"compaction_end","reason":"overflow","result":{"summary":"s","tokensBefore":9000,"usage":{"input":50,"output":5,"cost":{"total":0.25}}},"aborted":false,"willRetry":true}`,
+				`{"type":"agent_start"}`,
+				final.end(),
+				piRPCTestAgentEnd(false, final),
+				`{"type":"agent_settled"}`,
+			},
+			wantOutput: answer,
+			wantUsage:  Usage{TokensIn: piRPCTestPtr(150), TokensOut: piRPCTestPtr(15), CacheRead: piRPCTestPtr(3), CacheCreate: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.75)},
+		},
+		{
+			name: "completed assistant turns sum usage once and keep only the final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: "Checking the diff.", toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(100, 10, map[string]any{"cacheRead": 1}, 0.25)}.end(),
+				`{"type":"message_end","message":{"role":"toolResult","toolCallId":"call-1","toolName":"cr_diff","content":[{"type":"text","text":"diff"}],"isError":false}}`,
+				`{"type":"message_update","usage":{"input":200,"output":20,"cost":{"total":0.5}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"{"}}`,
+				`{"type":"message_update","usage":{"input":200,"output":20,"cost":{"total":0.5}},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"{\"ok\":true}"}}`,
+				piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(200, 20, map[string]any{"cacheRead": 2}, 0.5)}.end(),
+				`{"type":"agent_end","messages":[{"role":"assistant","content":[],"usage":{"input":100,"output":10},"stopReason":"toolUse"},{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":200,"output":20},"stopReason":"stop"}],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantOutput: answer,
+			wantUsage:  Usage{TokensIn: piRPCTestPtr(300), TokensOut: piRPCTestPtr(30), CacheRead: piRPCTestPtr(3), CostUSD: piRPCTestPtr(0.75)},
+		},
+		{
+			name: "one-hour cache writes sum once per completed assistant message",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: "Checking the diff.", toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(100, 10, map[string]any{"cacheWrite": 5, "cacheWrite1h": 1}, 0.25)}.end(),
+				`{"type":"message_update","usage":{"input":200,"output":20,"cacheWrite":7,"cacheWrite1h":2,"cost":{"total":0.5}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"{"}}`,
+				piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(200, 20, map[string]any{"cacheWrite": 7, "cacheWrite1h": 2}, 0.5)}.end(),
+				`{"type":"agent_end","messages":[{"role":"assistant","content":[],"usage":{"input":100,"output":10,"cacheWrite":5,"cacheWrite1h":1},"stopReason":"toolUse"},{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"input":200,"output":20,"cacheWrite":7,"cacheWrite1h":2},"stopReason":"stop"}],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantOutput: answer,
+			wantUsage:  Usage{TokensIn: piRPCTestPtr(300), TokensOut: piRPCTestPtr(30), CacheCreate: piRPCTestPtr(12), CacheCreate1h: piRPCTestPtr(3), CostUSD: piRPCTestPtr(0.75)},
+		},
+		{
+			name: "one-hour cache split reported by only some messages sums the reported values",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: "Checking the diff.", toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(100, 10, map[string]any{"cacheWrite": 5}, 0.25)}.end(),
+				piRPCTestTurn{text: answer, stopReason: "stop", usage: piRPCTestUsage(200, 20, map[string]any{"cacheWrite": 7, "cacheWrite1h": 2}, 0.5)}.end(),
+				piRPCTestAgentEnd(false),
+				`{"type":"agent_settled"}`,
+			},
+			wantOutput: answer,
+			wantUsage:  Usage{TokensIn: piRPCTestPtr(300), TokensOut: piRPCTestPtr(30), CacheCreate: piRPCTestPtr(12), CacheCreate1h: piRPCTestPtr(2), CostUSD: piRPCTestPtr(0.75)},
+		},
+		{
+			name: "provider error after exhausted retries fails with diagnostic",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, stopReason: "error", errorMessage: "503 overloaded", usage: piRPCTestUsage(7, 0, nil, 0.25)}.end(),
+				`{"type":"agent_end","messages":[],"willRetry":true}`,
+				`{"type":"auto_retry_start","attempt":1,"maxAttempts":1,"delayMs":1,"errorMessage":"503 overloaded"}`,
+				overloaded.end(),
+				`{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"503 overloaded"}`,
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "503 overloaded",
+			wantUsage: Usage{TokensIn: piRPCTestPtr(14), TokensOut: piRPCTestPtr(0), CostUSD: piRPCTestPtr(0.5)},
+		},
+		{
+			name: "aborted final assistant fails",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: `{"ok":`, stopReason: "aborted", errorMessage: "Request was aborted", usage: piRPCTestUsage(5, 1, nil, 0)}.end(),
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "Request was aborted",
+			wantUsage: Usage{TokensIn: piRPCTestPtr(5), TokensOut: piRPCTestPtr(1), CostUSD: piRPCTestPtr(0.0)},
+		},
+		{
+			name: "length stop reason rejects truncated final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, stopReason: "length", usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, stopReason: "length", usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "truncated",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "missing stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestLine(map[string]any{"type": "message_end", "message": map[string]any{
+					"role":    "assistant",
+					"content": []map[string]any{{"type": "text", "text": answer}},
+					"usage":   invalidFinalUsageReport,
+				}}),
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "missing a stop reason",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "empty stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "missing a stop reason",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "unknown stop reason rejects final answer",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, stopReason: "future_reason", usage: invalidFinalUsageReport}.end(),
+				piRPCTestAgentEnd(false, piRPCTestTurn{text: answer, stopReason: "future_reason", usage: invalidFinalUsageReport}),
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "unsupported final assistant stop reason",
+			wantUsage: invalidFinalUsage,
+		},
+		{
+			name: "earlier valid answer then final provider error fails",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: answer, toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(10, 2, nil, 0)}.end(),
+				piRPCTestTurn{stopReason: "error", errorMessage: "terminated", usage: piRPCTestUsage(0, 0, nil, 0)}.end(),
+				`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"toolUse"}],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "terminated",
+			wantUsage: Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CostUSD: piRPCTestPtr(0.0)},
+		},
+		{
+			name: "settled run without a final answer fails",
+			script: []string{
+				piRPCTestPromptStarted,
+				piRPCTestTurn{text: "Checking the diff.", toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(10, 2, nil, 0)}.end(),
+				`{"type":"agent_end","messages":[],"willRetry":false}`,
+				`{"type":"agent_settled"}`,
+			},
+			wantErr:   "final answer",
+			wantUsage: Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CostUSD: piRPCTestPtr(0.0)},
+		},
+		{
+			name: "stream truncated after agent_end fails",
+			script: []string{
+				piRPCTestPromptStarted,
+				final.end(),
+				piRPCTestAgentEnd(false, final),
+				`#exit`,
+			},
+			wantErr:   "agent_settled",
+			wantUsage: finalUsage,
+		},
+		{
+			name: "malformed record after valid answer fails without output",
+			script: []string{
+				piRPCTestPromptStarted,
+				final.end(),
+				`{"type":`,
+			},
+			wantErr:   "malformed JSONL",
+			wantUsage: finalUsage,
+		},
+		{
+			name: "prompt handled without a run fails",
+			script: []string{
+				`{"id":"prompt-1","type":"response","command":"prompt","success":true,"data":{"disposition":"handled"}}`,
+			},
+			wantErr: "handled",
+		},
+		{
+			name: "prompt rejection fails",
+			script: []string{
+				`{"id":"prompt-1","type":"response","command":"prompt","success":false,"error":"No API key found for opencode-go"}`,
+			},
+			wantErr: "No API key found",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := piRPCScriptAdapter(t, 5*time.Second, tt.script...)
+			stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			start := time.Now()
+			response, err := stream.Wait(context.Background())
+			if elapsed := time.Since(start); elapsed > 3*time.Second {
+				t.Fatalf("Wait took %s, want completion without waiting for the task deadline", elapsed)
+			}
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("Wait: %v", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("Wait error = %v, want %q", err, tt.wantErr)
+			}
+			if string(response.StructuredOutput) != tt.wantOutput {
+				t.Fatalf("StructuredOutput = %q, want %q", response.StructuredOutput, tt.wantOutput)
+			}
+			if !reflect.DeepEqual(response.Usage, tt.wantUsage) {
+				t.Fatalf("Usage = %s, want %s", formatPiRPCTestUsage(response.Usage), formatPiRPCTestUsage(tt.wantUsage))
+			}
+		})
+	}
+}
+
+func TestParsePiRPCUsageCacheWriteRetention(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		usage string
+		want  Usage
+	}{
+		{
+			name:  "one-hour subset is kept beside the aggregate",
+			usage: `{"input":10,"output":2,"cacheRead":3,"cacheWrite":7,"cacheWrite1h":4,"cost":{"total":0.5}}`,
+			want:  Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CacheRead: piRPCTestPtr(3), CacheCreate: piRPCTestPtr(7), CacheCreate1h: piRPCTestPtr(4), CostUSD: piRPCTestPtr(0.5)},
+		},
+		{
+			name:  "zero one-hour subset is a reported zero",
+			usage: `{"input":10,"output":2,"cacheRead":0,"cacheWrite":7,"cacheWrite1h":0,"cost":{"total":0.5}}`,
+			want:  Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CacheRead: piRPCTestPtr(0), CacheCreate: piRPCTestPtr(7), CacheCreate1h: piRPCTestPtr(0), CostUSD: piRPCTestPtr(0.5)},
+		},
+		{
+			name:  "absent one-hour subset stays unknown",
+			usage: `{"input":10,"output":2,"cacheRead":0,"cacheWrite":7,"cost":{"total":0.5}}`,
+			want:  Usage{TokensIn: piRPCTestPtr(10), TokensOut: piRPCTestPtr(2), CacheRead: piRPCTestPtr(0), CacheCreate: piRPCTestPtr(7), CostUSD: piRPCTestPtr(0.5)},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parsePiRPCUsage(map[string]json.RawMessage{"usage": json.RawMessage(tt.usage)})
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parsePiRPCUsage = %s, want %s", formatPiRPCTestUsage(got), formatPiRPCTestUsage(tt.want))
+			}
+		})
+	}
+}
+
+func TestPiRPCReviewerSettlementPreservesToolEvidence(t *testing.T) {
+	tempDir := t.TempDir()
+	repoDir := filepath.Join(tempDir, "repo")
+	scratchDir := filepath.Join(tempDir, "scratch")
+	for _, dir := range []string{repoDir, scratchDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+	}
+	diffPath := filepath.Join(tempDir, "diff.patch")
+	if err := os.WriteFile(diffPath, []byte("fixed diff\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(diff): %v", err)
+	}
+	commentary := piRPCTestTurn{text: "Checking the diff.", toolCall: true, stopReason: "toolUse", usage: piRPCTestUsage(100, 10, nil, 0.25)}
+	overloaded := piRPCTestTurn{stopReason: "error", errorMessage: "503 overloaded", usage: piRPCTestUsage(0, 0, nil, 0)}
+	final := piRPCTestTurn{text: `{"ok":true}`, stopReason: "stop", usage: piRPCTestUsage(200, 20, nil, 0.5)}
+	adapter := piRPCScriptAdapter(t, 5*time.Second,
+		piRPCTestPromptStarted,
+		commentary.end(),
+		`{"type":"tool_execution_start","toolCallId":"diff-1","toolName":"cr_diff","args":{}}`,
+		`{"type":"tool_execution_end","toolCallId":"diff-1","toolName":"cr_diff","result":{"content":[{"type":"text","text":"diff"}]},"isError":false}`,
+		overloaded.end(),
+		piRPCTestAgentEnd(true, commentary, overloaded),
+		`#pause`,
+		`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":100,"errorMessage":"503 overloaded"}`,
+		final.end(),
+		`{"type":"auto_retry_end","success":true,"attempt":1}`,
+		piRPCTestAgentEnd(false, final),
+		`{"type":"agent_settled"}`,
+	)
+	stream, err := adapter.Start(context.Background(), Request{
+		Prompt: "review",
+		ReviewerWorkspace: &ReviewerWorkspaceRequest{
+			RepoDir: repoDir, ScratchDir: scratchDir, DiffPath: diffPath, MaxToolOutputBytes: 2048,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %q, want recovered final answer", response.StructuredOutput)
+	}
+	if response.ReviewerToolEvidence == nil || response.ReviewerToolEvidence.DiffStatus != llm.DiffToolStatusSucceeded {
+		t.Fatalf("reviewer tool evidence = %#v, want succeeded cr_diff", response.ReviewerToolEvidence)
+	}
+	want := Usage{TokensIn: piRPCTestPtr(300), TokensOut: piRPCTestPtr(30), CostUSD: piRPCTestPtr(0.75)}
+	if !reflect.DeepEqual(response.Usage, want) {
+		t.Fatalf("Usage = %s, want %s", formatPiRPCTestUsage(response.Usage), formatPiRPCTestUsage(want))
+	}
+}
+
+func TestPiRPCPendingRetryHonorsDeadlineAndCancellation(t *testing.T) {
+	pendingRetry := []string{
+		piRPCTestPromptStarted,
+		piRPCTestTurn{stopReason: "error", errorMessage: "503 overloaded", usage: piRPCTestUsage(0, 0, nil, 0)}.end(),
+		`{"type":"agent_end","messages":[],"willRetry":true}`,
+		`{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":60000,"errorMessage":"503 overloaded"}`,
+	}
+	t.Run("deadline", func(t *testing.T) {
+		adapter := piRPCScriptAdapter(t, 300*time.Millisecond, pendingRetry...)
+		stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Wait error = %v, want deadline exceeded while retry is pending", err)
+		}
+	})
+	t.Run("cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		adapter := piRPCScriptAdapter(t, 5*time.Second, pendingRetry...)
+		stream, err := adapter.Start(ctx, Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+		if _, err := stream.Wait(context.Background()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Wait error = %v, want context canceled while retry is pending", err)
+		}
+	})
+}
+
+func TestPiRPCMissingSettlementFailsAsIncompatibleRuntime(t *testing.T) {
+	final := piRPCTestTurn{text: `{"ok":true}`, stopReason: "stop", usage: piRPCTestUsage(100, 10, nil, 0.5)}
+	adapter := piRPCScriptAdapter(t, 5*time.Second,
+		`{"id":"prompt-1","type":"response","command":"prompt","success":true}`,
+		final.end(),
+		`{"type":"agent_end","messages":[]}`,
+	)
+	adapter.settlementGrace = 100 * time.Millisecond
+	stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	start := time.Now()
+	response, err := stream.Wait(context.Background())
+	if !errors.Is(err, ErrPiRPCIncompatible) || !strings.Contains(err.Error(), "agent_settled") {
+		t.Fatalf("Wait error = %v, want incompatible runtime without agent_settled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Wait took %s, want bounded settlement grace", elapsed)
+	}
+	if len(response.StructuredOutput) != 0 {
+		t.Fatalf("StructuredOutput = %q, want none without settlement", response.StructuredOutput)
+	}
+}
+
+func TestPiRPCSettlementGraceRestartsOnFollowUpWork(t *testing.T) {
+	final := piRPCTestTurn{text: `{"ok":true}`, stopReason: "stop", usage: piRPCTestUsage(100, 10, nil, 0.5)}
+	adapter := piRPCScriptAdapter(t, 5*time.Second,
+		piRPCTestPromptStarted,
+		final.end(),
+		piRPCTestAgentEnd(false, final),
+		`#pause`,
+		`{"type":"compaction_start","reason":"threshold"}`,
+		`#pause`, `#pause`, `#pause`, `#pause`, `#pause`, `#pause`, `#pause`, `#pause`,
+		`{"type":"compaction_end","reason":"threshold","result":{"summary":"s","tokensBefore":9000},"aborted":false,"willRetry":false}`,
+		`{"type":"agent_settled"}`,
+	)
+	adapter.settlementGrace = 500 * time.Millisecond
+	stream, err := adapter.Start(context.Background(), Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"ok":true}` {
+		t.Fatalf("StructuredOutput = %q, want answer after threshold compaction settles", response.StructuredOutput)
+	}
+}
+
+type piRPCTestTurn struct {
+	text         string
+	toolCall     bool
+	stopReason   string
+	errorMessage string
+	usage        map[string]any
+}
+
+func (turn piRPCTestTurn) message() map[string]any {
+	content := []map[string]any{}
+	if turn.text != "" {
+		content = append(content, map[string]any{"type": "text", "text": turn.text})
+	}
+	if turn.toolCall {
+		content = append(content, map[string]any{"type": "toolCall", "id": "call-1", "name": "cr_diff", "arguments": map[string]any{}})
+	}
+	message := map[string]any{"role": "assistant", "content": content, "usage": turn.usage, "stopReason": turn.stopReason}
+	if turn.errorMessage != "" {
+		message["errorMessage"] = turn.errorMessage
+	}
+	return message
+}
+
+func (turn piRPCTestTurn) end() string {
+	return piRPCTestLine(map[string]any{"type": "message_end", "message": turn.message()})
+}
+
+func piRPCTestAgentEnd(willRetry bool, turns ...piRPCTestTurn) string {
+	messages := make([]map[string]any, 0, len(turns))
+	for _, turn := range turns {
+		messages = append(messages, turn.message())
+	}
+	return piRPCTestLine(map[string]any{"type": "agent_end", "messages": messages, "willRetry": willRetry})
+}
+
+func piRPCTestUsage(input, output int, cache map[string]any, cost float64) map[string]any {
+	usage := map[string]any{"input": input, "output": output, "cost": map[string]any{"total": cost}}
+	for key, value := range cache {
+		usage[key] = value
+	}
+	return usage
+}
+
+func piRPCTestLine(event map[string]any) string {
+	data, err := json.Marshal(event)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func piRPCTestPtr[T any](value T) *T { return &value }
+
+func formatPiRPCTestUsage(usage Usage) string {
+	data, _ := json.Marshal(usage)
+	return string(data)
+}
+
+func piRPCScriptAdapter(t *testing.T, timeout time.Duration, script ...string) *PiRPCAdapter {
+	t.Helper()
+	return NewPiRPCAdapter(PiRPCOptions{
+		Command:           os.Args[0],
+		commandArgsPrefix: piRPCHelperPrefix(),
+		Env:               append(piRPCHelperEnv("script", filepath.Join(t.TempDir(), "record.json")), "LLM_PI_RPC_SCRIPT="+strings.Join(script, "\n")),
+		Timeout:           timeout,
+	})
+}
+
 func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 	adapter := NewPiRPCAdapter(PiRPCOptions{})
 	req := Request{Model: "opencode-go/kimi-k2.6", Prompt: "prompt"}
@@ -1302,6 +1874,10 @@ func TestPiRPCRejectsUnsafeSpecs(t *testing.T) {
 		{name: "tools allowlist", args: append([]string{"--tools", "read"}, args...)},
 		{name: "missing no tools", args: removeFlag(args, "--no-tools")},
 		{name: "missing no extensions", args: removeFlag(args, "--no-extensions")},
+		{name: "missing context disable", args: removeFlag(args, "--no-context-files")},
+		{name: "missing append override", args: removeFlagWithValue(args, "--append-system-prompt")},
+		{name: "nonempty append override", args: replaceFlagValue(args, "--append-system-prompt", "ambient instructions")},
+		{name: "duplicate append override", args: append(append([]string(nil), args...), "--append-system-prompt", "")},
 		{name: "unexpected flag", args: append([]string{"--unexpected"}, args...)},
 		{name: "text mode", args: replaceFlagValue(args, "--mode", "text")},
 		{name: "wrong system prompt", args: replaceFlagValue(args, "--system-prompt", "be loose")},
@@ -1328,6 +1904,9 @@ func TestPiRPCRejectsUnsafeReviewerSpecs(t *testing.T) {
 	}{
 		{name: "missing builtin disable", args: removeFlag(args, "--no-builtin-tools")},
 		{name: "missing context disable", args: removeFlag(args, "--no-context-files")},
+		{name: "missing append override", args: removeFlagWithValue(args, "--append-system-prompt")},
+		{name: "nonempty append override", args: replaceFlagValue(args, "--append-system-prompt", "ambient instructions")},
+		{name: "duplicate append override", args: append(append([]string(nil), args...), "--append-system-prompt", "")},
 		{name: "missing project approval disable", args: removeFlag(args, "--no-approve")},
 		{name: "all tools disabled", args: append(removeFlagWithValue(args, "--tools"), "--no-tools")},
 		{name: "native bash added", args: replaceFlagValue(args, "--tools", piRPCReviewerToolNames+",bash")},
@@ -1417,17 +1996,62 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 		}
 		os.Exit(0)
 	}
+	if os.Getenv("LLM_PI_RPC_SYNTHETIC_AUTH_REFRESH") == "1" {
+		// Only this opt-in fixture passes a synthetic selected store and home.
+		record.Env["PI_CODING_AGENT_DIR"] = os.Getenv("PI_CODING_AGENT_DIR")
+		record.Env["HOME"] = os.Getenv("HOME")
+		data, _ := json.Marshal(record)
+		_ = os.WriteFile(recordPath, data, 0o600)                                                                                                      // #nosec G703 -- fixture-owned record path.
+		_ = os.WriteFile(filepath.Join(record.Env["PI_CODING_AGENT_DIR"], "auth.json"), []byte(`{"fixture":"refreshed synthetic auth state"}`), 0o600) // #nosec G703 -- opt-in synthetic fixture store, never real credentials.
+	}
+	// Pi RPC stays alive after agent_settled and shuts down when stdin closes.
+	stdinClosed := make(chan struct{})
+	go func() {
+		for scanner.Scan() {
+		}
+		close(stdinClosed)
+	}()
+	awaitStdinClose := func() {
+		select {
+		case <-stdinClosed:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	settle := func() {
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"stop"}],"willRetry":false}`)
+		fmt.Println(`{"type":"agent_settled"}`)
+		awaitStdinClose()
+	}
 
 	switch os.Getenv("LLM_HELPER_MODE") {
 	case "success", "slow-success":
 		if os.Getenv("LLM_HELPER_MODE") == "slow-success" {
 			time.Sleep(slowSuccessSleep)
 		}
-		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
+		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}`)
 		fmt.Println(`{"type":"agent_start","sessionId":"session-1"}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"user","content":"review this diff"}}`)
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","text":"ignored"},{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":3915,"tokensOut":50,"cacheRead":5,"cacheWrite":7,"cost":{"total":0.00392005}}}}`)
-		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","text":"ignored"},{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":3915,"tokensOut":50,"cacheRead":5,"cacheWrite":7,"cost":{"total":0.00392005}},"stopReason":"stop"}}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"usage":{"tokensIn":3915,"tokensOut":50,"cacheRead":5,"cacheWrite":7,"cost":{"total":0.00392005}},"stopReason":"stop"}],"willRetry":false}`)
+		fmt.Println(`{"type":"agent_settled"}`)
+		awaitStdinClose()
+	case "script":
+		for _, line := range strings.Split(os.Getenv("LLM_PI_RPC_SCRIPT"), "\n") {
+			switch line {
+			case "#pause":
+				// Emulate retry delay; Pi shuts down instead of retrying once stdin closes.
+				select {
+				case <-stdinClosed:
+					os.Exit(0)
+				case <-time.After(100 * time.Millisecond):
+				}
+			case "#exit":
+				os.Exit(0)
+			default:
+				fmt.Println(line)
+			}
+		}
+		awaitStdinClose()
 	case "streaming-partials":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"agent_start","sessionId":"session-1"}`)
@@ -1472,7 +2096,9 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 			fmt.Println(string(data))
 		}
 		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"api":"openai-completions","provider":"opencode-go","model":"deepseek-v4-pro","usage":{"input":100,"output":50,"cacheRead":0,"cacheWrite":0,"totalTokens":150,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1700000000000}}`)
-		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}],"willRetry":false}`)
+		fmt.Println(`{"type":"agent_settled"}`)
+		awaitStdinClose()
 	case "prompt-failure":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":false,"error":"No API key found for opencode-go"}`)
 	case "tool":
@@ -1485,28 +2111,28 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 			fmt.Printf("{\"type\":\"tool_execution_start\",\"toolCallId\":\"%s\",\"toolName\":%q,\"args\":{}}\n", tool, tool)
 			fmt.Printf("{\"type\":\"tool_execution_end\",\"toolCallId\":\"%s\",\"toolName\":%q,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n", tool, tool)
 		}
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
-		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"stop"}}`)
+		settle()
 	case "reviewer-log-flood":
 		fmt.Fprintln(os.Stderr, strings.Repeat("stderr flood\n", 1000))
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		for i := 0; i < 20; i++ {
 			fmt.Printf("{\"type\":\"tool_execution_end\",\"toolCallId\":\"tool-%d\",\"toolName\":\"cr_read\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":%q}]}}\n", i, strings.Repeat("tool output ", 500))
 		}
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
-		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"stop"}}`)
+		settle()
 	case "reviewer-diff-failure-log-flood":
 		fmt.Fprintln(os.Stderr, strings.Repeat("stderr flood\n", 1000))
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"tool_execution_start","toolCallId":"diff-1","toolName":"cr_diff","args":{}}`)
 		fmt.Println(`{"type":"tool_execution_end","toolCallId":"diff-1","toolName":"cr_diff","result":{"content":[{"type":"text","text":"fixed diff unavailable"}],"isError":true}}`)
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
-		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"stop"}}`)
+		settle()
 	case "reviewer-diff-incomplete":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"tool_execution_start","toolCallId":"diff-1","toolName":"cr_diff","args":{}}`)
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
-		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"stop"}}`)
+		settle()
 	case "sleep":
 		time.Sleep(10 * time.Second)
 	case "malformed":
@@ -1514,10 +2140,12 @@ func TestPiRPCHelperProcess(_ *testing.T) {
 	case "no-agent-end":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
 		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
-	case "agent-end-exit-failure":
+	case "settled-exit-failure":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
-		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}}`)
-		fmt.Println(`{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}]}]}`)
+		fmt.Println(`{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"ok\":true}"}],"stopReason":"stop"}}`)
+		fmt.Println(`{"type":"agent_end","messages":[],"willRetry":false}`)
+		fmt.Println(`{"type":"agent_settled"}`)
+		awaitStdinClose()
 		os.Exit(42)
 	case "exit-before-agent-end":
 		fmt.Println(`{"id":"prompt-1","type":"response","command":"prompt","success":true}`)
@@ -1658,4 +2286,13 @@ func TestPiRPCToolUseKillsProcessGroup(t *testing.T) {
 	eventually(t, 2*time.Second, func() bool {
 		return !processExists(pid)
 	})
+}
+
+// Absence is distinct from an explicitly empty append source in Pi.
+func assertPiRPCEmptyAppend(t *testing.T, args []string) {
+	t.Helper()
+	value, present := flagValueOK(args, "--append-system-prompt")
+	if !present || value != "" || countPiRPCFlag(args, "--append-system-prompt") != 1 {
+		t.Fatalf("append system prompt = %q (present %v) in %#v, want exactly one empty source", value, present, args)
+	}
 }

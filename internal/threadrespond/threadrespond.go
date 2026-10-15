@@ -197,7 +197,7 @@ func fresh(ctx context.Context, opts Options, req Request) (res Result, err erro
 			if err != nil {
 				return result, err
 			}
-			analyses, err := threadanalysis.AnalyzeThreads(ctx, analysisOpts, eligible, func(thread threadcontext.Thread) (string, error) {
+			analyses, _, err := threadanalysis.AnalyzeThreads(ctx, analysisOpts, eligible, func(thread threadcontext.Thread) (string, error) {
 				return threadLogPath(artifacts, thread.ID), nil
 			})
 			if err != nil {
