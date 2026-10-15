@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -186,6 +188,9 @@ func TestDryRunWithoutDiscussionReplaysAsFirstPass(t *testing.T) {
 	if provider.threadCalls != 0 || provider.reviewCalls != 0 || provider.issueCommentCalls != 0 {
 		t.Fatalf("discussion reads = threads %d reviews %d comments %d, want none", provider.threadCalls, provider.reviewCalls, provider.issueCommentCalls)
 	}
+	if len(result.ThreadAnalysisFailures) != 0 || len(result.Plan.Summary.Run.ThreadAnalysisFailures) != 0 {
+		t.Fatalf("discussion-free replay retained thread failures: result=%#v summary=%#v", result.ThreadAnalysisFailures, result.Plan.Summary.Run.ThreadAnalysisFailures)
+	}
 	if resumes := adapter.Resumes(); len(resumes) != 0 {
 		t.Fatalf("resumes = %#v, want no prior orchestrator or reviewer session resumed", resumes)
 	}
@@ -317,6 +322,48 @@ func TestDryRunWithDiscussionFeedsExistingDiscussion(t *testing.T) {
 	selectionPrompt := prompts[1]
 	if !strings.Contains(selectionPrompt, discussionThreadMarker) || !strings.Contains(selectionPrompt, discussionCommentMarker) {
 		t.Fatalf("selection prompt missing existing discussion:\n%s", selectionPrompt)
+	}
+}
+
+// Ordinary dry runs must retain isolated thread failures after the replay mode
+// is added, including the non-approving outcome and the rollup evidence.
+func TestDryRunWithDiscussionRetainsIsolatedThreadFailures(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	provider.threads = []gitprovider.InlineThread{markedReviewThread(t, "thread-failed", "main.go", 2, req.PostingIdentity, gitprovider.Identity{Login: "human", ID: "human-id"})}
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("dossier", discussionSummaryJSON(nil, nil), 1, 1))
+	adapter.Queue(fakeLLMResult("selection", selectionJSON("harness:reviewer", "main.go"), 1, 1))
+	adapter.Queue(llm.FakeResult{SessionID: "failed-thread", WaitErr: errors.New("thread provider failed")})
+	adapter.Queue(fakeLLMResult("reviewer", findingsWithCoverageJSON("harness:reviewer", []string{"main.go"}, nil, nil, nil), 1, 1))
+	adapter.Queue(fakeLLMResult("rollup", rollupJSON("approve", nil), 1, 1))
+
+	result, err := dryRunForTest(ctx, withoutDiscussionOptions(t, provider, adapter, store, "run-with-thread-failure"), req)
+	if err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	if result.WithoutDiscussion || result.Plan.Outcome != reviewplan.OutcomeComment {
+		t.Fatalf("mode/outcome = %t/%s, want ordinary non-approving review", result.WithoutDiscussion, result.Plan.Outcome)
+	}
+	if len(result.ThreadAnalysisFailures) != 1 || result.ThreadAnalysisFailures[0].ThreadID != "thread-failed" {
+		t.Fatalf("thread failures = %#v, want isolated failure", result.ThreadAnalysisFailures)
+	}
+	if failures := result.Plan.Summary.Run.ThreadAnalysisFailures; len(failures) != 1 || failures[0].ThreadID != "thread-failed" {
+		t.Fatalf("summary thread failures = %#v, want retained evidence", failures)
+	}
+	prompts := allPrompts(adapter)
+	if len(prompts) != 5 {
+		t.Fatalf("prompts = %d, want dossier, selection, failed thread, reviewer, rollup", len(prompts))
+	}
+	if !strings.Contains(prompts[4], `"thread_analysis_failures"`) || !strings.Contains(prompts[4], `"thread_id":"thread-failed"`) {
+		t.Fatalf("rollup prompt lost isolated thread failure: %s", prompts[4])
+	}
+	for _, action := range result.PlannedActions {
+		if action.ThreadID == "thread-failed" {
+			t.Fatalf("failed thread has planned action: %#v", action)
+		}
 	}
 }
 
