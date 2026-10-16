@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net"
 	"net/http"
@@ -244,6 +247,52 @@ func TestPiRPCRuntimeReviewerToolsAndUsage(t *testing.T) {
 	assertPiRuntimeToolResult(t, requests[3], "escape", "path traversal")
 	if strings.Contains(string(requests[3].raw), "outside the repository") {
 		t.Fatal("cr_read returned content from outside the repository root")
+	}
+	assertPiRuntimeDirEmpty(t, workspace.ScratchDir)
+}
+
+func TestPiRPCRuntimeReviewerPNGReachesProvider(t *testing.T) {
+	fixture := newPiRuntimeFixture(t,
+		piRuntimeToolCalls(piRuntimeUsage{}, piRuntimeToolCall{id: "diff", name: "cr_diff", args: `{}`}),
+		piRuntimeToolCalls(piRuntimeUsage{}, piRuntimeToolCall{id: "png", name: "cr_read", args: `{"path":"image.png","view":"png"}`}),
+		piRuntimeAnswer(`{"findings":[]}`, piRuntimeUsage{}),
+	)
+	modelsPath := filepath.Join(fixture.agentDir, "models.json")
+	data, err := os.ReadFile(modelsPath) // #nosec G304 -- test-owned model configuration.
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models map[string]any
+	if err := json.Unmarshal(data, &models); err != nil {
+		t.Fatal(err)
+	}
+	provider := models["providers"].(map[string]any)[piRuntimeProviderName].(map[string]any)
+	provider["models"].([]any)[0].(map[string]any)["input"] = []string{"text", "image"}
+	fixture.writeJSON(modelsPath, models)
+	workspace := fixture.reviewerWorkspace()
+	img := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	img.SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace.RepoDir, "image.png"), encoded.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response, err := fixture.run(fixture.adapter(piRuntimeTaskTimeout), Request{Model: piRuntimeModel, Prompt: "Inspect the PNG image.", ReviewerWorkspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.StructuredOutput) != `{"findings":[]}` {
+		t.Fatalf("output = %s", response.StructuredOutput)
+	}
+	requests := fixture.provider.requests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d", len(requests))
+	}
+	assertPiRuntimeToolResult(t, requests[2], "png", "rgba16_sha256")
+	if !bytes.Contains(requests[2].raw, []byte("data:image/png;base64,")) || !bytes.Contains(requests[2].raw, []byte(`"image_url"`)) {
+		t.Fatalf("provider did not receive native PNG: %s", requests[2].raw)
 	}
 	assertPiRuntimeDirEmpty(t, workspace.ScratchDir)
 }

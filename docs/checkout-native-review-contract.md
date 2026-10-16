@@ -375,7 +375,7 @@ tool duration, and aggregate reviewer RPC/stderr logs are bounded without
 limiting protocol parsing. Non-reviewer Pi tasks retain their tool-free scratch
 working directory.
 
-For PNG images, `cr_read` accepts `view="png"`. This reads the confined pinned
+With an image-capable reviewer model, `cr_read` accepts `view="png"` for PNG images. This reads the confined pinned
 head file and returns a native image block plus dimensions, file SHA-256,
 decoded non-premultiplied RGBA16 SHA-256 (row-major, big-endian channels), and
 the original chunk types, lengths and payload hashes. Chunk CRCs and PNG
