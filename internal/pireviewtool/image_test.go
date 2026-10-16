@@ -1,6 +1,8 @@
 package pireviewtool
 
 import (
+	"github.com/open-cli-collective/codereview-cli/internal/testimages"
+
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -19,7 +21,7 @@ func TestImageSourcePreservesBytesAndDimensions(t *testing.T) {
 	repo, diff := reviewerToolFixture(t)
 	for _, name := range []string{"sample.png", "sample.jpg", "sample.gif", "sample.webp", "sample.bmp"} {
 		t.Run(name, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("..", "llmadapters", "testdata", "reviewer-images", name)) // #nosec G304 -- fixed test fixture names.
+			data, err := testimages.Encoded(name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -116,7 +118,7 @@ func writeTestPNG(t *testing.T, repo, name string, data []byte) {
 
 func TestImageSourceRejectsGIFFrameOutsideCanvas(t *testing.T) {
 	repo, diff := reviewerToolFixture(t)
-	data, err := os.ReadFile(filepath.Join("..", "llmadapters", "testdata", "reviewer-images", "sample.gif"))
+	data, err := testimages.Encoded("sample.gif")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +146,7 @@ func TestImageSourceKeepsSVGAsText(t *testing.T) {
 
 func TestImageSourceRejectsWebPFrameOutsideCanvas(t *testing.T) {
 	repo, diff := reviewerToolFixture(t)
-	data, err := os.ReadFile(filepath.Join("..", "llmadapters", "testdata", "reviewer-images", "sample.webp"))
+	data, err := testimages.Encoded("sample.webp")
 	if err != nil {
 		t.Fatal(err)
 	}

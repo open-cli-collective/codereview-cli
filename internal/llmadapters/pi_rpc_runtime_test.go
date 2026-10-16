@@ -1,6 +1,8 @@
 package llmadapters
 
 import (
+	"github.com/open-cli-collective/codereview-cli/internal/testimages"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -256,7 +258,7 @@ func TestPiRPCRuntimeReviewerImagesReachProvider(t *testing.T) {
 		{"sample.png", "image/png"}, {"sample.jpg", "image/jpeg"}, {"sample.gif", "image/gif"}, {"sample.webp", "image/webp"}, {"sample.bmp", "image/png"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join("testdata", "reviewer-images", test.name))
+			data, err := testimages.Encoded(test.name)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -322,7 +324,7 @@ func TestPiRPCRuntimeReviewerImageLimits(t *testing.T) {
 		}
 	})
 	t.Run("nonvision", func(t *testing.T) {
-		data, err := os.ReadFile(filepath.Join("testdata", "reviewer-images", "sample.png"))
+		data, err := testimages.Encoded("sample.png")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -332,7 +334,7 @@ func TestPiRPCRuntimeReviewerImageLimits(t *testing.T) {
 		}
 	})
 	t.Run("invalid pixels", func(t *testing.T) {
-		data, err := os.ReadFile(filepath.Join("testdata", "reviewer-images", "sample.jpg"))
+		data, err := testimages.Encoded("sample.jpg")
 		if err != nil {
 			t.Fatal(err)
 		}
