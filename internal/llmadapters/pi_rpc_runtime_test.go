@@ -1,10 +1,9 @@
 package llmadapters
 
 import (
-	"github.com/open-cli-collective/codereview-cli/internal/testimages"
-
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +27,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/pireviewtool"
+	"github.com/open-cli-collective/codereview-cli/internal/testimages"
 )
 
 // piRuntimeVersionEnv opts this package into tests that drive the installed Pi
@@ -343,7 +343,8 @@ func TestPiRPCRuntimeReviewerImageLimits(t *testing.T) {
 		if scan < 0 {
 			t.Fatal("missing JPEG scan")
 		}
-		request := runPiRuntimeImage(t, data[:scan+2], true)
+		scanLength := int(binary.BigEndian.Uint16(data[scan+2:]))
+		request := runPiRuntimeImage(t, data[:scan+2+scanLength], true)
 		if bytes.Contains(request, []byte("image_url")) || !bytes.Contains(request, []byte("could not prepare")) {
 			t.Fatalf("invalid pixels accepted: %s", request)
 		}

@@ -1,8 +1,6 @@
 package pireviewtool
 
 import (
-	"github.com/open-cli-collective/codereview-cli/internal/testimages"
-
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -15,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/open-cli-collective/codereview-cli/internal/testimages"
 )
 
 func TestImageSourcePreservesBytesAndDimensions(t *testing.T) {
