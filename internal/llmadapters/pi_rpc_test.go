@@ -305,7 +305,7 @@ func TestPiRPCReviewerWorkspaceLaunchUsesOnlyCROwnedTools(t *testing.T) {
 			t.Fatalf("extension does not register %s:\n%s", tool, extension)
 		}
 	}
-	if !strings.Contains(string(extension), `enum: ["symlink", "png"]`) {
+	if !strings.Contains(string(extension), `enum: ["symlink", "image"]`) {
 		t.Fatalf("extension omitted optional symlink view schema:\n%s", extension)
 	}
 	for _, forbidden := range []string{"workspace_write", `name: "bash"`, `name: "edit"`, `name: "write"`} {
@@ -364,7 +364,7 @@ func TestPiRPCReviewerToolConfigPinsSymlinkArtifact(t *testing.T) {
 		}
 	}
 	extension, err := os.ReadFile(extensionPath) // #nosec G304 -- path is the generated extension.
-	if err != nil || !strings.Contains(string(extension), "cr_read") || !strings.Contains(string(extension), `enum: ["symlink", "png"]`) {
+	if err != nil || !strings.Contains(string(extension), "cr_read") || !strings.Contains(string(extension), `enum: ["symlink", "image"]`) {
 		t.Fatalf("generated extension missing bounded symlink view: err=%v content=%s", err, extension)
 	}
 }
