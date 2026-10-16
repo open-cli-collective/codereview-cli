@@ -23,7 +23,7 @@ import (
 const (
 	piRPCPromptID               = "prompt-1"
 	piRPCSystemPrompt           = "You are a strict JSON API for code review structured output. Return exactly one JSON object that matches the requested schema. Do not include markdown fences, prose, explanations, or leading/trailing text. The first byte of your final answer must be { and the last byte must be }."
-	piRPCReviewerSystemPrompt   = piRPCSystemPrompt + " Inspect the disposable repository only through the CR-owned cr_read, cr_search, cr_list, and cr_diff tools. Invoke cr_diff before cr_read, cr_search, or cr_list so the review starts from the pinned change. If cr_diff fails, record that exact tool failure as a constraint before inspecting allowed head files. For a head-tree symlink in assignment.symlink_paths, use cr_read with view=symlink to inspect its pinned payload and lexical target status; this does not read the destination body. For a path in assignment.base_only_symlink_paths, the base symlink payload is historical metadata only: inspect the head regular-file body with ordinary cr_read and no view before listing it as inspected. If metadata has payload_omitted_reason, the exact payload bytes are unavailable: metadata alone does not count as payload inspection, so keep that path skipped. payload=\"\" with payload_size=0 is an inspected empty payload, not an omission. These tools are read-only; do not request shell, write, edit, or any other tool."
+	piRPCReviewerSystemPrompt   = piRPCSystemPrompt + " Inspect the disposable repository only through the CR-owned cr_read, cr_search, cr_list, and cr_diff tools. Invoke cr_diff before cr_read, cr_search, or cr_list so the review starts from the pinned change. If cr_diff fails, record that exact tool failure as a constraint before inspecting allowed head files. For a head-tree symlink in assignment.symlink_paths, use cr_read with view=symlink to inspect its pinned payload and lexical target status; this does not read the destination body. For a path in assignment.base_only_symlink_paths, the base symlink payload is historical metadata only: inspect the head regular-file body with ordinary cr_read and no view before listing it as inspected. If metadata has payload_omitted_reason, the exact payload bytes are unavailable: metadata alone does not count as payload inspection, so keep that path skipped. payload=\"\" with payload_size=0 is an inspected empty payload, not an omission. For PNG files, use cr_read with view=png to inspect the pinned head image and its dimensions, source/pixel hashes and chunk inventory. A resized preview is explicitly labeled and cannot prove full-resolution fidelity or lossless equality with the base image. Keep any genuinely uninspected files skipped. These tools are read-only; do not request shell, write, edit, or any other tool."
 	piRPCReviewerToolTimeout    = 15 * time.Second
 	piRPCReviewerToolNames      = "cr_read,cr_search,cr_list,cr_diff"
 	piRPCToolEvidenceReserve    = 256
@@ -1168,7 +1168,17 @@ function runTool(tool, params, signal) {
       clearTimeout(timer);
       signal?.removeEventListener("abort", kill);
       const text = code === 0 ? stdout.toString("utf8") : (stderr.toString("utf8") || ("tool exited " + code));
-      resolve({ content: [{ type: "text", text }], details: {}, isError: code !== 0 });
+      if (code === 0 && tool === "cr_read" && params.view === "png") {
+        try {
+          const result = JSON.parse(text);
+          if (!Array.isArray(result.content) || result.content.length !== 2 || result.content[0].type !== "text" || typeof result.content[0].text !== "string" || result.content[1].type !== "image" || result.content[1].mimeType !== "image/png" || typeof result.content[1].data !== "string" || !result.content[1].data) throw new Error("invalid PNG result");
+          resolve({ content: result.content, details: {}, isError: false });
+        } catch {
+          resolve({ content: [{ type: "text", text: "PNG tool returned an invalid or incomplete image result" }], details: {}, isError: true });
+        }
+      } else {
+        resolve({ content: [{ type: "text", text }], details: {}, isError: code !== 0 });
+      }
     });
     child.stdin.end(JSON.stringify({ ...params, tool }));
   });
@@ -1180,7 +1190,7 @@ export default function (pi) {
     if (!diffAttempted) return Promise.resolve({ content: [{ type: "text", text: "cr_diff must be invoked before inspecting repository files" }], details: {}, isError: true });
     return runTool(tool, params, signal);
   };
-  pi.registerTool({ name: "cr_read", label: "CR Read", description: "Read one repository file. For an assigned changed symlink only, set view to symlink to inspect pinned link payload and lexical resolution without following it. Use offset and limit with next_offset for ranged regular-file or symlink-metadata reads.", parameters: { type: "object", properties: { path: { type: "string" }, view: { type: "string", enum: ["symlink"] }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, required: ["path"], additionalProperties: false }, execute: headTool("cr_read") });
+  pi.registerTool({ name: "cr_read", label: "CR Read", description: "Read one repository file. For an assigned changed symlink only, set view to symlink to inspect pinned link payload and lexical resolution without following it. For PNG images, set view to png to receive a native image preview and source/pixel/chunk hashes. PNG views cannot be ranged. Use offset and limit with next_offset for ranged regular-file or symlink-metadata reads.", parameters: { type: "object", properties: { path: { type: "string" }, view: { type: "string", enum: ["symlink", "png"] }, offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, required: ["path"], additionalProperties: false }, execute: headTool("cr_read") });
   pi.registerTool({ name: "cr_search", label: "CR Search", description: "Search repository text literally.", parameters: { type: "object", properties: { query: { type: "string" }, path: { type: "string" } }, required: ["query"], additionalProperties: false }, execute: headTool("cr_search") });
   pi.registerTool({ name: "cr_list", label: "CR List", description: "List repository files.", parameters: { type: "object", properties: { path: { type: "string" } }, additionalProperties: false }, execute: headTool("cr_list") });
   pi.registerTool({ name: "cr_diff", label: "CR Diff", description: "Read the fixed pinned review diff. Use offset and limit with next_offset from ranged responses to continue.", parameters: { type: "object", properties: { offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 0 } }, additionalProperties: false }, execute: (_id, params, signal) => { diffAttempted = true; return runTool("cr_diff", params, signal); } });

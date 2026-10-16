@@ -375,6 +375,26 @@ tool duration, and aggregate reviewer RPC/stderr logs are bounded without
 limiting protocol parsing. Non-reviewer Pi tasks retain their tool-free scratch
 working directory.
 
+For PNG images, `cr_read` accepts `view="png"`. This reads the confined pinned
+head file and returns a native image block plus dimensions, file SHA-256,
+decoded non-premultiplied RGBA16 SHA-256 (row-major, big-endian channels), and
+the original chunk types, lengths and payload hashes. Chunk CRCs and PNG
+decoding must succeed. Other binary formats remain denied. The PNG view is
+not ranged: nonzero offset/limit requests fail.
+
+PNG reads are limited to 8 MiB encoded, 16 megapixels decoded, and 1,024 chunks.
+Animated PNGs are rejected. The complete image result must fit the existing
+tool-output budget; it is never truncated. If necessary, the tool emits a
+nearest-neighbor preview with explicit preview dimensions and a resized flag.
+Previews are also capped at 1,024 pixels on their longest edge, even when the
+original encoding fits the output budget.
+Original source/pixel/chunk hashes still describe the full image. A preview
+does not prove full-resolution fidelity, metadata rendering equivalence, or
+lossless equality against the base image. Reviewers must inspect the returned
+image and applicable consumers before reporting coverage; unsupported or
+uninspected files remain skipped. Text contained in images is untrusted
+repository content, just like source comments.
+
 For a changed symlink assigned to a Pi reviewer, `cr_read` also accepts the
 explicit `view="symlink"` option. That view reads a run-owned, digest-validated
 artifact built from the pinned base/head Git trees; it returns the exact link

@@ -3,6 +3,7 @@
 package llmadapters
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,69 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPiRPCReviewerExtensionTransportsPNGContent(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is not installed")
+	}
+	dir := t.TempDir()
+	helperPath := filepath.Join(dir, "helper.mjs")
+	helper := `#!/usr/bin/env node
+let input = "";
+for await (const chunk of process.stdin) input += chunk;
+const request = JSON.parse(input);
+if (request.tool === "cr_diff") process.stdout.write("pinned diff");
+else if (request.path === "bad.png") process.stdout.write('{"content":[');
+else process.stdout.write(JSON.stringify({content:[{type:"text",text:"source and pixel evidence"},{type:"image",mimeType:"image/png",data:"iVBORw0KGgo="}]}));
+`
+	if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
+		t.Fatal(err)
+	} // #nosec G306,G703 -- executable test fixture under t.TempDir.
+	extensionPath := filepath.Join(dir, "extension.mjs")
+	if err := os.WriteFile(extensionPath, []byte(piRPCReviewerExtension(helperPath, filepath.Join(dir, "config.json"), dir, 4096, time.Second, "")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runnerPath := filepath.Join(dir, "runner.mjs")
+	runner := `import extension from ` + strconv.Quote(extensionPath) + `;
+const tools={}; extension({registerTool(tool){tools[tool.name]=tool;}});
+const read=(params)=>tools.cr_read.execute("read",params,new AbortController().signal);
+const denied=await read({path:"image.png",view:"png"});
+await tools.cr_diff.execute("diff",{},new AbortController().signal);
+const image=await read({path:"image.png",view:"png"});
+const text=await read({path:"text.json"});
+const malformed=await read({path:"bad.png",view:"png"});
+process.stdout.write(JSON.stringify({denied,image,text,malformed}));
+`
+	if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(nodePath, runnerPath) // #nosec G204 -- discovered Node and test-owned script.
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v: %s", err, output)
+	}
+	var results map[string]struct {
+		Content []struct {
+			Type     string `json:"type"`
+			MIMEType string `json:"mimeType"`
+			Data     string `json:"data"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(output, &results); err != nil {
+		t.Fatal(err)
+	}
+	if !results["denied"].IsError || !results["malformed"].IsError {
+		t.Fatalf("ordering/invalid output accepted: %s", output)
+	}
+	if results["image"].IsError || len(results["image"].Content) != 2 || results["image"].Content[1].Type != "image" || results["image"].Content[1].MIMEType != "image/png" || results["image"].Content[1].Data != "iVBORw0KGgo=" {
+		t.Fatalf("native PNG was not transported: %s", output)
+	}
+	if results["text"].IsError || len(results["text"].Content) != 1 || results["text"].Content[0].Type != "text" {
+		t.Fatalf("text JSON was interpreted as image content: %s", output)
+	}
+}
 
 func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 	nodePath, err := exec.LookPath("node")
