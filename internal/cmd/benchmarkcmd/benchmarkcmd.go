@@ -77,8 +77,9 @@ type doctorAgentDir struct {
 }
 
 type doctorCase struct {
-	ID string `json:"id"`
-	PR string `json:"pr"`
+	ID                string `json:"id"`
+	PR                string `json:"pr"`
+	WithoutDiscussion bool   `json:"without_discussion"`
 }
 
 type stickyWriter struct {
@@ -240,7 +241,7 @@ func buildDoctorReport(suite benchmark.SuiteFile, cfg config.File, flags doctorF
 		report.Candidates = append(report.Candidates, out)
 	}
 	for _, benchCase := range selectedCases {
-		report.Cases = append(report.Cases, doctorCase{ID: benchCase.ID, PR: benchCase.PR})
+		report.Cases = append(report.Cases, doctorCase{ID: benchCase.ID, PR: benchCase.PR, WithoutDiscussion: benchCase.EffectiveWithoutDiscussion()})
 	}
 	if report.Warnings == nil {
 		report.Warnings = []string{}
@@ -282,7 +283,7 @@ func renderDoctorText(opts *root.Options, report doctorReport) error {
 		)
 	}
 	for _, benchCase := range report.Cases {
-		w.printf("- case %s pr=%s\n", benchCase.ID, benchCase.PR)
+		w.printf("- case %s pr=%s without_discussion=%t\n", benchCase.ID, benchCase.PR, benchCase.WithoutDiscussion)
 	}
 	if len(report.Warnings) == 0 {
 		w.println("Warnings: 0")
