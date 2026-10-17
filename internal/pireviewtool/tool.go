@@ -176,7 +176,7 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 			}
 			break
 		}
-		if request.View != "" {
+		if request.View != "" && request.View != "image" {
 			return "", fmt.Errorf("%w: unsupported read view %q", ErrDenied, request.View)
 		}
 		path, err := confinedPath(root, request.Path, false)
@@ -187,6 +187,10 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 		file, openErr := rootHandle.Open(rel)
 		if openErr != nil {
 			return "", fmt.Errorf("read %q: %w", request.Path, openErr)
+		}
+		if request.View == "image" {
+			defer file.Close()
+			return readImageSource(ctx, file, request)
 		}
 		if binaryErr := rejectBinaryFile(ctx, file); binaryErr != nil {
 			_ = file.Close()

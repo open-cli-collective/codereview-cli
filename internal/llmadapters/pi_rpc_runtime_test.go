@@ -3,9 +3,13 @@ package llmadapters
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net"
 	"net/http"
@@ -23,6 +27,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/pireviewtool"
+	"github.com/open-cli-collective/codereview-cli/internal/testimages"
 )
 
 // piRuntimeVersionEnv opts this package into tests that drive the installed Pi
@@ -246,6 +251,147 @@ func TestPiRPCRuntimeReviewerToolsAndUsage(t *testing.T) {
 		t.Fatal("cr_read returned content from outside the repository root")
 	}
 	assertPiRuntimeDirEmpty(t, workspace.ScratchDir)
+}
+
+func TestPiRPCRuntimeReviewerImagesReachProvider(t *testing.T) {
+	for _, test := range []struct{ name, mime string }{
+		{"sample.png", "image/png"}, {"sample.jpg", "image/jpeg"}, {"sample.gif", "image/gif"}, {"sample.webp", "image/webp"}, {"sample.bmp", "image/png"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := testimages.Encoded(test.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := runPiRuntimeImage(t, data, true)
+			if !bytes.Contains(request, []byte("data:"+test.mime+";base64,")) || !bytes.Contains(request, []byte(`"image_url"`)) || !bytes.Contains(request, []byte("source_sha256")) {
+				t.Fatalf("provider did not receive image and source evidence: %s", request)
+			}
+		})
+	}
+}
+
+func TestPiRPCRuntimeReviewerPNGVariants(t *testing.T) {
+	transparent := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	transparent.SetNRGBA(0, 0, color.NRGBA{R: 100, G: 50, B: 20, A: 0})
+	transparent.SetNRGBA(1, 0, color.NRGBA{R: 255, A: 128})
+	palette := image.NewPaletted(image.Rect(0, 0, 2, 1), color.Palette{color.Transparent, color.NRGBA{G: 255, A: 128}})
+	palette.SetColorIndex(1, 0, 1)
+	wide := image.NewNRGBA64(image.Rect(0, 0, 2, 1))
+	wide.SetNRGBA64(0, 0, color.NRGBA64{R: 12345, G: 500, A: 65535})
+	for name, img := range map[string]image.Image{"transparent": transparent, "palette": palette, "16-bit": wide} {
+		t.Run(name, func(t *testing.T) {
+			var encoded bytes.Buffer
+			if err := png.Encode(&encoded, img); err != nil {
+				t.Fatal(err)
+			}
+			request := runPiRuntimeImage(t, encoded.Bytes(), true)
+			if !bytes.Contains(request, []byte("data:image/png;base64,")) {
+				t.Fatalf("PNG variant did not reach provider: %s", request)
+			}
+		})
+	}
+}
+
+func TestPiRPCRuntimeReviewerImageLimits(t *testing.T) {
+	t.Run("resized", func(t *testing.T) {
+		img := image.NewNRGBA(image.Rect(0, 0, 2048, 16))
+		img.SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, img); err != nil {
+			t.Fatal(err)
+		}
+		request := runPiRuntimeImage(t, encoded.Bytes(), true)
+		if !bytes.Contains(request, []byte("1024x8")) || !bytes.Contains(request, []byte("image_url")) {
+			t.Fatalf("preview not bounded and labeled: %s", request)
+		}
+	})
+	t.Run("output budget", func(t *testing.T) {
+		img := image.NewNRGBA(image.Rect(0, 0, 128, 128))
+		seed := uint32(1234567)
+		for i := range img.Pix {
+			seed ^= seed << 13
+			seed ^= seed >> 17
+			seed ^= seed << 5
+			img.Pix[i] = byte(seed & 255)
+		}
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, img); err != nil {
+			t.Fatal(err)
+		}
+		request := runPiRuntimeImage(t, encoded.Bytes(), true, 4096)
+		if !bytes.Contains(request, []byte("image_url")) {
+			t.Fatalf("Pi could not fit preview within output budget: %s", request)
+		}
+	})
+	t.Run("nonvision", func(t *testing.T) {
+		data, err := testimages.Encoded("sample.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := runPiRuntimeImage(t, data, false)
+		if bytes.Contains(request, []byte("image_url")) || !bytes.Contains(request, []byte("cannot inspect images")) {
+			t.Fatalf("text-only model treated image as inspected: %s", request)
+		}
+	})
+	t.Run("invalid pixels", func(t *testing.T) {
+		data, err := testimages.Encoded("sample.jpg")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Keep the dimension header, but remove the scan data.
+		scan := bytes.Index(data, []byte{0xff, 0xda})
+		if scan < 0 {
+			t.Fatal("missing JPEG scan")
+		}
+		scanLength := int(binary.BigEndian.Uint16(data[scan+2:]))
+		request := runPiRuntimeImage(t, data[:scan+2+scanLength], true)
+		if bytes.Contains(request, []byte("image_url")) || !bytes.Contains(request, []byte("could not prepare")) {
+			t.Fatalf("invalid pixels accepted: %s", request)
+		}
+	})
+}
+
+func runPiRuntimeImage(t *testing.T, data []byte, vision bool, budget ...int) []byte {
+	t.Helper()
+	fixture := newPiRuntimeFixture(t,
+		piRuntimeToolCalls(piRuntimeUsage{}, piRuntimeToolCall{id: "diff", name: "cr_diff", args: `{}`}),
+		piRuntimeToolCalls(piRuntimeUsage{}, piRuntimeToolCall{id: "image", name: "cr_read", args: `{"path":"image","view":"image"}`}),
+		piRuntimeAnswer(`{"findings":[]}`, piRuntimeUsage{}),
+	)
+	if vision {
+		modelsPath := filepath.Join(fixture.agentDir, "models.json")
+		modelData, err := os.ReadFile(modelsPath) // #nosec G304 -- test-owned model configuration.
+		if err != nil {
+			t.Fatal(err)
+		}
+		var models map[string]any
+		if err := json.Unmarshal(modelData, &models); err != nil {
+			t.Fatal(err)
+		}
+		provider := models["providers"].(map[string]any)[piRuntimeProviderName].(map[string]any)
+		provider["models"].([]any)[0].(map[string]any)["input"] = []string{"text", "image"}
+		fixture.writeJSON(modelsPath, models)
+	}
+	workspace := fixture.reviewerWorkspace()
+	if len(budget) > 0 {
+		workspace.MaxToolOutputBytes = budget[0]
+	}
+	if err := os.WriteFile(filepath.Join(workspace.RepoDir, "image"), data, 0o600); err != nil { // #nosec G703 -- test-owned workspace from t.TempDir.
+		t.Fatal(err)
+	}
+	response, err := fixture.run(fixture.adapter(piRuntimeTaskTimeout), Request{Model: piRuntimeModel, Prompt: "Inspect the image.", ReviewerWorkspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.StructuredOutput) != `{"findings":[]}` {
+		t.Fatalf("output = %s", response.StructuredOutput)
+	}
+	requests := fixture.provider.requests()
+	if len(requests) != 3 {
+		t.Fatalf("provider requests = %d", len(requests))
+	}
+	assertPiRuntimeDirEmpty(t, workspace.ScratchDir)
+	return requests[2].raw
 }
 
 func TestPiRPCRuntimeReviewerRejectsUnlistedTool(t *testing.T) {

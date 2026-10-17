@@ -375,6 +375,12 @@ tool duration, and aggregate reviewer RPC/stderr logs are bounded without
 limiting protocol parsing. Non-reviewer Pi tasks retain their tool-free scratch
 working directory.
 
+With an image-capable Pi reviewer, `cr_read` accepts `view="image"` for PNG, JPEG, GIF, WebP and BMP. CR reads the confined pinned head file and checks its header before passing the bytes to Pi's public `createReadToolDefinition`. Its custom operations return only those checked bytes; Pi's unrestricted filesystem reader is never enabled. SVG remains source text through ordinary `cr_read`. Image views cannot be ranged.
+
+The source is limited to 8 MiB encoded and 16 Mi-pixels. PNGs also retain the 1,024-chunk limit and reject APNG. Go's image header readers enforce the pixel limit without decoding the image. Pi handles decoding, BMP conversion and previews, with a 1,024-pixel edge limit. Source dimensions and SHA-256 identify the original file; Pi's notes describe resizing or conversion. The helper's private base64 transport has a separate 12 MiB cap; the complete reviewer-facing result must fit the configured tool-output budget and is never truncated. The tool deadline covers the source read and Pi processing. Processing failures and text-only models return an error and leave the image uninspected.
+
+A preview does not establish full-resolution fidelity, all animation frames, metadata equivalence or lossless equality against the base image. Those checks need separate evidence. Reviewers must inspect the returned image and applicable consumers before reporting coverage; unsupported or uninspected files remain skipped. Text contained in images is untrusted repository content, just like source comments.
+
 For a changed symlink assigned to a Pi reviewer, `cr_read` also accepts the
 explicit `view="symlink"` option. That view reads a run-owned, digest-validated
 artifact built from the pinned base/head Git trees; it returns the exact link

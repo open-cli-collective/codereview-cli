@@ -13,6 +13,40 @@ import (
 	"time"
 )
 
+func TestPiRPCReviewerExtensionRejectsInvalidImageTransport(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is not installed")
+	}
+	dir := t.TempDir()
+	helperPath := filepath.Join(dir, "helper.mjs")
+	helper := "#!/usr/bin/env node\nlet input=''; for await (const chunk of process.stdin) input+=chunk; const request=JSON.parse(input); process.stdout.write(request.tool==='cr_diff'?'diff':'{\"content\":[');"
+	if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
+		t.Fatal(err)
+	} // #nosec G306,G703 -- executable fixture under t.TempDir.
+	extensionPath := filepath.Join(dir, "extension.mjs")
+	if err := os.WriteFile(extensionPath, []byte(extensionWithoutPiSDK(piRPCReviewerExtension(helperPath, "config.json", dir, 4096, time.Second, ""))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runnerPath := filepath.Join(dir, "runner.mjs")
+	runner := `import extension from ` + strconv.Quote(extensionPath) + `;
+const tools={}; extension({registerTool(tool){tools[tool.name]=tool;}});
+const read=(params)=>tools.cr_read.execute("read",params,new AbortController().signal);
+const denied=await read({path:"image.png",view:"image"});
+await tools.cr_diff.execute("diff",{},new AbortController().signal);
+const malformed=await read({path:"image.png",view:"image"});
+const text=await read({path:"text.json"});
+if(!denied.isError || !malformed.isError || text.isError || text.content.length!==1 || text.content[0].type!=="text") throw new Error(JSON.stringify({denied,malformed,text}));
+`
+	if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(nodePath, runnerPath) // #nosec G204 -- discovered Node and test-owned script.
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node: %v: %s", err, out)
+	}
+}
+
 func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 	nodePath, err := exec.LookPath("node")
 	if err != nil {
@@ -27,7 +61,7 @@ func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 	}
 	extensionPath := filepath.Join(tempDir, "extension.mjs")
 	const helperTimeout = 5 * time.Second
-	extension := piRPCReviewerExtension(helperPath, filepath.Join(tempDir, "config.json"), tempDir, 2048, helperTimeout, "")
+	extension := extensionWithoutPiSDK(piRPCReviewerExtension(helperPath, filepath.Join(tempDir, "config.json"), tempDir, 2048, helperTimeout, ""))
 	if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil { // #nosec G703 -- extensionPath is rooted in t.TempDir.
 		t.Fatalf("WriteFile(extension): %v", err)
 	}
@@ -109,5 +143,55 @@ func TestPiRPCReviewerExtensionRequiresDiffBeforeHeadTools(t *testing.T) {
 		if !strings.Contains(extension, want) {
 			t.Fatalf("extension missing diff-ordering enforcement %q:\n%s", want, extension)
 		}
+	}
+}
+
+// Plain Node has no Pi extension alias resolver. These transport-only tests
+// must never reach the reader; installed-Pi tests exercise the real SDK.
+func extensionWithoutPiSDK(extension string) string {
+	return strings.Replace(extension, `import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";`, `const createReadToolDefinition = () => { throw new Error("unexpected image decode in transport-only test"); };`, 1)
+}
+
+func TestPiRPCReviewerImageProcessingBounds(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is not installed")
+	}
+	for _, test := range []struct{ name, reader, want string }{
+		{"output", `const createReadToolDefinition = () => ({execute:async()=>({content:[{type:"image",mimeType:"image/png",data:"x".repeat(4096)}]})});`, "output budget"},
+		{"deadline", `const createReadToolDefinition = () => ({execute:(_id,_params,signal)=>new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>reject(new Error("aborted")),{once:true}))});`, "timed out"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			helperPath := filepath.Join(dir, "helper.mjs")
+			helper := `#!/usr/bin/env node
+let input=""; for await (const c of process.stdin) input+=c;
+const request=JSON.parse(input);
+process.stdout.write(request.tool==="cr_diff"?"diff":JSON.stringify({data:"AQ==",mimeType:"image/png",width:1,height:1,source_sha256:"a".repeat(64)}));
+`
+			if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
+				t.Fatal(err)
+			} // #nosec G306,G703 -- executable fixture under t.TempDir.
+			extension := piRPCReviewerExtension(helperPath, "config.json", dir, 1024, 500*time.Millisecond, "")
+			extension = strings.Replace(extension, `import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";`, test.reader, 1)
+			extensionPath := filepath.Join(dir, "extension.mjs")
+			if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runner := `import extension from ` + strconv.Quote(extensionPath) + `;
+const tools={}; extension({registerTool(t){tools[t.name]=t;}});
+await tools.cr_diff.execute("diff",{},new AbortController().signal);
+const result=await tools.cr_read.execute("image",{path:"image",view:"image"},new AbortController().signal);
+if(!result.isError || !result.content[0].text.includes(` + strconv.Quote(test.want) + `) || Buffer.byteLength(JSON.stringify(result))>1024) throw new Error(JSON.stringify(result));
+`
+			runnerPath := filepath.Join(dir, "runner.mjs")
+			if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(nodePath, runnerPath) // #nosec G204 -- discovered Node and test-owned script.
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("node: %v: %s", err, out)
+			}
+		})
 	}
 }
