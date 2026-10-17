@@ -2,7 +2,9 @@ package benchmarkcmd
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +95,9 @@ func TestBenchmarkDiscussionIsolationCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatalf("executeBenchmarkRun: %v", err)
 			}
+			if run.ReviewJSONSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte(tt.stdout))) {
+				t.Fatalf("review JSON digest does not bind original stdout: %q", run.ReviewJSONSHA256)
+			}
 			if calls != 1 || run.ExitCode != tt.exitCode || run.FailureClassification != tt.wantClass || run.WithoutDiscussionVerified != tt.wantVerified || run.RequestedWithoutDiscussion != benchCase.EffectiveWithoutDiscussion() {
 				t.Fatalf("calls=%d run=%#v, want class=%s verified=%t actual child exit=%d", calls, run, tt.wantClass, tt.wantVerified, tt.exitCode)
 			}
@@ -132,7 +137,7 @@ func TestRunCountsUnverifiedIsolationAsFailureAndPreservesProvenance(t *testing.
 	if err := json.Unmarshal([]byte(discussionReadFileString(t, resultsDir, summary.Artifacts.Manifest)), &manifest); err != nil {
 		t.Fatalf("manifest JSON: %v", err)
 	}
-	if !manifest.SelectedCases[0].WithoutDiscussion || !manifest.Runs[0].RequestedWithoutDiscussion || manifest.Runs[0].WithoutDiscussionVerified {
+	if !manifest.SelectedCases[0].WithoutDiscussion || !manifest.Runs[0].RequestedWithoutDiscussion || manifest.Runs[0].WithoutDiscussionVerified || manifest.Runs[0].ReviewJSONSHA256 != summary.Runs[0].ReviewJSONSHA256 || manifest.Runs[0].ReviewJSONSHA256 == "" {
 		t.Fatalf("manifest=%#v, want requested/verified policy", manifest)
 	}
 	comparison := buildComparison(summary, summary.ResultsDir)
@@ -161,14 +166,17 @@ func discussionReadFileString(t *testing.T, resultsDir, path string) string {
 
 func TestCompareRechecksDiscussionIsolationAgainstCurrentArtifact(t *testing.T) {
 	for _, tt := range []struct {
-		name         string
-		currentJSON  string
-		missing      bool
-		wantClass    string
-		wantVerified bool
-		wantStatus   string
+		name          string
+		currentJSON   string
+		missing       bool
+		missingDigest bool
+		wantClass     string
+		wantVerified  bool
+		wantStatus    string
 	}{
 		{name: "unchanged verified artifact", currentJSON: `{"run":{"without_discussion":true}}`, wantClass: failureNone, wantVerified: true, wantStatus: runStatusCompleted},
+		{name: "valid isolated replacement", currentJSON: `{"run":{"run_id":"replacement","base_sha":"aaaaaaa","head_sha":"bbbbbbb","without_discussion":true}}`, wantClass: failureDiscussionIsolationUnverified, wantStatus: runStatusFailed},
+		{name: "missing original digest", currentJSON: `{"run":{"without_discussion":true}}`, missingDigest: true, wantClass: failureDiscussionIsolationUnverified, wantStatus: runStatusFailed},
 		{name: "marker removed", currentJSON: `{"run":{"run_id":"old"}}`, wantClass: failureDiscussionIsolationUnverified, wantStatus: runStatusFailed},
 		{name: "marker changed to false", currentJSON: `{"run":{"without_discussion":false}}`, wantClass: failureDiscussionIsolationUnverified, wantStatus: runStatusFailed},
 		{name: "marker changed to null", currentJSON: `{"run":{"without_discussion":null}}`, wantClass: failureDiscussionIsolationUnverified, wantStatus: runStatusFailed},
@@ -181,6 +189,7 @@ func TestCompareRechecksDiscussionIsolationAgainstCurrentArtifact(t *testing.T) 
 			summary := comparisonFixtureSummary(resultsDir)
 			summary.Runs[0].RequestedWithoutDiscussion = true
 			summary.Runs[0].WithoutDiscussionVerified = true
+			summary.Runs[0].ReviewJSONSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(`{"run":{"without_discussion":true}}`)))
 			writeComparisonFixture(t, summary)
 			artifact := summary.Runs[0].Artifacts.ReviewJSON
 			writeLog(t, artifact, `{"run":{"without_discussion":true}}`)
@@ -188,6 +197,10 @@ func TestCompareRechecksDiscussionIsolationAgainstCurrentArtifact(t *testing.T) 
 			initial := buildComparison(summary, resultsDir)
 			if !initial.Runs[0].WithoutDiscussionVerified || initial.Runs[0].Status != runStatusCompleted {
 				t.Fatalf("initial comparison = %#v, want verified completed run", initial.Runs[0])
+			}
+			if tt.missingDigest {
+				summary.Runs[0].ReviewJSONSHA256 = ""
+				writeComparisonFixture(t, summary)
 			}
 			if tt.missing {
 				if err := os.Remove(artifact); err != nil {
@@ -204,6 +217,9 @@ func TestCompareRechecksDiscussionIsolationAgainstCurrentArtifact(t *testing.T) 
 			row := comparison.Runs[0]
 			if row.WithoutDiscussionVerified != tt.wantVerified || row.Status != tt.wantStatus || row.FailureClassification != tt.wantClass || row.ExitCode != exitcode.Success || !row.RequestedWithoutDiscussion {
 				t.Fatalf("row = %#v, want status=%s class=%s verified=%t actual exit=0", row, tt.wantStatus, tt.wantClass, tt.wantVerified)
+			}
+			if tt.wantClass == failureDiscussionIsolationUnverified && row.AnchorSummary != nil {
+				t.Fatal("replacement or unbound artifact contributed anchor results")
 			}
 			if !tt.wantVerified && !strings.Contains(strings.Join(row.Warnings, "\n"), "discussion isolation could not be verified") {
 				t.Fatalf("warnings = %#v, want current-artifact isolation warning", row.Warnings)

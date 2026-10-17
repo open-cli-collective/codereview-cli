@@ -94,6 +94,7 @@ type benchmarkManifestRun struct {
 	CaseID                     string       `json:"case_id"`
 	RequestedWithoutDiscussion bool         `json:"requested_without_discussion"`
 	WithoutDiscussionVerified  bool         `json:"without_discussion_verified"`
+	ReviewJSONSHA256           string       `json:"review_json_sha256,omitempty"`
 	Artifacts                  runArtifacts `json:"artifacts"`
 }
 
@@ -165,6 +166,7 @@ type benchmarkRun struct {
 	RequestedReviewHeadSHA     string                   `json:"requested_review_head_sha,omitempty"`
 	RequestedWithoutDiscussion bool                     `json:"requested_without_discussion"`
 	WithoutDiscussionVerified  bool                     `json:"without_discussion_verified"`
+	ReviewJSONSHA256           string                   `json:"review_json_sha256,omitempty"`
 	ExpectedBaseSHA            string                   `json:"expected_base_sha,omitempty"`
 	ExpectedHeadSHA            string                   `json:"expected_head_sha,omitempty"`
 	ReviewRunID                string                   `json:"review_run_id,omitempty"`
@@ -394,6 +396,7 @@ func executeBenchmarkRun(ctx context.Context, logger *progress.Logger, suiteDir,
 		RequestedReviewHeadSHA:     benchCase.ReviewHeadSHA,
 		RequestedWithoutDiscussion: benchCase.EffectiveWithoutDiscussion(),
 		WithoutDiscussionVerified:  benchCase.EffectiveWithoutDiscussion() && execution.Review != nil && execution.Review.Run.WithoutDiscussion,
+		ReviewJSONSHA256:           fmt.Sprintf("%x", sha256.Sum256(execution.Stdout)),
 		ExpectedBaseSHA:            benchCase.ExpectedBaseSHA,
 		ExpectedHeadSHA:            benchCase.ExpectedHeadSHA,
 		ExitCode:                   execution.ExitCode,
@@ -812,6 +815,7 @@ func writeSuiteArtifacts(summary benchmarkSuiteSummary) error {
 			CaseID:                     run.CaseID,
 			RequestedWithoutDiscussion: run.RequestedWithoutDiscussion,
 			WithoutDiscussionVerified:  run.WithoutDiscussionVerified,
+			ReviewJSONSHA256:           run.ReviewJSONSHA256,
 			Artifacts:                  run.Artifacts,
 		})
 	}

@@ -1,6 +1,7 @@
 package benchmarkcmd
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -470,6 +471,9 @@ func readReviewArtifactForCompare(resultsDir string, run benchmarkRun) reviewArt
 	var parsed view.ReviewDryRun
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return reviewArtifactRead{warnings: []string{fmt.Sprintf("review JSON parse failed: %s", err.Error())}, class: failureInvalidReviewJSON}
+	}
+	if run.RequestedWithoutDiscussion && (run.ReviewJSONSHA256 == "" || run.ReviewJSONSHA256 != fmt.Sprintf("%x", sha256.Sum256(data))) {
+		return reviewArtifactRead{warnings: []string{"review JSON does not match the original execution digest"}, class: failureDiscussionIsolationUnverified}
 	}
 	return reviewArtifactRead{parsed: &parsed, ok: true, class: failureNone}
 }

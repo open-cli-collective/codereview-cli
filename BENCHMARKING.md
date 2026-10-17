@@ -170,7 +170,9 @@ Doctor and selected-case artifacts record the effective setting. Per-run
 metrics, manifests, summaries, and comparisons distinguish
 `requested_without_discussion` from `without_discussion_verified`; a missing
 marker is never treated as proof of isolation. `benchmark compare` rechecks
-the current review artifact; replacing or corrupting it invalidates prior
+the current review artifact against the original stdout SHA-256 recorded as
+`review_json_sha256` in run metrics, summaries and the manifest. Missing digests
+cannot verify isolated runs. Replacing or corrupting the artifact invalidates prior
 verification and fails a cell that requested discussion-free execution.
 
 Selector-only `benchmark select` already uses a caller-owned selection run with
