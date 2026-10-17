@@ -246,6 +246,10 @@ func TestCompareDiscussionVerificationCannotUpgradeSavedExecution(t *testing.T) 
 	summary.Runs[0].WithoutDiscussionVerified = false
 	summary.Runs[0].FailureClassification = failureDiscussionIsolationUnverified
 	writeReviewJSON(t, summary.Runs[0].Artifacts.ReviewJSON, view.ReviewDryRun{Run: view.ReviewRun{WithoutDiscussion: true}})
+	summary.Runs[0].ReviewJSONSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(discussionReadFileString(t, resultsDir, summary.Runs[0].Artifacts.ReviewJSON))))
+	if read := readReviewArtifactForCompare(resultsDir, summary.Runs[0]); !read.ok {
+		t.Fatalf("valid original artifact rejected before saved-verification guard: %#v", read)
+	}
 	comparison := buildComparison(summary, resultsDir)
 	row := comparison.Runs[0]
 	if row.WithoutDiscussionVerified || row.Status != runStatusFailed || row.FailureClassification != failureDiscussionIsolationUnverified {
