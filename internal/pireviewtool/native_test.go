@@ -390,3 +390,21 @@ func TestNativeArtifactIgnoresEntriesAfterDynamicTerminator(t *testing.T) {
 		t.Fatalf("post-terminator strings reported: %+v", report)
 	}
 }
+
+func TestNativeArtifactRejectsEmptySymbolsWithInvalidStringTable(t *testing.T) {
+	repo, diff := reviewerToolFixture(t)
+	data := nativeFixture(true, binary.LittleEndian)
+	// Remove the dynamic section/program so only symbol-table validation guards
+	// the linked string range, even though there are no symbol entries to visit.
+	binary.LittleEndian.PutUint16(data[56:], 1)
+	binary.LittleEndian.PutUint32(data[1024+4*64+4:], uint32(elf.SHT_PROGBITS))
+	binary.LittleEndian.PutUint64(data[1024+3*64+32:], 0)
+	binary.LittleEndian.PutUint32(data[1024+3*64+40:], 6)
+	binary.LittleEndian.PutUint64(data[1024+6*64+24:], uint64(len(data))+100)
+	writeTestPNG(t, repo, "empty-symbols", data)
+	for _, view := range []string{"binary", "binary-hex"} {
+		if _, err := Execute(context.Background(), Config{RepoDir: repo, DiffPath: diff, MaxOutputBytes: 16384}, Request{Tool: ToolRead, Path: "empty-symbols", View: view}); !errors.Is(err, ErrDenied) {
+			t.Fatalf("empty symbol string table accepted: %v", err)
+		}
+	}
+}

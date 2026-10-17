@@ -353,7 +353,7 @@ func validateNativeTables(ctx context.Context, data []byte) error {
 		if s.kind != uint32(elf.SHT_DYNSYM) && s.kind != uint32(elf.SHT_DYNAMIC) {
 			continue
 		}
-		if s.link >= uint32(shnum) {
+		if s.link >= uint32(shnum) || sections[s.link].kind != uint32(elf.SHT_STRTAB) {
 			return deny()
 		}
 		step := 16
