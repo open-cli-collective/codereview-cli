@@ -167,3 +167,70 @@ func TestImageSourceRejectsWebPFrameOutsideCanvas(t *testing.T) {
 		t.Fatalf("valid extended WebP rejected: %v", err)
 	}
 }
+
+func TestImageSourceChecksAnimatedWebPFrames(t *testing.T) {
+	lossy, err := testimages.Encoded("sample.webp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lossless, err := base64.StdEncoding.DecodeString("UklGRh4AAABXRUJQVlA4TBEAAAAvC8ABAAdQiirUo/+BiOh/AAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := func(kind string, payload []byte) []byte {
+		out := make([]byte, 8+len(payload)+len(payload)%2)
+		copy(out, kind)
+		binary.LittleEndian.PutUint32(out[4:], uint32(len(payload))) // #nosec G115 -- small fixed test fixtures.
+		copy(out[8:], payload)
+		return out
+	}
+	for format, encoded := range map[string][]byte{"VP8": lossy, "VP8L": lossless} {
+		t.Run(format, func(t *testing.T) {
+			for _, tc := range []struct {
+				name                     string
+				left, top, width, height byte
+				denied                   bool
+			}{
+				{name: "valid animation", width: 11, height: 7},
+				{name: "frame right outside canvas", left: 1, width: 11, height: 7, denied: true},
+				{name: "frame bottom outside canvas", top: 1, width: 11, height: 7, denied: true},
+				{name: "embedded width exceeds rectangle", width: 9, height: 7, denied: true},
+				{name: "embedded height exceeds rectangle", width: 11, height: 5, denied: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					repo, diff := reviewerToolFixture(t)
+					canvas := make([]byte, 10)
+					canvas[0], canvas[4], canvas[7] = 2, 11, 7
+					frame := make([]byte, 16)
+					frame[0], frame[3], frame[6], frame[9], frame[12] = tc.left, tc.top, tc.width, tc.height, 10
+					frame = append(frame, encoded[12:]...)
+					data := []byte("RIFF\x00\x00\x00\x00WEBP")
+					data = append(data, chunk("VP8X", canvas)...)
+					data = append(data, chunk("ANIM", make([]byte, 6))...)
+					data = append(data, chunk("ANMF", frame)...)
+					data = append(data, chunk("ANMF", frame)...)
+					binary.LittleEndian.PutUint32(data[4:], uint32(len(data)-8)) // #nosec G115 -- small fixed test fixtures.
+					writeTestPNG(t, repo, "animated.webp", data)
+					out, err := Execute(context.Background(), Config{RepoDir: repo, DiffPath: diff, MaxOutputBytes: 4096}, Request{Tool: ToolRead, Path: "animated.webp", View: "image"})
+					if tc.denied {
+						if !errors.Is(err, ErrDenied) || out != "" {
+							t.Fatalf("unsafe animated frame returned source: %q, %v", out, err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("valid animated WebP rejected: %v", err)
+					}
+					var source imageSource
+					if err := json.Unmarshal([]byte(out), &source); err != nil {
+						t.Fatal(err)
+					}
+					decoded, err := base64.StdEncoding.DecodeString(source.Data)
+					if err != nil || !bytes.Equal(decoded, data) || source.Width != 12 || source.Height != 8 {
+						t.Fatalf("animated source changed: %+v, %v", source, err)
+					}
+				})
+			}
+		})
+	}
+}
