@@ -105,8 +105,9 @@ func TestInProcessExecutorOpensAndCleansRuntimePerCell(t *testing.T) {
 				Runner: benchmarkTestRunner{dryRun: func(_ context.Context, req pipeline.Request) (pipeline.Result, error) {
 					pipelineRequests = append(pipelineRequests, req)
 					return pipeline.Result{
-						Run: ledger.Run{RunID: runID, ArtifactPath: t.TempDir()},
-						PR:  gitprovider.PR{URL: req.PRURL},
+						Run:               ledger.Run{RunID: runID, ArtifactPath: t.TempDir()},
+						WithoutDiscussion: req.WithoutDiscussion,
+						PR:                gitprovider.PR{URL: req.PRURL},
 					}, nil
 				}},
 				Cleanup: func() { cleanupCount++ },
@@ -152,6 +153,9 @@ func TestInProcessExecutorOpensAndCleansRuntimePerCell(t *testing.T) {
 	}
 	if pipelineRequests[1].ReviewBaseSHA != "1111111" || pipelineRequests[1].ReviewHeadSHA != "2222222" {
 		t.Fatalf("second pipeline request = %#v, want case SHAs", pipelineRequests[1])
+	}
+	if pipelineRequests[0].WithoutDiscussion || !pipelineRequests[1].WithoutDiscussion {
+		t.Fatalf("discussion policy = %t/%t, want live:false pinned:true", pipelineRequests[0].WithoutDiscussion, pipelineRequests[1].WithoutDiscussion)
 	}
 	for _, req := range pipelineRequests {
 		if req.ReviewerEffortOverride != "" {

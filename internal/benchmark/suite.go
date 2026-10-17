@@ -198,13 +198,14 @@ func (s *ReviewerStage) UnmarshalYAML(value *yaml.Node) error {
 
 // Case is one pull request to review during a benchmark.
 type Case struct {
-	ID              string   `yaml:"id" json:"id"`
-	PR              string   `yaml:"pr" json:"pr"`
-	ReviewBaseSHA   string   `yaml:"review_base_sha,omitempty" json:"review_base_sha,omitempty"`
-	ReviewHeadSHA   string   `yaml:"review_head_sha,omitempty" json:"review_head_sha,omitempty"`
-	ExpectedBaseSHA string   `yaml:"expected_base_sha,omitempty" json:"expected_base_sha,omitempty"`
-	ExpectedHeadSHA string   `yaml:"expected_head_sha,omitempty" json:"expected_head_sha,omitempty"`
-	Anchors         []Anchor `yaml:"anchors,omitempty" json:"anchors,omitempty"`
+	ID                string   `yaml:"id" json:"id"`
+	PR                string   `yaml:"pr" json:"pr"`
+	ReviewBaseSHA     string   `yaml:"review_base_sha,omitempty" json:"review_base_sha,omitempty"`
+	ReviewHeadSHA     string   `yaml:"review_head_sha,omitempty" json:"review_head_sha,omitempty"`
+	WithoutDiscussion *bool    `yaml:"without_discussion,omitempty" json:"without_discussion,omitempty"`
+	ExpectedBaseSHA   string   `yaml:"expected_base_sha,omitempty" json:"expected_base_sha,omitempty"`
+	ExpectedHeadSHA   string   `yaml:"expected_head_sha,omitempty" json:"expected_head_sha,omitempty"`
+	Anchors           []Anchor `yaml:"anchors,omitempty" json:"anchors,omitempty"`
 
 	reviewBaseSHASet   bool
 	reviewHeadSHASet   bool
@@ -212,27 +213,41 @@ type Case struct {
 	expectedHeadSHASet bool
 }
 
+// EffectiveWithoutDiscussion defaults pinned cases to discussion-free reviews.
+// A pointer preserves the distinction between an omitted setting and false.
+func (c Case) EffectiveWithoutDiscussion() bool {
+	if c.WithoutDiscussion != nil {
+		return *c.WithoutDiscussion
+	}
+	return c.ReviewBaseSHA != "" && c.ReviewHeadSHA != ""
+}
+
 // UnmarshalYAML tracks optional SHA field presence so explicitly blank values
 // can be rejected after normalization.
 func (c *Case) UnmarshalYAML(value *yaml.Node) error {
 	type rawCase struct {
-		ID              string   `yaml:"id"`
-		PR              string   `yaml:"pr"`
-		ReviewBaseSHA   string   `yaml:"review_base_sha"`
-		ReviewHeadSHA   string   `yaml:"review_head_sha"`
-		ExpectedBaseSHA string   `yaml:"expected_base_sha"`
-		ExpectedHeadSHA string   `yaml:"expected_head_sha"`
-		Anchors         []Anchor `yaml:"anchors"`
+		ID                string   `yaml:"id"`
+		PR                string   `yaml:"pr"`
+		ReviewBaseSHA     string   `yaml:"review_base_sha"`
+		ReviewHeadSHA     string   `yaml:"review_head_sha"`
+		WithoutDiscussion *bool    `yaml:"without_discussion"`
+		ExpectedBaseSHA   string   `yaml:"expected_base_sha"`
+		ExpectedHeadSHA   string   `yaml:"expected_head_sha"`
+		Anchors           []Anchor `yaml:"anchors"`
 	}
 	var raw rawCase
 	if err := value.Decode(&raw); err != nil {
 		return fmt.Errorf("%w: decode case: %w", ErrInvalid, err)
+	}
+	if mappingHasKey(value, "without_discussion") && raw.WithoutDiscussion == nil {
+		return fmt.Errorf("%w: case without_discussion must be a boolean when present", ErrInvalid)
 	}
 	*c = Case{
 		ID:                 raw.ID,
 		PR:                 raw.PR,
 		ReviewBaseSHA:      raw.ReviewBaseSHA,
 		ReviewHeadSHA:      raw.ReviewHeadSHA,
+		WithoutDiscussion:  raw.WithoutDiscussion,
 		ExpectedBaseSHA:    raw.ExpectedBaseSHA,
 		ExpectedHeadSHA:    raw.ExpectedHeadSHA,
 		Anchors:            raw.Anchors,
@@ -648,6 +663,9 @@ func validateCases(cases []Case) error {
 		if (benchCase.ReviewBaseSHA == "") != (benchCase.ReviewHeadSHA == "") {
 			return fmt.Errorf("%w: case %q review_base_sha and review_head_sha must be set together", ErrInvalid, benchCase.ID)
 		}
+		if benchCase.EffectiveWithoutDiscussion() && benchCase.ReviewBaseSHA == "" {
+			return fmt.Errorf("%w: case %q without_discussion requires review_base_sha and review_head_sha", ErrInvalid, benchCase.ID)
+		}
 		if err := validateOptionalSHA("expected_base_sha", benchCase.ID, benchCase.ExpectedBaseSHA, benchCase.expectedBaseSHASet); err != nil {
 			return err
 		}
@@ -820,7 +838,7 @@ func validateKnownFields(doc *yaml.Node) error {
 		for i, benchCase := range node.Content {
 			if err := validateMappingKeys(benchCase, fmt.Sprintf("case[%d]", i), map[string]bool{
 				"id": true, "pr": true, "review_base_sha": true, "review_head_sha": true,
-				"expected_base_sha": true, "expected_head_sha": true, "anchors": true,
+				"expected_base_sha": true, "expected_head_sha": true, "without_discussion": true, "anchors": true,
 			}); err != nil {
 				return err
 			}
