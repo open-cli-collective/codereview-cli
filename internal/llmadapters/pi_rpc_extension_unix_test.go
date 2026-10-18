@@ -47,6 +47,46 @@ if(!denied.isError || !malformed.isError || text.isError || text.content.length!
 	}
 }
 
+func TestPiRPCReviewerExtensionForwardsBinaryViewsAfterDiff(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is not installed")
+	}
+	dir := t.TempDir()
+	helperPath := filepath.Join(dir, "helper.mjs")
+	helper := "#!/usr/bin/env node\nlet input=''; for await (const chunk of process.stdin) input+=chunk; process.stdout.write(input);"
+	if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
+		t.Fatal(err)
+	} // #nosec G306,G703 -- executable fixture under t.TempDir.
+	extensionPath := filepath.Join(dir, "extension.mjs")
+	if err := os.WriteFile(extensionPath, []byte(extensionWithoutPiSDK(piRPCReviewerExtension(helperPath, "config.json", dir, 2048, 5*time.Second, ""))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runnerPath := filepath.Join(dir, "runner.mjs")
+	runner := `import extension from ` + strconv.Quote(extensionPath) + `;
+const tools={}; extension({registerTool(tool){tools[tool.name]=tool;}});
+const read=(params)=>tools.cr_read.execute("read",params,new AbortController().signal);
+for(const view of ["binary","binary-hex"]){
+  if(!tools.cr_read.parameters.properties.view.enum.includes(view)) throw new Error("missing schema view");
+  const denied=await read({path:"lib.gz",view});
+  if(!denied.isError || !denied.content[0].text.includes("cr_diff")) throw new Error("diff-first bypass");
+}
+await tools.cr_diff.execute("diff",{},new AbortController().signal);
+for(const view of ["binary","binary-hex"]){
+  const response=await read({path:"lib.gz",view,offset:25,limit:100});
+  if(response.isError || response.content.length!==1 || response.content[0].type!=="text") throw new Error(JSON.stringify(response));
+  const request=JSON.parse(response.content[0].text);
+  if(request.tool!=="cr_read" || request.view!==view || request.path!=="lib.gz" || request.offset!==25 || request.limit!==100) throw new Error(JSON.stringify(request));
+}`
+	if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(nodePath, runnerPath) // #nosec G204 -- discovered Node and test-owned script.
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node: %v: %s", err, out)
+	}
+}
+
 func TestPiRPCReviewerHelperStaysInParentProcessGroup(t *testing.T) {
 	nodePath, err := exec.LookPath("node")
 	if err != nil {
