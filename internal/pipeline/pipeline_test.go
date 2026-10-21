@@ -6492,6 +6492,47 @@ func TestSelectionOnlyAcceptsRenameSourcePath(t *testing.T) {
 	}
 }
 
+func TestSelectionOnlyAcceptsDeletedPathsWithSpaces(t *testing.T) {
+	ctx := context.Background()
+	provider, req := dryRunHarness(t)
+	removeRepoAgentFixture(provider)
+
+	deleted := []string{"data/2024-06-08 - a.json", "data/2024-06-08 - b.json"}
+	repoDir := provider.fixtureRepoDir
+	gitCommandMustSucceed(t, repoDir, "checkout", "main")
+	for _, path := range deleted {
+		writeFile(t, filepath.Join(repoDir, path), "{}\n")
+	}
+	gitCommandMustSucceed(t, repoDir, "add", "data")
+	gitCommandMustSucceed(t, repoDir, "commit", "-m", "add dated files")
+	provider.pr.Base.SHA = gitCommandMustSucceed(t, repoDir, "rev-parse", "HEAD")
+	gitCommandMustSucceed(t, repoDir, "checkout", "-B", "feature")
+	gitCommandMustSucceed(t, repoDir, append([]string{"rm", "--"}, deleted...)...)
+	gitCommandMustSucceed(t, repoDir, "commit", "-m", "delete dated files")
+	provider.pr.Head.SHA = gitCommandMustSucceed(t, repoDir, "rev-parse", "HEAD")
+	provider.diff.Raw = gitCommandOutput(t, repoDir, "diff", provider.pr.Base.SHA, provider.pr.Head.SHA)
+
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
+	adapter.Queue(fakeLLMResult("selection-session", `{
+		"schema_version": 1,
+		"selected_agents": [],
+		"thread_actions": [],
+		"reasoning": "the diff only deletes files"
+	}`, 10, 2))
+
+	result, err := selectionOnlyForTest(ctx, Options{
+		Provider: provider,
+		Adapter:  adapter,
+		Now:      fixedNow,
+	}, selectionRequestFromReview(req, t.TempDir()))
+	if err != nil {
+		t.Fatalf("SelectionOnly: %v", err)
+	}
+	if !reflect.DeepEqual(result.ChangedFiles, deleted) {
+		t.Fatalf("changed files = %#v, want %#v", result.ChangedFiles, deleted)
+	}
+}
+
 func TestDryRunReviewerFindingOnDeletedPathIsDecoded(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

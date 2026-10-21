@@ -150,6 +150,117 @@ func TestParseUnifiedDiffQuotedPathsWithSpaces(t *testing.T) {
 	}
 }
 
+// Git leaves paths with spaces unquoted in "diff --git" headers and appends a
+// tab to "---"/"+++" paths that contain a space. These shapes mirror its output.
+func TestParseUnifiedDiffUnquotedPathsWithSpaces(t *testing.T) {
+	raw := strings.Join([]string{
+		"diff --git a/data/2024-06-08 - a.json b/data/2024-06-08 - a.json",
+		"deleted file mode 100644",
+		"index 1111111..0000000",
+		"--- a/data/2024-06-08 - a.json\t",
+		"+++ /dev/null",
+		"@@ -1 +0,0 @@",
+		"-{}",
+		"diff --git a/data/2024-06-08 - b.json b/data/2024-06-08 - b.json",
+		"deleted file mode 100644",
+		"index 2222222..0000000",
+		"--- a/data/2024-06-08 - b.json\t",
+		"+++ /dev/null",
+		"@@ -1 +0,0 @@",
+		"-{}",
+		"diff --git a/data/2024-06-09 - c.json b/data/2024-06-09 - c.json",
+		"new file mode 100644",
+		"index 0000000..3333333",
+		"--- /dev/null",
+		"+++ b/data/2024-06-09 - c.json\t",
+		"@@ -0,0 +1 @@",
+		"+{}",
+		"diff --git a/data/empty old.txt b/data/empty old.txt",
+		"deleted file mode 100644",
+		"index e69de29..0000000",
+		"diff --git a/data/empty new.txt b/data/empty new.txt",
+		"new file mode 100644",
+		"index 0000000..e69de29",
+		"diff --git a/data/blob old.bin b/data/blob old.bin",
+		"deleted file mode 100644",
+		"index 4444444..0000000",
+		"Binary files a/data/blob old.bin and /dev/null differ",
+		"diff --git a/data/blob new.bin b/data/blob new.bin",
+		"new file mode 100644",
+		"index 0000000..5555555",
+		"Binary files /dev/null and b/data/blob new.bin differ",
+		"diff --git a/scripts/run me.sh b/scripts/run me.sh",
+		"old mode 100644",
+		"new mode 100755",
+		"diff --git a/docs/old name.md b/docs/new name.md",
+		"similarity index 100%",
+		"rename from docs/old name.md",
+		"rename to docs/new name.md",
+		"diff --git a/docs/moved file.md b/docs/moved file 2.md",
+		"similarity index 80%",
+		"rename from docs/moved file.md",
+		"rename to docs/moved file 2.md",
+		"index 6666666..7777777 100644",
+		"--- a/docs/moved file.md\t",
+		"+++ b/docs/moved file 2.md\t",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"",
+	}, "\n")
+
+	got, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	want := []struct {
+		oldPath, path          string
+		deleted, added, binary bool
+	}{
+		{oldPath: "data/2024-06-08 - a.json", path: "data/2024-06-08 - a.json", deleted: true},
+		{oldPath: "data/2024-06-08 - b.json", path: "data/2024-06-08 - b.json", deleted: true},
+		{oldPath: "data/2024-06-09 - c.json", path: "data/2024-06-09 - c.json", added: true},
+		{oldPath: "data/empty old.txt", path: "data/empty old.txt", deleted: true},
+		{oldPath: "data/empty new.txt", path: "data/empty new.txt", added: true},
+		{oldPath: "data/blob old.bin", path: "data/blob old.bin", deleted: true, binary: true},
+		{oldPath: "data/blob new.bin", path: "data/blob new.bin", added: true, binary: true},
+		{oldPath: "scripts/run me.sh", path: "scripts/run me.sh"},
+		{oldPath: "docs/old name.md", path: "docs/new name.md"},
+		{oldPath: "docs/moved file.md", path: "docs/moved file 2.md"},
+	}
+	if len(got.Patches) != len(want) || len(got.PlanDiff.Files) != len(want) {
+		t.Fatalf("patches = %d, plan files = %d, want %d", len(got.Patches), len(got.PlanDiff.Files), len(want))
+	}
+	for i, w := range want {
+		patch := got.Patches[i]
+		if patch.OldPath != w.oldPath || patch.Path != w.path || patch.Deleted != w.deleted || patch.Added != w.added || patch.Binary != w.binary {
+			t.Errorf("patch %d = old %q path %q deleted %v added %v binary %v, want %+v",
+				i, patch.OldPath, patch.Path, patch.Deleted, patch.Added, patch.Binary, w)
+		}
+		if plan := got.PlanDiff.Files[i]; plan.OldPath != w.oldPath || plan.Path != w.path {
+			t.Errorf("plan file %d = old %q path %q, want old %q path %q", i, plan.OldPath, plan.Path, w.oldPath, w.path)
+		}
+	}
+}
+
+func TestParseUnifiedDiffQuotedRenamePaths(t *testing.T) {
+	raw := strings.Join([]string{
+		`diff --git "a/docs/caf\303\251 notes.md" "b/docs/caf\303\251 notes 2.md"`,
+		"similarity index 100%",
+		`rename from "docs/caf\303\251 notes.md"`,
+		`rename to "docs/caf\303\251 notes 2.md"`,
+		"",
+	}, "\n")
+
+	got, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	if len(got.Patches) != 1 || got.Patches[0].OldPath != "docs/café notes.md" || got.Patches[0].Path != "docs/café notes 2.md" {
+		t.Fatalf("patches = %#v, want decoded rename paths", got.Patches)
+	}
+}
+
 func TestParseUnifiedDiffRejectsBadHunkHeader(t *testing.T) {
 	_, err := parseUnifiedDiff("diff --git a/main.go b/main.go\n@@ bad @@\n")
 	if err == nil {
