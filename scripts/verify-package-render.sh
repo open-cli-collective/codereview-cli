@@ -40,65 +40,24 @@ require_grep 'binary "cr"' "$cask"
 require_grep 'open-cli-collective/codereview-cli/releases/download/v' "$cask"
 require_grep 'cr_v#{version}_darwin_arm64.tar.gz' "$cask"
 require_grep 'cr_v#{version}_darwin_amd64.tar.gz' "$cask"
-require_grep 'args: ["catalog", "update"]' "$cask"
-require_grep 'must_succeed: false' "$cask"
-require_grep 'cr catalog update failed; run `cr catalog update`' "$cask"
+require_grep '"com.apple.quarantine", "#{staged_path}/cr"' "$cask"
 
-# Exercise the rendered Ruby control flow as well as checking its source. The
-# updater is warning-only during package installation, so a failed refresh
-# must call opoo without raising or skipping the command.
+# The shared release workflow rewrites this legacy postflight block into
+# Homebrew's install-step DSL, which has no system_command, by turning each line
+# that starts with system_command into a run step. Any other statement survives
+# the rewrite and makes Homebrew reject the whole cask as invalid.
 ruby - "$cask" <<'RUBY'
-path = ARGV.fetch(0)
-source = File.read(path)
+source = File.read(ARGV.fetch(0))
 body = source[/  postflight do\n(.*?)\n  end/m, 1]
 raise "postflight body missing" unless body
 
-HookResult = Struct.new(:ok) do
-  def success?
-    ok
-  end
+body.each_line do |line|
+  next if line.strip.empty?
+  next if line.match?(/\A\s*system_command\s/)
+
+  raise "postflight line is not a bare system_command call: #{line.strip}"
 end
-
-class HookHarness
-  attr_reader :calls, :warnings
-
-  def initialize(fail_refresh)
-    @fail_refresh = fail_refresh
-    @calls = []
-    @warnings = []
-  end
-
-  def staged_path
-    "/tmp/staged"
-  end
-
-  def system_command(command, args:, must_succeed: true)
-    @calls << {command: command, args: args, must_succeed: must_succeed}
-    failed_refresh = @fail_refresh && command == "#{staged_path}/cr"
-    HookResult.new(!failed_refresh)
-  end
-
-  def opoo(message)
-    @warnings << message
-  end
-
-  def run(rendered_body)
-    instance_eval(rendered_body, "rendered-cask", 1)
-  end
-end
-
-success = HookHarness.new(false)
-success.run(body)
-raise "success path did not invoke both commands" unless success.calls.length == 2
-raise "success path emitted a warning" unless success.warnings.empty?
-raise "refresh command is not warning-only" unless success.calls.last[:must_succeed] == false
-
-failure = HookHarness.new(true)
-failure.run(body)
-raise "failure path did not invoke both commands" unless failure.calls.length == 2
-raise "failure path did not warn" unless failure.warnings.length == 1
-raise "failure path did not keep refresh warning-only" unless failure.calls.last[:must_succeed] == false
-puts "rendered package hook behavior check OK"
+puts "rendered package hook check OK"
 RUBY
 
 for kind in deb rpm pkg.tar.zst; do
