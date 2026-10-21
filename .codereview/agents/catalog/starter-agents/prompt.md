@@ -30,7 +30,7 @@ Zero findings is a normal result. Prefer no finding to a speculative one, and do
 
 - Prose style or word choice that does not change what a reviewer would do.
 - Requests for more checks in a prompt that already covers its lane, unless a missing check would let a common, costly problem through.
-- Agent schema errors; `internal/agents/starter_catalog_test.go` loads the catalog with the strict parser.
+- Unknown or malformed `index.yaml` fields; `cr`'s agent loader rejects them when the catalog loads, so they cannot ship silently.
 
 ## Severity
 
