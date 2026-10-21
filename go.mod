@@ -2,6 +2,8 @@ module github.com/open-cli-collective/codereview-cli
 
 go 1.26.0
 
+toolchain go1.26.10
+
 require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/byteness/percent v0.2.2
