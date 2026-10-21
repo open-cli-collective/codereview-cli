@@ -88,9 +88,9 @@ func parseUnifiedDiff(raw string) (ParsedDiff, error) {
 		case strings.HasPrefix(trimmed, "new file mode"):
 			current.Added = true
 		case strings.HasPrefix(trimmed, "rename from "):
-			current.OldPath = strings.TrimPrefix(trimmed, "rename from ")
+			current.OldPath = unquoteGitPath(strings.TrimPrefix(trimmed, "rename from "))
 		case strings.HasPrefix(trimmed, "rename to "):
-			current.Path = strings.TrimPrefix(trimmed, "rename to ")
+			current.Path = unquoteGitPath(strings.TrimPrefix(trimmed, "rename to "))
 		case strings.HasPrefix(trimmed, "Binary files ") || strings.HasPrefix(trimmed, "GIT binary patch"):
 			current.Binary = true
 		case strings.HasPrefix(trimmed, "@@ "):
@@ -118,6 +118,9 @@ func splitLines(raw string) []string {
 
 func parseDiffGitPaths(line string) (string, string) {
 	rest := strings.TrimSpace(strings.TrimPrefix(line, "diff --git "))
+	if path, ok := sameUnquotedDiffPath(rest); ok {
+		return path, path
+	}
 	oldPath, rest, ok := consumeDiffPath(rest)
 	if !ok {
 		return "", ""
@@ -129,17 +132,44 @@ func parseDiffGitPaths(line string) (string, string) {
 	return trimDiffPrefix(oldPath), trimDiffPrefix(newPath)
 }
 
+// sameUnquotedDiffPath reads an unquoted "a/<path> b/<path>" pair that names
+// one file on both sides. Git quotes a path for special characters but not for
+// spaces, so splitting at the first space would cut such a path short. Equal
+// halves around the middle space are unambiguous; a rename falls through to
+// token parsing and takes its paths from the "rename from"/"rename to" lines.
+func sameUnquotedDiffPath(rest string) (string, bool) {
+	if strings.HasPrefix(rest, `"`) || len(rest)%2 == 0 {
+		return "", false
+	}
+	mid := len(rest) / 2
+	if rest[mid] != ' ' {
+		return "", false
+	}
+	oldPath, newPath := trimDiffPrefix(rest[:mid]), trimDiffPrefix(rest[mid+1:])
+	if oldPath == "" || oldPath != newPath {
+		return "", false
+	}
+	return oldPath, true
+}
+
 func parseHeaderPath(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "/dev/null" {
 		return ""
 	}
+	return trimDiffPrefix(unquoteGitPath(value))
+}
+
+// unquoteGitPath decodes a path git wrote as a C-style quoted string, which it
+// does for names holding control characters, quotes, backslashes, or (with the
+// default core.quotePath) non-ASCII bytes.
+func unquoteGitPath(value string) string {
 	if strings.HasPrefix(value, `"`) {
 		if unquoted, err := strconv.Unquote(value); err == nil {
-			value = unquoted
+			return unquoted
 		}
 	}
-	return trimDiffPrefix(value)
+	return value
 }
 
 func trimDiffPrefix(path string) string {

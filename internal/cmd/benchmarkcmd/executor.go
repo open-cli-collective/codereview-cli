@@ -191,6 +191,7 @@ func (e inProcessExecutor) Execute(ctx context.Context, req reviewExecutionReque
 		ReviewerEffortOverride:      req.Candidate.Stages.Reviewers.Effort,
 		ReviewBaseSHA:               req.Case.ReviewBaseSHA,
 		ReviewHeadSHA:               req.Case.ReviewHeadSHA,
+		WithoutDiscussion:           req.Case.EffectiveWithoutDiscussion(),
 		ToolVersion:                 version.Version,
 	})
 	if err != nil {

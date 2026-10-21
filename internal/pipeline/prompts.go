@@ -822,7 +822,7 @@ func selectionThreadStatus(thread threadcontext.Thread) string {
 	}
 }
 
-func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary) (string, error) {
+func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary, threadFailures ...[]reviewplan.ThreadAnalysisFailureSummary) (string, error) {
 	payload := map[string]any{
 		"task":              "dedupe findings and return rollup JSON only",
 		"output_contract":   rollupOutputContract(findings),
@@ -832,11 +832,46 @@ func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFai
 		"reviewer_failures": reviewerFailures,
 		"reviewer_coverage": rollupCoveragePrompt(reviewerCoverage),
 	}
+	if len(threadFailures) > 0 && len(threadFailures[0]) > 0 {
+		payload["thread_analysis_failures"] = rollupThreadAnalysisFailurePrompt(threadFailures[0])
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("pipeline: build rollup prompt: %w", err)
 	}
 	return string(body), nil
+}
+
+type rollupThreadAnalysisFailureSummary struct {
+	Count          int                                       `json:"count"`
+	Examples       []reviewplan.ThreadAnalysisFailureSummary `json:"examples"`
+	Omitted        int                                       `json:"omitted"`
+	EvidenceDigest string                                    `json:"evidence_digest"`
+}
+
+func rollupThreadAnalysisFailurePrompt(failures []reviewplan.ThreadAnalysisFailureSummary) rollupThreadAnalysisFailureSummary {
+	// Bind the complete evidence independently of the sampled prompt. A changed
+	// omitted failure must invalidate cached synthesis just like a visible one.
+	complete := append([]reviewplan.ThreadAnalysisFailureSummary(nil), failures...)
+	slices.SortFunc(complete, func(a, b reviewplan.ThreadAnalysisFailureSummary) int {
+		if order := strings.Compare(a.ThreadID, b.ThreadID); order != 0 {
+			return order
+		}
+		return strings.Compare(a.Error, b.Error)
+	})
+	digest := sha256.New()
+	for _, failure := range complete {
+		// Length-prefix raw strings so even invalid UTF-8 repaired for display
+		// cannot make distinct complete evidence share a reuse fingerprint.
+		_, _ = fmt.Fprintf(digest, "%d:%s%d:%s", len(failure.ThreadID), failure.ThreadID, len(failure.Error), failure.Error)
+	}
+	examples := reviewplan.ThreadAnalysisFailureExamples(complete)
+	return rollupThreadAnalysisFailureSummary{
+		Count:          len(complete),
+		Examples:       examples,
+		Omitted:        len(complete) - len(examples),
+		EvidenceDigest: hex.EncodeToString(digest.Sum(nil)),
+	}
 }
 
 type rollupCoveragePromptEntry struct {
@@ -1016,6 +1051,7 @@ func findingsOutputContractWithRelocations(agentID string, changedFiles []string
 			"skipped_files must list assigned body-inspection, symlink-payload, or relocation-impact obligations you intentionally did not complete or could not complete.",
 			"For each head-tree symlink in assignment.symlink_paths, inspect its exact pinned link payload and resolution with cr_read using view=symlink. This inspects the symlink payload, not the destination body; list the path in inspected_files only after actually inspecting available payload bytes.",
 			"For a path in assignment.symlink_paths, if symlink metadata has payload_omitted_reason, the payload bytes were unavailable: metadata inspection alone does not count as payload inspection, so keep that symlink-payload obligation in skipped_files. payload=\"\" with payload_size=0 is an inspected empty payload, not an omitted payload.",
+			"For compiled ELF artifacts, cr_read view=binary and view=binary-hex provide bounded structural and byte inspection, including single-member gzip. Read the complete paginated report and applicable source/build/integrity/consumer evidence before claiming inspection. A hash or header alone is insufficient. Coverage records static inspection, not execution or reproducible-build attestation: complete report, relevant byte ranges and adequate source/build/integrity/consumer evidence can satisfy the assigned static review. Record unrun validation in constraints rather than skipping solely because read-only tools cannot execute or rebuild. Keep unsupported or inadequately inspected artifacts skipped; explain any material implementation/provenance evidence still missing.",
 			"At least one of inspected_files, skipped_files, or context_files must be non-empty; context evidence alone may support a valid relocation assessment.",
 			"constraints must list any material review constraints, such as intentionally narrow scope, missing context, or tool limitations.",
 			"assignment.scope_indices are the authoritative review scope; file_indices outside scope_indices are context only and do not expand inspected_files or skipped_files.",

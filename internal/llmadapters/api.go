@@ -449,7 +449,8 @@ type openAIUsage struct {
 }
 
 type openAIInputTokensDetails struct {
-	CachedTokens *int `json:"cached_tokens"`
+	CachedTokens     *int `json:"cached_tokens"`
+	CacheWriteTokens *int `json:"cache_write_tokens"`
 }
 
 func parseOpenAIResponse(body []byte) (string, Response, error) {
@@ -478,13 +479,16 @@ func parseOpenAIResponse(body []byte) (string, Response, error) {
 	case "standard", "default":
 		speed = "standard"
 	}
+	// OpenAI's input total includes cache reads and writes. Keep that total
+	// intact rather than treating cache writes as an additional input bucket.
 	return payload.ID, Response{
 		StructuredOutput: []byte(text.String()),
 		Usage: Usage{
-			TokensIn:  payload.Usage.InputTokens,
-			TokensOut: payload.Usage.OutputTokens,
-			CacheRead: payload.Usage.InputTokensDetails.CachedTokens,
-			Speed:     speed,
+			TokensIn:    payload.Usage.InputTokens,
+			TokensOut:   payload.Usage.OutputTokens,
+			CacheRead:   payload.Usage.InputTokensDetails.CachedTokens,
+			CacheCreate: payload.Usage.InputTokensDetails.CacheWriteTokens,
+			Speed:       speed,
 		},
 	}, nil
 }
