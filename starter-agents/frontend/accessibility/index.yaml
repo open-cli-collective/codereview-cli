@@ -1,0 +1,22 @@
+name: accessibility
+description: Reviews rendered UI changes (markup, components, templates, and styles) for accessibility barriers, mapped to WCAG 2.2 success criteria.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*.tsx"
+  - "**/*.jsx"
+  - "**/*.vue"
+  - "**/*.svelte"
+  - "**/*.html"
+  - "**/*.mdx"
+  - "**/*.css"
+  - "**/*.scss"
+  - "**/*.less"
+  - "**/*.styles.*"
+  - "!**/*.test.*"
+  - "!**/*.spec.*"
+  - "!**/*.stories.*"
+  - "!**/__tests__/**"
+applies_when:
+  - A change affects what the browser renders or how people operate it, such as markup, components, templates, styles, focus or keyboard handling, labels, announcements, motion, or visual states.
+  - Do not select for changes limited to data fetching, state management, build configuration, or server code with no rendered output.

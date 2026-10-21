@@ -1,0 +1,27 @@
+name: ci-release
+description: Reviews CI, build, release, packaging, and automation-script changes for gate, permission, identity, and failure-visibility problems.
+model_tier: medium
+effort: medium
+file_globs:
+  - ".github/workflows/**"
+  - ".github/actions/**"
+  - ".gitlab-ci.yml"
+  - ".gitlab/**"
+  - "**/Dockerfile"
+  - "**/*.Dockerfile"
+  - "Makefile"
+  - "**/Makefile"
+  - "Justfile"
+  - "Taskfile.yml"
+  - ".goreleaser.yml"
+  - ".goreleaser.yaml"
+  - "packaging/**"
+  - "scripts/**"
+  - "go.mod"
+  - "package.json"
+  - "pyproject.toml"
+  - "Cargo.toml"
+  - "version.txt"
+applies_when:
+  - A change edits CI workflows, build or release configuration, container images, packaging, version sources, dependency manifests, or automation scripts.
+  - A change claims a CI or build performance improvement.

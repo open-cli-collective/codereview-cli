@@ -1,0 +1,13 @@
+name: repo-conventions
+description: Checks changes against the rules the repository writes down in AGENTS.md, CLAUDE.md, CONTRIBUTING, ARCHITECTURE and docs/.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*"
+  - "!*.md"
+  - "!**/*.md"
+  - "!*.mdx"
+  - "!**/*.mdx"
+required_on_match: true
+applies_when:
+  - Any change to code, configuration, scripts, or workflows, because the repository's written rules can cover any of them.

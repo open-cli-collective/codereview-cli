@@ -1,0 +1,11 @@
+name: implementation-tests
+description: Reviews Go changes for idiomatic, testable implementation and tests that prove the changed behavior.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*.go"
+  - "go.mod"
+  - "**/testdata/**"
+applies_when:
+  - A change touches Go source or tests, Go module dependencies, or Go test data.
+  - Do not select for changes with no Go code.

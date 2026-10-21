@@ -10,6 +10,10 @@ under `.codereview/agents/`. Shared profile agent sources provide organization-
 or developer-managed reviewers without requiring repositories to duplicate
 them.
 
+`cr` itself ships no reviewers. The starter catalog in
+[`starter-agents/`](../starter-agents/README.md) is a general set to use as a
+profile source and extend with organization or repository agents.
+
 Those agent definitions can shape review behavior by:
 
 - adding repository-specific reviewers
