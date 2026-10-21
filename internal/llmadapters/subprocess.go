@@ -338,6 +338,7 @@ func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID stri
 	}
 	args := []string{
 		"-p",
+		"--safe-mode",
 		"--output-format", "json",
 		"--tools", tools,
 		"--permission-mode", "acceptEdits",
@@ -795,6 +796,7 @@ func (a *SubprocessAdapter) buildArgsForSession(req Request, scratch string, res
 		}
 		args := []string{
 			"--bg",
+			"--safe-mode",
 			"--enable-auto-mode",
 			"--tools", tools,
 			"--permission-mode", "auto",
@@ -872,6 +874,11 @@ func appendCodexNoNetworkArgs(args []string, req Request) []string {
 	return args
 }
 
+// codexNoProjectDocsConfig stops Codex from loading AGENTS.md files from the
+// working directory. A reviewer's cwd is the PR head checkout, and a PR must not
+// change the instructions its own review runs under.
+const codexNoProjectDocsConfig = "project_doc_max_bytes=0"
+
 func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string, durable bool) []string {
 	args := append([]string(nil), prefix...)
 	args = append(args, "--json")
@@ -882,6 +889,7 @@ func subprocessCodexBaseArgs(prefix []string, sandbox, cwd string, durable bool)
 		"--skip-git-repo-check",
 		"--ignore-user-config",
 		"--ignore-rules",
+		"-c", codexNoProjectDocsConfig,
 		"--sandbox", sandbox,
 		"--cd", cwd,
 	)
@@ -896,6 +904,7 @@ func subprocessCodexResumeArgs() []string {
 		"--skip-git-repo-check",
 		"--ignore-user-config",
 		"--ignore-rules",
+		"-c", codexNoProjectDocsConfig,
 	}
 }
 
@@ -914,6 +923,7 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		}
 		if err := validateAllowedFlags("claude_cli", checkedArgs, map[string]bool{
 			"--bg":               false,
+			"--safe-mode":        false,
 			"--enable-auto-mode": false,
 			"-p":                 false,
 			"--output-format":    true,
@@ -930,6 +940,12 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		}
 		if err := validateClaudeNoNetworkArgs(checkedArgs, req); err != nil {
 			return err
+		}
+		// Safe mode keeps the operator's CLAUDE.md, skills, plugins, hooks and
+		// MCP servers out of every task, so a review depends on the repository
+		// and the agent catalog rather than on the machine that runs it.
+		if !containsFlag(checkedArgs, "--safe-mode") {
+			return fmt.Errorf("%w: claude_cli must pass --safe-mode", ErrUnsafeSubprocessConfig)
 		}
 		// Exactly one transport: the detached job service (--bg) or headless
 		// foreground print mode (-p, see claudeForegroundEnabled).
@@ -1003,6 +1019,9 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 			if !containsFlag(checkedArgs, flag) {
 				return fmt.Errorf("%w: missing %s", ErrUnsafeSubprocessConfig, flag)
 			}
+		}
+		if !slices.Contains(flagValues(checkedArgs, "-c"), codexNoProjectDocsConfig) {
+			return fmt.Errorf("%w: codex_cli must pass -c %s", ErrUnsafeSubprocessConfig, codexNoProjectDocsConfig)
 		}
 		if workspace != nil && workspace.NoNetwork {
 			configs := flagValues(checkedArgs, "-c")
