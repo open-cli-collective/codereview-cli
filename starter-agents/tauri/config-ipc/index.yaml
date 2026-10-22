@@ -11,4 +11,4 @@ file_globs:
   - "**/permissions/**"
 applies_when:
   - A change edits Tauri configuration, the src-tauri backend, command or IPC handlers, capabilities, permissions, allowlist, CSP, or updater settings.
-  - Do not select for pure Rust implementation, idiom, or test concerns owned by the Rust reviewer, or for changes that do not touch Tauri configuration, IPC, or capabilities.
+  - Do not select for changes that do not touch Tauri configuration, IPC, or capabilities.

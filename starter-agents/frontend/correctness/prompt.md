@@ -83,7 +83,7 @@ Weigh return on investment. Do not ask for tests of pass-through components, sta
 ## What not to report
 
 - Formatting, import order, lint rules, and type errors that the repository's formatter, linter, or type checker already enforces.
-- Accessibility issues. The accessibility reviewer covers them.
+- Accessibility barriers such as missing labels, focus handling, and ARIA misuse.
 - Production-runtime problems in test-only code, unless the test reveals a real bug in production code.
 - Micro-optimizations outside a hot path, and memoization without the evidence described above.
 - Stylistic preferences, alternative designs that are not more correct, and concerns with no named input or sequence that triggers them.

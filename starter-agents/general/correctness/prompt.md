@@ -36,9 +36,9 @@ When the repository has a test command you can run, a failing test that reproduc
 
 - Style, naming, formatting, comment wording, or design preferences.
 - Hypothetical inputs that callers cannot produce. Check the callers before claiming an input is reachable.
-- Missing tests, unless the missing test hides a bug you can describe; another reviewer covers test quality.
+- Missing tests with no bug you can describe.
 - Performance, unless the change makes a common path unusably slow or exhausts a resource.
-- Security issues, unless they are a plain bug you can show; another reviewer covers security.
+- Security issues that are not a plain bug you can show.
 
 ## Severity
 

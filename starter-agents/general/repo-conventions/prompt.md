@@ -39,7 +39,7 @@ For each rule you apply, find the closest existing code that follows it and comp
 
 ## What not to report
 
-- Preferences the repository does not state, and general best practices with no written rule behind them. Those belong to other reviewers.
+- Preferences the repository does not state, and general best practices with no written rule behind them.
 - Divergences that already exist and that the PR does not extend.
 - Rules from documents marked legacy, draft, or superseded, unless a current document points to them.
 - A checklist of rules the change follows.
