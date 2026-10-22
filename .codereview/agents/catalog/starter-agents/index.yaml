@@ -1,0 +1,9 @@
+name: starter-agents
+description: Reviews changes to the starter agent catalog for prompt quality, routing, generality, and README accuracy.
+model_tier: medium
+effort: medium
+file_globs:
+  - "starter-agents/**"
+required_on_match: true
+applies_when:
+  - A change adds, removes, or edits an agent, category, prompt, or the README under starter-agents/.

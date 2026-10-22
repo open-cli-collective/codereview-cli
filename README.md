@@ -813,17 +813,29 @@ cache workdir so Claude Code can resolve resumed sessions consistently; set
 `CR_CLAUDE_BG_WORK_DIR` to override that workdir. For checkout-native reviewer
 execution, Claude CLI receives a disposable reviewer workspace, run-owned
 scratch/temp/cache directories, and `Read,Write,Bash` tools through Claude Code
-directory permissions.
+directory permissions. Every Claude request passes `--safe-mode`, so the
+operator's `CLAUDE.md` files, skills, plugins, hooks, and MCP servers do not
+reach any review task; subscription auth and the requested tools still work.
+The adapter rejects an argv without it.
 
 For OpenAI subscription profiles, `adapter: codex_cli` runs `codex exec` in an
 adapter-owned scratch directory with `--json`, `--ephemeral`,
-`--skip-git-repo-check`, `--ignore-user-config`, `--ignore-rules`, a read-only
-sandbox, and a scratch `--cd`. For checkout-native reviewer execution, Codex CLI
-uses `workspace-write` with the disposable reviewer workspace as `--cd`, plus
-run-owned scratch/temp/cache environment variables for verification commands.
-The adapter rejects unsafe flags. Non-reviewer Codex requests remain
-best-effort/beta because Codex CLI does not yet expose a first-class
+`--skip-git-repo-check`, `--ignore-user-config`, `--ignore-rules`,
+`-c project_doc_max_bytes=0`, a read-only sandbox, and a scratch `--cd`. For
+checkout-native reviewer execution, Codex CLI uses `workspace-write` with the
+disposable reviewer workspace as `--cd`, plus run-owned scratch/temp/cache
+environment variables for verification commands. The project-doc limit keeps
+Codex from loading the PR head's `AGENTS.md` files as instructions, so a PR
+cannot change the instructions its own review runs under. Codex has no flag
+that skips the user-level `$CODEX_HOME/AGENTS.md`, and `cr` does not move
+`CODEX_HOME` because it also holds Codex auth, so that file still reaches
+Codex tasks. The adapter rejects unsafe flags. Non-reviewer Codex requests
+remain best-effort/beta because Codex CLI does not yet expose a first-class
 all-tools-disabled flag.
+
+Repository guidance reaches reviewers through trusted agent prompts, which can
+tell a reviewer to read `AGENTS.md`, `CLAUDE.md`, or `docs/` from the checkout
+as files. See [docs/review-guidance.md](docs/review-guidance.md).
 
 Credential key matrix:
 
