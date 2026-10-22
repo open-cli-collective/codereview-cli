@@ -806,8 +806,8 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			}
 		}
 		assertFlagValue(t, record.AdapterArgs, "--sandbox", "read-only")
-		if got := strings.Join(flagValues(record.AdapterArgs, "-c"), ","); got != "model_reasoning_effort=high" {
-			t.Fatalf("Codex config overrides = %q, want standard-speed reasoning only", got)
+		if got := strings.Join(flagValues(record.AdapterArgs, "-c"), ","); got != "project_doc_max_bytes=0,model_reasoning_effort=high" {
+			t.Fatalf("Codex config overrides = %q, want project docs off and standard-speed reasoning only", got)
 		}
 		if cd := flagValue(record.AdapterArgs, "--cd"); !samePath(t, cd, record.Cwd) {
 			t.Fatalf("flagValue(--cd) = %q, helper cwd = %q, want same path", cd, record.Cwd)
@@ -872,9 +872,8 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			}
 		}
 		assertFlagValue(t, record.AdapterArgs, "--model", "gpt-5.5")
-		assertFlagValue(t, record.AdapterArgs, "-c", "model_reasoning_effort=high")
-		if got := strings.Join(flagValues(record.AdapterArgs, "-c"), ","); got != "model_reasoning_effort=high" {
-			t.Fatalf("Codex resume config overrides = %q, want standard-speed reasoning only", got)
+		if got := strings.Join(flagValues(record.AdapterArgs, "-c"), ","); got != "project_doc_max_bytes=0,model_reasoning_effort=high" {
+			t.Fatalf("Codex resume config overrides = %q, want project docs off and standard-speed reasoning only", got)
 		}
 		promptIndex := len(argsBeforePrompt(record.AdapterArgs))
 		if promptIndex+2 != len(record.AdapterArgs) || record.AdapterArgs[promptIndex] != "--" || record.AdapterArgs[promptIndex+1] != "resume prompt" {
@@ -909,7 +908,7 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 			if _, err := stream.Wait(context.Background()); err != nil {
 				t.Fatalf("Wait: %v", err)
 			}
-			if got := strings.Join(flagValues(readHelperRecord(t, recordPath).AdapterArgs, "-c"), ","); got != `model_reasoning_effort=high,service_tier="fast"` {
+			if got := strings.Join(flagValues(readHelperRecord(t, recordPath).AdapterArgs, "-c"), ","); got != `project_doc_max_bytes=0,model_reasoning_effort=high,service_tier="fast"` {
 				t.Fatalf("Codex config overrides = %q, want fast service tier", got)
 			}
 		})
@@ -2332,6 +2331,7 @@ func TestClaudeTransportXORValidation(t *testing.T) {
 	scratch := t.TempDir()
 	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
 	base := []string{
+		"--safe-mode",
 		"--tools", "Read,Write",
 		"--add-dir", scratch,
 		"--", "positional prompt",
@@ -2669,9 +2669,84 @@ func TestSubprocessCodexDisablesNetworkOnlyForOfflineReviewer(t *testing.T) {
 			}
 		}
 		if noNetwork {
-			if err := adapter.validateArgs(removeFlagPair(started, "-c"), scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) {
-				t.Fatalf("validateArgs without network config = %v, want unsafe config", err)
+			withoutNetwork := started
+			for _, value := range codexNoNetworkConfig {
+				withoutNetwork = removeFlagValuePair(withoutNetwork, "-c", value)
+			}
+			if err := adapter.validateArgs(withoutNetwork, scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) || !strings.Contains(err.Error(), "offline reviewer") {
+				t.Fatalf("validateArgs without network config = %v, want offline reviewer unsafe config", err)
 			}
 		}
 	}
+}
+
+func TestSubprocessClaudeIgnoresAmbientInstructionFiles(t *testing.T) {
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
+	for _, workspace := range []bool{false, true} {
+		req, scratch := offlineTestRequest(t, true)
+		if !workspace {
+			req = Request{Prompt: "prompt"}
+		}
+		background, err := adapter.buildArgsForSession(req, scratch, "")
+		if err != nil {
+			t.Fatalf("buildArgsForSession: %v", err)
+		}
+		resumed, err := adapter.buildArgsForSession(req, scratch, "session-1")
+		if err != nil {
+			t.Fatalf("buildArgsForSession(resume): %v", err)
+		}
+		foreground := buildClaudeForegroundArgs(req, scratch, "")
+		for name, args := range map[string][]string{"background": background, "resumed": resumed, "foreground": foreground} {
+			if !containsFlag(argsBeforePrompt(args), "--safe-mode") {
+				t.Fatalf("%s args = %v, want --safe-mode", name, args)
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("%s validateArgs(workspace=%v): %v", name, workspace, err)
+			}
+			if err := adapter.validateArgs(removeFlag(args, "--safe-mode"), scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) || !strings.Contains(err.Error(), "--safe-mode") {
+				t.Fatalf("%s validateArgs without --safe-mode = %v, want unsafe config", name, err)
+			}
+		}
+	}
+}
+
+func TestSubprocessCodexIgnoresProjectInstructionFiles(t *testing.T) {
+	adapter := NewCodexCLIAdapter(SubprocessOptions{AllowBestEffortNoTools: true})
+	for _, workspace := range []bool{false, true} {
+		req, scratch := offlineTestRequest(t, false)
+		if !workspace {
+			req = Request{Prompt: "prompt"}
+		}
+		started, err := adapter.buildArgsForSession(req, scratch, "")
+		if err != nil {
+			t.Fatalf("buildArgsForSession: %v", err)
+		}
+		resumed, err := adapter.buildArgsForSession(req, scratch, "session-1")
+		if err != nil {
+			t.Fatalf("buildArgsForSession(resume): %v", err)
+		}
+		for name, args := range map[string][]string{"started": started, "resumed": resumed} {
+			if !slices.Contains(flagValues(argsBeforePrompt(args), "-c"), codexNoProjectDocsConfig) {
+				t.Fatalf("%s args = %v, want -c %s", name, args, codexNoProjectDocsConfig)
+			}
+			if err := adapter.validateArgs(args, scratch, req); err != nil {
+				t.Fatalf("%s validateArgs(workspace=%v): %v", name, workspace, err)
+			}
+			if err := adapter.validateArgs(removeFlagValuePair(args, "-c", codexNoProjectDocsConfig), scratch, req); !errors.Is(err, ErrUnsafeSubprocessConfig) || !strings.Contains(err.Error(), codexNoProjectDocsConfig) {
+				t.Fatalf("%s validateArgs without project doc config = %v, want unsafe config", name, err)
+			}
+		}
+	}
+}
+
+func removeFlagValuePair(args []string, flag string, value string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag && i+1 < len(args) && args[i+1] == value {
+			i++
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
 }
