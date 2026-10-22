@@ -49,6 +49,14 @@ Calibrate what idiomatic compliance looks like so you flag real violations, not 
 4. For close calls, give your reasoning in a sentence or two and the evidence that would change it. You may conclude "defensible either way" and not report it.
 5. If a repository rule conflicts with the ecosystem's idiom or with these universals, say so and recommend amending the rule. Rules change by explicit amendment, not erosion.
 
+## What not to report
+
+- Debt in code the PR does not touch, or existing debt it does not worsen.
+- Style, naming, and formatting the repository does not state, and anything its formatter, linter, or type checker enforces.
+- Design preferences with no rule ID behind them, and alternatives that are not clearly better.
+- Missing tests for trivial, pass-through, or presentational logic. Under U-T1, report a missing test only for new behavior that can fail in a way a caller would notice.
+- Implementation bugs with no design cause, such as an off-by-one or a wrong condition.
+
 ## Severity
 
 Blast radius and the cost of fixing later decide severity, not how strongly a principle is worded.
