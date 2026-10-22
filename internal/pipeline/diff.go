@@ -34,6 +34,10 @@ func parseUnifiedDiff(raw string) (ParsedDiff, error) {
 	var current *FilePatch
 	var patch strings.Builder
 	patchLine := 0
+	// inHunks is set at a file's first hunk header. The ---/+++ path headers
+	// only come before it; after it, a removed "-- x" or added "++ x" line
+	// reads the same as a header and must stay content.
+	inHunks := false
 
 	flush := func() {
 		if current == nil {
@@ -63,6 +67,7 @@ func parseUnifiedDiff(raw string) (ParsedDiff, error) {
 			current = &FilePatch{OldPath: oldPath, Path: newPath}
 			patch.Reset()
 			patchLine = 0
+			inHunks = false
 		}
 		if current == nil {
 			continue
@@ -71,12 +76,12 @@ func parseUnifiedDiff(raw string) (ParsedDiff, error) {
 		patchLine++
 		trimmed := strings.TrimRight(line, "\r\n")
 		switch {
-		case strings.HasPrefix(trimmed, "--- "):
+		case !inHunks && strings.HasPrefix(trimmed, "--- "):
 			path := parseHeaderPath(strings.TrimPrefix(trimmed, "--- "))
 			if path != "" {
 				current.OldPath = path
 			}
-		case strings.HasPrefix(trimmed, "+++ "):
+		case !inHunks && strings.HasPrefix(trimmed, "+++ "):
 			path := parseHeaderPath(strings.TrimPrefix(trimmed, "+++ "))
 			if path != "" {
 				current.Path = path
@@ -99,6 +104,7 @@ func parseUnifiedDiff(raw string) (ParsedDiff, error) {
 				return ParsedDiff{}, err
 			}
 			current.Hunks = append(current.Hunks, hunk)
+			inHunks = true
 		}
 	}
 	flush()

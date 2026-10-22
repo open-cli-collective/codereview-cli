@@ -323,3 +323,56 @@ func TestParseUnifiedDiffMarksAddedFiles(t *testing.T) {
 		t.Fatalf("added file with content = %#v, want Added with one hunk", withContent)
 	}
 }
+
+func TestParseUnifiedDiffKeepsHeaderLikeHunkLinesAsContent(t *testing.T) {
+	raw := strings.Join([]string{
+		"diff --git a/db/one.sql b/db/one.sql",
+		"index 1111111..2222222 100644",
+		"--- a/db/one.sql",
+		"+++ b/db/one.sql",
+		"@@ -1,3 +1,3 @@",
+		" SELECT 1;",
+		"--- TODO",
+		"+++ counter",
+		" SELECT 2;",
+		"diff --git a/db/two.sql b/db/two.sql",
+		"index 3333333..4444444 100644",
+		"--- a/db/two.sql",
+		"+++ b/db/two.sql",
+		"@@ -1,2 +1,1 @@",
+		"--- TODO",
+		" SELECT 3;",
+		"@@ -9,1 +8,2 @@",
+		" SELECT 4;",
+		"+++ /dev/null",
+		"",
+	}, "\n")
+
+	got, err := parseUnifiedDiff(raw)
+	if err != nil {
+		t.Fatalf("parseUnifiedDiff: %v", err)
+	}
+	want := []struct {
+		path  string
+		hunks int
+	}{
+		{path: "db/one.sql", hunks: 1},
+		{path: "db/two.sql", hunks: 2},
+	}
+	if len(got.Patches) != len(want) {
+		t.Fatalf("patches = %d, want %d", len(got.Patches), len(want))
+	}
+	for i, w := range want {
+		patch := got.Patches[i]
+		if patch.OldPath != w.path || patch.Path != w.path || patch.Deleted || patch.Added {
+			t.Errorf("patch %d = old %q path %q deleted %v added %v, want old and path %q, neither deleted nor added",
+				i, patch.OldPath, patch.Path, patch.Deleted, patch.Added, w.path)
+		}
+		if len(patch.Hunks) != w.hunks {
+			t.Errorf("patch %d hunks = %d, want %d", i, len(patch.Hunks), w.hunks)
+		}
+		if !strings.Contains(patch.Patch, "--- TODO\n") {
+			t.Errorf("patch %d lost its removed comment line:\n%s", i, patch.Patch)
+		}
+	}
+}
