@@ -100,6 +100,12 @@ Secrets are never written to `config.yml`. Non-secret config lives in the
 `codereview` config directory resolved by the operating system, and durable
 review data lives under the OS data directory for the `cr` binary.
 
+`cr` ships no reviewer agents: a review needs at least one agent source, either
+a profile `agent_sources` directory, a repository's `.codereview/agents/`, or
+`--agents-dir`. [`starter-agents/`](starter-agents/README.md) is a
+general-purpose catalog to start from, with instructions for using it as a
+profile source and for adding repository-specific reviewers on top of it.
+
 For repo review guidance, reviewer-facing dossier context, and dossier/workbench
 retention conventions, see [docs/review-guidance.md](docs/review-guidance.md).
 For first runs, reruns, fresh sessions, thread checkpoints, and interrupted-run

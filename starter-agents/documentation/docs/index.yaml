@@ -1,0 +1,13 @@
+name: docs
+description: Checks edited documentation for accuracy against the repository and against what the same PR changes.
+model_tier: medium
+effort: medium
+file_globs:
+  - "*.md"
+  - "**/*.md"
+  - "*.mdx"
+  - "**/*.mdx"
+required_on_match: true
+applies_when:
+  - A change edits README files, docs, agent entrypoints such as AGENTS.md or CLAUDE.md, runbooks, or other prose documentation.
+  - A change to code, configuration, or workflows also edits any documentation file, however small the edit; the edited docs must match the behavior the same change introduces.

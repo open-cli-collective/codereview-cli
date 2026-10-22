@@ -1,0 +1,13 @@
+name: behavior
+description: Checks that new or changed behavior has tests that would fail if the implementation were wrong.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*"
+  - "!*.md"
+  - "!**/*.md"
+  - "!*.mdx"
+  - "!**/*.mdx"
+applies_when:
+  - A change adds or alters behavior in source code, or adds, removes, or rewrites tests or test fixtures.
+  - Do not select for documentation-only, formatting-only, or dependency-only changes.

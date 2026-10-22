@@ -181,6 +181,12 @@ release, change `PI_RUNTIME_VERSION` and run the target locally first.
 - Intended binary: `cr`
 - Main branch: `main`
 - Support scripts are documented in `scripts/README.md`.
+- `starter-agents/` is the general reviewer catalog offered to users as a
+  profile agent source; it is data, not loaded by the binary.
+  `internal/agents/starter_catalog_test.go` loads it with the strict
+  profile-source parser and checks that `starter-agents/README.md` lists every
+  agent. `.codereview/agents/` holds only the reviewers specific to this
+  repository, some of which replace starter agents by ID.
 - Local workflow files: `.github/workflows/ci.yml`,
   `.github/workflows/auto-release.yml`, and `.github/workflows/release.yml`
 - Packaging identity: `packaging/identity.yml`

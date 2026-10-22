@@ -1,0 +1,3 @@
+name: automation
+description: Reviewers for CI, build, release, packaging, and automation scripts.
+owner: open-cli-collective

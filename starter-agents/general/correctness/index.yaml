@@ -1,0 +1,13 @@
+name: correctness
+description: Finds bugs the change introduces, in any language, and proves each one with a concrete input or sequence.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*"
+  - "!*.md"
+  - "!**/*.md"
+  - "!*.mdx"
+  - "!**/*.mdx"
+required_on_match: true
+applies_when:
+  - Any change to code, configuration, scripts, or workflows.

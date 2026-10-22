@@ -1,0 +1,23 @@
+name: correctness
+description: Reviews frontend changes for correctness bugs, browser security risks, missing loading, empty, and error states, feature-flag fallbacks, and tests that prove the change.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.js"
+  - "**/*.jsx"
+  - "**/*.mjs"
+  - "**/*.cjs"
+  - "**/*.vue"
+  - "**/*.svelte"
+  - "**/package.json"
+  - "**/tsconfig*.json"
+  - "**/vite.config.*"
+  - "**/webpack.config.*"
+  - "**/next.config.*"
+  - "!**/*.stories.*"
+  - "!**/*.min.js"
+applies_when:
+  - A change touches browser frontend code, such as components, hooks, client-side state, data fetching, routing, feature-flag checks, frontend tests, frontend build configuration, or frontend package dependencies.
+  - Do not select for server-only JavaScript or TypeScript, such as API handlers, workers, or command-line tools.

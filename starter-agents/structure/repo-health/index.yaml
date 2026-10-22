@@ -1,0 +1,9 @@
+name: repo-health
+description: Reviews changes for structural drift that compounds across future human and agent work.
+model_tier: medium
+effort: medium
+file_globs:
+  - "**/*"
+applies_when:
+  - A change crosses module boundaries, adds or removes a durable concept, changes repository guidance or automation, or creates a pattern likely to be copied.
+  - Do not select for narrow, localized changes that stay inside one module and add no durable concept, guidance, or automation.

@@ -1,0 +1,3 @@
+name: frontend
+description: Reviewers for browser frontend code, covering component correctness, browser security, user-facing states, and accessibility.
+owner: open-cli-collective

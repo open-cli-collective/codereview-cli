@@ -1,0 +1,13 @@
+name: design
+description: Reviews changes for SOLID and dependency-hygiene problems in the idiom of the language at hand, citing a rule for every finding.
+model_tier: large
+effort: medium
+file_globs:
+  - "**/*"
+  - "!*.md"
+  - "!**/*.md"
+  - "!*.mdx"
+  - "!**/*.mdx"
+applies_when:
+  - A change adds or reshapes modules, public interfaces, dependency wiring, entry points, error contracts, or project enforcement configuration such as lint, type-check, or test settings.
+  - Do not select for small localized fixes, documentation, or configuration value changes.

@@ -1,0 +1,13 @@
+name: trust-boundaries
+description: Finds exploitable vulnerabilities by classifying where each input comes from and where it ends up.
+model_tier: medium
+effort: high
+file_globs:
+  - "**/*"
+  - "!*.md"
+  - "!**/*.md"
+  - "!*.mdx"
+  - "!**/*.mdx"
+applies_when:
+  - A change touches authentication, authorization, input parsing, data access, file paths, shell or process execution, HTML rendering, redirects, deserialization, secrets, credentials, or network requests built from input.
+  - A change adds or widens an API, command, webhook, or other entry point that accepts outside input.
