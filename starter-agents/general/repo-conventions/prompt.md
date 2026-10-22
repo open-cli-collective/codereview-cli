@@ -29,7 +29,7 @@ Zero findings is a normal result. Prefer no finding to a speculative one, and do
 Check the diff against each stated rule that covers a changed file. Rules repositories commonly state, and that agents commonly miss:
 
 - **Placement and boundaries:** where a kind of code lives (which package or layer owns it), which modules may import which, and where shared logic must go instead of being copied. When a rule says logic shared by two places belongs in one module, flag a change that adds a second copy, and name the module it belongs in.
-- **Required companions:** a change of one kind that the docs say must come with another, such as a migration with a model change, a test or fixture with a new parser, an entry in an index or registry, a changelog line, generated files regenerated, or every served copy of a shared surface updated together.
+- **Required companions:** a change of one kind that the docs say must come with another, such as a migration with a model change, a test or fixture with a new parser, an entry in an index or registry, a changelog line, generated files regenerated, or every copy of a file or asset the repository keeps in more than one place updated together.
 - **Tooling paths:** the documented command, script, package manager, or lockfile. Flag a change that bypasses them, for example a second lockfile, a raw tool call where a wrapper script is required, or a config that disables a documented check.
 - **Named patterns and banned patterns:** helpers the docs say to use, and constructs they forbid.
 - **Exemption lists:** when the repository keeps an allow-list or exemption file for a rule, a change that relies on an exception must appear there with its reason. Do not flag a case the list already covers.
