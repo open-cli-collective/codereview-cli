@@ -1,0 +1,10 @@
+runtime_id,tier,model_id,effort,max_effort,source_url,verified_date
+anthropic-subscription-claude-cli,small,claude-sonnet-5-5,low,,https://platform.claude.com/docs/en/models/sonnet-5-5/overview,2026-10-02
+anthropic-subscription-claude-cli,medium,claude-sonnet-5-5,medium,,https://platform.claude.com/docs/en/models/sonnet-5-5/overview,2026-10-02
+anthropic-subscription-claude-cli,large,claude-opus-5-5,medium,,https://platform.claude.com/docs/en/models,2026-10-02
+openai-api-key,small,gpt-6-luna,max,,https://developers.openai.com/api/docs/models,2026-10-02
+openai-api-key,medium,gpt-6.1-sol,low,,https://developers.openai.com/api/docs/models/gpt-6.1-sol,2026-10-02
+openai-api-key,large,gpt-6.1-sol,medium,,https://developers.openai.com/api/docs/models/gpt-6.1-sol,2026-10-02
+openai-subscription-codex-cli,small,gpt-6-luna,max,,https://learn.chatgpt.com/docs/agent-configuration/speed,2026-10-02
+openai-subscription-codex-cli,medium,gpt-6.1-sol,low,,https://learn.chatgpt.com/docs/agent-configuration/speed,2026-10-02
+openai-subscription-codex-cli,large,gpt-6.1-sol,medium,,https://learn.chatgpt.com/docs/agent-configuration/speed,2026-10-02

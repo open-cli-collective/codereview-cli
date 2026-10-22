@@ -1,0 +1,6 @@
+runtime_id,provider,auth,harness,adapter,suggested_name,display_name,maximum_effort,requires_credential_ref,source_url,verified_date
+anthropic-subscription-claude-cli,anthropic,subscription,claude_cli,claude_cli,claude-cli,Claude CLI,max,N,https://docs.anthropic.com/en/docs/claude-code,2026-10-02
+anthropic-api-key,anthropic,api_key,anthropic_api,anthropic_api,anthropic-api-key,Anthropic API,high,Y,https://docs.anthropic.com/en/api/overview,2026-10-02
+openai-subscription-codex-cli,openai,subscription,codex_cli,codex_cli,codex-cli,Codex CLI,max,N,https://developers.openai.com/codex/cli,2026-10-02
+openai-api-key,openai,api_key,openai_api,openai_api,openai-api-key,OpenAI API,max,Y,https://developers.openai.com/api/docs/overview,2026-10-02
+pi-subscription-rpc,pi,subscription,pi_rpc,pi_rpc,pi-local,Pi RPC,max,N,https://github.com/badlogic/pi-mono,2026-10-02

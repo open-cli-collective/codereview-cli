@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
@@ -253,12 +254,29 @@ func TestEstimateUsageUSDForLeavesUnknownRatesAndContextBandsUnavailable(t *test
 
 func customPricingCatalog(t *testing.T) *modelcatalog.Catalog {
 	t.Helper()
+	return customPricingCatalogForSchema(t, 1, false)
+}
+
+func customPricingCatalogForSchema(t *testing.T, schema int, requestBound bool) *modelcatalog.Catalog {
+	t.Helper()
+	catalog, err := modelcatalog.LoadPath(customPricingCatalogPathForSchema(t, schema, requestBound))
+	if err != nil {
+		t.Fatalf("LoadPath: %v", err)
+	}
+	return catalog
+}
+
+func customPricingCatalogPathForSchema(t *testing.T, schema int, requestBound bool) string {
+	t.Helper()
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
 	source := t.TempDir()
 	dataDir := filepath.Join(filepath.Dir(testFile), "..", "modelcatalog", "data")
+	if schema == 1 {
+		dataDir = filepath.Join(filepath.Dir(testFile), "..", "modelcatalog", "testdata", "v1")
+	}
 	for _, name := range []string{"manifest.json", "runtimes.csv", "models.csv", "defaults.csv", "pricing.csv"} {
 		body, err := os.ReadFile(filepath.Join(dataDir, name)) // #nosec G304 -- dataDir is the repository's bundled fixture.
 		if err != nil {
@@ -269,7 +287,15 @@ func customPricingCatalog(t *testing.T) *modelcatalog.Catalog {
 		}
 	}
 	appendCatalogRow(t, source, "models.csv", "openai-api-key,pricing-test-model,low,,,,https://example.invalid,2026-10-03\n")
-	appendCatalogRow(t, source, "pricing.csv", "pricing-test-model,standard,all,7,11,0.7,,3,5,https://example.invalid,2026-10-03\n")
+	priceRow := "pricing-test-model,standard,all,7,11,0.7,,3,5,https://example.invalid,2026-10-03"
+	if schema == 2 {
+		if requestBound {
+			priceRow += ",openai-api-key,default,0,,whole_request"
+		} else {
+			priceRow += ",,,,,"
+		}
+	}
+	appendCatalogRow(t, source, "pricing.csv", priceRow+"\n")
 	manifestPath := filepath.Join(source, "manifest.json")
 	manifestBody, err := os.ReadFile(manifestPath) // #nosec G304 -- manifestPath is under t.TempDir.
 	if err != nil {
@@ -295,11 +321,7 @@ func customPricingCatalog(t *testing.T) *modelcatalog.Catalog {
 	if err := os.WriteFile(manifestPath, append(manifestBody, '\n'), 0o600); err != nil { // #nosec G703 -- manifestPath is under t.TempDir.
 		t.Fatalf("write manifest: %v", err)
 	}
-	catalog, err := modelcatalog.LoadPath(source)
-	if err != nil {
-		t.Fatalf("LoadPath: %v", err)
-	}
-	return catalog
+	return source
 }
 
 func appendCatalogRow(t *testing.T, dir, name, row string) {
@@ -312,5 +334,122 @@ func appendCatalogRow(t *testing.T, dir, name, row string) {
 	defer body.Close()
 	if _, err := body.WriteString(row); err != nil {
 		t.Fatalf("append %s: %v", name, err)
+	}
+}
+
+func TestLegacyEstimateRejectsRequestBoundAllAndPreservesV1(t *testing.T) {
+	for _, tc := range []struct {
+		schema int
+		bound  bool
+	}{{1, false}, {2, false}, {2, true}} {
+		catalog := customPricingCatalogForSchema(t, tc.schema, tc.bound)
+		if _, ok := catalog.PriceFor("pricing-test-model", "standard"); ok == tc.bound {
+			t.Fatalf("schema=%d bound=%t PriceFor availability=%t", tc.schema, tc.bound, ok)
+		}
+		for _, usage := range []Usage{{Speed: "standard"}, {TokensIn: p(1_000_000), Speed: "standard"}} {
+			cost, ok := EstimateUsageUSDFor(catalog, "pricing-test-model", usage)
+			if ok == tc.bound {
+				t.Fatalf("schema=%d bound=%t legacy availability=%t", tc.schema, tc.bound, ok)
+			}
+			if ok && cost != float64(deref(usage.TokensIn))*7/perMillion {
+				t.Fatal("legacy price changed")
+			}
+		}
+		if tc.bound {
+			if _, reason := catalog.PriceForRequest("openai-api-key", "pricing-test-model", "default", 1); reason != "" {
+				t.Fatalf("request-bound all row unavailable to exact selector: %q", reason)
+			}
+		}
+	}
+}
+
+func TestLegacyEstimateStillRejectsEveryOpenAIContextBand(t *testing.T) {
+	catalog, err := modelcatalog.LoadBundled()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, price := range catalog.Pricing() {
+		if price.ContextBand == "all" {
+			continue
+		}
+		if _, ok := EstimateUsageUSDFor(catalog, price.ModelID, Usage{TokensIn: p(1), Speed: price.Speed}); ok {
+			t.Fatalf("legacy estimator activated for %s/%s", price.ModelID, price.Speed)
+		}
+	}
+}
+
+func TestPaddedV2HeadersCannotDemoteRequestBoundAllToLegacy(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		indexes               []int
+		quoted, finiteMaximum bool
+	}{
+		{name: "all five", indexes: []int{11, 12, 13, 14, 15}},
+		{name: "all five quoted", indexes: []int{11, 12, 13, 14, 15}, quoted: true},
+		{name: "partial", indexes: []int{11, 12}},
+		{name: "optional maximum only", indexes: []int{14}, finiteMaximum: true},
+		{name: "optional maximum quoted", indexes: []int{14}, quoted: true, finiteMaximum: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := customPricingCatalogPathForSchema(t, 2, true)
+			catalog, err := modelcatalog.LoadPath(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			usage := Usage{TokensIn: p(1_000_000), Speed: "standard"}
+			if _, ok := catalog.PriceFor("pricing-test-model", "standard"); ok {
+				t.Fatal("canonical bound all row entered PriceFor")
+			}
+			if _, ok := EstimateUsageUSDFor(catalog, "pricing-test-model", usage); ok {
+				t.Fatal("canonical bound all row entered legacy estimator")
+			}
+			sourceRoot, err := os.OpenRoot(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = sourceRoot.Close() })
+			body, err := sourceRoot.ReadFile("pricing.csv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts := strings.SplitN(string(body), "\n", 2)
+			headers := strings.Split(parts[0], ",")
+			for _, index := range tc.indexes {
+				headers[index] += " "
+				if tc.quoted {
+					headers[index] = "\"" + headers[index] + "\""
+				}
+			}
+			if tc.finiteMaximum {
+				// A populated invalid finite bound on all must not become unbounded
+				// merely because its header key was padded.
+				parts[1] = strings.Replace(parts[1], ",openai-api-key,default,0,,whole_request", ",openai-api-key,default,0,100,whole_request", 1)
+			}
+			body = []byte(strings.Join(headers, ",") + "\n" + parts[1])
+			if err := sourceRoot.WriteFile("pricing.csv", body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manifest := catalog.Manifest()
+			manifest.Files["pricing.csv"] = fmt.Sprintf("%x", sha256.Sum256(body))
+			manifestBody, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sourceRoot.WriteFile("manifest.json", manifestBody, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := sourceRoot.Close(); err != nil {
+				t.Fatal(err)
+			}
+			malformed, err := modelcatalog.LoadPath(source)
+			if err == nil {
+				_, priceOK := malformed.PriceFor("pricing-test-model", "standard")
+				_, estimateOK := EstimateUsageUSDFor(malformed, "pricing-test-model", usage)
+				t.Fatalf("padded header accepted: PriceFor=%t legacy estimate=%t", priceOK, estimateOK)
+			}
+			if !strings.Contains(err.Error(), "header") {
+				t.Fatalf("error = %v, want exact header rejection", err)
+			}
+		})
 	}
 }
