@@ -47,6 +47,9 @@ type SubprocessOptions struct {
 	// a session id. Unexported beside commandArgsPrefix: the seam exists for
 	// tests, which would otherwise wait out the real window.
 	sessionIDGrace time.Duration
+	// startGrace overrides how long a job may stay on its launch record
+	// before it counts as never started. A test seam, like sessionIDGrace.
+	startGrace time.Duration
 }
 
 // defaultLLMTaskTimeout bounds a single LLM task when the caller does not set
@@ -69,6 +72,10 @@ const (
 	claudeBGSessionIDGrace  = 10 * time.Second
 	claudeBGControlTimeout  = 10 * time.Second
 	claudeBGInspectMaxDepth = 8
+	// A job the job service picked up rewrites its launch record within
+	// seconds. One still on it after this long was accepted and never run, and
+	// waiting longer only spends the budget the foreground retry needs.
+	claudeBGStartGrace = 2 * time.Minute
 	// Stale metadata GC only touches jobs whose state has been idle for at least a day.
 	// Shorter windows risk racing manually resumed or slow-to-settle background sessions.
 	claudeBGStaleJobAge = 24 * time.Hour
@@ -81,6 +88,11 @@ const (
 // another transport. A job that DID complete and wrote nothing usable is a
 // model failure and is not marked, since retrying would only repeat it.
 var ErrClaudeBGTransport = errors.New("llm subprocess: Claude background transport failed")
+
+// errClaudeBGNotStarted marks the transport failure where no worker ever
+// picked the job up. Its session holds no conversation, so it must not be
+// reported for a later resume.
+var errClaudeBGNotStarted = errors.New("job never started")
 
 var (
 	claudeBGJobIDDirectRE = regexp.MustCompile(`backgrounded\s+.\s+([A-Za-z0-9_-]+)`)
@@ -109,6 +121,9 @@ type SubprocessAdapter struct {
 	// sessionIDGrace is how long a completed job is given to publish a
 	// session id, already resolved to the value in effect.
 	sessionIDGrace time.Duration
+	// startGrace is how long a job may stay on its launch record, already
+	// resolved to the value in effect.
+	startGrace time.Duration
 }
 
 // Claude CLI and Codex CLI share this concrete implementation.
@@ -141,6 +156,10 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 	if sessionIDGrace <= 0 {
 		sessionIDGrace = claudeBGSessionIDGrace
 	}
+	startGrace := opts.startGrace
+	if startGrace <= 0 {
+		startGrace = claudeBGStartGrace
+	}
 	return &SubprocessAdapter{
 		kind:                   kind,
 		command:                command,
@@ -151,6 +170,7 @@ func newSubprocessAdapter(kind subprocessKind, defaultCommand string, opts Subpr
 		allowBestEffortNoTools: opts.AllowBestEffortNoTools,
 		fastModeModels:         append([]string(nil), opts.FastModeModels...),
 		sessionIDGrace:         sessionIDGrace,
+		startGrace:             startGrace,
 	}
 }
 
@@ -1562,6 +1582,9 @@ func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID str
 		filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "tmp", claudeBGResultFilename),
 	}
 	state, err := a.waitForClaudeBGState(ctx, jobID, resultPaths)
+	if errors.Is(err, errClaudeBGNotStarted) {
+		return Response{}, "", err
+	}
 	if err != nil {
 		return Response{}, extractClaudeBGSessionID(state), err
 	}
@@ -1593,6 +1616,7 @@ func (a *SubprocessAdapter) waitForClaudeBGResult(ctx context.Context, jobID str
 func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID string, resultPaths []string) (map[string]any, error) {
 	statePath := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "state.json")
 	lastState := map[string]any{"state": "starting", "job_id": jobID}
+	startBy := time.Now().Add(a.startGrace)
 	ticker := time.NewTicker(claudeBGPollInterval)
 	defer ticker.Stop()
 
@@ -1614,6 +1638,10 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 				detail := claudeBGStateDetail(state)
 				jobErr := fmt.Errorf("%w: job %s: %s", ErrClaudeBGTransport, stateName, detail)
 				return state, classifyCLIDetail(jobErr, detail)
+			}
+			if claudeBGLaunchRecord(state) && !time.Now().Before(startBy) {
+				return state, fmt.Errorf("%w: %w: job %s still on its launch record after %s",
+					ErrClaudeBGTransport, errClaudeBGNotStarted, jobID, a.startGrace)
 			}
 		}
 
@@ -1653,6 +1681,15 @@ func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID 
 			}
 		}
 	}
+}
+
+// claudeBGLaunchRecord reports whether state is still the record the job
+// service wrote when it accepted the job. A worker that picks the job up
+// rewrites it, so updatedAt moves off createdAt. A state without both
+// timestamps cannot show this and never matches.
+func claudeBGLaunchRecord(state map[string]any) bool {
+	createdAt := claudeBGStateString(state, "createdAt")
+	return createdAt != "" && createdAt == claudeBGStateString(state, "updatedAt")
 }
 
 func readClaudeBGState(path string) (map[string]any, bool) {
