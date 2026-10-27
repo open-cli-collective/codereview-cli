@@ -113,8 +113,8 @@ homebrew_casks:
     description: Automated pull-request review CLI
     hooks:
       post:
-        install: |
-          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cr"]
+        install_steps: |
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/cr"]
     caveats: |
       To configure cr, follow the setup examples in the README:
         https://github.com/open-cli-collective/codereview-cli#authentication-and-setup

@@ -40,22 +40,25 @@ require_grep 'binary "cr"' "$cask"
 require_grep 'open-cli-collective/codereview-cli/releases/download/v' "$cask"
 require_grep 'cr_v#{version}_darwin_arm64.tar.gz' "$cask"
 require_grep 'cr_v#{version}_darwin_amd64.tar.gz' "$cask"
-require_grep '"com.apple.quarantine", "#{staged_path}/cr"' "$cask"
+require_grep '"com.apple.quarantine", "{{staged_path}}/cr"' "$cask"
 
-# The shared release workflow rewrites this legacy postflight block into
-# Homebrew's install-step DSL, which has no system_command, by turning each line
-# that starts with system_command into a run step. Any other statement survives
-# the rewrite and makes Homebrew reject the whole cask as invalid.
+# GoReleaser renders the install_steps hook as Homebrew's install-step DSL,
+# which has no system_command: any statement other than a run step makes
+# Homebrew reject the whole cask as invalid. A legacy postflight block means the
+# hook moved back to GoReleaser's deprecated install key, which fails
+# `goreleaser check` in the release workflow.
 ruby - "$cask" <<'RUBY'
 source = File.read(ARGV.fetch(0))
-body = source[/  postflight do\n(.*?)\n  end/m, 1]
-raise "postflight body missing" unless body
+raise "legacy postflight block present" if source.match?(/^  postflight do$/)
+
+body = source[/  postflight_steps do\n(.*?)\n  end/m, 1]
+raise "postflight_steps body missing" unless body
 
 body.each_line do |line|
   next if line.strip.empty?
-  next if line.match?(/\A\s*system_command\s/)
+  next if line.match?(/\A\s*run\s/)
 
-  raise "postflight line is not a bare system_command call: #{line.strip}"
+  raise "postflight_steps line is not a run step: #{line.strip}"
 end
 puts "rendered package hook check OK"
 RUBY
