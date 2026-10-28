@@ -2162,7 +2162,7 @@ func TestSubprocessClaudeForegroundMode(t *testing.T) {
 		t.Fatalf("args = %#v, want -p --output-format json", record.AdapterArgs)
 	}
 	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-5")
-	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "acceptEdits")
+	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "auto")
 }
 
 // slowSuccessSleep is the helper delay that pins DurationMS to the wait window
@@ -2372,11 +2372,11 @@ func TestClaudeTransportXORValidation(t *testing.T) {
 		wantErr        bool
 	}{
 		{"bg only", []string{"--bg"}, "auto", false},
-		{"foreground only", []string{"-p", "--output-format", "json"}, "acceptEdits", false},
+		{"foreground only", []string{"-p", "--output-format", "json"}, "auto", false},
 		{"acceptEdits with bg", []string{"--bg"}, "acceptEdits", true},
-		{"auto with foreground", []string{"-p", "--output-format", "json"}, "auto", true},
+		{"acceptEdits with foreground", []string{"-p", "--output-format", "json"}, "acceptEdits", true},
 		{"both transports", []string{"--bg", "-p", "--output-format", "json"}, "auto", true},
-		{"neither transport", nil, "acceptEdits", true},
+		{"neither transport", nil, "auto", true},
 	}
 	for _, tc := range cases {
 		args := append(append([]string(nil), tc.prefix...), "--permission-mode", tc.permissionMode)

@@ -350,7 +350,9 @@ func isTruthyEnvValue(v string) bool {
 // buildClaudeForegroundArgs mirrors the Claude background args with the job
 // service swapped for headless print mode. The prompt-file/result-file
 // contract is unchanged: the model writes its structured result to
-// cr-result.json in the scratch dir.
+// cr-result.json in the scratch dir. The permission mode matches background
+// too: acceptEdits denies every Bash call in print mode, so a workspace
+// reviewer could not read its own diff.
 func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID string) []string {
 	tools := "Read,Write"
 	if req.ReviewerWorkspace != nil {
@@ -359,9 +361,10 @@ func buildClaudeForegroundArgs(req Request, scratch string, resumeSessionID stri
 	args := []string{
 		"-p",
 		"--safe-mode",
+		"--enable-auto-mode",
 		"--output-format", "json",
 		"--tools", tools,
-		"--permission-mode", "acceptEdits",
+		"--permission-mode", "auto",
 		"--add-dir", scratch,
 	}
 	if workspace := req.ReviewerWorkspace; workspace != nil {
@@ -977,13 +980,9 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 		if req.ReviewerWorkspace != nil {
 			requiredTools = "Read,Write,Bash"
 		}
-		requiredPermissionMode := "acceptEdits"
-		if containsFlag(checkedArgs, "--bg") {
-			requiredPermissionMode = "auto"
-		}
 		required := map[string]string{
 			"--tools":           requiredTools,
-			"--permission-mode": requiredPermissionMode,
+			"--permission-mode": "auto",
 		}
 		for flag, value := range required {
 			got, ok := flagValueOK(checkedArgs, flag)
