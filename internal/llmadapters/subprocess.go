@@ -47,8 +47,8 @@ type SubprocessOptions struct {
 	// a session id. Unexported beside commandArgsPrefix: the seam exists for
 	// tests, which would otherwise wait out the real window.
 	sessionIDGrace time.Duration
-	// startGrace overrides how long a job may stay on its launch record
-	// before it counts as never started. A test seam, like sessionIDGrace.
+	// startGrace overrides how long a job may go without a worker reporting
+	// in before it counts as never started. A test seam, like sessionIDGrace.
 	startGrace time.Duration
 }
 
@@ -72,9 +72,9 @@ const (
 	claudeBGSessionIDGrace  = 10 * time.Second
 	claudeBGControlTimeout  = 10 * time.Second
 	claudeBGInspectMaxDepth = 8
-	// A job the job service picked up rewrites its launch record within
-	// seconds. One still on it after this long was accepted and never run, and
-	// waiting longer only spends the budget the foreground retry needs.
+	// A worker that runs a job reports its cliVersion in the job state within
+	// a minute. A job with none after this long was accepted and never run,
+	// and waiting longer only spends the budget the foreground retry needs.
 	claudeBGStartGrace = 2 * time.Minute
 	// Stale metadata GC only touches jobs whose state has been idle for at least a day.
 	// Shorter windows risk racing manually resumed or slow-to-settle background sessions.
@@ -90,7 +90,7 @@ const (
 var ErrClaudeBGTransport = errors.New("llm subprocess: Claude background transport failed")
 
 // errClaudeBGNotStarted marks the transport failure where no worker ever
-// picked the job up. Its session holds no conversation, so it must not be
+// ran the job. Its session holds no conversation, so it must not be
 // reported for a later resume.
 var errClaudeBGNotStarted = errors.New("job never started")
 
@@ -121,8 +121,8 @@ type SubprocessAdapter struct {
 	// sessionIDGrace is how long a completed job is given to publish a
 	// session id, already resolved to the value in effect.
 	sessionIDGrace time.Duration
-	// startGrace is how long a job may stay on its launch record, already
-	// resolved to the value in effect.
+	// startGrace is how long a job may go without a worker, already resolved
+	// to the value in effect.
 	startGrace time.Duration
 }
 
@@ -1641,9 +1641,9 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 				jobErr := fmt.Errorf("%w: job %s: %s", ErrClaudeBGTransport, stateName, detail)
 				return state, classifyCLIDetail(jobErr, detail)
 			}
-			if claudeBGLaunchRecord(state) && !time.Now().Before(startBy) {
-				return state, fmt.Errorf("%w: %w: job %s still on its launch record after %s",
-					ErrClaudeBGTransport, errClaudeBGNotStarted, jobID, a.startGrace)
+			if claudeBGNoWorker(state) && !time.Now().Before(startBy) {
+				return state, fmt.Errorf("%w: %w: job %s (state %s) has no worker after %s",
+					ErrClaudeBGTransport, errClaudeBGNotStarted, jobID, stateName, a.startGrace)
 			}
 		}
 
@@ -1685,13 +1685,15 @@ func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID 
 	}
 }
 
-// claudeBGLaunchRecord reports whether state is still the record the job
-// service wrote when it accepted the job. A worker that picks the job up
-// rewrites it, so updatedAt moves off createdAt. A state without both
-// timestamps cannot show this and never matches.
-func claudeBGLaunchRecord(state map[string]any) bool {
-	createdAt := claudeBGStateString(state, "createdAt")
-	return createdAt != "" && createdAt == claudeBGStateString(state, "updatedAt")
+// claudeBGNoWorker reports whether no Claude worker has reported in on the
+// job. A worker that runs the job writes its cliVersion into the state; until
+// then the job service alone writes it. That covers a job left on the record
+// it was created with, and a resumed job the service moved to "running" whose
+// worker never came up: updatedAt moves in the second case, so it cannot be
+// the signal. A state without createdAt is not from the job service and never
+// matches.
+func claudeBGNoWorker(state map[string]any) bool {
+	return claudeBGStateString(state, "createdAt") != "" && claudeBGStateString(state, "cliVersion") == ""
 }
 
 func readClaudeBGState(path string) (map[string]any, bool) {

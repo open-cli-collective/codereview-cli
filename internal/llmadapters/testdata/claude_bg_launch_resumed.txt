@@ -1,0 +1,5 @@
+backgrounded · job-1
+  claude agents             list sessions
+  claude attach job-1    open in this terminal
+  claude logs job-1      show recent output
+  claude stop job-1      stop this session
