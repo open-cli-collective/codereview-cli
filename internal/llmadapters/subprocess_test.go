@@ -2866,6 +2866,10 @@ func TestClaudeBGNoWorker(t *testing.T) {
 		{name: "launch record", state: mustClaudeBGStateFixture(t, "claude_bg_state_launch_record.json"), want: true},
 		{name: "running with no worker", state: mustClaudeBGStateFixture(t, "claude_bg_state_no_worker_running.json"), want: true},
 		{name: "worker reported in", state: mustClaudeBGStateFixture(t, "claude_bg_state_worker_running.json")},
+		{name: "working with inFlight and no cliVersion", state: map[string]any{"state": "working", "detail": "Reading cr-prompt.txt", "inFlight": map[string]any{"tasks": 1}, "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
+		{name: "working with detail and no worker fields", state: map[string]any{"state": "working", "detail": "Reading cr-prompt.txt", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
+		{name: "running with a detail", state: map[string]any{"state": "running", "detail": "Reading cr-prompt.txt", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
+		{name: "resuming", state: map[string]any{"state": "resuming", "detail": "", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:24.000Z"}},
 		{name: "no createdAt", state: map[string]any{"state": "working", "updatedAt": "2026-10-23T21:00:10.043Z"}},
 		{name: "no timestamps", state: map[string]any{"state": "working"}},
 	} {

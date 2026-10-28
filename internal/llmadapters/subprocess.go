@@ -1685,15 +1685,27 @@ func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID 
 	}
 }
 
-// claudeBGNoWorker reports whether no Claude worker has reported in on the
-// job. A worker that runs the job writes its cliVersion into the state; until
-// then the job service alone writes it. That covers a job left on the record
-// it was created with, and a resumed job the service moved to "running" whose
-// worker never came up: updatedAt moves in the second case, so it cannot be
-// the signal. A state without createdAt is not from the job service and never
-// matches.
+// claudeBGNoWorker reports whether the job matches one of the two shapes of a
+// job no worker ever ran. A worker that runs a job writes its cliVersion and
+// inFlight into the state, and the job service alone writes everything else,
+// so both shapes have neither:
+//   - the record the job was created with, updatedAt still equal to createdAt;
+//   - a job whose worker died starting up and was respawned, which the service
+//     moves to "running" with an empty detail. updatedAt moves here, so the
+//     timestamps alone cannot show it.
+//
+// Anything else counts as started: a job that shows any sign of a worker is
+// never cut off, at the cost of waiting out a stuck job of some other shape.
+// A state without createdAt is not from the job service and never matches.
 func claudeBGNoWorker(state map[string]any) bool {
-	return claudeBGStateString(state, "createdAt") != "" && claudeBGStateString(state, "cliVersion") == ""
+	createdAt := claudeBGStateString(state, "createdAt")
+	if createdAt == "" || claudeBGStateString(state, "cliVersion") != "" || claudeBGStateString(state, "inFlight") != "" {
+		return false
+	}
+	if createdAt == claudeBGStateString(state, "updatedAt") {
+		return true
+	}
+	return claudeBGStateString(state, "state") == "running" && claudeBGStateString(state, "detail") == ""
 }
 
 func readClaudeBGState(path string) (map[string]any, bool) {
