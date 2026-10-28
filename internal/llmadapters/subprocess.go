@@ -73,8 +73,9 @@ const (
 	claudeBGControlTimeout  = 10 * time.Second
 	claudeBGInspectMaxDepth = 8
 	// A job the job service picked up rewrites its launch record within
-	// seconds. One still on it after this long was accepted and never run, and
-	// waiting longer only spends the budget the foreground retry needs.
+	// seconds. One still on it after this long, or one that has written no
+	// state file at all, was accepted and never run, and waiting longer only
+	// spends the budget the foreground retry needs.
 	claudeBGStartGrace = 2 * time.Minute
 	// Stale metadata GC only touches jobs whose state has been idle for at least a day.
 	// Shorter windows risk racing manually resumed or slow-to-settle background sessions.
@@ -1619,6 +1620,7 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 	statePath := filepath.Join(claudeConfigDirFromEnv(a.env), "jobs", jobID, "state.json")
 	lastState := map[string]any{"state": "starting", "job_id": jobID}
 	startBy := time.Now().Add(a.startGrace)
+	seenState := false
 	ticker := time.NewTicker(claudeBGPollInterval)
 	defer ticker.Stop()
 
@@ -1645,7 +1647,11 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 				return state, fmt.Errorf("%w: %w: job %s still on its launch record after %s",
 					ErrClaudeBGTransport, errClaudeBGNotStarted, jobID, a.startGrace)
 			}
+		} else if !seenState && !time.Now().Before(startBy) {
+			return lastState, fmt.Errorf("%w: %w: job %s wrote no state file within %s",
+				ErrClaudeBGTransport, errClaudeBGNotStarted, jobID, a.startGrace)
 		}
+		seenState = seenState || ok
 
 		select {
 		case <-ctx.Done():
