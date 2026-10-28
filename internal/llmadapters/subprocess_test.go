@@ -2163,6 +2163,9 @@ func TestSubprocessClaudeForegroundMode(t *testing.T) {
 	}
 	assertFlagValue(t, record.AdapterArgs, "--model", "claude-sonnet-5")
 	assertFlagValue(t, record.AdapterArgs, "--permission-mode", "auto")
+	if !containsFlag(record.AdapterArgs, "--enable-auto-mode") {
+		t.Fatalf("args = %#v, want --enable-auto-mode", record.AdapterArgs)
+	}
 }
 
 // slowSuccessSleep is the helper delay that pins DurationMS to the wait window
@@ -2361,6 +2364,7 @@ func TestClaudeTransportXORValidation(t *testing.T) {
 	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
 	base := []string{
 		"--safe-mode",
+		"--enable-auto-mode",
 		"--tools", "Read,Write",
 		"--add-dir", scratch,
 		"--", "positional prompt",
@@ -2388,6 +2392,29 @@ func TestClaudeTransportXORValidation(t *testing.T) {
 		if !tc.wantErr && err != nil {
 			t.Fatalf("%s: err = %v, want nil", tc.name, err)
 		}
+	}
+}
+
+// A workspace reviewer must be able to run read-only git in foreground print
+// mode, where acceptEdits denies every Bash call.
+func TestClaudeForegroundWorkspaceReviewerRunsBashInAutoMode(t *testing.T) {
+	scratch := t.TempDir()
+	request := Request{ReviewerWorkspace: &ReviewerWorkspaceRequest{RepoDir: t.TempDir(), ScratchDir: scratch}}
+	args := buildClaudeForegroundArgs(request, scratch, "")
+	assertFlagValue(t, args, "--tools", "Read,Write,Bash")
+	assertFlagValue(t, args, "--permission-mode", "auto")
+	adapter := NewClaudeCLIAdapter(SubprocessOptions{})
+	if err := adapter.validateArgs(args, scratch, request); err != nil {
+		t.Fatalf("validateArgs: %v", err)
+	}
+	var withoutOptIn []string
+	for _, arg := range args {
+		if arg != "--enable-auto-mode" {
+			withoutOptIn = append(withoutOptIn, arg)
+		}
+	}
+	if err := adapter.validateArgs(withoutOptIn, scratch, request); !errors.Is(err, ErrUnsafeSubprocessConfig) {
+		t.Fatalf("validateArgs without --enable-auto-mode: err = %v, want ErrUnsafeSubprocessConfig", err)
 	}
 }
 

@@ -990,6 +990,9 @@ func (a *SubprocessAdapter) validateArgs(args []string, scratch string, req Requ
 				return fmt.Errorf("%w: missing %s %q", ErrUnsafeSubprocessConfig, flag, value)
 			}
 		}
+		if !containsFlag(checkedArgs, "--enable-auto-mode") {
+			return fmt.Errorf("%w: claude_cli must pass --enable-auto-mode", ErrUnsafeSubprocessConfig)
+		}
 		if err := validateClaudeAddDirs(checkedArgs, scratch, req.ReviewerWorkspace); err != nil {
 			return err
 		}
