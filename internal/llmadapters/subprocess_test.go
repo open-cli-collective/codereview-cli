@@ -2,6 +2,7 @@ package llmadapters
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,33 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 )
+
+// claudeBGFixtures holds job states and launch output captured from the
+// Claude job service, with paths and ids made generic.
+//
+//go:embed testdata/claude_bg_state_*.json testdata/claude_bg_launch_*.txt
+var claudeBGFixtures embed.FS
+
+func claudeBGStateFixture(name string) (map[string]any, error) {
+	data, err := claudeBGFixtures.ReadFile("testdata/" + name)
+	if err != nil {
+		return nil, err
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+func mustClaudeBGStateFixture(t *testing.T, name string) map[string]any {
+	t.Helper()
+	state, err := claudeBGStateFixture(name)
+	if err != nil {
+		t.Fatalf("claudeBGStateFixture(%s): %v", name, err)
+	}
+	return state
+}
 
 type trackedAfterFuncContext struct {
 	done   chan struct{}
@@ -1688,6 +1716,8 @@ func runClaudeBGHelper(mode string, args []string) {
 	}
 	result := `{"ok":true}`
 	writeResult := true
+	launchOutput := fmt.Sprintf("backgrounded * %s\n  claude attach %s\n", jobID, jobID)
+	stateFixture := ""
 	switch mode {
 	case "slow-success":
 		time.Sleep(slowSuccessSleep)
@@ -1716,22 +1746,20 @@ func runClaudeBGHelper(mode string, args []string) {
 		writeResult = false
 	case "bg-never-starts", "bg-never-starts-retry-fails":
 		// The launch record a stuck job keeps: nothing has rewritten it.
-		state = map[string]any{
-			"state":     "working",
-			"detail":    "starting…",
-			"sessionId": "session-never-ran",
-			"createdAt": "2026-10-23T21:00:10.043Z",
-			"updatedAt": "2026-10-23T21:00:10.043Z",
-		}
+		stateFixture = "claude_bg_state_launch_record.json"
+		writeResult = false
+	case "bg-resume-no-worker", "bg-resume-no-worker-retry-fails":
+		// A resumed job the service moved to running, with no worker behind it.
+		stateFixture = "claude_bg_state_no_worker_running.json"
+		launchOutput = readClaudeBGHelperFixture("claude_bg_launch_resumed.txt")
+		writeResult = false
+	case "bg-resume-copy-no-worker":
+		jobID = "job-2"
+		stateFixture = "claude_bg_state_no_worker_running.json"
+		launchOutput = readClaudeBGHelperFixture("claude_bg_launch_copy.txt")
 		writeResult = false
 	case "bg-started-still-working":
-		state = map[string]any{
-			"state":     "working",
-			"detail":    "Reading cr-prompt.txt",
-			"sessionId": "session-working",
-			"createdAt": "2026-10-23T21:00:10.043Z",
-			"updatedAt": "2026-10-23T21:00:16.875Z",
-		}
+		stateFixture = "claude_bg_state_worker_running.json"
 		writeResult = false
 	case "bg-failed":
 		state = map[string]any{"state": "failed", "error": "model failed"}
@@ -1761,6 +1789,14 @@ func runClaudeBGHelper(mode string, args []string) {
 		}
 		writeResult = false
 	}
+	if stateFixture != "" {
+		fixture, err := claudeBGStateFixture(stateFixture)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read state fixture: %v\n", err)
+			os.Exit(43)
+		}
+		state = fixture
+	}
 	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	if mode == "bg-no-state" {
 		// The job service accepted the job and printed its id, but no state
@@ -1776,7 +1812,16 @@ func runClaudeBGHelper(mode string, args []string) {
 		// #nosec G703 -- helper writes only inside the test scratch dir.
 		_ = os.WriteFile(filepath.Join(resultDir, claudeBGResultFilename), []byte(result), 0o600)
 	}
-	fmt.Printf("backgrounded * %s\n  claude attach %s\n", jobID, jobID)
+	fmt.Print(launchOutput)
+}
+
+func readClaudeBGHelperFixture(name string) string {
+	data, err := claudeBGFixtures.ReadFile("testdata/" + name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read launch fixture: %v\n", err)
+		os.Exit(43)
+	}
+	return string(data)
 }
 
 func writeClaudeHelperState(t *testing.T, path string, state map[string]any) {
@@ -2098,7 +2143,7 @@ func runClaudeForegroundHelper(mode string, args []string) {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":39},"speed":"standard"}}`)
-	case "bg-blocked-foreground-recovers", "bg-never-starts", "bg-no-state":
+	case "bg-blocked-foreground-recovers", "bg-never-starts", "bg-resume-no-worker", "bg-resume-copy-no-worker", "bg-no-state":
 		if scratch != "" {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"recovered":true}`), 0o600)
 		}
@@ -2722,8 +2767,7 @@ func TestSubprocessClaudeBackgroundJobThatNeverStartsReportsNoSession(t *testing
 	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), true)
 }
 
-// A job a worker has picked up is left to run however long it takes: only the
-// launch record counts as not started.
+// A job a worker has reported in on is left to run however long it takes.
 func TestSubprocessClaudeBackgroundStartedJobIsNotCutOff(t *testing.T) {
 	tempDir := t.TempDir()
 	recordPath := filepath.Join(tempDir, "records.jsonl")
@@ -2741,23 +2785,150 @@ func TestSubprocessClaudeBackgroundStartedJobIsNotCutOff(t *testing.T) {
 	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), false)
 }
 
-func TestClaudeBGLaunchRecord(t *testing.T) {
+// A resumed job can sit in "running" with its updatedAt moved and no worker
+// behind it, so a job a worker never reported in on is not started however its
+// timestamps read. The foreground retry resumes the same session, not the job's.
+func TestSubprocessClaudeBackgroundResumeWithNoWorkerFallsBackToForeground(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapterWithStartGrace("bg-resume-no-worker", recordPath, configDir, 5*time.Second, 50*time.Millisecond)
+
+	stream, err := adapter.Resume(context.Background(), "session-to-resume", Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"recovered":true}` {
+		t.Fatalf("StructuredOutput = %s, want the foreground result", response.StructuredOutput)
+	}
+	if stream.SessionID() != "fg-recovered" {
+		t.Fatalf("SessionID = %q, want the foreground session", stream.SessionID())
+	}
+	records := readHelperRecords(t, recordPath)
+	assertClaudeCleanup(t, records, "job-1", true, configDir)
+	assertClaudeLaunchCount(t, records, true)
+	assertClaudeLaunchesResume(t, records, "session-to-resume")
+}
+
+// When the CLI cannot tell whether the session is running it starts a copy
+// under a new id. cr waits on, stops and removes the copy, and the retry
+// still resumes the session it was asked to.
+func TestSubprocessClaudeBackgroundResumeCopyWithNoWorkerFallsBackToForeground(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapterWithStartGrace("bg-resume-copy-no-worker", recordPath, configDir, 5*time.Second, 50*time.Millisecond)
+
+	stream, err := adapter.Resume(context.Background(), "session-to-resume", Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"recovered":true}` {
+		t.Fatalf("StructuredOutput = %s, want the foreground result", response.StructuredOutput)
+	}
+	if stream.SessionID() != "fg-recovered" {
+		t.Fatalf("SessionID = %q, want the foreground session", stream.SessionID())
+	}
+	records := readHelperRecords(t, recordPath)
+	assertClaudeCleanup(t, records, "job-2", true, configDir)
+	assertClaudeLaunchCount(t, records, true)
+	assertClaudeLaunchesResume(t, records, "session-to-resume")
+}
+
+// The no-worker job's session holds nothing the task produced, so when the
+// retry fails too it is not reported for the next resume.
+func TestSubprocessClaudeBackgroundResumeWithNoWorkerReportsNoSession(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapterWithStartGrace("bg-resume-no-worker-retry-fails", recordPath, configDir, 5*time.Second, 50*time.Millisecond)
+
+	stream, err := adapter.Resume(context.Background(), "session-to-resume", Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	_, err = stream.Wait(context.Background())
+	if !errors.Is(err, ErrClaudeBGTransport) || !errors.Is(err, errClaudeBGNotStarted) {
+		t.Fatalf("Wait error = %v, want the never-started transport failure", err)
+	}
+	if stream.SessionID() != "" {
+		t.Fatalf("SessionID = %q, want empty for a job no worker ran", stream.SessionID())
+	}
+	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), true)
+}
+
+func TestExtractClaudeBGJobIDFromLaunchOutput(t *testing.T) {
+	for _, tt := range []struct {
+		fixture string
+		want    string
+	}{
+		{fixture: "claude_bg_launch_resumed.txt", want: "job-1"},
+		// The copy is the job that runs, so it is the one cr waits on and cleans up.
+		{fixture: "claude_bg_launch_copy.txt", want: "job-2"},
+	} {
+		t.Run(tt.fixture, func(t *testing.T) {
+			data, err := claudeBGFixtures.ReadFile("testdata/" + tt.fixture)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if got := extractClaudeBGJobID(string(data)); got != tt.want {
+				t.Fatalf("extractClaudeBGJobID = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClaudeBGNoWorker(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		state map[string]any
 		want  bool
 	}{
-		{name: "never updated", state: map[string]any{"createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:10.043Z"}, want: true},
-		{name: "updated by a worker", state: map[string]any{"createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
-		{name: "no createdAt", state: map[string]any{"updatedAt": "2026-10-23T21:00:10.043Z"}},
-		{name: "no updatedAt", state: map[string]any{"createdAt": "2026-10-23T21:00:10.043Z"}},
+		{name: "launch record", state: mustClaudeBGStateFixture(t, "claude_bg_state_launch_record.json"), want: true},
+		{name: "running with no worker", state: mustClaudeBGStateFixture(t, "claude_bg_state_no_worker_running.json"), want: true},
+		{name: "worker reported in", state: mustClaudeBGStateFixture(t, "claude_bg_state_worker_running.json")},
+		{name: "running with inFlight", state: map[string]any{"state": "running", "detail": "", "inFlight": map[string]any{"tasks": 1}, "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
+		{name: "running with cliVersion", state: map[string]any{"state": "running", "detail": "", "cliVersion": "2.1.312", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
+		{name: "unchanged timestamps with inFlight", state: map[string]any{"state": "working", "detail": "starting…", "inFlight": map[string]any{"tasks": 1}, "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:10.043Z"}},
+		{name: "unchanged timestamps with cliVersion", state: map[string]any{"state": "working", "detail": "starting…", "cliVersion": "2.1.312", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:10.043Z"}},
+		{name: "working with detail and no worker fields", state: map[string]any{"state": "working", "detail": "Reading cr-prompt.txt", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
+		{name: "running with a detail", state: map[string]any{"state": "running", "detail": "Reading cr-prompt.txt", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:16.875Z"}},
+		{name: "resuming", state: map[string]any{"state": "resuming", "detail": "", "createdAt": "2026-10-23T21:00:10.043Z", "updatedAt": "2026-10-23T21:00:24.000Z"}},
+		{name: "no createdAt", state: map[string]any{"state": "working", "updatedAt": "2026-10-23T21:00:10.043Z"}},
 		{name: "no timestamps", state: map[string]any{"state": "working"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := claudeBGLaunchRecord(tt.state); got != tt.want {
-				t.Fatalf("claudeBGLaunchRecord = %v, want %v", got, tt.want)
+			if got := claudeBGNoWorker(tt.state); got != tt.want {
+				t.Fatalf("claudeBGNoWorker = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// assertClaudeLaunchesResume checks that every task launch, the background
+// job and the foreground retry, resumed the requested session.
+func assertClaudeLaunchesResume(t *testing.T, records []helperRecord, sessionID string) {
+	t.Helper()
+	launches := 0
+	for _, record := range records {
+		if !containsFlag(record.AdapterArgs, "--bg") && !containsFlag(record.AdapterArgs, "-p") {
+			continue
+		}
+		launches++
+		if got := flagValue(record.AdapterArgs, "--resume"); got != sessionID {
+			t.Fatalf("launch %v resumes %q, want %q", record.AdapterArgs, got, sessionID)
+		}
+	}
+	if launches == 0 {
+		t.Fatalf("no task launches in records %#v", records)
 	}
 }
 

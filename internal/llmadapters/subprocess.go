@@ -47,8 +47,8 @@ type SubprocessOptions struct {
 	// a session id. Unexported beside commandArgsPrefix: the seam exists for
 	// tests, which would otherwise wait out the real window.
 	sessionIDGrace time.Duration
-	// startGrace overrides how long a job may stay on its launch record
-	// before it counts as never started. A test seam, like sessionIDGrace.
+	// startGrace overrides how long a job may go without a worker reporting
+	// in before it counts as never started. A test seam, like sessionIDGrace.
 	startGrace time.Duration
 }
 
@@ -72,8 +72,8 @@ const (
 	claudeBGSessionIDGrace  = 10 * time.Second
 	claudeBGControlTimeout  = 10 * time.Second
 	claudeBGInspectMaxDepth = 8
-	// A job the job service picked up rewrites its launch record within
-	// seconds. One still on it after this long, or one that has written no
+	// A worker that runs a job reports its cliVersion in the job state within
+	// a minute. A job with none after this long, or one that has written no
 	// state file at all, was accepted and never run, and waiting longer only
 	// spends the budget the foreground retry needs.
 	claudeBGStartGrace = 2 * time.Minute
@@ -91,7 +91,7 @@ const (
 var ErrClaudeBGTransport = errors.New("llm subprocess: Claude background transport failed")
 
 // errClaudeBGNotStarted marks the transport failure where no worker ever
-// picked the job up. Its session holds no conversation, so it must not be
+// ran the job. Its session holds no conversation, so it must not be
 // reported for a later resume.
 var errClaudeBGNotStarted = errors.New("job never started")
 
@@ -122,8 +122,8 @@ type SubprocessAdapter struct {
 	// sessionIDGrace is how long a completed job is given to publish a
 	// session id, already resolved to the value in effect.
 	sessionIDGrace time.Duration
-	// startGrace is how long a job may stay on its launch record, already
-	// resolved to the value in effect.
+	// startGrace is how long a job may go without a worker, already resolved
+	// to the value in effect.
 	startGrace time.Duration
 }
 
@@ -1643,9 +1643,9 @@ func (a *SubprocessAdapter) waitForClaudeBGState(ctx context.Context, jobID stri
 				jobErr := fmt.Errorf("%w: job %s: %s", ErrClaudeBGTransport, stateName, detail)
 				return state, classifyCLIDetail(jobErr, detail)
 			}
-			if claudeBGLaunchRecord(state) && !time.Now().Before(startBy) {
-				return state, fmt.Errorf("%w: %w: job %s still on its launch record after %s",
-					ErrClaudeBGTransport, errClaudeBGNotStarted, jobID, a.startGrace)
+			if claudeBGNoWorker(state) && !time.Now().Before(startBy) {
+				return state, fmt.Errorf("%w: %w: job %s (state %s) has no worker after %s",
+					ErrClaudeBGTransport, errClaudeBGNotStarted, jobID, stateName, a.startGrace)
 			}
 		} else if !seenState && !time.Now().Before(startBy) {
 			return lastState, fmt.Errorf("%w: %w: job %s wrote no state file within %s",
@@ -1691,13 +1691,27 @@ func (a *SubprocessAdapter) waitForClaudeBGSessionID(ctx context.Context, jobID 
 	}
 }
 
-// claudeBGLaunchRecord reports whether state is still the record the job
-// service wrote when it accepted the job. A worker that picks the job up
-// rewrites it, so updatedAt moves off createdAt. A state without both
-// timestamps cannot show this and never matches.
-func claudeBGLaunchRecord(state map[string]any) bool {
+// claudeBGNoWorker reports whether the job matches one of the two shapes of a
+// job no worker ever ran. A worker that runs a job writes its cliVersion and
+// inFlight into the state, and the job service alone writes everything else,
+// so both shapes have neither:
+//   - the record the job was created with, updatedAt still equal to createdAt;
+//   - a job whose worker died starting up and was respawned, which the service
+//     moves to "running" with an empty detail. updatedAt moves here, so the
+//     timestamps alone cannot show it.
+//
+// Anything else counts as started: a job that shows any sign of a worker is
+// never cut off, at the cost of waiting out a stuck job of some other shape.
+// A state without createdAt is not from the job service and never matches.
+func claudeBGNoWorker(state map[string]any) bool {
 	createdAt := claudeBGStateString(state, "createdAt")
-	return createdAt != "" && createdAt == claudeBGStateString(state, "updatedAt")
+	if createdAt == "" || claudeBGStateString(state, "cliVersion") != "" || claudeBGStateString(state, "inFlight") != "" {
+		return false
+	}
+	if createdAt == claudeBGStateString(state, "updatedAt") {
+		return true
+	}
+	return claudeBGStateString(state, "state") == "running" && claudeBGStateString(state, "detail") == ""
 }
 
 func readClaudeBGState(path string) (map[string]any, bool) {

@@ -1,0 +1,29 @@
+{
+  "state": "running",
+  "detail": "",
+  "tempo": "idle",
+  "output": null,
+  "children": null,
+  "linkScanOffset": 0,
+  "template": "bg",
+  "respawnFlags": [
+    "--safe-mode",
+    "--tools",
+    "Read,Write,Bash",
+    "--permission-mode",
+    "auto",
+    "--effort",
+    "medium",
+    "--model",
+    "claude-sonnet-5-5"
+  ],
+  "intent": "Read /tmp/codereview-llm-1/cr-prompt.txt and follow its instructions exactly. Use the Write tool to write the final structured result to /tmp/codereview-llm-1/cr-result.json. Do not answer in chat.",
+  "sessionId": "session-no-worker",
+  "resumeSessionId": "session-no-worker",
+  "daemonShort": "job-1",
+  "cwd": "/tmp/claude-bg-workdir",
+  "createdAt": "2026-10-27T21:52:52.430Z",
+  "updatedAt": "2026-10-27T21:53:10.374Z",
+  "firstTerminalAt": null,
+  "backend": "daemon"
+}

@@ -1,0 +1,6 @@
+note: could not check whether session job-1 is running, so this started a copy as job-2.
+backgrounded · job-2
+  claude agents             list sessions
+  claude attach job-2    open in this terminal
+  claude logs job-2      show recent output
+  claude stop job-2      stop this session

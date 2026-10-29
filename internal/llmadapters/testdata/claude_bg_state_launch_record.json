@@ -1,0 +1,17 @@
+{
+  "state": "working",
+  "detail": "starting…",
+  "tempo": "active",
+  "output": null,
+  "children": null,
+  "linkScanOffset": 0,
+  "template": "bg",
+  "sessionId": "session-never-ran",
+  "resumeSessionId": "session-never-ran",
+  "daemonShort": "job-1",
+  "cwd": "/tmp/claude-bg-workdir",
+  "createdAt": "2026-10-23T21:00:10.043Z",
+  "updatedAt": "2026-10-23T21:00:10.043Z",
+  "firstTerminalAt": null,
+  "backend": "daemon"
+}

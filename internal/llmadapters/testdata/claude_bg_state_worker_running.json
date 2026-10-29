@@ -1,0 +1,18 @@
+{
+  "state": "working",
+  "detail": "Reading /tmp/codereview-llm-1/cr-prompt.txt",
+  "tempo": "active",
+  "output": null,
+  "children": null,
+  "template": "bg",
+  "sessionId": "session-working",
+  "resumeSessionId": "session-working",
+  "daemonShort": "job-1",
+  "cwd": "/tmp/claude-bg-workdir",
+  "cliVersion": "2.1.312",
+  "inFlight": {"tasks": 1, "queued": 0},
+  "createdAt": "2026-10-23T21:00:10.043Z",
+  "updatedAt": "2026-10-23T21:00:16.875Z",
+  "firstTerminalAt": null,
+  "backend": "daemon"
+}
