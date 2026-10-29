@@ -1798,6 +1798,12 @@ func runClaudeBGHelper(mode string, args []string) {
 		state = fixture
 	}
 	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if mode == "bg-no-state" {
+		// The job service accepted the job and printed its id, but no state
+		// file ever appears.
+		fmt.Printf("backgrounded * %s\n  claude attach %s\n", jobID, jobID)
+		return
+	}
 	if err := writeClaudeHelperStateFile(filepath.Join(configDir, "jobs", jobID, "state.json"), state); err != nil {
 		fmt.Fprintf(os.Stderr, "write state: %v\n", err)
 		os.Exit(43)
@@ -2137,7 +2143,7 @@ func runClaudeForegroundHelper(mode string, args []string) {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":39},"speed":"standard"}}`)
-	case "bg-blocked-foreground-recovers", "bg-never-starts", "bg-resume-no-worker", "bg-resume-copy-no-worker":
+	case "bg-blocked-foreground-recovers", "bg-never-starts", "bg-resume-no-worker", "bg-resume-copy-no-worker", "bg-no-state":
 		if scratch != "" {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"recovered":true}`), 0o600)
 		}
@@ -2713,6 +2719,29 @@ func TestSubprocessClaudeBackgroundJobThatNeverStartsFallsBackToForeground(t *te
 	records := readHelperRecords(t, recordPath)
 	assertClaudeCleanup(t, records, "job-1", true, configDir)
 	assertClaudeLaunchCount(t, records, true)
+}
+
+// A job whose state file never appears gives the wait nothing to classify, so
+// without a bound it would spend the whole task budget. After the start grace
+// it is treated like a job stuck on its launch record.
+func TestSubprocessClaudeBackgroundJobWithoutStateFileFallsBackToForeground(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapterWithStartGrace("bg-no-state", recordPath, configDir, 5*time.Second, 50*time.Millisecond)
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"recovered":true}` {
+		t.Fatalf("StructuredOutput = %s, want the foreground result", response.StructuredOutput)
+	}
+	assertClaudeLaunchCount(t, readHelperRecords(t, recordPath), true)
 }
 
 // The stuck job's session never held a conversation. Reporting it when the
