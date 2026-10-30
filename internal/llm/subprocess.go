@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -289,6 +290,12 @@ func (s *BaseStream) Finish(response Response, err error) {
 func openSubprocessLog(path string) (*os.File, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, nil
+	}
+	// Create the parent at open time: callers create artifact dirs early, and an
+	// empty log dir can be pruned before a resumed task first writes to it.
+	// #nosec G301 G703 -- the parent is the caller-selected private artifact log directory.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
 	}
 	// #nosec G304 -- LogPath is an explicit caller-selected artifact path for tailable adapter logs.
 	return os.Create(path)
