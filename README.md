@@ -1131,7 +1131,8 @@ current. For a source in a Git checkout whose branch tracks an upstream, cr
 fetches that upstream (up to 15 seconds). If the checkout is behind, cr prints
 a warning on stderr with the commit count and the `git merge --ff-only` command
 that updates it, so reviewers merged upstream don't go missing without notice.
-If the fetch fails, cr compares against the last fetched upstream state. A
+If the fetch fails, cr compares against the last fetched upstream state and
+notes that it could not confirm the source is current. A
 source outside Git, or on a branch with no upstream, gets a one-line note that
 cr cannot check it. The check never fails a review.
 

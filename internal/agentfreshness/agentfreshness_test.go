@@ -55,12 +55,26 @@ func TestCheckFallsBackToLastFetchWhenUpstreamIsUnreachable(t *testing.T) {
 	}
 }
 
-func TestCheckIsQuietWhenUpstreamIsUnreachableAndLastFetchIsCurrent(t *testing.T) {
+func TestCheckNotesUnreachableUpstreamWhenLastFetchIsCurrent(t *testing.T) {
 	_, clone := catalogClone(t)
 	git(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "gone.git"))
 
-	if notices := Check(context.Background(), []string{agentsDir(t, clone)}, testGit); len(notices) != 0 {
-		t.Fatalf("notices = %+v, want none", notices)
+	notices := Check(context.Background(), []string{agentsDir(t, clone)}, testGit)
+
+	if len(notices) != 1 || notices[0].Kind != KindFetchFailed || notices[0].FetchError == "" {
+		t.Fatalf("notices = %+v, want one fetch-failed notice", notices)
+	}
+	if line := notices[0].String(); !strings.HasPrefix(line, "note: ") || !strings.Contains(line, "could not fetch") {
+		t.Fatalf("line = %q, want a fetch-failed note", line)
+	}
+}
+
+func TestBehindNoticeQuotesUpdateCommandArguments(t *testing.T) {
+	line := Notice{Kind: KindBehind, Source: "~/catalog", RepoRoot: "/Users/me/My Catalog's", Upstream: "origin/main", Behind: 1}.String()
+
+	want := `git -C '/Users/me/My Catalog'\''s' merge --ff-only origin/main`
+	if !strings.HasSuffix(line, want) {
+		t.Fatalf("line = %q, want suffix %q", line, want)
 	}
 }
 

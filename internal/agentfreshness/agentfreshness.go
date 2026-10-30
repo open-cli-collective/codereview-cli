@@ -38,6 +38,9 @@ const (
 	KindNoUpstream Kind = "no_upstream"
 	// KindBehind reports a checkout missing commits from its upstream.
 	KindBehind Kind = "behind"
+	// KindFetchFailed reports a checkout that matched its last fetched upstream
+	// but whose upstream could not be fetched to confirm it is current.
+	KindFetchFailed Kind = "fetch_failed"
 )
 
 // Notice describes one agent source that may not reflect its shared catalog.
@@ -107,14 +110,17 @@ func checkRepo(ctx context.Context, run GitCommand, source, root string) (Notice
 		return Notice{}, false
 	}
 	behind, err := strconv.Atoi(strings.TrimSpace(string(out)))
-	if err != nil || behind == 0 {
+	if err != nil {
 		return Notice{}, false
 	}
 	notice := Notice{Kind: KindBehind, Source: source, RepoRoot: root, Upstream: upstream, Behind: behind}
 	if fetchErr != nil {
 		notice.FetchError = fetchErr.Error()
+		if behind == 0 {
+			notice.Kind = KindFetchFailed
+		}
 	}
-	return notice, true
+	return notice, notice.Kind == KindFetchFailed || behind > 0
 }
 
 // Write renders notices as one line each.
@@ -132,15 +138,30 @@ func (n Notice) String() string {
 		return fmt.Sprintf("note: agent source %s is in %s, whose branch tracks no upstream; cr cannot check whether its reviewers are current", n.Source, n.RepoRoot)
 	case KindBehind:
 		line := fmt.Sprintf("warning: agent source %s is %d %s behind %s; reviewer changes merged there will not run. Update with: git -C %s merge --ff-only %s",
-			n.Source, n.Behind, plural(n.Behind, "commit", "commits"), n.Upstream, n.RepoRoot, n.Upstream)
+			n.Source, n.Behind, plural(n.Behind, "commit", "commits"), n.Upstream, shellQuote(n.RepoRoot), shellQuote(n.Upstream))
 		if n.FetchError != "" {
-			reason, _, _ := strings.Cut(n.FetchError, "\n")
-			line += fmt.Sprintf(" (fetch failed, counted from the last fetch: %s)", reason)
+			line += fmt.Sprintf(" (fetch failed, counted from the last fetch: %s)", firstLine(n.FetchError))
 		}
 		return line
+	case KindFetchFailed:
+		return fmt.Sprintf("note: agent source %s matches the last fetch of %s, but cr could not fetch it to confirm it is current: %s", n.Source, n.Upstream, firstLine(n.FetchError))
 	default:
 		return fmt.Sprintf("note: agent source %s: %s", n.Source, n.Kind)
 	}
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
+// shellQuote returns s as one POSIX shell word, so the suggested update
+// command can be pasted as-is.
+func shellQuote(s string) string {
+	if s != "" && strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+:@%=,") == "" {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func plural(n int, one, many string) string {
