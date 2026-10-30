@@ -1116,8 +1116,8 @@ func TestAdapterConstructorsCoverLLMRuntimeSpecs(t *testing.T) {
 	wantFastModels := map[config.LLMAdapter][]string{
 		config.LLMAdapterClaudeCLI:    {"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"},
 		config.LLMAdapterAnthropicAPI: {"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"},
-		config.LLMAdapterOpenAIAPI:    {"gpt-5.6-sol", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"},
-		config.LLMAdapterCodexCLI:     {"gpt-5.4", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"},
+		config.LLMAdapterOpenAIAPI:    {"gpt-5.4", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra"},
+		config.LLMAdapterCodexCLI:     {"gpt-5.4", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra"},
 	}
 	for _, spec := range config.LLMRuntimeSpecs() {
 		if _, duplicate := want[spec.Adapter]; duplicate {

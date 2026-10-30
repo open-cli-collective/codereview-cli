@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "revision": "baseline-2026-10-02",
-  "generated_at": "2026-10-02",
+  "revision": "baseline-2026-10-30",
+  "generated_at": "2026-10-30",
   "files": {
     "runtimes.csv": "c8259b7dd4ea3a9ab149656c74a3e37fa58874ecb57d75a59ff4b8642a32ff0d",
-    "models.csv": "cc80619402a47d7338b8c70ffa190001a2247aedc3da00e76aeb9d2c31e6c2d8",
+    "models.csv": "5c2f47df5eb9a83e9b0aab446f74bf4a667bf01f01b3b90a25316e05631b9eb2",
     "defaults.csv": "7d7ee13a060a70130597b35708d13baddd3f6576cf7aa7f986d7532918734531",
     "pricing.csv": "236305213c9876472c4efad072e9c3bb07cbfe20276dd70b65d6fd9729131447"
   },
