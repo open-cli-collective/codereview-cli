@@ -339,6 +339,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		PRRef:                             ref,
 		PRURL:                             prArg,
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
+		CheckAgentSourceFreshness:         true,
 		Retention:                         appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 		KeepWorkbench:                     keepWorkbench,

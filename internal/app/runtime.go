@@ -13,6 +13,7 @@ import (
 
 	"github.com/open-cli-collective/cli-common/credstore"
 
+	"github.com/open-cli-collective/codereview-cli/internal/agentfreshness"
 	"github.com/open-cli-collective/codereview-cli/internal/approvaloverride"
 	"github.com/open-cli-collective/codereview-cli/internal/appruntime"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
@@ -72,12 +73,15 @@ type OpenRequest struct {
 	PRRef                             gitprovider.PRRef
 	PRURL                             string
 	RequireOpinionatedReviewAuthority bool
-	MaxAgents                         int
-	MaxConcurrency                    int
-	Retention                         datalifecycle.RetentionPolicy
-	RetentionManualOnly               bool
-	KeepWorkbench                     bool
-	Dependencies                      Dependencies
+	// CheckAgentSourceFreshness reports profile agent sources that are behind
+	// their upstream or cannot be checked, before the runtime is assembled.
+	CheckAgentSourceFreshness bool
+	MaxAgents                 int
+	MaxConcurrency            int
+	Retention                 datalifecycle.RetentionPolicy
+	RetentionManualOnly       bool
+	KeepWorkbench             bool
+	Dependencies              Dependencies
 }
 
 // SelectionOpenRequest carries command-resolved values for selection-only
@@ -112,6 +116,7 @@ type Dependencies struct {
 	RuntimeLayout          func() (statepaths.Layout, error)
 	OpenLedger             func(context.Context, string) (*ledger.Store, error)
 	NewLimiter             func() (outbox.Limiter, error)
+	CheckAgentSources      func(context.Context, []string, io.Writer)
 }
 
 func (d Dependencies) withDefaults() Dependencies {
@@ -142,6 +147,9 @@ func (d Dependencies) withDefaults() Dependencies {
 	if d.OpenLedger == nil {
 		d.OpenLedger = ledger.Open
 	}
+	if d.CheckAgentSources == nil {
+		d.CheckAgentSources = agentfreshness.Warn
+	}
 	if d.NewLimiter == nil {
 		d.NewLimiter = func() (outbox.Limiter, error) {
 			return outbox.NewTokenBucket(livePostLimiterInterval, livePostLimiterBurst)
@@ -156,6 +164,9 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 	command := commandName(req.Command)
 	profile := normalizeRuntimeProfile(req.Profile)
 	req.Profile = profile
+	if req.CheckAgentSourceFreshness {
+		deps.CheckAgentSources(ctx, profile.AgentSources, req.Warnings)
+	}
 	dispatcher := newHookDispatcher(req, nil)
 	stores := newRuntimeCredentialStores(req.Config, req.Backend, req.BackendFlagChanged, command, req.Progress)
 	cleanup := stores.Close

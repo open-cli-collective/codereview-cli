@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +71,42 @@ func TestOpenCanInstantiateWithoutCobra(t *testing.T) {
 	}
 	if runtime.Runner == nil || runtime.Responder == nil || runtime.PostingIdentity != identity {
 		t.Fatalf("runtime = %#v, want runner, responder, and posting identity", runtime)
+	}
+}
+
+func TestOpenChecksAgentSourceFreshnessOnlyWhenRequested(t *testing.T) {
+	for _, requested := range []bool{true, false} {
+		cfg := testConfig()
+		profile := cfg.Profiles["home"]
+		profile.AgentSources = []string{"/catalog/agents"}
+		var warnings bytes.Buffer
+		var gotDirs []string
+		var gotWriter io.Writer
+		deps := testDependencies(t, nil, nil, nil)
+		deps.CheckAgentSources = func(_ context.Context, dirs []string, w io.Writer) {
+			gotDirs = dirs
+			gotWriter = w
+		}
+		runtime, err := Open(context.Background(), OpenRequest{
+			Config:                    cfg,
+			Profile:                   profile,
+			PRRef:                     testPRRef(),
+			Warnings:                  &warnings,
+			CheckAgentSourceFreshness: requested,
+			Dependencies:              deps,
+		})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if runtime.Cleanup != nil {
+			runtime.Cleanup()
+		}
+		if requested && (!slices.Equal(gotDirs, profile.AgentSources) || gotWriter != &warnings) {
+			t.Fatalf("checked dirs/writer = %v/%v, want profile sources and request warnings", gotDirs, gotWriter)
+		}
+		if !requested && gotDirs != nil {
+			t.Fatalf("checked dirs = %v, want no check when not requested", gotDirs)
+		}
 	}
 }
 
