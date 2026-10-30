@@ -912,6 +912,29 @@ func TestSubprocessCodexSafetyModes(t *testing.T) {
 		}
 	})
 
+	t.Run("resume creates a missing log directory", func(t *testing.T) {
+		// Regression for #699: a resumed thread analysis failed before launch
+		// when its agent-logs/thread-analysis directory no longer existed.
+		tempDir := t.TempDir()
+		recordPath := filepath.Join(tempDir, "records.jsonl")
+		logPath := filepath.Join(tempDir, "agent-logs", "thread-analysis", "thread-1.jsonl")
+		adapter := newCodexHelperAdapter("success", recordPath, 5*time.Second)
+		stream, err := adapter.Resume(context.Background(), "prior-session", Request{
+			Model:   "gpt-5.5",
+			Prompt:  "resume prompt",
+			LogPath: logPath,
+		})
+		if err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if _, err := stream.Wait(context.Background()); err != nil {
+			t.Fatalf("Wait: %v", err)
+		}
+		if _, err := os.Stat(logPath); err != nil {
+			t.Fatalf("Stat(log): %v", err)
+		}
+	})
+
 	for _, tt := range []struct {
 		name      string
 		sessionID string

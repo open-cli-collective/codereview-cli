@@ -588,15 +588,27 @@ func dirBytes(path string) (int64, error) {
 	return total, err
 }
 
+// removeEmptyParents removes empty layout directories above attempt dirs. It
+// never enters or removes an attempt dir: a live run creates artifact subdirs
+// (such as agent-logs/thread-analysis) before writing to them, so an empty
+// subdir there is still in use.
 func removeEmptyParents(root string) error {
 	var dirs []string
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() && path != root {
-			dirs = append(dirs, path)
+		if !entry.IsDir() || path == root {
+			return nil
 		}
+		isAttempt, err := isAttemptDir(root, path)
+		if err != nil {
+			return err
+		}
+		if isAttempt {
+			return filepath.SkipDir
+		}
+		dirs = append(dirs, path)
 		return nil
 	}); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
