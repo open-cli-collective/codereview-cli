@@ -483,3 +483,30 @@ func TestPruneKeepsOrphansWithinGraceWindow(t *testing.T) {
 		t.Fatalf("stale orphan stat error = %v, want not exist", err)
 	}
 }
+
+// Regression for #699: a live run's empty artifact subdirs must survive the
+// empty-dir sweep, while empty layout parents left by deleted runs go away.
+func TestPruneKeepsEmptyArtifactSubdirsOfLiveRuns(t *testing.T) {
+	layout := testLayout(t)
+	live := testRun(layout, "live", ledger.PostModeLive, testNow())
+	threadLogs := filepath.Join(live.ArtifactPath, "agent-logs", "thread-analysis")
+	if err := os.MkdirAll(threadLogs, 0o700); err != nil {
+		t.Fatalf("MkdirAll(thread logs): %v", err)
+	}
+	emptyParent := filepath.Join(layout.DataRoot, "runs", "github_owner_repo_2", "cccccccccccccccccccccccccccccccccccccccc")
+	if err := os.MkdirAll(emptyParent, 0o700); err != nil {
+		t.Fatalf("MkdirAll(empty parent): %v", err)
+	}
+	store := &fakeStore{runs: []ledger.Run{live}}
+	keep := 10
+
+	if _, err := Prune(context.Background(), Options{Layout: layout, Store: store, Now: testNow}, PruneOptions{KeepLast: &keep}); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if _, err := os.Stat(threadLogs); err != nil {
+		t.Fatalf("live run's empty thread-analysis dir was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(emptyParent)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty layout parent stat error = %v, want not exist", err)
+	}
+}
