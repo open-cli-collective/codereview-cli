@@ -255,6 +255,9 @@ func TestReviewCommandAcceptanceHarnessComposesDryRun(t *testing.T) {
 	if gotRuntime.RequireOpinionatedReviewAuthority {
 		t.Fatal("dry-run runtime should not require opinionated review authority")
 	}
+	if !gotRuntime.CheckAgentSourceFreshness {
+		t.Fatal("dry-run runtime should check agent source freshness")
+	}
 	if len(runner.requests) != 1 {
 		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
 	}
