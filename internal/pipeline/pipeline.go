@@ -2060,9 +2060,11 @@ func joinRequiredReviewers(req Request, catalog agents.Catalog, cohort ledger.Re
 	if err != nil {
 		return llm.Selection{}, nil, err
 	}
-	for _, selected := range selection.SelectedAgents {
-		if member, ok := members[selected.AgentID]; ok && member.Fast != effectiveFast {
-			return freshError("saved reviewer %q fast-mode setting is incompatible with the required reviewers joining the cohort", selected.AgentID)
+	// Every saved member is compared, not only those running this pass: the
+	// grown cohort is saved whole, and one fast-mode setting must hold for it.
+	for _, member := range cohort.Members {
+		if member.Fast != effectiveFast {
+			return freshError("saved reviewer %q fast-mode setting is incompatible with the required reviewers joining the cohort", member.AgentID)
 		}
 	}
 	grown := cohort

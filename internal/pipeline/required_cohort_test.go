@@ -298,10 +298,15 @@ func TestJoinRequiredReviewersFastMode(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		requiredFast bool
+		savedFast    bool
+		changed      []string
 		wantErr      bool
 	}{
-		{name: "joiner without fast support conflicts with fast saved member", requiredFast: false, wantErr: true},
-		{name: "fast-capable joiner is saved with fast mode", requiredFast: true, wantErr: false},
+		{name: "joiner without fast support conflicts with fast saved member", requiredFast: false, savedFast: true, changed: []string{"main.go"}, wantErr: true},
+		{name: "fast-capable joiner is saved with fast mode", requiredFast: true, savedFast: true, changed: []string{"main.go"}, wantErr: false},
+		// The saved member does not run this pass, but the grown cohort is
+		// saved whole, so its setting must still agree with the joiner's.
+		{name: "fast joiner conflicts with a normal-speed member this pass does not run", requiredFast: true, savedFast: false, changed: []string{"data.json"}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			catalog := requiredCohortCatalog()
@@ -315,9 +320,9 @@ func TestJoinRequiredReviewersFastMode(t *testing.T) {
 				t.Fatalf("resolveReviewerRuntimeConfig: %v", err)
 			}
 			cohort := goOnlyCohort()
-			cohort.Members[0].Model, cohort.Members[0].Effort, cohort.Members[0].Fast = goRuntime.model, goRuntime.effort, true
+			cohort.Members[0].Model, cohort.Members[0].Effort, cohort.Members[0].Fast = goRuntime.model, goRuntime.effort, tc.savedFast
 
-			_, _, grown, err := reuseReviewerCohort(req, catalog, cohort, []string{"main.go"}, 0, "fake-llm", fixedNow())
+			_, _, grown, err := reuseReviewerCohort(req, catalog, cohort, tc.changed, 0, "fake-llm", fixedNow())
 			if tc.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "fast-mode setting") || !strings.Contains(err.Error(), "--fresh-session") {
 					t.Fatalf("error = %v, want a fast-mode conflict that points at --fresh-session", err)
@@ -334,5 +339,24 @@ func TestJoinRequiredReviewersFastMode(t *testing.T) {
 				t.Fatalf("grown cohort = %#v, want the joined reviewer saved with fast mode", grown)
 			}
 		})
+	}
+}
+
+// Generated lockfiles are no coverage obligation, so one that no saved member
+// covers does not force a reselected cohort even when a broad catalog agent
+// could review it.
+func TestReuseReviewerCohortExemptsUncoveredLockfile(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		requiredCohortCatalog().Agents[0],
+		{ID: "shared:general", ModelTier: "medium", Effort: "medium", Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+	}}
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+
+	selection, _, grown, err := reuseReviewerCohort(req, catalog, goOnlyCohort(), []string{"main.go", "Cargo.lock"}, 0, "fake-llm", fixedNow())
+	if err != nil {
+		t.Fatalf("reuseReviewerCohort: %v, want the uncovered lockfile exempt", err)
+	}
+	if grown != nil || len(selection.SelectedAgents) != 1 || !reflect.DeepEqual(selection.SelectedAgents[0].Files, []string{"main.go"}) {
+		t.Fatalf("selection = %#v grown = %#v, want the saved member alone on main.go", selection.SelectedAgents, grown)
 	}
 }
