@@ -327,7 +327,7 @@ recipes directly into `pipeline.SelectionOnly`:
 | `stages.selection.model` | `SelectionModelOverride` |
 | `stages.selection.effort` | `SelectionEffortOverride` |
 | `stages.selection.prompt` | file contents loaded into `SelectionPromptInstructions` |
-| `stages.reviewers.agent_dirs[]` | `AgentDirs` |
+| `stages.reviewers.agent_dirs[]` | `AgentDirs`, each resolved against the suite file directory |
 | `review_base_sha` / `review_head_sha` | pinned review SHAs |
 
 Selector-only benchmarks do not run reviewer agents, do not run synthesis, do
