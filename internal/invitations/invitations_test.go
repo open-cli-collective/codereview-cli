@@ -3,6 +3,7 @@ package invitations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -189,8 +190,9 @@ func TestFailureReasonClassifiesProviderErrors(t *testing.T) {
 		{gitprovider.WrapError(gitprovider.ErrNotFound, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonNotFound},
 		{gitprovider.WrapError(gitprovider.ErrConflict, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonConflict},
 		{gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonRetryable},
+		{gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationAcceptRepositoryInvitation, fmt.Errorf("client timeout: %w", context.DeadlineExceeded)), ReasonRetryable},
+		{context.DeadlineExceeded, ReasonRetryable},
 		{context.Canceled, ReasonCanceled},
-		{context.DeadlineExceeded, ReasonCanceled},
 		{errors.New("github: validation error"), ReasonError},
 	}
 	for _, tt := range tests {

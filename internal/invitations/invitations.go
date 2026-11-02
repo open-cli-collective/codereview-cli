@@ -196,10 +196,11 @@ func Accept(ctx context.Context, provider gitprovider.RepositoryInvitations, all
 	return outcomes, nil
 }
 
+// failureReason classifies an accept failure. The adapter's provider kind
+// wins: a host timeout arrives as ErrRetryable with the deadline still in its
+// chain and must stay retryable. Only a caller cancellation is "canceled".
 func failureReason(err error) ReasonCode {
 	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return ReasonCanceled
 	case errors.Is(err, gitprovider.ErrAuth):
 		return ReasonAuth
 	case errors.Is(err, gitprovider.ErrPermission):
@@ -208,8 +209,10 @@ func failureReason(err error) ReasonCode {
 		return ReasonNotFound
 	case errors.Is(err, gitprovider.ErrConflict):
 		return ReasonConflict
-	case errors.Is(err, gitprovider.ErrRetryable):
+	case errors.Is(err, gitprovider.ErrRetryable), errors.Is(err, context.DeadlineExceeded):
 		return ReasonRetryable
+	case errors.Is(err, context.Canceled):
+		return ReasonCanceled
 	default:
 		return ReasonError
 	}
