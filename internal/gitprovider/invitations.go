@@ -31,6 +31,12 @@ func (i RepositoryInvitation) FullName() string {
 // addressed to the authenticated identity. It is separate from GitProvider
 // because it acts on the account rather than on a pull request, so review
 // runtime wrappers need not forward it.
+//
+// Every host adapter implements it, so gitproviders can construct an
+// invitation client for any configured host without a capability check. A
+// host or credential with no invitations to accept, such as GitLab or a
+// GitHub App installation, returns an error wrapping config.ErrUnsupported
+// from both methods; the adapter owns that decision.
 type RepositoryInvitations interface {
 	ListRepositoryInvitations(ctx context.Context) ([]RepositoryInvitation, error)
 	AcceptRepositoryInvitation(ctx context.Context, id InvitationID) error

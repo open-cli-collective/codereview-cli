@@ -155,7 +155,7 @@ func TestAcceptContinuesPastFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Accept: %v", err)
 	}
-	if outcomes[0].Status != StatusFailed || !errors.Is(outcomes[0].Err, gitprovider.ErrPermission) || outcomes[0].Reason != failure.Error() {
+	if outcomes[0].Status != StatusFailed || !errors.Is(outcomes[0].Err, gitprovider.ErrPermission) || outcomes[0].Reason != ReasonPermission {
 		t.Fatalf("first outcome = %#v, want failed with the provider error", outcomes[0])
 	}
 	if outcomes[1].Status != StatusAccepted {
@@ -176,6 +176,27 @@ func TestAcceptReturnsListingFailure(t *testing.T) {
 	}
 	if accepted := fake.RecordedAcceptedInvitations(); len(accepted) != 0 {
 		t.Fatalf("accepted = %v, want none", accepted)
+	}
+}
+
+func TestFailureReasonClassifiesProviderErrors(t *testing.T) {
+	tests := []struct {
+		err  error
+		want ReasonCode
+	}{
+		{gitprovider.WrapError(gitprovider.ErrAuth, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonAuth},
+		{gitprovider.WrapError(gitprovider.ErrPermission, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonPermission},
+		{gitprovider.WrapError(gitprovider.ErrNotFound, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonNotFound},
+		{gitprovider.WrapError(gitprovider.ErrConflict, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonConflict},
+		{gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationAcceptRepositoryInvitation, nil), ReasonRetryable},
+		{context.Canceled, ReasonCanceled},
+		{context.DeadlineExceeded, ReasonCanceled},
+		{errors.New("github: validation error"), ReasonError},
+	}
+	for _, tt := range tests {
+		if got := failureReason(tt.err); got != tt.want {
+			t.Fatalf("failureReason(%v) = %q, want %q", tt.err, got, tt.want)
+		}
 	}
 }
 

@@ -9,7 +9,7 @@
       "example-org"
     ],
     "repos": [
-      "other-org/tooling"
+      "other-org/expired"
     ]
   },
   "results": [
@@ -42,7 +42,8 @@
       "expired": true,
       "url": "https://github.com/other-org/expired/invitations",
       "status": "skipped",
-      "reason": "not on the allowlist"
+      "reason_code": "expired",
+      "reason": "invitation expired; ask the inviter to send a new one"
     },
     {
       "id": "2",
@@ -52,13 +53,15 @@
       "created_at": "2026-10-29T08:00:00Z",
       "expired": false,
       "url": "https://github.com/other-org/tooling/invitations",
-      "status": "accepted"
+      "status": "skipped",
+      "reason_code": "not_allowlisted",
+      "reason": "not on the allowlist"
     }
   ],
   "summary": {
-    "accepted": 3,
+    "accepted": 2,
     "would_accept": 0,
-    "skipped": 1,
+    "skipped": 2,
     "failed": 0
   }
 }

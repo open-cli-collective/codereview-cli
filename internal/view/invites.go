@@ -50,10 +50,12 @@ type InviteItem struct {
 }
 
 // InviteAcceptItem describes what accept did with one pending invitation.
+// ReasonCode is the stable value for scripts; Reason is the human text.
 type InviteAcceptItem struct {
 	InviteItem
-	Status string `json:"status"`
-	Reason string `json:"reason,omitempty"`
+	Status     string `json:"status"`
+	ReasonCode string `json:"reason_code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // InvitesAcceptCounts counts accept outcomes by status.
@@ -80,7 +82,8 @@ func NewInvitesAccept(identity InvitesIdentity, allow invitations.Allowlist, dry
 		results = append(results, InviteAcceptItem{
 			InviteItem: newInviteItem(outcome.Invitation),
 			Status:     string(outcome.Status),
-			Reason:     outcome.Reason,
+			ReasonCode: string(outcome.Reason),
+			Reason:     inviteReasonText(outcome),
 		})
 	}
 	summary := invitations.Summarize(outcomes)
@@ -98,6 +101,30 @@ func NewInvitesAccept(identity InvitesIdentity, allow invitations.Allowlist, dry
 			Skipped:     summary.Skipped,
 			Failed:      summary.Failed,
 		},
+	}
+}
+
+// inviteReasonText gives skips a fixed sentence and failures the provider's
+// error text, which the adapters already scrub of response bodies.
+func inviteReasonText(outcome invitations.Outcome) string {
+	switch outcome.Reason {
+	case invitations.ReasonNotAllowlisted:
+		return "not on the allowlist"
+	case invitations.ReasonExpired:
+		return "invitation expired; ask the inviter to send a new one"
+	case invitations.ReasonAuth,
+		invitations.ReasonPermission,
+		invitations.ReasonNotFound,
+		invitations.ReasonConflict,
+		invitations.ReasonRetryable,
+		invitations.ReasonCanceled,
+		invitations.ReasonError:
+		if outcome.Err != nil {
+			return outcome.Err.Error()
+		}
+		return string(outcome.Reason)
+	default:
+		return ""
 	}
 }
 

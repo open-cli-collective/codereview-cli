@@ -112,7 +112,7 @@ func TestAcceptPartialFailureReportsEveryResultThenExitsNonzero(t *testing.T) {
 	if result.Summary != (view.InvitesAcceptCounts{Accepted: 1, Skipped: 2, Failed: 1}) {
 		t.Fatalf("summary = %#v", result.Summary)
 	}
-	if result.Results[0].Repository != "example-org/docs" || result.Results[0].Status != "failed" || !strings.Contains(result.Results[0].Reason, "permission denied") {
+	if result.Results[0].Repository != "example-org/docs" || result.Results[0].Status != "failed" || result.Results[0].ReasonCode != "permission" || !strings.Contains(result.Results[0].Reason, "permission denied") {
 		t.Fatalf("first result = %#v, want failed docs invitation with reason", result.Results[0])
 	}
 	if accepted := h.fake.RecordedAcceptedInvitations(); !reflect.DeepEqual(accepted, []gitprovider.InvitationID{"1"}) {
@@ -123,7 +123,7 @@ func TestAcceptPartialFailureReportsEveryResultThenExitsNonzero(t *testing.T) {
 func TestAcceptJSONShape(t *testing.T) {
 	h := newHarness(t, testConfig())
 
-	out, err := h.run("--profile", "home", "invites", "accept", "--owner", "example-org", "--repo", "other-org/tooling", "--json")
+	out, err := h.run("--profile", "home", "invites", "accept", "--owner", "example-org", "--repo", "other-org/expired", "--json")
 	if err != nil {
 		t.Fatalf("Execute: %v\n%s", err, out)
 	}

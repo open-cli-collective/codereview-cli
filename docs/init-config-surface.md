@@ -258,6 +258,7 @@ The following flags are intentionally not durable init configuration.
 | `cr data show` | `--json` | Presentation only. |
 | `cr agents` | `--agents-dir`, `--json` | Per-run inspection inputs and output. Durable trusted sources use `agent_sources`. |
 | `cr me` | `--all`, `--json` | Identity refresh/read behavior, not wizard configuration. |
+| `cr invites` | `--owner`, `--repo`, `--dry-run`, `--json` | Per-run allowlist, filter, and preview controls for accepting the posting identity's repository invitations, not profile config. |
 | `cr sessions` | `--json` | Presentation only. |
 | `cr benchmark` | `--candidate`, `--case`, `--results-dir`, `--cr-bin`, `--json` | Benchmark harness controls, outside init. |
 

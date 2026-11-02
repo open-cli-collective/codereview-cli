@@ -2,12 +2,10 @@
 package invitescmd
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
 
-	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
@@ -24,10 +22,7 @@ import (
 
 // Provider is the provider surface `cr invites` needs: the identity lookup
 // plus the account's repository invitations.
-type Provider interface {
-	WhoAmI(ctx context.Context, creds gitprovider.Credential) (gitprovider.Identity, error)
-	gitprovider.RepositoryInvitations
-}
+type Provider = gitproviders.InvitationClient
 
 // ProviderFactory builds the provider authenticated as one profile's posting
 // identity. The returned cleanup, when non-nil, closes the credential store.
@@ -244,38 +239,10 @@ func prevalidate(profileName, source string, git config.GitConfig) error {
 }
 
 func mapRunError(err error) error {
-	switch {
-	case errors.Is(err, invitations.ErrInvalidAllowlist),
-		errors.Is(err, invitations.ErrAllowlistRequired):
+	if errors.Is(err, invitations.ErrInvalidAllowlist) || errors.Is(err, invitations.ErrAllowlistRequired) {
 		return exitcode.Usage(err)
-	case errors.Is(err, config.ErrInvalid),
-		errors.Is(err, config.ErrNotConfigured),
-		errors.Is(err, config.ErrProfileNotFound),
-		errors.Is(err, config.ErrSecretsStoreNotFound),
-		errors.Is(err, config.ErrUnsupported):
-		return cmderr.Config(err)
-	case errors.Is(err, gitprovider.ErrAuth),
-		errors.Is(err, gitprovider.ErrPermission),
-		errors.Is(err, gitprovider.ErrRetryable),
-		errors.Is(err, gitprovider.ErrNotFound),
-		errors.Is(err, gitprovider.ErrConflict):
-		return cmderr.Provider(err)
-	// Keep this list in sync with cmderr.Credential. The explicit guard avoids
-	// classifying arbitrary errors as credential-domain failures.
-	case errors.Is(err, credentials.ErrInvalidBackendSelection),
-		errors.Is(err, credentials.ErrWrongService),
-		errors.Is(err, credstore.ErrRefEmpty),
-		errors.Is(err, credstore.ErrRefSegmentCount),
-		errors.Is(err, credstore.ErrRefInvalidChar),
-		errors.Is(err, credstore.ErrKeyNotAllowed),
-		errors.Is(err, credstore.ErrExists),
-		errors.Is(err, credstore.ErrFilePassphraseRequired),
-		errors.Is(err, credstore.ErrSecretServiceFailClosed),
-		errors.Is(err, credstore.ErrStoreClosed),
-		errors.Is(err, credstore.ErrBackendNotImplemented):
-		return cmderr.Credential(err)
 	}
-	return err
+	return cmderr.Classify(err)
 }
 
 // ConfiguredProviderFactory returns the production factory: it opens the
@@ -296,15 +263,10 @@ func newConfiguredProvider(cmd *cobra.Command, opts *root.Options, cfg config.Fi
 		return nil, gitprovider.Credential{}, nil, err
 	}
 	reader := credentials.ProgressStoreReader("invites", root.NewProgressLogger(opts), resolved, store)
-	client, credential, err := gitproviders.New(git, reader, options)
+	client, credential, err := gitproviders.NewInvitationClient(git, reader, options)
 	if err != nil {
 		_ = store.Close()
 		return nil, gitprovider.Credential{}, nil, err
 	}
-	provider, ok := client.(Provider)
-	if !ok {
-		_ = store.Close()
-		return nil, gitprovider.Credential{}, nil, fmt.Errorf("%w: repository invitations for provider %s", config.ErrUnsupported, git.ProviderKind())
-	}
-	return provider, credential, func() { _ = store.Close() }, nil
+	return client, credential, func() { _ = store.Close() }, nil
 }

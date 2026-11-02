@@ -1243,7 +1243,7 @@ a usage error and reads nothing.
 
 | Flag | Semantics |
 |------|-----------|
-| `--owner <login>` | Accept invitations to repositories this account owns. Repeatable. |
+| `--owner <login>` | Accept invitations to repositories owned by this login (user or organization). Repeatable. |
 | `--repo <owner/name>` | Accept the invitation to this repository. Repeatable. |
 | `--dry-run` | Report what would be accepted without accepting anything. |
 | `--json` | Emit JSON. |
@@ -1254,7 +1254,10 @@ Every pending invitation gets one result: `accepted`, `would_accept` under
 accepts. After printing every result, the command exits `1` if any accept
 failed. JSON output carries the identity (`profile`, `credential_source`,
 `host`, `login`), `dry_run`, the `allowlist`, the per-invitation `results`, and
-a `summary` count per status.
+a `summary` count per status. Each skipped or failed result carries a stable
+`reason_code` for scripts and a human-readable `reason`. Skips use
+`not_allowlisted` or `expired`. Failures use `auth`, `permission`, `not_found`,
+`conflict`, `retryable`, `canceled`, or `error`.
 
 ### `cr agents list`
 

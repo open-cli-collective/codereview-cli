@@ -101,17 +101,33 @@ const (
 	StatusFailed      Status = "failed"
 )
 
+// ReasonCode is the closed, machine-readable reason for a skipped or failed
+// outcome. Accepted and would-accept outcomes carry no reason.
+type ReasonCode string
+
 // Skip reasons.
 const (
-	ReasonNotAllowlisted = "not on the allowlist"
-	ReasonExpired        = "invitation expired; ask the inviter to send a new one"
+	ReasonNotAllowlisted ReasonCode = "not_allowlisted"
+	ReasonExpired        ReasonCode = "expired"
 )
 
-// Outcome records what an accept run did with one pending invitation.
+// Failure reasons, classified from the provider error.
+const (
+	ReasonAuth       ReasonCode = "auth"
+	ReasonPermission ReasonCode = "permission"
+	ReasonNotFound   ReasonCode = "not_found"
+	ReasonConflict   ReasonCode = "conflict"
+	ReasonRetryable  ReasonCode = "retryable"
+	ReasonCanceled   ReasonCode = "canceled"
+	ReasonError      ReasonCode = "error"
+)
+
+// Outcome records what an accept run did with one pending invitation. Err
+// holds the provider error of a failed outcome.
 type Outcome struct {
 	Invitation gitprovider.RepositoryInvitation
 	Status     Status
-	Reason     string
+	Reason     ReasonCode
 	Err        error
 }
 
@@ -169,7 +185,7 @@ func Accept(ctx context.Context, provider gitprovider.RepositoryInvitations, all
 		default:
 			if err := provider.AcceptRepositoryInvitation(ctx, invitation.ID); err != nil {
 				outcome.Status = StatusFailed
-				outcome.Reason = err.Error()
+				outcome.Reason = failureReason(err)
 				outcome.Err = err
 			} else {
 				outcome.Status = StatusAccepted
@@ -178,6 +194,25 @@ func Accept(ctx context.Context, provider gitprovider.RepositoryInvitations, all
 		outcomes = append(outcomes, outcome)
 	}
 	return outcomes, nil
+}
+
+func failureReason(err error) ReasonCode {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return ReasonCanceled
+	case errors.Is(err, gitprovider.ErrAuth):
+		return ReasonAuth
+	case errors.Is(err, gitprovider.ErrPermission):
+		return ReasonPermission
+	case errors.Is(err, gitprovider.ErrNotFound):
+		return ReasonNotFound
+	case errors.Is(err, gitprovider.ErrConflict):
+		return ReasonConflict
+	case errors.Is(err, gitprovider.ErrRetryable):
+		return ReasonRetryable
+	default:
+		return ReasonError
+	}
 }
 
 func sortInvitations(invitations []gitprovider.RepositoryInvitation) {

@@ -12,13 +12,13 @@ import (
 
 // Accepting a repository invitation is the one account-level provider write.
 // It stays inside internal/invitations, which enforces the allowlist and
-// dry-run, so no other caller can accept invitations without them.
+// dry-run, so no other caller can accept invitations without them. Any
+// selector naming the method counts, so a method value or method expression
+// cannot slip past where a direct call would be caught. Adapters only declare
+// the method, and declarations are not selectors.
 func TestRepositoryInvitationAcceptsStayInInvitationsPackage(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
-	allowedDirs := []string{
-		"internal/invitations",
-		"internal/gitprovider",
-	}
+	allowedDirs := []string{"internal/invitations"}
 
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(repoRoot, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -45,15 +45,11 @@ func TestRepositoryInvitationAcceptsStayInInvitationsPackage(t *testing.T) {
 			return err
 		}
 		ast.Inspect(parsed, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
+			selector, ok := node.(*ast.SelectorExpr)
 			if !ok || selector.Sel.Name != "AcceptRepositoryInvitation" {
 				return true
 			}
-			t.Fatalf("%s calls AcceptRepositoryInvitation outside internal/invitations", fset.Position(selector.Pos()))
+			t.Fatalf("%s references AcceptRepositoryInvitation outside internal/invitations", fset.Position(selector.Pos()))
 			return false
 		})
 		return nil
