@@ -32,9 +32,11 @@ declaring it is rejected as invalid rather than colliding with that pass.
 
 Any source may set `required_on_match: true` with `file_globs`. Those reviewers
 are added deterministically whenever a glob matches a changed file, even if the
-orchestrator omits them. An explicit maximum smaller than the combined set of
-applicable repo-local and matching `required_on_match` reviewers fails instead
-of silently dropping required coverage.
+orchestrator omits them, and on follow-up reviews that reuse the PR's saved
+reviewer cohort, even if the cohort was selected before they matched. An
+explicit maximum smaller than the combined set of applicable repo-local and
+matching `required_on_match` reviewers fails instead of silently dropping
+required coverage.
 
 `cr review` does not load repo guidance from the PR head for the same review
 run. It reads `.codereview/agents/` from the PR base branch, pins that source

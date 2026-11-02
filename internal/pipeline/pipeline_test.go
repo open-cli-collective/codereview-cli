@@ -7390,7 +7390,7 @@ func TestRebaseReviewerCohortLeavesInherentlyUnmatchedFilesUnassigned(t *testing
 	}
 }
 
-func TestRebaseReviewerCohortRejectsFileCoveredByBroadCatalogAgent(t *testing.T) {
+func TestReuseReviewerCohortRejectsFileCoveredByBroadCatalogAgent(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "fake-llm", Members: []ledger.ReviewerCohortMember{{
 		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped,
@@ -7402,9 +7402,9 @@ func TestRebaseReviewerCohortRejectsFileCoveredByBroadCatalogAgent(t *testing.T)
 		{ID: "shared:general", ModelTier: "medium", Effort: "medium"},
 	}}
 
-	_, _, err := rebaseReviewerCohort(req, catalog, cohort, []string{"main.go", ".github/workflows/ci.yml"}, 0, "fake-llm")
+	_, _, _, err := reuseReviewerCohort(req, catalog, cohort, []string{"main.go", ".github/workflows/ci.yml"}, 0, "fake-llm", fixedNow())
 	if err == nil || !strings.Contains(err.Error(), ".github/workflows/ci.yml") || !strings.Contains(err.Error(), "--fresh-session") {
-		t.Fatalf("rebaseReviewerCohort error = %v, want broad catalog coverage to retain fresh-session guidance", err)
+		t.Fatalf("reuseReviewerCohort error = %v, want broad catalog coverage to retain fresh-session guidance", err)
 	}
 }
 
@@ -7531,7 +7531,7 @@ func TestRestoreOrchestratorSessionFromInterruptedRunUsesLatestChainSession(t *t
 	}
 }
 
-func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
+func TestReuseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 	req := Request{Profile: testProfile(""), ProfileName: "default"}
 	cohort := ledger.ReviewerCohort{Adapter: "old-adapter", Members: []ledger.ReviewerCohortMember{{
 		AgentID: "repo:go", AssignmentMode: ledger.ReviewerAssignmentScoped, Model: "claude-sonnet-5-5", Effort: "medium",
@@ -7563,9 +7563,9 @@ func TestRebaseReviewerCohortRejectsIncompatibleOrUncoveredState(t *testing.T) {
 				tc.maxAgents = 1
 				tc.wantDetail = "--max-agents"
 			}
-			_, _, err := rebaseReviewerCohort(req, candidateCatalog, candidate, tc.files, tc.maxAgents, tc.adapter)
+			_, _, _, err := reuseReviewerCohort(req, candidateCatalog, candidate, tc.files, tc.maxAgents, tc.adapter, fixedNow())
 			if err == nil || !strings.Contains(err.Error(), tc.wantDetail) || !strings.Contains(err.Error(), "--fresh-session") {
-				t.Fatalf("rebaseReviewerCohort error = %v, want %q and fresh-session guidance", err, tc.wantDetail)
+				t.Fatalf("reuseReviewerCohort error = %v, want %q and fresh-session guidance", err, tc.wantDetail)
 			}
 		})
 	}
