@@ -288,7 +288,7 @@ func executeBenchmarkSelectRun(ctx context.Context, logger *progress.Logger, sui
 		ProfileName:                 state.profileName,
 		Profile:                     state.profile,
 		PostingIdentity:             postingIdentity,
-		AgentDirs:                   append([]string(nil), candidate.Stages.Reviewers.AgentDirs...),
+		AgentDirs:                   resolveSuiteAgentDirs(suiteDir, candidate.Stages.Reviewers.AgentDirs),
 		ArtifactDir:                 runDir,
 		ReviewBaseSHA:               benchCase.ReviewBaseSHA,
 		ReviewHeadSHA:               benchCase.ReviewHeadSHA,
@@ -387,6 +387,20 @@ func selectionRunArtifacts(runDir string) (runArtifacts, error) {
 		Stderr:        filepath.Join(runDir, "stderr.txt"),
 		MetricsJSON:   filepath.Join(runDir, "metrics.json"),
 	}, nil
+}
+
+// resolveSuiteAgentDirs resolves candidate agent directories against the suite
+// file's directory, as `benchmark run` does for its child reviews, so a suite
+// selects from the same catalog whichever directory it is invoked from.
+func resolveSuiteAgentDirs(suiteDir string, dirs []string) []string {
+	if dirs == nil {
+		return nil
+	}
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		out = append(out, benchmark.ResolveSuitePath(suiteDir, dir))
+	}
+	return out
 }
 
 func loadSelectionPromptInstructions(suiteDir, configured string) (string, error) {
