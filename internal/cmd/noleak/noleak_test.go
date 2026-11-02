@@ -31,6 +31,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/datacmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/initcmd"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/invitescmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/mecmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -153,6 +154,32 @@ func TestCommandSurfacesDoNotLeakSeededSecrets(t *testing.T) {
 			name:    "me github app json",
 			prepare: seedGitHubAppGitCredentials,
 			args:    staticArgs("me", "--json"),
+		},
+		{
+			name:    "invites list text",
+			prepare: seedConfiguredCredentials,
+			args:    staticArgs("invites", "list"),
+		},
+		{
+			name:    "invites list json",
+			prepare: seedConfiguredCredentials,
+			args:    staticArgs("invites", "list", "--json"),
+		},
+		{
+			name:    "invites accept dry-run text",
+			prepare: seedConfiguredCredentials,
+			args:    staticArgs("invites", "accept", "--owner", "open-cli-collective", "--dry-run"),
+		},
+		{
+			name:    "invites accept json",
+			prepare: seedConfiguredCredentials,
+			args:    staticArgs("invites", "accept", "--repo", "open-cli-collective/codereview-cli", "--json"),
+		},
+		{
+			name:    "invites accept failure",
+			prepare: seedConfiguredCredentials,
+			args:    staticArgs("invites", "accept", "--repo", "open-cli-collective/denied"),
+			wantErr: true,
 		},
 		{
 			name:    "agents list json",
@@ -480,6 +507,7 @@ func (h *auditHarness) run(args []string) (string, string, error) {
 	sessionscmd.Register(cmd, opts)
 	mecmd.RegisterWithFactory(cmd, opts, h.identityFactory)
 	agentscmd.RegisterWithFactory(cmd, opts, h.providerFactory)
+	invitescmd.RegisterWithFactory(cmd, opts, h.invitesFactory)
 	reviewcmd.RegisterWithFactory(cmd, opts, h.reviewRuntimeFactory)
 
 	err := root.Execute(cmd, args)
@@ -492,7 +520,7 @@ func auditArgsWithExplicitProfile(args []string) []string {
 	}
 	command := auditRootCommand(args)
 	switch command {
-	case "config", "me", "agents", "review":
+	case "config", "me", "agents", "review", "invites":
 		out := []string{"--profile", "default"}
 		out = append(out, args...)
 		return out
@@ -761,6 +789,19 @@ func (h *auditHarness) providerFactory(_ *cobra.Command, _ *root.Options, _ conf
 	return provider, func() { _ = store.Close() }, nil
 }
 
+func (h *auditHarness) invitesFactory(_ *cobra.Command, _ *root.Options, _ config.File, _ string, git config.GitConfig) (invitescmd.Provider, gitprovider.Credential, func(), error) {
+	store, err := h.openCredentialStore()
+	if err != nil {
+		return nil, gitprovider.Credential{}, nil, err
+	}
+	provider, credential, err := h.newGitHubProvider(git, store, nil)
+	if err != nil {
+		_ = store.Close()
+		return nil, gitprovider.Credential{}, nil, err
+	}
+	return provider, credential, func() { _ = store.Close() }, nil
+}
+
 func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app.OpenRequest) (app.Runtime, error) {
 	profile := runtimeOpts.Profile
 	store, err := h.openCredentialStore()
@@ -982,6 +1023,34 @@ func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
 			id = 1005
 		}
 		writeHTTPJSON(h.t, w, map[string]any{"login": login, "id": id, "name": login})
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == "/user/repository_invitations":
+		if !h.requireBearer(w, r, h.reviewerSecret) {
+			return
+		}
+		invitation := func(id int, repo string) map[string]any {
+			return map[string]any{
+				"id":          id,
+				"repository":  map[string]any{"name": repo, "owner": map[string]any{"login": h.prRef.Owner, "id": 1004}},
+				"invitee":     map[string]any{"login": "reviewer-user", "id": 1002},
+				"inviter":     map[string]any{"login": "author-user", "id": 1003},
+				"permissions": "write",
+				"created_at":  h.now.Format(time.RFC3339),
+				"html_url":    fmt.Sprintf("https://%s/%s/%s/invitations", h.prRef.Host, h.prRef.Owner, repo),
+			}
+		}
+		writeHTTPJSON(h.t, w, []map[string]any{invitation(401, h.prRef.Repo), invitation(402, "denied")})
+	case r.Method == http.MethodPatch && r.URL.EscapedPath() == "/user/repository_invitations/401":
+		if !h.requireBearer(w, r, h.reviewerSecret) {
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPatch && r.URL.EscapedPath() == "/user/repository_invitations/402":
+		if !h.requireBearer(w, r, h.reviewerSecret) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = fmt.Fprintf(w, `{"message":"credential %s may not accept", "errors":[{"resource":"RepositoryInvitation","code":"forbidden"}]}`, h.reviewerSecret)
 	case r.Method == http.MethodGet && r.URL.EscapedPath() == pullPath && r.Header.Get("Accept") == "application/vnd.github.v3.diff":
 		if !h.requireBearer(w, r, h.gitSecret, h.reviewerSecret, h.githubAppInstallationToken) {
 			return

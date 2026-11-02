@@ -34,6 +34,8 @@ func TestRun(t *testing.T) {
 		{name: "dash-v is not version", args: []string{"-v"}, wantCode: 2, wantStderr: "unknown shorthand flag", wantEmptyStdout: true},
 		{name: "help flag shows usage", args: []string{"--help"}, wantCode: 0, wantStdout: "Usage:", wantStdoutSubstring: true},
 		{name: "me command wired", args: []string{"me", "--help"}, wantCode: 0, wantStdout: "Resolve and cache", wantStdoutSubstring: true},
+		{name: "invites command wired", args: []string{"invites", "--help"}, wantCode: 0, wantStdout: "List and accept the pending repository invitations", wantStdoutSubstring: true},
+		{name: "invites accept command wired", args: []string{"invites", "accept", "--help"}, wantCode: 0, wantStdout: "Accept the pending invitations whose repository is on the allowlist", wantStdoutSubstring: true},
 		{name: "agents command wired", args: []string{"agents", "--help"}, wantCode: 0, wantStdout: "Inspect trusted review agents", wantStdoutSubstring: true},
 		{name: "review command wired", args: []string{"review", "--help"}, wantCode: 0, wantStdout: "Run an automated pull-request review", wantStdoutSubstring: true},
 		{name: "sessions command wired", args: []string{"sessions", "--help"}, wantCode: 0, wantStdout: "Manage named orchestrator sessions", wantStdoutSubstring: true},

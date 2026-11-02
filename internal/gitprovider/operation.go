@@ -22,4 +22,7 @@ const (
 	OperationResolveThread      Operation = "ResolveThread"
 	OperationPostIssueComment   Operation = "PostIssueComment"
 	OperationSubmitReview       Operation = "SubmitReview"
+
+	OperationListRepositoryInvitations  Operation = "ListRepositoryInvitations"
+	OperationAcceptRepositoryInvitation Operation = "AcceptRepositoryInvitation"
 )

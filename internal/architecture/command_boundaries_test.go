@@ -45,6 +45,7 @@ func TestCommandPackageTestsKeepFeatureCommandImportsAtCommandTreeBoundaries(t *
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/credentialcmd": "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/datacmd":       "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/initcmd":       "command-surface noleak harness registers the command tree",
+		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/invitescmd":    "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/mecmd":         "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/reviewcmd":     "command-surface noleak harness registers the command tree",
 		"internal/cmd/noleak/noleak_test.go -> github.com/open-cli-collective/codereview-cli/internal/cmd/sessionscmd":   "command-surface noleak harness registers the command tree",

@@ -1209,6 +1209,53 @@ and verifies both user Git and reviewer identity credentials when a profile
 declares both. `--json` emits structured output. `--all` cannot be combined
 with `--profile`.
 
+### `cr invites list`
+
+```text
+cr invites list --profile <name> [--owner <login> ...] [--repo <owner/name> ...] [--json]
+```
+
+Lists the pending repository invitations addressed to the profile's posting
+identity, the identity `cr review` posts as: its `reviewer_credentials` when
+the profile declares them, otherwise its Git credential. Each invitation shows
+the repository, inviter, permission, creation time, and whether it has
+expired. `--owner` and `--repo` narrow the list; matching ignores case.
+
+On GitHub, an `APPROVE` counts toward a required review only when the posting
+identity has write access to the repository. When the repository owner invites
+that identity as a collaborator, `cr invites accept` accepts the invitation
+with the token `cr` already holds. The token is never printed or exported.
+
+Requires a GitHub personal access token for the posting identity. GitHub App
+credentials and GitLab profiles fail with a configuration error before the
+credential store is opened. GitLab adds existing users as project members
+directly, so it has no invitation to accept.
+
+### `cr invites accept`
+
+```text
+cr invites accept --profile <name> (--owner <login> | --repo <owner/name>)... [--dry-run] [--json]
+```
+
+Accepts the pending invitations whose repository matches the allowlist. At
+least one `--owner` or `--repo` is required; without one the command fails with
+a usage error and reads nothing.
+
+| Flag | Semantics |
+|------|-----------|
+| `--owner <login>` | Accept invitations to repositories this account owns. Repeatable. |
+| `--repo <owner/name>` | Accept the invitation to this repository. Repeatable. |
+| `--dry-run` | Report what would be accepted without accepting anything. |
+| `--json` | Emit JSON. |
+
+Every pending invitation gets one result: `accepted`, `would_accept` under
+`--dry-run`, `skipped` with a reason (not on the allowlist, or expired), or
+`failed` with the host's error. One failure does not stop the remaining
+accepts. After printing every result, the command exits `1` if any accept
+failed. JSON output carries the identity (`profile`, `credential_source`,
+`host`, `login`), `dry_run`, the `allowlist`, the per-invitation `results`, and
+a `summary` count per status.
+
 ### `cr agents list`
 
 ```text
