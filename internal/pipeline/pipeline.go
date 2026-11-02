@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1862,6 +1863,10 @@ func rebaseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.Rev
 			break
 		}
 		if !assigned {
+			if requiredOnMatchCovers(catalog, file) {
+				// joinRequiredReviewers adds the required reviewer that owns it.
+				continue
+			}
 			for _, current := range catalog.Agents {
 				if len(current.FileGlobs) == 0 || globsMatchFile(current.FileGlobs, file) {
 					return freshError("saved reviewer cohort leaves changed file %q uncovered", file)
@@ -1922,14 +1927,138 @@ func loadReviewerCohort(ctx context.Context, opts Options, req Request, scope le
 	if err != nil {
 		return llm.Selection{}, nil, false, err
 	}
-	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, changedFiles, maxAgents, opts.Adapter.Name())
+	selection, resumes, grown, err := reuseReviewerCohort(req, catalog, cohort, changedFiles, maxAgents, opts.Adapter.Name(), opts.now())
 	if err != nil {
 		return llm.Selection{}, nil, false, Failure(FailureTerminal, err)
+	}
+	if grown != nil {
+		if err := opts.Store.ReplaceReviewerCohort(ctx, *grown); err != nil {
+			return llm.Selection{}, nil, false, err
+		}
 	}
 	if !opts.Adapter.SupportsResume() {
 		resumes = nil
 	}
 	return selection, resumes, true, nil
+}
+
+// reuseReviewerCohort rebases a saved cohort onto the current change and joins
+// the required_on_match reviewers it lacks. It returns the selection to run,
+// the provider session to resume per reviewer, and — when a reviewer joined —
+// the grown cohort the caller must persist before any reviewer runs.
+func reuseReviewerCohort(req Request, catalog agents.Catalog, cohort ledger.ReviewerCohort, changedFiles []string, maxAgents int, adapter string, now time.Time) (llm.Selection, map[string]string, *ledger.ReviewerCohort, error) {
+	selection, resumes, err := rebaseReviewerCohort(req, catalog, cohort, changedFiles, maxAgents, adapter)
+	if err != nil {
+		return llm.Selection{}, nil, nil, err
+	}
+	selection, grown, err := joinRequiredReviewers(req, catalog, cohort, selection, changedFiles, maxAgents, now)
+	if err != nil {
+		return llm.Selection{}, nil, nil, err
+	}
+	return selection, cohortResumes(cohort, selection, resumes), grown, nil
+}
+
+// requiredOnMatchCovers reports whether a required_on_match catalog reviewer
+// matches file, so the file has an owner even when no saved member covers it.
+func requiredOnMatchCovers(catalog agents.Catalog, file string) bool {
+	for _, candidate := range catalog.Agents {
+		if len(requiredOnMatchFiles(candidate, []string{file})) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// joinRequiredReviewers brings a reused cohort up to the required_on_match
+// contract that a fresh selection enforces: every catalog reviewer marked
+// required_on_match whose globs match a changed file runs, scoped to all of
+// its matches. A cohort is saved at a PR's first review, so without this a
+// reviewer that became required later — a later push touched files it must
+// see, or the agent joined the catalog after that first review — would not
+// run on the PR again until someone passed --fresh-session, and a required
+// member already in the cohort could see a new matching file handed to
+// another member instead.
+//
+// When the cohort gains a member, the grown cohort is returned for the caller
+// to persist, so the newcomer's provider session is recorded and resumed on
+// later passes like any original member's.
+func joinRequiredReviewers(req Request, catalog agents.Catalog, cohort ledger.ReviewerCohort, selection llm.Selection, changedFiles []string, maxAgents int, now time.Time) (llm.Selection, *ledger.ReviewerCohort, error) {
+	freshError := func(format string, args ...any) (llm.Selection, *ledger.ReviewerCohort, error) {
+		return llm.Selection{}, nil, fmt.Errorf("pipeline: "+format+"; pass --fresh-session to select a new reviewer cohort", args...)
+	}
+	members := make(map[string]ledger.ReviewerCohortMember, len(cohort.Members))
+	for _, member := range cohort.Members {
+		members[member.AgentID] = member
+	}
+	selection = ensureRequiredOnMatchAgents(selection, catalog, changedFiles)
+	selection = ensureSelectedGlobCoverage(selection, catalog, changedFiles)
+	var joined []llm.SelectedAgent
+	for _, selected := range selection.SelectedAgents {
+		if _, ok := members[selected.AgentID]; !ok {
+			joined = append(joined, selected)
+		}
+	}
+	if len(joined) == 0 {
+		return selection, nil, nil
+	}
+	if maxAgents > 0 && len(selection.SelectedAgents) > maxAgents {
+		return freshError("--max-agents %d is smaller than the saved reviewer cohort plus the %d required reviewers it lacks", maxAgents, len(joined))
+	}
+	effectiveFast, _, err := resolveReviewerFastMode(req, selection, catalog)
+	if err != nil {
+		return llm.Selection{}, nil, err
+	}
+	for _, selected := range selection.SelectedAgents {
+		if member, ok := members[selected.AgentID]; ok && member.Fast != effectiveFast {
+			return freshError("saved reviewer %q fast-mode setting is incompatible with the required reviewers joining the cohort", selected.AgentID)
+		}
+	}
+	grown := cohort
+	grown.Members = append([]ledger.ReviewerCohortMember(nil), cohort.Members...)
+	grown.UpdatedAt = now
+	for _, selected := range joined {
+		agent, ok := catalog.Find(selected.AgentID)
+		if !ok {
+			return llm.Selection{}, nil, fmt.Errorf("pipeline: required reviewer %q not found while growing reviewer cohort", selected.AgentID)
+		}
+		runtimeConfig, err := resolveReviewerRuntimeConfig(req, agent)
+		if err != nil {
+			return llm.Selection{}, nil, err
+		}
+		grown.Members = append(grown.Members, ledger.ReviewerCohortMember{
+			AgentID:        selected.AgentID,
+			AssignmentMode: ledger.ReviewerAssignmentScoped,
+			Files:          append([]string(nil), selected.Files...),
+			AllowedFiles:   append([]string(nil), selected.AllowedFiles...),
+			Model:          runtimeConfig.model,
+			Effort:         runtimeConfig.effort,
+			Fast:           effectiveFast,
+		})
+	}
+	return selection, &grown, nil
+}
+
+// cohortResumes returns the provider session to resume for each selected
+// reviewer that has one saved in the cohort. A member that rebasing dropped
+// for lack of scope and a required reviewer then brought back resumes its own
+// conversation rather than starting over.
+func cohortResumes(cohort ledger.ReviewerCohort, selection llm.Selection, resumes map[string]string) map[string]string {
+	out := make(map[string]string, len(resumes))
+	maps.Copy(out, resumes)
+	for _, selected := range selection.SelectedAgents {
+		if _, ok := out[selected.AgentID]; ok {
+			continue
+		}
+		for _, member := range cohort.Members {
+			if member.AgentID == selected.AgentID {
+				if sessionID := strings.TrimSpace(member.ProviderSessionID); sessionID != "" {
+					out[selected.AgentID] = sessionID
+				}
+				break
+			}
+		}
+	}
+	return out
 }
 
 func persistReviewerCohort(ctx context.Context, opts Options, req Request, scope ledger.ReviewerCohortScope, catalog agents.Catalog, selection llm.Selection, now time.Time) error {
