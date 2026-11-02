@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -581,5 +582,62 @@ func TestSelectionReportMarkdownListsSelectedReviewers(t *testing.T) {
 	})
 	if !strings.Contains(report, "Selected Reviewers") || !strings.Contains(report, "`harness:alpha`") {
 		t.Fatalf("report = %s, want selected reviewer table", report)
+	}
+}
+
+func TestSelectResolvesRelativeAgentDirsAgainstSuiteDirectory(t *testing.T) {
+	cmd, _ := newTestCommand(t)
+	suitePath := writeBenchmarkSuite(t, `
+suite:
+  id: suite1
+  name: Suite One
+  version: 1
+candidates:
+  - id: first
+    profile: home
+    stages:
+      selection:
+        model: claude-sonnet-4-6
+        effort: high
+      reviewers:
+        model: claude-sonnet-4-6
+        agent_dirs:
+          - ../agents
+cases:
+  - id: case_one
+    pr: https://github.com/open-cli-collective/codereview-cli/pull/1
+`)
+	// Invoke from an unrelated directory: a cwd-relative "../agents" would
+	// point somewhere else entirely.
+	t.Chdir(t.TempDir())
+	var requests []pipeline.SelectionRequest
+	withBenchmarkSelectSeams(t,
+		func(context.Context, string, bool, config.File, config.Profile, gitprovider.PRRef) (app.SelectionRuntime, error) {
+			return app.SelectionRuntime{Cleanup: func() {}}, nil
+		},
+		func(_ context.Context, _ pipeline.Options, req pipeline.SelectionRequest) (pipeline.SelectionResult, error) {
+			requests = append(requests, req)
+			return pipeline.SelectionResult{
+				Artifacts: pipeline.ArtifactPathsFromDir(req.ArtifactDir),
+				SelectionSession: pipeline.SelectionSession{Response: llm.Response{
+					StructuredOutput: []byte(`{"schema_version":1,"selected_agents":[],"thread_actions":[],"reasoning":"ok"}`),
+				}},
+			}, nil
+		},
+	)
+
+	if err := root.Execute(cmd, []string{
+		"benchmark", "select", suitePath,
+		"--results-dir", filepath.Join(t.TempDir(), "results"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	want := []string{filepath.Join(filepath.Dir(filepath.Dir(suitePath)), "agents")}
+	if len(requests) != 1 {
+		t.Fatalf("selection requests = %d, want 1", len(requests))
+	}
+	if got := requests[0].AgentDirs; !reflect.DeepEqual(got, want) {
+		t.Fatalf("selection agent dirs = %#v, want suite-relative %#v", got, want)
 	}
 }
