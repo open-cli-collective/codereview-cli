@@ -93,3 +93,43 @@ func TestProviderErrorMapping(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyMapsEveryDomainAndLeavesOthersAlone(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "config usage", err: config.ErrInvalid, want: exitcode.UsageError},
+		{name: "config auth", err: config.ErrProfileNotFound, want: exitcode.AuthConfigError},
+		{name: "config unsupported", err: config.ErrUnsupported, want: exitcode.AuthConfigError},
+		{name: "provider auth", err: gitprovider.WrapError(gitprovider.ErrAuth, gitprovider.OperationWhoAmI, nil), want: exitcode.AuthConfigError},
+		{name: "provider upstream", err: gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationWhoAmI, nil), want: exitcode.UpstreamError},
+		{name: "provider failure", err: gitprovider.WrapError(gitprovider.ErrNotFound, gitprovider.OperationWhoAmI, nil), want: exitcode.Failure},
+		{name: "provider auth beats credential cause", err: gitprovider.WrapError(gitprovider.ErrAuth, "", credstore.ErrFilePassphraseRequired), want: exitcode.AuthConfigError},
+		{name: "credential usage", err: credstore.ErrRefEmpty, want: exitcode.UsageError},
+		{name: "credential auth", err: credstore.ErrStoreClosed, want: exitcode.AuthConfigError},
+		{name: "credential backend selection", err: credentials.ErrInvalidBackendSelection, want: exitcode.UsageError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := Classify(tt.err)
+			if got := exitcode.FromError(err); got != tt.want {
+				t.Fatalf("exit code = %d, want %d", got, tt.want)
+			}
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("mapped error = %v, want it to wrap %v", err, tt.err)
+			}
+		})
+	}
+
+	other := errors.New("unclassified")
+	got := Classify(other)
+	if !errors.Is(got, other) || exitcode.FromError(got) != exitcode.Failure {
+		t.Fatalf("Classify(unclassified) = %v (exit %d), want it unchanged with the generic failure code", got, exitcode.FromError(got))
+	}
+	var coded interface{ ExitCode() int }
+	if errors.As(got, &coded) {
+		t.Fatalf("Classify(unclassified) = %T, want no exit-code wrapper", got)
+	}
+}

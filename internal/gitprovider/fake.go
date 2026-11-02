@@ -48,6 +48,8 @@ type Fake struct {
 	issueCommentWrites  map[PRRef][]string
 	reviewWrites        map[PRRef][]ReviewRequest
 
+	invitations fakeInvitations
+
 	nextCommentID int
 	nextReviewID  int
 }

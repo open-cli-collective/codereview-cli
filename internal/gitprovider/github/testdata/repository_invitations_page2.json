@@ -1,0 +1,32 @@
+[
+  {
+    "id": 301003,
+    "node_id": "MDIwOlJlcG9zaXRvcnlJbnZpdGF0aW9uMzAxMDAz",
+    "repository": {
+      "id": 7003,
+      "node_id": "MDEwOlJlcG9zaXRvcnk3MDAz",
+      "name": "docs",
+      "full_name": "example-org/docs",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 9001,
+        "type": "Organization",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/docs"
+    },
+    "invitee": {
+      "login": "review-bot",
+      "id": 9100,
+      "type": "User",
+      "site_admin": false
+    },
+    "inviter": null,
+    "permissions": "maintain",
+    "created_at": "2026-10-31T09:15:00Z",
+    "expired": false,
+    "url": "https://api.github.com/user/repository_invitations/301003",
+    "html_url": "https://github.com/example-org/docs/invitations"
+  }
+]

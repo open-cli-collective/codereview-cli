@@ -3,13 +3,11 @@ package mecmd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 
-	"github.com/open-cli-collective/cli-common/credstore"
 	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/cmderr"
@@ -159,36 +157,7 @@ func prevalidateAllIdentityProfile(name string, profile config.Profile) error {
 }
 
 func mapRunError(err error) error {
-	switch {
-	case errors.Is(err, config.ErrInvalid),
-		errors.Is(err, config.ErrNotConfigured),
-		errors.Is(err, config.ErrProfileNotFound),
-		errors.Is(err, config.ErrSecretsStoreNotFound),
-		errors.Is(err, config.ErrUnsupported):
-		return cmderr.Config(err)
-	case errors.Is(err, gitprovider.ErrAuth),
-		errors.Is(err, gitprovider.ErrPermission),
-		errors.Is(err, gitprovider.ErrRetryable),
-		errors.Is(err, gitprovider.ErrNotFound),
-		errors.Is(err, gitprovider.ErrConflict),
-		errors.Is(err, gitprovider.ErrStaleSHA):
-		return cmderr.Provider(err)
-	// Keep this list in sync with cmderr.Credential. The explicit guard avoids
-	// accidentally classifying arbitrary errors as credential-domain failures.
-	case errors.Is(err, credentials.ErrInvalidBackendSelection),
-		errors.Is(err, credentials.ErrWrongService),
-		errors.Is(err, credstore.ErrRefEmpty),
-		errors.Is(err, credstore.ErrRefSegmentCount),
-		errors.Is(err, credstore.ErrRefInvalidChar),
-		errors.Is(err, credstore.ErrKeyNotAllowed),
-		errors.Is(err, credstore.ErrExists),
-		errors.Is(err, credstore.ErrFilePassphraseRequired),
-		errors.Is(err, credstore.ErrSecretServiceFailClosed),
-		errors.Is(err, credstore.ErrStoreClosed),
-		errors.Is(err, credstore.ErrBackendNotImplemented):
-		return cmderr.Credential(err)
-	}
-	return err
+	return cmderr.Classify(err)
 }
 
 func newProviderResolver(cmd *cobra.Command, opts *root.Options, cfg config.File) (identity.Resolver, func(), error) {
