@@ -102,6 +102,16 @@ This keeps markers, retries, reconciliation, idempotency, and resume behavior in
 one place. New commands such as `cr respond` should produce planned thread
 actions and let the reviewplan/ledger/outbox flow perform provider writes.
 
+Accepting a repository invitation is the one exception. It changes the posting
+identity's account, not a pull request, so it has no marker, no run, and
+nothing to reconcile, and accepting an invitation that is already gone fails
+harmlessly. `cr invites accept` therefore writes directly through
+`gitprovider.RepositoryInvitations`, a seam separate from `GitProvider` so the
+review runtime wrappers never carry it. Only `internal/invitations`, which
+enforces the required owner/repository allowlist and `--dry-run`, may call
+`AcceptRepositoryInvitation`; `internal/architecture/invitation_writes_test.go`
+enforces that.
+
 ## Authenticated Git Reads
 
 `internal/gitexec` is the narrow transport adapter for non-interactive Git

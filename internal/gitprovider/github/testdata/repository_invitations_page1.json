@@ -1,0 +1,72 @@
+[
+  {
+    "id": 301001,
+    "node_id": "MDIwOlJlcG9zaXRvcnlJbnZpdGF0aW9uMzAxMDAx",
+    "repository": {
+      "id": 7001,
+      "node_id": "MDEwOlJlcG9zaXRvcnk3MDAx",
+      "name": "service",
+      "full_name": "example-org/service",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 9001,
+        "type": "Organization",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/service"
+    },
+    "invitee": {
+      "login": "review-bot",
+      "id": 9100,
+      "type": "User",
+      "site_admin": false
+    },
+    "inviter": {
+      "login": "example-owner",
+      "id": 9002,
+      "type": "User",
+      "site_admin": false
+    },
+    "permissions": "write",
+    "created_at": "2026-10-30T14:52:50Z",
+    "expired": false,
+    "url": "https://api.github.com/user/repository_invitations/301001",
+    "html_url": "https://github.com/example-org/service/invitations"
+  },
+  {
+    "id": 301002,
+    "node_id": "MDIwOlJlcG9zaXRvcnlJbnZpdGF0aW9uMzAxMDAy",
+    "repository": {
+      "id": 7002,
+      "node_id": "MDEwOlJlcG9zaXRvcnk3MDAy",
+      "name": "tooling",
+      "full_name": "other-org/tooling",
+      "private": true,
+      "owner": {
+        "login": "other-org",
+        "id": 9003,
+        "type": "Organization",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/other-org/tooling"
+    },
+    "invitee": {
+      "login": "review-bot",
+      "id": 9100,
+      "type": "User",
+      "site_admin": false
+    },
+    "inviter": {
+      "login": "other-owner",
+      "id": 9004,
+      "type": "User",
+      "site_admin": false
+    },
+    "permissions": "read",
+    "created_at": "2026-09-01T08:00:00Z",
+    "expired": true,
+    "url": "https://api.github.com/user/repository_invitations/301002",
+    "html_url": "https://github.com/other-org/tooling/invitations"
+  }
+]

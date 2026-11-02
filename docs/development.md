@@ -9,7 +9,8 @@ codereview-cli is the Open CLI Collective code-review CLI and ships the `cr`
 binary. It provides configuration and credential commands, trusted-agent
 inspection, dry-run and live pull-request review orchestration, inline thread
 response handling through `cr respond`, named orchestrator sessions, automatic
-PR-scoped reviewer cohorts, and local data lifecycle commands.
+PR-scoped reviewer cohorts, local data lifecycle commands, and `cr invites` for
+accepting the posting identity's repository invitations.
 
 The current Go code is a Cobra command tree in `internal/cmd/*` with a thin
 `cmd/cr` entrypoint, shared exit-code mapping in `internal/cmd/exitcode`, and
@@ -198,9 +199,10 @@ release, change `PI_RUNTIME_VERSION` and run the target locally first.
   state/config adapters in `internal/config`, `internal/ledger`, and
   `internal/statepaths`, provider/LLM adapters in their owning packages, and
   review posting/gating in `internal/outbox`, `internal/gate`, and
-  `internal/gateio`, and response-only
+  `internal/gateio`, response-only
   inline discussion handling in
-  `internal/threadrespond`.
+  `internal/threadrespond`, and allowlisted repository-invitation acceptance
+  in `internal/invitations`.
 
 ## Interactive Init Notes
 

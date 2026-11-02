@@ -19,6 +19,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/datacmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/initcmd"
+	"github.com/open-cli-collective/codereview-cli/internal/cmd/invitescmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/mecmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/pireviewtoolcmd"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/respondcmd"
@@ -56,6 +57,7 @@ func buildRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command
 		credentialcmd.Register,
 		initcmd.Register,
 		mecmd.Register,
+		invitescmd.Register,
 		pireviewtoolcmd.Register,
 		agentscmd.Register,
 		reviewcmd.Register,
