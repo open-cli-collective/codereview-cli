@@ -241,3 +241,98 @@ func TestPlainRerunRunsRequiredReviewerAddedAfterFirstReview(t *testing.T) {
 		t.Fatalf("joined member session = %q, want the rerun's reviewer session recorded", got)
 	}
 }
+
+// A saved broad member that is also required_on_match keeps the files rebasing
+// gave it: joining widens a required member's assignment, never narrows it to
+// its glob matches, so a file it was reviewing cannot lose its only owner.
+func TestReuseReviewerCohortKeepsFilesABroadRequiredMemberHeld(t *testing.T) {
+	catalog := agents.Catalog{Agents: []agents.Agent{
+		{ID: "repo:req", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.go"}, RequiredOnMatch: true, Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+		{ID: "repo:docs", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.md"}, Provenance: agents.Provenance{Kind: agents.SourceProfile}},
+	}}
+	cohort := goOnlyCohort()
+	cohort.Members = []ledger.ReviewerCohortMember{{
+		AgentID: "repo:req", AssignmentMode: ledger.ReviewerAssignmentBroad,
+		Model: "claude-sonnet-5-5", Effort: "medium", ProviderSessionID: "req-session",
+	}}
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+	changed := []string{"main.go", "README.md"}
+
+	selection, _, grown, err := reuseReviewerCohort(req, catalog, cohort, changed, 0, "fake-llm", fixedNow())
+	if err != nil {
+		t.Fatalf("reuseReviewerCohort: %v", err)
+	}
+	if grown != nil {
+		t.Fatalf("grown cohort = %#v, want nil when no reviewer joined", grown)
+	}
+	if len(selection.SelectedAgents) != 1 || !reflect.DeepEqual(selection.SelectedAgents[0].Files, changed) {
+		t.Fatalf("selection = %#v, want the broad required member to keep every file %#v", selection.SelectedAgents, changed)
+	}
+}
+
+// The cap counts the cohort that will be saved. A member this pass drops for
+// an empty assignment stays in the saved cohort, so it counts too; otherwise
+// one run would persist a cohort larger than the cap and the next would fail.
+func TestJoinRequiredReviewersCapCountsMembersThisPassDoesNotRun(t *testing.T) {
+	catalog := requiredCohortCatalog()
+	catalog.Agents = append(catalog.Agents, agents.Agent{ID: "lang:ts", ModelTier: "medium", Effort: "medium", FileGlobs: []string{"**/*.ts"}, Provenance: agents.Provenance{Kind: agents.SourceProfile}})
+	cohort := goOnlyCohort()
+	cohort.Members = append(cohort.Members, ledger.ReviewerCohortMember{
+		AgentID: "lang:ts", AssignmentMode: ledger.ReviewerAssignmentScoped,
+		Files: []string{"app.ts"}, AllowedFiles: []string{"app.ts"},
+		Model: "claude-sonnet-5-5", Effort: "medium",
+	})
+	req := Request{Profile: testProfile(""), ProfileName: "default"}
+
+	_, _, grown, err := reuseReviewerCohort(req, catalog, cohort, []string{"main.go"}, 2, "fake-llm", fixedNow())
+	if err == nil || !strings.Contains(err.Error(), "--max-agents 2 is smaller than the saved reviewer cohort of 2 plus the 1 required reviewers") || !strings.Contains(err.Error(), "--fresh-session") {
+		t.Fatalf("error = %v, want the cap to count the dropped member and point at --fresh-session", err)
+	}
+	if grown != nil {
+		t.Fatalf("grown cohort = %#v, want nothing to persist on error", grown)
+	}
+}
+
+func TestJoinRequiredReviewersFastMode(t *testing.T) {
+	const fastModel = "claude-opus-4-8"
+	for _, tc := range []struct {
+		name         string
+		requiredFast bool
+		wantErr      bool
+	}{
+		{name: "joiner without fast support conflicts with fast saved member", requiredFast: false, wantErr: true},
+		{name: "fast-capable joiner is saved with fast mode", requiredFast: true, wantErr: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			catalog := requiredCohortCatalog()
+			catalog.Agents[0].ModelID = fastModel
+			if tc.requiredFast {
+				catalog.Agents[1].ModelID = fastModel
+			}
+			req := Request{Profile: testProfile(""), ProfileName: "default", ReviewerFast: true}
+			goRuntime, err := resolveReviewerRuntimeConfig(req, catalog.Agents[0])
+			if err != nil {
+				t.Fatalf("resolveReviewerRuntimeConfig: %v", err)
+			}
+			cohort := goOnlyCohort()
+			cohort.Members[0].Model, cohort.Members[0].Effort, cohort.Members[0].Fast = goRuntime.model, goRuntime.effort, true
+
+			_, _, grown, err := reuseReviewerCohort(req, catalog, cohort, []string{"main.go"}, 0, "fake-llm", fixedNow())
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "fast-mode setting") || !strings.Contains(err.Error(), "--fresh-session") {
+					t.Fatalf("error = %v, want a fast-mode conflict that points at --fresh-session", err)
+				}
+				if grown != nil {
+					t.Fatalf("grown cohort = %#v, want nothing to persist on error", grown)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("reuseReviewerCohort: %v", err)
+			}
+			if grown == nil || len(grown.Members) != 2 || grown.Members[1].AgentID != "privacy:data" || !grown.Members[1].Fast {
+				t.Fatalf("grown cohort = %#v, want the joined reviewer saved with fast mode", grown)
+			}
+		})
+	}
+}

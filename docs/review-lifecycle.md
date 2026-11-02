@@ -50,13 +50,14 @@ failure behavior below).
 
 The one way a reused cohort grows is `required_on_match`. Every catalog
 reviewer marked `required_on_match` whose globs match a current changed file
-runs, scoped to all of its matching files, exactly as a fresh selection would
-schedule it. A required reviewer the saved cohort lacks — because a later push
-touched files it must see, or because it joined the catalog after the first
-review — is appended to the cohort and persisted before reviewers start, so its
-provider session is recorded and resumed on later passes. A required reviewer
-already in the cohort has its assignment widened to every matching file rather
-than leaving new matches to whichever member rebasing reached first.
+runs with all of its matching files in its assignment, as a fresh selection
+would schedule it. A required reviewer the saved cohort lacks — because a later
+push touched files it must see, or because it joined the catalog after the
+first review — is appended to the cohort and persisted before reviewers start,
+so its provider session is recorded and resumed on later passes. A required
+reviewer already in the cohort keeps the files rebasing gave it and gains every
+matching file, rather than leaving new matches to whichever member rebasing
+reached first.
 
 `--rerun` changes local gate behavior only: it bypasses approval, override,
 resume, and marker gates to allocate a new review attempt. It does not select a
@@ -65,12 +66,15 @@ missing-conversation fallback.
 
 Reuse fails with `--fresh-session` guidance when a cohort member is missing or
 runtime-incompatible, `--max-agents` is smaller than the saved cohort plus any
-required reviewers joining it, or a changed file is coverable by a current
+required reviewers joining it, joining required reviewers would change the
+saved members' fast-mode setting, or a changed file is coverable by a current
 catalog agent (broad with no file globs or matching a file glob) but neither a
-saved cohort member nor a joining required reviewer can take it. If no current
-catalog agent can cover a changed file, reuse leaves it unassigned and the
-downstream coverage gate reports `incomplete_unassigned` without forcing a
-fresh session.
+saved cohort member nor a joining required reviewer takes it. The coverage
+check runs on the final reused selection, after required reviewers join.
+Generated lockfiles are exempt from it, as they are from reviewer coverage. If
+no current catalog agent can cover a changed file, reuse leaves it unassigned
+and the downstream coverage gate reports `incomplete_unassigned` without
+forcing a fresh session.
 
 ## `--fresh-session`
 

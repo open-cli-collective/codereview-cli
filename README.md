@@ -493,7 +493,7 @@ smaller than the combined set of applicable repo-local and matching
 `required_on_match` reviewers fails rather than dropping reviewers. The
 guarantee holds on follow-up reviews that reuse the PR's saved reviewer cohort:
 a matching required reviewer the cohort lacks joins it, and a required member
-reviews every matching file.
+gains every matching file.
 
 Legacy agent files that use `model: sonnet` or another provider-specific
 `model` value must be updated. Replace portable intent with `model_tier`
