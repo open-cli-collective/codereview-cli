@@ -1157,23 +1157,28 @@ function runTool(tool, params, signal) {
     const append = (current, chunk, limit) => Buffer.concat([current, chunk]).subarray(0, limit);
     child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk, transportLimit); });
     child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk, maxOutputBytes); });
-    const kill = () => {
+    let killReason = "";
+    const kill = (reason) => {
+      killReason ||= reason;
       try {
         child.kill("SIGKILL");
       } catch {}
     };
-    const timer = setTimeout(kill, timeoutMs);
-    signal?.addEventListener("abort", kill, { once: true });
+    const onAbort = () => kill("Tool request aborted");
+    const timer = setTimeout(() => kill("Tool request timed out"), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (error) => {
       clearTimeout(timer);
       resolve({ content: [{ type: "text", text: String(error) }], details: {}, isError: true });
     });
-    child.on("close", (code) => {
+    child.on("close", (code, exitSignal) => {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", kill);
-      const text = code === 0 ? stdout.toString("utf8") : (stderr.toString("utf8") || ("tool exited " + code));
+      signal?.removeEventListener("abort", onAbort);
+      const text = code === 0 ? stdout.toString("utf8") : (killReason || stderr.toString("utf8") || ("tool exited " + (code ?? exitSignal)));
       resolve({ content: [{ type: "text", text }], details: {}, isError: code !== 0 });
     });
+    // A child that dies before draining stdin raises EPIPE here; close reports it.
+    child.stdin.on("error", () => {});
     child.stdin.end(JSON.stringify({ ...params, tool }));
   });
 }
@@ -1187,7 +1192,7 @@ async function readImage(id, params, signal, ctx) {
   const timer = setTimeout(() => { timedOut = true; abort(); }, timeoutMs);
   try {
     const response = await runTool("cr_read", params, controller.signal);
-    if (response.isError) return response;
+    if (response.isError && !timedOut) return response;
     if (controller.signal.aborted) throw new Error("Image read aborted");
     const source = JSON.parse(response.content[0].text);
     const bytes = Buffer.from(source.data, "base64");

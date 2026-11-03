@@ -30,7 +30,7 @@ func TestPiRPCReviewerExtensionRejectsInvalidImageTransport(t *testing.T) {
 	}
 	runnerPath := filepath.Join(dir, "runner.mjs")
 	runner := `import extension from ` + strconv.Quote(extensionPath) + `;
-const tools={}; extension({registerTool(tool){tools[tool.name]=tool;}});
+` + piRPCTestFrozenClock + `const tools={}; extension({registerTool(tool){tools[tool.name]=tool;}});
 const read=(params)=>tools.cr_read.execute("read",params,new AbortController().signal);
 const denied=await read({path:"image.png",view:"image"});
 await tools.cr_diff.execute("diff",{},new AbortController().signal);
@@ -192,46 +192,139 @@ func extensionWithoutPiSDK(extension string) string {
 	return strings.Replace(extension, `import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";`, `const createReadToolDefinition = () => { throw new Error("unexpected image decode in transport-only test"); };`, 1)
 }
 
+const (
+	piRPCTestImageHelper = `#!/usr/bin/env node
+let input=""; for await (const c of process.stdin) input+=c;
+const request=JSON.parse(input);
+process.stdout.write(request.tool==="cr_diff"?"diff":JSON.stringify({data:"AQ==",mimeType:"image/png",width:1,height:1,source_sha256:"a".repeat(64)}));
+`
+	piRPCTestHungHelper = "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n"
+
+	// A helper is a Node process, so a real deadline can expire before it answers
+	// on a loaded machine. Holding the extension's timers lets a case that is not
+	// about that deadline finish regardless of load, and expire it only on demand.
+	piRPCTestFrozenClock = `const armed=new Set();
+globalThis.setTimeout=(fn)=>{armed.add(fn);return fn;};
+globalThis.clearTimeout=(fn)=>{armed.delete(fn);};
+globalThis.expireToolDeadlines=()=>{for(const fn of [...armed]) fn();};
+`
+)
+
+// runPiRPCExtensionScript loads the generated extension in plain Node with the
+// given helper and reader, then runs script with the registered tools in scope.
+func runPiRPCExtensionScript(t *testing.T, nodePath, helper, reader string, timeout time.Duration, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	helperPath := filepath.Join(dir, "helper.mjs")
+	if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
+		t.Fatal(err)
+	} // #nosec G306,G703 -- executable fixture under t.TempDir.
+	extension := piRPCReviewerExtension(helperPath, "config.json", dir, 1024, timeout, "")
+	extension = strings.Replace(extension, `import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";`, reader, 1)
+	extensionPath := filepath.Join(dir, "extension.mjs")
+	if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := `import extension from ` + strconv.Quote(extensionPath) + `;
+const tools={}; extension({registerTool(t){tools[t.name]=t;}});
+` + script
+	runnerPath := filepath.Join(dir, "runner.mjs")
+	if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(nodePath, runnerPath) // #nosec G204 -- discovered Node and test-owned script.
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("node: %v: %s", err, out)
+	}
+}
+
 func TestPiRPCReviewerImageProcessingBounds(t *testing.T) {
 	nodePath, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("Node is not installed")
 	}
-	for _, test := range []struct{ name, reader, want string }{
-		{"output", `const createReadToolDefinition = () => ({execute:async()=>({content:[{type:"image",mimeType:"image/png",data:"x".repeat(4096)}]})});`, "output budget"},
-		{"deadline", `const createReadToolDefinition = () => ({execute:(_id,_params,signal)=>new Promise((_resolve,reject)=>signal.addEventListener("abort",()=>reject(new Error("aborted")),{once:true}))});`, "timed out"},
+	for _, test := range []struct {
+		name, helper, reader, clock, want string
+		timeout                           time.Duration
+	}{
+		{
+			name:    "output",
+			helper:  piRPCTestImageHelper,
+			reader:  `const createReadToolDefinition = () => ({execute:async()=>({content:[{type:"image",mimeType:"image/png",data:"x".repeat(4096)}]})});`,
+			clock:   piRPCTestFrozenClock,
+			timeout: piRPCReviewerToolTimeout,
+			want:    "output budget",
+		},
+		{
+			name:    "deadline",
+			helper:  piRPCTestImageHelper,
+			reader:  `const createReadToolDefinition = () => ({execute:(_id,_params,signal)=>new Promise((_resolve,reject)=>{signal.addEventListener("abort",()=>reject(new Error("aborted")),{once:true});expireToolDeadlines();})});`,
+			clock:   piRPCTestFrozenClock,
+			timeout: piRPCReviewerToolTimeout,
+			want:    "Image read timed out",
+		},
+		{
+			// The real timer kills the helper whichever stage it has reached, so
+			// this outcome does not depend on how fast Node starts.
+			name:    "helper deadline",
+			helper:  piRPCTestHungHelper,
+			reader:  `const createReadToolDefinition = () => { throw new Error("unexpected image decode"); };`,
+			timeout: 200 * time.Millisecond,
+			want:    "Image read timed out",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			dir := t.TempDir()
-			helperPath := filepath.Join(dir, "helper.mjs")
-			helper := `#!/usr/bin/env node
-let input=""; for await (const c of process.stdin) input+=c;
-const request=JSON.parse(input);
-process.stdout.write(request.tool==="cr_diff"?"diff":JSON.stringify({data:"AQ==",mimeType:"image/png",width:1,height:1,source_sha256:"a".repeat(64)}));
-`
-			if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
-				t.Fatal(err)
-			} // #nosec G306,G703 -- executable fixture under t.TempDir.
-			extension := piRPCReviewerExtension(helperPath, "config.json", dir, 1024, 500*time.Millisecond, "")
-			extension = strings.Replace(extension, `import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";`, test.reader, 1)
-			extensionPath := filepath.Join(dir, "extension.mjs")
-			if err := os.WriteFile(extensionPath, []byte(extension), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			runner := `import extension from ` + strconv.Quote(extensionPath) + `;
-const tools={}; extension({registerTool(t){tools[t.name]=t;}});
-await tools.cr_diff.execute("diff",{},new AbortController().signal);
+			runPiRPCExtensionScript(t, nodePath, test.helper, test.reader, test.timeout, test.clock+`await tools.cr_diff.execute("diff",{},new AbortController().signal);
 const result=await tools.cr_read.execute("image",{path:"image",view:"image"},new AbortController().signal);
-if(!result.isError || !result.content[0].text.includes(` + strconv.Quote(test.want) + `) || Buffer.byteLength(JSON.stringify(result))>1024) throw new Error(JSON.stringify(result));
+if(!result.isError || !result.content[0].text.includes(`+strconv.Quote(test.want)+`) || Buffer.byteLength(JSON.stringify(result))>1024) throw new Error(JSON.stringify(result));
+`)
+		})
+	}
+}
+
+func TestPiRPCReviewerToolReportsKilledHelper(t *testing.T) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node is not installed")
+	}
+	const reader = `const createReadToolDefinition = () => { throw new Error("unexpected image decode"); };`
+	assertDiffError := func(want string) string {
+		return `if(!result.isError || result.content[0].text!==` + strconv.Quote(want) + `) throw new Error(JSON.stringify(result));
 `
-			runnerPath := filepath.Join(dir, "runner.mjs")
-			if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command(nodePath, runnerPath) // #nosec G204 -- discovered Node and test-owned script.
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("node: %v: %s", err, out)
-			}
+	}
+	for _, test := range []struct {
+		name, helper, script string
+		timeout              time.Duration
+	}{
+		{
+			name:    "deadline",
+			helper:  piRPCTestHungHelper,
+			timeout: 200 * time.Millisecond,
+			script:  `const result=await tools.cr_diff.execute("diff",{},new AbortController().signal);` + assertDiffError("Tool request timed out"),
+		},
+		{
+			name:    "abort",
+			helper:  piRPCTestHungHelper,
+			timeout: piRPCReviewerToolTimeout,
+			script:  `const controller=new AbortController(); const pending=tools.cr_diff.execute("diff",{},controller.signal); controller.abort(); const result=await pending;` + assertDiffError("Tool request aborted"),
+		},
+		{
+			name:    "external signal",
+			helper:  "#!/usr/bin/env node\nprocess.kill(process.pid, 'SIGTERM');\nsetInterval(() => {}, 1000);\n",
+			timeout: piRPCReviewerToolTimeout,
+			script:  `const result=await tools.cr_diff.execute("diff",{},new AbortController().signal);` + assertDiffError("tool exited SIGTERM"),
+		},
+		{
+			// The request is larger than a pipe buffer, so the write is still
+			// pending when the helper dies and fails with EPIPE.
+			name:    "unread request",
+			helper:  piRPCTestHungHelper,
+			timeout: 200 * time.Millisecond,
+			script:  `const result=await tools.cr_diff.execute("diff",{offset:0,padding:"x".repeat(4*1024*1024)},new AbortController().signal);` + assertDiffError("Tool request timed out"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runPiRPCExtensionScript(t, nodePath, test.helper, reader, test.timeout, test.script)
 		})
 	}
 }
