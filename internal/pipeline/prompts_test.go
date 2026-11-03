@@ -541,7 +541,7 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 		Status:         reviewerCoverageCompleteBroad,
 		Scope:          []string{"main.go"},
 		InspectedFiles: []string{"main.go"},
-	}})
+	}}, false)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
@@ -577,6 +577,38 @@ func TestRollupPromptPreservesLocationForDedupeWithoutRawAnchors(t *testing.T) {
 	}
 }
 
+// The model picks request_changes for a major finding unless the prompt states
+// the profile's policy, and the prompt fingerprint must separate the two.
+func TestRollupPromptStatesMajorEventPolicy(t *testing.T) {
+	findings := []review.Finding{{ID: "finding-1", Severity: review.SeverityMajor, FilePath: "main.go"}}
+	comment, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, nil, false)
+	if err != nil {
+		t.Fatalf("buildRollupPrompt comment policy: %v", err)
+	}
+	requestChanges, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, nil, true)
+	if err != nil {
+		t.Fatalf("buildRollupPrompt request_changes policy: %v", err)
+	}
+	if !strings.Contains(comment, "review_event must be comment when the highest kept severity is major") ||
+		!strings.Contains(comment, "review_policy.major_event is comment") {
+		t.Fatalf("comment policy prompt does not state the policy:\n%s", comment)
+	}
+	if !strings.Contains(requestChanges, "review_event should be request_changes when the highest kept severity is major") ||
+		!strings.Contains(requestChanges, "review_policy.major_event is request_changes") {
+		t.Fatalf("request_changes policy prompt does not state the policy:\n%s", requestChanges)
+	}
+	for name, prompt := range map[string]string{"comment": comment, "request_changes": requestChanges} {
+		for _, rule := range []string{
+			"review_event must be request_changes when any kept finding is blocking",
+			"never request_changes, when every kept finding is minor or nits",
+		} {
+			if !strings.Contains(prompt, rule) {
+				t.Fatalf("%s policy prompt omits %q:\n%s", name, rule, prompt)
+			}
+		}
+	}
+}
+
 func TestRollupPromptAndFingerprintChangeWhenReviewerCoverageChanges(t *testing.T) {
 	findings := largeRollupFindings(1, "main.go", "body")
 	baseCoverage := []reviewplan.ReviewerCoverageSummary{{
@@ -592,11 +624,11 @@ func TestRollupPromptAndFingerprintChangeWhenReviewerCoverageChanges(t *testing.
 		InspectedFiles: []string{"main.go"},
 		SkippedFiles:   []string{"main.go"},
 	}}
-	basePrompt, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, baseCoverage)
+	basePrompt, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, baseCoverage, false)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt base: %v", err)
 	}
-	skippedPrompt, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, skippedCoverage)
+	skippedPrompt, err := buildRollupPrompt(gitprovider.PR{}, findings, nil, skippedCoverage, false)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt skipped: %v", err)
 	}
@@ -620,7 +652,7 @@ func TestRollupPromptBudgetUsesSynthesisModel(t *testing.T) {
 	if rollupRuntime.model == req.SelectionModelOverride {
 		t.Fatalf("rollup model = %q, want synthesis model independent of selection override", rollupRuntime.model)
 	}
-	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil)
+	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil, false)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}
@@ -640,7 +672,7 @@ func TestRollupPromptBudgetIgnoresSelectionModelOverride(t *testing.T) {
 	if rollupRuntime.model == req.SelectionModelOverride {
 		t.Fatalf("rollup model = %q, want synthesis model independent of selection override", rollupRuntime.model)
 	}
-	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil)
+	prompt, err := buildRollupPrompt(provider.pr, largeRollupFindings(4, "main.go", strings.Repeat("body ", 4000)), nil, nil, false)
 	if err != nil {
 		t.Fatalf("buildRollupPrompt: %v", err)
 	}

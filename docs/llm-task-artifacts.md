@@ -155,12 +155,20 @@ their retry semantics, and new isolated thread tasks use the existing status
 contract.
 
 `failed_blocking` means the task prevents dependent phases from safely running.
-Selection and rollup failures are blocking. `reviewrun` is the sole owner of
-live planner-error outcomes: blocking LLM failures leave fresh and resumed runs
-`incomplete`; transient failures leave resumed runs `incomplete` but fail fresh
-runs; terminal failures fail either kind; cancellation leaves the current
-outcome untouched. The normal resume gate can therefore rerun only the failed
-task and downstream work after an interruption or durable blocking failure.
+Selection failures and rollup provider failures are blocking. `reviewrun` is the
+sole owner of live planner-error outcomes: blocking LLM failures leave fresh and
+resumed runs `incomplete`; transient failures leave resumed runs `incomplete` but
+fail fresh runs; terminal failures fail either kind; cancellation leaves the
+current outcome untouched. The normal resume gate can therefore rerun only the
+failed task and downstream work after an interruption or durable blocking
+failure.
+
+Rollup output that stays invalid after the correction retry does not stop the
+run, because reviewer findings must reach the pull request. The rollup task keeps
+`failed_blocking` status with both attempts recorded, and the plan uses a fallback
+rollup: every finding, most severe first, with no deduplication and a note in the
+posted review body. The event comes from finding severities and
+`review_policy.major_event`.
 
 Provider start/wait failures may have empty `attempts` because no structured
 output existed. When a provider session ID is known, retry should seed the next

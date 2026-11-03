@@ -681,7 +681,7 @@ Supported values:
 | `llm.model_map` keys | `small`, `medium`, `large` |
 | `llm_runtimes.<name>.max_effort` keys | `small`, `medium`, `large`; values `low`, `medium`, `high`, plus `xhigh` and `max` for `claude_cli`, `codex_cli`, `openai_api`, and `pi_rpc`. `anthropic_api` supports through `high`. Effective extended-effort support depends on the selected model and, for CLI adapters, the installed CLI. |
 | `llm.reviewer_model_tier` | `small`, `medium`, `large` |
-| `review_policy.major_event` | `comment`, `request_changes` |
+| `review_policy.major_event` | `comment`, `request_changes`. Sets the review event when the highest severity is major. Blocking findings always request changes, a major finding never approves, and the rollup model's proposed event cannot override either rule. Under `request_changes`, the rollup model may soften a major-only review to a comment. |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. Review-time pruning runs only when no other cr instance is mid-run (it requires the data-root active-runs lock exclusively) and is skipped, not queued, on contention. |
 | `data.keep_workbench` | `true` retains the run checkout under `workbench/` after a successful run. Failed and errored runs always retain it. |

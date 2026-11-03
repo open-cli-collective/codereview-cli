@@ -822,10 +822,10 @@ func selectionThreadStatus(thread threadcontext.Thread) string {
 	}
 }
 
-func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary, threadFailures ...[]reviewplan.ThreadAnalysisFailureSummary) (string, error) {
+func buildRollupPrompt(pr gitprovider.PR, findings []review.Finding, reviewerFailures []ReviewerFailure, reviewerCoverage []reviewplan.ReviewerCoverageSummary, majorRequestsChanges bool, threadFailures ...[]reviewplan.ThreadAnalysisFailureSummary) (string, error) {
 	payload := map[string]any{
 		"task":              "dedupe findings and return rollup JSON only",
-		"output_contract":   rollupOutputContract(findings),
+		"output_contract":   rollupOutputContract(findings, majorRequestsChanges),
 		"schema":            "rollup",
 		"pr":                promptPRFromPR(pr),
 		"findings":          rollupFindingsPrompt(findings),
@@ -1128,10 +1128,14 @@ func findingsOutputContractWithRelocations(agentID string, changedFiles []string
 	return contract
 }
 
-func rollupOutputContract(findings []review.Finding) outputContract {
+func rollupOutputContract(findings []review.Finding, majorRequestsChanges bool) outputContract {
 	findingIDs := make([]string, 0, len(findings))
 	for _, finding := range findings {
 		findingIDs = append(findingIDs, finding.ID.String())
+	}
+	majorEvent := "review_event must be comment when the highest kept severity is major, because this profile's review_policy.major_event is comment."
+	if majorRequestsChanges {
+		majorEvent = "review_event should be request_changes when the highest kept severity is major, because this profile's review_policy.major_event is request_changes; comment is also accepted."
 	}
 	return outputContract{
 		Instructions: []string{
@@ -1143,6 +1147,9 @@ func rollupOutputContract(findings []review.Finding) outputContract {
 			"dedupe_log kept and dropped values must contain finding ID strings only, never finding objects.",
 			"Use finding location only to distinguish findings during dedupe; do not include finding fields such as severity, file_path, location, body, anchor, or finding_id in the response.",
 			"dedupe_log must be an empty array when no findings are duplicates.",
+			"review_event must be request_changes when any kept finding is blocking.",
+			majorEvent,
+			"review_event must be approve or comment, never request_changes, when every kept finding is minor or nits or no findings remain.",
 			llm.SensitiveValueRule,
 		},
 		ResponseSchema: map[string]any{

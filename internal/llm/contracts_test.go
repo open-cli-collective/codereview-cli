@@ -436,11 +436,47 @@ func TestDecodeRollup(t *testing.T) {
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","ordered_findings":["missing","f-1","f-2","f-3"]}`, "unknown ordered finding ID")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","ordered_findings":["f-1","f-1","f-2","f-3"]}`, "appears more than once")
 	assertRollupError(t, known, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","ordered_findings":["f-1","f-2"]}`, "does not cover")
-	assertRollupError(t, known, `{"schema_version":1,"review_event":"approve","review_event_rationale":"x","ordered_findings":["f-1","f-2","f-3"]}`, "major findings cannot approve")
-	assertRollupError(t, map[review.FindingID]review.Severity{"f-1": review.SeverityBlocking}, `{"schema_version":1,"review_event":"comment","review_event_rationale":"x","ordered_findings":["f-1"]}`, "blocking")
-	assertRollupError(t, map[review.FindingID]review.Severity{"f-1": review.SeverityMinor}, `{"schema_version":1,"review_event":"request_changes","review_event_rationale":"x","ordered_findings":["f-1"]}`, "request_changes")
-	if _, err := DecodeRollup([]byte(`{"schema_version":1,"review_event":"request_changes","review_event_rationale":"x","ordered_findings":["f-1"]}`), RollupOptions{FindingSeverities: map[review.FindingID]review.Severity{"f-1": review.SeverityMajor}, MajorEventRequestsChanges: true}); err != nil {
-		t.Fatalf("DecodeRollup major request_changes with policy: %v", err)
+}
+
+// The model's event is a proposal that reviewplan resolves against the review
+// policy, so a proposal that conflicts with the policy must not fail decoding.
+func TestDecodeRollupAcceptsEventsThatConflictWithPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		severity review.Severity
+		event    string
+		want     review.ReviewEvent
+	}{
+		{"major request_changes", review.SeverityMajor, "request_changes", review.ReviewEventRequestChanges},
+		{"major approve", review.SeverityMajor, "approve", review.ReviewEventApprove},
+		{"blocking comment", review.SeverityBlocking, "comment", review.ReviewEventComment},
+		{"minor request_changes", review.SeverityMinor, "request_changes", review.ReviewEventRequestChanges},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeRollup([]byte(`{"schema_version":1,"review_event":"`+tc.event+`","review_event_rationale":"x","ordered_findings":["f-1"]}`), RollupOptions{
+				FindingSeverities: map[review.FindingID]review.Severity{"f-1": tc.severity},
+			})
+			if err != nil {
+				t.Fatalf("DecodeRollup: %v", err)
+			}
+			if got.ReviewEvent != tc.want {
+				t.Fatalf("ReviewEvent = %q, want %q", got.ReviewEvent, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeRollupSchemaVersion(t *testing.T) {
+	known := map[review.FindingID]review.Severity{"f-1": review.SeverityMajor}
+	const fields = `"review_event":"comment","review_event_rationale":"x","ordered_findings":["f-1"]`
+
+	if _, err := DecodeRollup([]byte(`{`+fields+`}`), RollupOptions{FindingSeverities: known}); err != nil {
+		t.Fatalf("DecodeRollup with absent schema_version: %v", err)
+	}
+	for _, version := range []string{"0", "2"} {
+		t.Run("rejects "+version, func(t *testing.T) {
+			assertRollupError(t, known, `{"schema_version":`+version+`,`+fields+`}`, "unsupported rollup schema_version "+version)
+		})
 	}
 }
 

@@ -16,11 +16,11 @@ import (
 
 func TestThreadAnalysisFailuresChangeSynthesisFingerprint(t *testing.T) {
 	pr := gitprovider.PR{Title: "fixture"}
-	base, err := buildRollupPrompt(pr, nil, nil, nil)
+	base, err := buildRollupPrompt(pr, nil, nil, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	empty, err := buildRollupPrompt(pr, nil, nil, nil, nil)
+	empty, err := buildRollupPrompt(pr, nil, nil, nil, false, nil)
 	if err != nil || empty != base || strings.Contains(base, "thread_analysis_failures") {
 		t.Fatalf("no-failure prompt changed: base=%s empty=%s err=%v", base, empty, err)
 	}
@@ -33,7 +33,7 @@ func TestThreadAnalysisFailuresChangeSynthesisFingerprint(t *testing.T) {
 		{ThreadID: "thread-2", Error: "structured output remained invalid after retry"},
 		{ThreadID: "thread-1", Error: "provider execution failed; see local task artifacts for details"},
 	} {
-		prompt, err := buildRollupPrompt(pr, nil, nil, nil, []reviewplan.ThreadAnalysisFailureSummary{failure})
+		prompt, err := buildRollupPrompt(pr, nil, nil, nil, false, []reviewplan.ThreadAnalysisFailureSummary{failure})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func TestThreadFailureSynthesisPromptBoundsExamplesAndBindsOmittedEvidence(t *te
 		failures[i] = reviewplan.ThreadAnalysisFailureSummary{ThreadID: fmt.Sprintf("thread-%04d", i), Error: strings.Repeat("界", 800)}
 	}
 	original := append([]reviewplan.ThreadAnalysisFailureSummary(nil), failures...)
-	prompt, err := buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, failures)
+	prompt, err := buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, false, failures)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestThreadFailureSynthesisPromptBoundsExamplesAndBindsOmittedEvidence(t *te
 	}
 	changed := append([]reviewplan.ThreadAnalysisFailureSummary(nil), failures...)
 	changed[5].ThreadID = "zz-omitted-thread-changed"
-	changedPrompt, err := buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, changed)
+	changedPrompt, err := buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, false, changed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestThreadFailureSynthesisPromptBoundsExamplesAndBindsOmittedEvidence(t *te
 	}
 	changed = append([]reviewplan.ThreadAnalysisFailureSummary(nil), failures...)
 	changed[5].Error = "provider execution failed; see local task artifacts for details"
-	changedPrompt, err = buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, changed)
+	changedPrompt, err = buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, false, changed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestThreadFailureSynthesisPromptBoundsExamplesAndBindsOmittedEvidence(t *te
 	for i, j := 0, len(reordered)-1; i < j; i, j = i+1, j-1 {
 		reordered[i], reordered[j] = reordered[j], reordered[i]
 	}
-	reorderedPrompt, err := buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, reordered)
+	reorderedPrompt, err := buildRollupPrompt(gitprovider.PR{}, nil, nil, nil, false, reordered)
 	if err != nil || reorderedPrompt != prompt {
 		t.Fatalf("failure evidence digest is not deterministic across order, err=%v", err)
 	}

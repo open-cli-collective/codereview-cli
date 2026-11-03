@@ -32,6 +32,7 @@ func TestReviewerCoverageDiagnosticsBoundLargeCollections(t *testing.T) {
 	original := cloneReviewerCoverage(coverage)
 
 	req := summaryRequest()
+	req.EventOptions.MajorEventRequestsChanges = true
 	req.RunSummary.ReviewerCoverage = coverage
 	plan, err := Build(req)
 	if err != nil {

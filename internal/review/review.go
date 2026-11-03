@@ -374,11 +374,16 @@ type DedupeEntry struct {
 }
 
 // Rollup is the provider-neutral review rollup selected by the orchestrator.
+// ReviewEvent is the orchestrator's proposal; reviewplan decides the posted
+// event from finding severities and the review policy.
 type Rollup struct {
 	ReviewEvent          ReviewEvent   `json:"review_event"`
 	ReviewEventRationale string        `json:"review_event_rationale"`
 	DedupeLog            []DedupeEntry `json:"dedupe_log"`
 	OrderedFindings      []FindingID   `json:"ordered_findings"`
+	// Fallback marks a rollup built without valid orchestrator output: every
+	// finding is kept, with no deduplication and no proposed event.
+	Fallback bool `json:"fallback,omitempty"`
 }
 
 func normalizeLower(value string) string {
