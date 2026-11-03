@@ -12,6 +12,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
@@ -30,30 +31,63 @@ func (c *Client) doREST(ctx context.Context, op gitprovider.Operation, method, e
 	return c.doRESTWithToken(ctx, op, method, endpoint, token, accept, out)
 }
 
+// defaultReadRetryDelays spaces the retries of a GET that failed with a
+// retryable upstream error. GitHub answers an occasional read with a 5xx that
+// the same request succeeds on moments later, and a review makes many reads,
+// so without a retry one transient failure aborts the whole run.
+var defaultReadRetryDelays = []time.Duration{time.Second, 2 * time.Second}
+
 func (c *Client) doRESTWithToken(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, error) {
+	delays := c.readRetryDelays
+	if delays == nil {
+		delays = defaultReadRetryDelays
+	}
+	for attempt := 0; ; attempt++ {
+		body, header, status, err := c.doRESTOnce(ctx, op, method, endpoint, token, accept, out)
+		if err == nil || method != http.MethodGet || attempt >= len(delays) || !isTransientReadFailure(err, status) {
+			return body, header, err
+		}
+		timer := time.NewTimer(delays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return body, header, err
+		case <-timer.C:
+		}
+	}
+}
+
+// isTransientReadFailure reports whether a read is worth repeating. A 429 is
+// retryable for the caller but not within seconds, since GitHub's rate-limit
+// window is longer than the retry delays.
+func isTransientReadFailure(err error, status int) bool {
+	return errors.Is(err, gitprovider.ErrRetryable) && status != http.StatusTooManyRequests
+}
+
+func (c *Client) doRESTOnce(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, int, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	setHeaders(req, token, accept)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, nil, mapTransportError(op, err)
+		return nil, nil, 0, mapTransportError(op, err)
 	}
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return nil, nil, gitprovider.WrapError(gitprovider.ErrRetryable, op, readErr)
+		return nil, nil, resp.StatusCode, gitprovider.WrapError(gitprovider.ErrRetryable, op, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, resp.Header, mapHTTPStatus(op, resp.StatusCode, body)
+		return nil, resp.Header, resp.StatusCode, mapHTTPStatus(op, resp.StatusCode, body)
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
-			return nil, resp.Header, fmt.Errorf("%w: decode GitHub response: %w", ErrValidation, err)
+			return nil, resp.Header, resp.StatusCode, fmt.Errorf("%w: decode GitHub response: %w", ErrValidation, err)
 		}
 	}
-	return body, resp.Header, nil
+	return body, resp.Header, resp.StatusCode, nil
 }
 
 func (c *Client) doRESTJSON(ctx context.Context, op gitprovider.Operation, method, endpoint string, in any, out any) error {

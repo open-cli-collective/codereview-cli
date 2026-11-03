@@ -56,9 +56,11 @@ type Client struct {
 	host       string
 	token      string
 	httpClient *http.Client
-	baseURL    *url.URL
-	graphQLURL *url.URL
-	appAuth    *githubAppAuth
+	// readRetryDelays overrides defaultReadRetryDelays; tests shorten it.
+	readRetryDelays []time.Duration
+	baseURL         *url.URL
+	graphQLURL      *url.URL
+	appAuth         *githubAppAuth
 }
 
 // NewFromGitConfig builds a GitHub client and credential from config plus a token store.
