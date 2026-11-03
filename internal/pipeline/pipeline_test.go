@@ -697,8 +697,7 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 	reviewer := fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4)
 	reviewer.Response.ReviewerToolEvidence = &llm.ReviewerToolEvidence{DiffStatus: llm.DiffToolStatusIncomplete}
 	firstAdapter.Queue(reviewer)
-	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
-	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+	firstAdapter.Queue(llm.FakeResult{SessionID: "rollup-retry-session", WaitErr: errors.New("rollup provider failed")})
 	_, err := dryRunForTest(ctx, Options{
 		Provider:        provider,
 		Adapter:         firstAdapter,
@@ -711,8 +710,8 @@ func TestReviewPipelineAcceptanceHarnessResumesFailedDurableTask(t *testing.T) {
 		NewActionID:     actionSequence(),
 		MaxConcurrency:  1,
 	}, req)
-	if err == nil || !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
-		t.Fatalf("first DryRun error = %v, want invalid rollup after retry", err)
+	if err == nil || !errors.Is(err, errLLMTaskFailedBlocking) {
+		t.Fatalf("first DryRun error = %v, want blocking rollup failure", err)
 	}
 	stored, err := store.GetRun(ctx, run.RunID)
 	if err != nil {
@@ -3352,8 +3351,7 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 	firstAdapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
 	firstAdapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
 	firstAdapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
-	firstAdapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
-	firstAdapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+	firstAdapter.Queue(llm.FakeResult{SessionID: "rollup-retry-session", WaitErr: errors.New("rollup provider failed")})
 	findingID := func() (review.FindingID, error) { return review.FindingID("finding-1"), nil }
 
 	_, err := liveForTest(ctx, Options{
@@ -3368,8 +3366,8 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 		NewActionID:     actionSequence(),
 		MaxConcurrency:  1,
 	}, req, run)
-	if err == nil || !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
-		t.Fatalf("first Live error = %v, want invalid rollup after retry", err)
+	if err == nil || !errors.Is(err, errLLMTaskFailedBlocking) {
+		t.Fatalf("first Live error = %v, want blocking rollup failure", err)
 	}
 	stored, err := store.GetRun(ctx, run.RunID)
 	if err != nil {
@@ -3423,6 +3421,140 @@ func TestLiveResumeCompletedSelectionAndReviewersRerunsOnlyRollup(t *testing.T) 
 	}
 	if len(result.PlannedActions) == 0 {
 		t.Fatal("planned actions len = 0, want resumed pipeline to synthesize actions")
+	}
+}
+
+// A rollup that omits schema_version and proposes request_changes for a major
+// finding under major_event: comment failed the whole run before this test
+// existed: the first attempt reported only the missing version, and the retry,
+// the last attempt, then hit the event conflict. Nothing was posted.
+func TestLiveMajorFindingUnderCommentPolicyPostsCommentForConflictingRollup(t *testing.T) {
+	ctx := context.Background()
+	store := openPipelineStore(t)
+	defer closeStore(t, store)
+	provider, req := dryRunHarness(t)
+	req.MajorRequestChanges = false
+	run := allocateLiveRun(t, store, provider, req, "run-major-comment-policy")
+	adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+	adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+	adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", "major", 2, "Fix this"), 20, 4))
+	adapter.Queue(fakeLLMResult("rollup-session", `{"review_event":"request_changes","review_event_rationale":"major finding","dedupe_log":[],"ordered_findings":["finding-1"]}`, 30, 6))
+
+	result, err := liveForTest(ctx, Options{
+		Provider:        provider,
+		Adapter:         adapter,
+		Store:           store,
+		NamedSessions:   store,
+		Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+		Now:             fixedNow,
+		NewSessionRowID: sequence("session"),
+		NewFindingID:    func() (review.FindingID, error) { return review.FindingID("finding-1"), nil },
+		NewActionID:     actionSequence(),
+		MaxConcurrency:  1,
+	}, req, run)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if calls := len(adapter.Requests()) + len(adapter.Resumes()); calls != 3 {
+		t.Fatalf("adapter calls = %d, want selection, reviewer and one rollup attempt", calls)
+	}
+	assertSubmittedReview(t, result, review.ReviewEventComment, "Fix this")
+	if strings.Contains(result.Plan.RollupMarkdown, rollupFallbackNoteMarker) {
+		t.Fatalf("valid rollup rendered the fallback note:\n%s", result.Plan.RollupMarkdown)
+	}
+}
+
+// Rollup output that stays invalid after the retry must not cost the run its
+// findings, and it must never turn a blocking or major finding into an approval.
+func TestLiveInvalidRollupAfterRetryStillPostsEveryFinding(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		severity       string
+		requestChanges bool
+		want           review.ReviewEvent
+	}{
+		{"major under comment policy", "major", false, review.ReviewEventComment},
+		{"major under request_changes policy", "major", true, review.ReviewEventRequestChanges},
+		{"blocking", "blocking", false, review.ReviewEventRequestChanges},
+		{"minor", "minor", false, review.ReviewEventApprove},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := openPipelineStore(t)
+			defer closeStore(t, store)
+			provider, req := dryRunHarness(t)
+			req.MajorRequestChanges = tc.requestChanges
+			run := allocateLiveRun(t, store, provider, req, "run-invalid-rollup")
+			adapter := &llm.FakeAdapter{NameValue: "fake-llm", SupportsResumeValue: true}
+			adapter.Queue(fakeLLMResult("selection-session", selectionJSON("harness:reviewer", "main.go"), 10, 2))
+			adapter.Queue(fakeLLMResult("reviewer-session", findingsJSON("harness:reviewer", "main.go", tc.severity, 2, "Fix this"), 20, 4))
+			adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+			adapter.Queue(fakeLLMResult("rollup-retry-session", rollupJSON("comment", []string{"missing-finding"}), 30, 6))
+			var warnings bytes.Buffer
+
+			result, err := liveForTest(ctx, Options{
+				Provider:        provider,
+				Adapter:         adapter,
+				Store:           store,
+				NamedSessions:   store,
+				Layout:          statepaths.NewLayout(t.TempDir(), t.TempDir()),
+				Now:             fixedNow,
+				NewSessionRowID: sequence("session"),
+				NewFindingID:    func() (review.FindingID, error) { return review.FindingID("finding-1"), nil },
+				NewActionID:     actionSequence(),
+				MaxConcurrency:  1,
+				Warnings:        &warnings,
+			}, req, run)
+			if err != nil {
+				t.Fatalf("Live: %v", err)
+			}
+			assertSubmittedReview(t, result, tc.want, "Fix this")
+			if !result.Rollup.Fallback || !strings.Contains(result.Plan.RollupMarkdown, rollupFallbackNoteMarker) {
+				t.Fatalf("rollup = %#v, body:\n%s\nwant the fallback rollup and its note", result.Rollup, result.Plan.RollupMarkdown)
+			}
+			if !strings.Contains(warnings.String(), "rollup output stayed invalid") {
+				t.Fatalf("warnings = %q, want the fallback warning", warnings.String())
+			}
+			meta, ok, err := llmlifecycle.ReadMetadata(lifecyclePaths(ArtifactPathsFromDir(run.ArtifactPath)), orchestratorRollupStage)
+			if err != nil || !ok || meta.Status != llmTaskStatusFailedBlocking || len(meta.Attempts) != 2 {
+				t.Fatalf("rollup metadata = %#v ok %v err %v, want the failed attempts kept for diagnosis", meta, ok, err)
+			}
+		})
+	}
+}
+
+func TestFallbackRollupKeepsEveryFindingMostSevereFirst(t *testing.T) {
+	got := fallbackRollup([]review.Finding{
+		{ID: "nit", Severity: review.SeverityNits},
+		{ID: "major-1", Severity: review.SeverityMajor},
+		{ID: "blocking", Severity: review.SeverityBlocking},
+		{ID: "minor", Severity: review.SeverityMinor},
+		{ID: "major-2", Severity: review.SeverityMajor},
+	})
+	want := []review.FindingID{"blocking", "major-1", "major-2", "minor", "nit"}
+	if !reflect.DeepEqual(got.OrderedFindings, want) || !got.Fallback || got.ReviewEvent != "" || len(got.DedupeLog) != 0 {
+		t.Fatalf("fallbackRollup = %#v, want ordered %v with no proposed event and no dedupe", got, want)
+	}
+}
+
+const rollupFallbackNoteMarker = "duplicate findings were not merged"
+
+func assertSubmittedReview(t *testing.T, result Result, wantEvent review.ReviewEvent, wantBody string) {
+	t.Helper()
+	var submit *reviewplan.SubmitReviewPayload
+	for _, action := range result.Plan.Actions {
+		if action.Kind == reviewplan.ActionKindSubmitReview {
+			submit = action.SubmitReview
+		}
+	}
+	if submit == nil {
+		t.Fatalf("plan actions = %#v, want a submit-review action", result.Plan.Actions)
+	}
+	if submit.Event != wantEvent {
+		t.Fatalf("submitted event = %q, want %q", submit.Event, wantEvent)
+	}
+	if !strings.Contains(submit.Body, wantBody) {
+		t.Fatalf("submitted body omits finding %q:\n%s", wantBody, submit.Body)
 	}
 }
 

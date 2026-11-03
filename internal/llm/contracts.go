@@ -132,8 +132,7 @@ type FindingsOptions struct {
 
 // RollupOptions contains context needed to validate rollup output.
 type RollupOptions struct {
-	FindingSeverities         map[review.FindingID]review.Severity
-	MajorEventRequestsChanges bool
+	FindingSeverities map[review.FindingID]review.Severity
 }
 
 type selectionWire struct {
@@ -184,7 +183,9 @@ type anchorWire struct {
 }
 
 type rollupWire struct {
-	SchemaVersion        int               `json:"schema_version"`
+	// SchemaVersion is a pointer because models omit it from otherwise valid
+	// rollups, and an absent version does not name a different schema.
+	SchemaVersion        *int              `json:"schema_version"`
 	ReviewEvent          string            `json:"review_event"`
 	ReviewEventRationale string            `json:"review_event_rationale"`
 	DedupeLog            []dedupeEntryWire `json:"dedupe_log"`
@@ -571,8 +572,8 @@ func DecodeRollup(data []byte, opts RollupOptions) (review.Rollup, error) {
 	if err := decodeStrict(data, &wire); err != nil {
 		return review.Rollup{}, err
 	}
-	if wire.SchemaVersion != SchemaVersion {
-		return review.Rollup{}, fmt.Errorf("llm: unsupported rollup schema_version %d", wire.SchemaVersion)
+	if wire.SchemaVersion != nil && *wire.SchemaVersion != SchemaVersion {
+		return review.Rollup{}, fmt.Errorf("llm: unsupported rollup schema_version %d", *wire.SchemaVersion)
 	}
 	event, err := review.ParseReviewEvent(wire.ReviewEvent)
 	if err != nil {
@@ -587,9 +588,6 @@ func DecodeRollup(data []byte, opts RollupOptions) (review.Rollup, error) {
 	}
 	ordered, err := decodeOrderedFindings(wire.OrderedFindings, opts.FindingSeverities, dropped)
 	if err != nil {
-		return review.Rollup{}, err
-	}
-	if err := validateReviewEvent(event, ordered, opts); err != nil {
 		return review.Rollup{}, err
 	}
 	return review.Rollup{
@@ -703,37 +701,6 @@ func decodeOrderedFindings(raw []string, known map[review.FindingID]review.Sever
 		}
 	}
 	return ordered, nil
-}
-
-func validateReviewEvent(event review.ReviewEvent, ordered []review.FindingID, opts RollupOptions) error {
-	var blocking, major int
-	for _, id := range ordered {
-		switch opts.FindingSeverities[id] {
-		case review.SeverityBlocking:
-			blocking++
-		case review.SeverityMajor:
-			major++
-		case review.SeverityMinor, review.SeverityNits:
-		default:
-			return fmt.Errorf("llm: invalid severity for ordered finding %q", id)
-		}
-	}
-	switch {
-	case blocking > 0:
-		if event != review.ReviewEventRequestChanges {
-			return fmt.Errorf("llm: blocking findings require request_changes")
-		}
-	case major > 0:
-		if event == review.ReviewEventApprove {
-			return fmt.Errorf("llm: major findings cannot approve")
-		}
-		if event == review.ReviewEventRequestChanges && !opts.MajorEventRequestsChanges {
-			return fmt.Errorf("llm: major findings cannot request_changes under current policy")
-		}
-	case event == review.ReviewEventRequestChanges:
-		return fmt.Errorf("llm: request_changes requires blocking findings or major policy")
-	}
-	return nil
 }
 
 func knownID(known map[review.FindingID]review.Severity, id review.FindingID) bool {

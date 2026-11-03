@@ -955,7 +955,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		return nil, false, Failure(FailureTerminal, err)
 	}
 	rollupModel, rollupEffort := rollupRuntimeConfig.model, rollupRuntimeConfig.effort
-	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, reviewerRun.findings, reviewerRun.failures, reviewerCoverage, threadFailureSummaries(threadFailures))
+	rollupPrompt, err := buildRollupPrompt(prepared.reviewPR, reviewerRun.findings, reviewerRun.failures, reviewerCoverage, req.MajorRequestChanges, threadFailureSummaries(threadFailures))
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
@@ -986,15 +986,18 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 		resumeSessionID:   namedSession.resumeID(),
 	}, func(data []byte) (review.Rollup, error) {
 		return llm.DecodeRollup(data, llm.RollupOptions{
-			FindingSeverities:         findingSeverities(reviewerRun.findings),
-			MajorEventRequestsChanges: req.MajorRequestChanges,
+			FindingSeverities: findingSeverities(reviewerRun.findings),
 		})
 	})
 	if checkpointErr := namedSession.checkpointSessionID(ctx, rollupSession, opts.now()); checkpointErr != nil {
 		return nil, false, checkpointErr
 	}
 	if err != nil {
-		return executionPhaseFailure(err)
+		if !errors.Is(err, ErrStructuredOutputInvalidAfterRetry) {
+			return executionPhaseFailure(err)
+		}
+		opts.emitWarning("rollup output stayed invalid after retry; posting every finding without deduplication")
+		rollup = fallbackRollup(reviewerRun.findings)
 	}
 	result.Rollup = rollup
 	result.Sessions = appendSessionIfPresent(result.Sessions, rollupLedgerSession)
@@ -1025,6 +1028,21 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	plan.Actions = preserveCheckpointActions(plan.Actions, checkpointActions)
 	result.Plan = plan
 	return reviewerRun.findingSessions, false, nil
+}
+
+// fallbackRollup keeps reviewer findings postable when the rollup model cannot
+// return valid output. Only deduplication is lost: the event never depended on
+// the model's choice beyond softening a major-only request_changes.
+func fallbackRollup(findings []review.Finding) review.Rollup {
+	ordered := make([]review.FindingID, 0, len(findings))
+	for _, severity := range review.SeverityOrder() {
+		for _, finding := range findings {
+			if finding.Severity == severity {
+				ordered = append(ordered, finding.ID)
+			}
+		}
+	}
+	return review.Rollup{Fallback: true, OrderedFindings: ordered}
 }
 
 func executionPhaseFailure(err error) (map[review.FindingID]string, bool, error) {

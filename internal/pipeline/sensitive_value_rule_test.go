@@ -30,7 +30,7 @@ func TestOutputContractsCarrySensitiveValueRule(t *testing.T) {
 		{name: "selection with max agents", contract: selectionOutputContract(nil, []string{"main.go"}, nil, 2)},
 		{name: "findings", contract: findingsOutputContract("agent-1", []string{"main.go"})},
 		{name: "findings with relocations", contract: findingsOutputContractWithRelocations("agent-1", []string{"main.go"}, relocated)},
-		{name: "rollup", contract: rollupOutputContract([]review.Finding{{ID: "finding-1"}})},
+		{name: "rollup", contract: rollupOutputContract([]review.Finding{{ID: "finding-1"}}, false)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

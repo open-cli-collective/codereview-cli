@@ -350,22 +350,27 @@ func ReviewEventForFindings(findings []review.Finding, opts EventOptions) review
 	}
 }
 
-// effectiveReviewEvent resolves the posted review event. It begins with the
-// rollup model's chosen event (or the severity-derived default when the model
-// did not specify one), then clamps it so a review whose findings are all
-// minor/nit — nothing blocking or major — always approves. Non-blocking,
-// non-major findings are suggestions and must never gate approval, regardless
-// of what the rollup model proposed. Blocking/major findings still govern as
-// before (the model's choice, or the severity default, stands).
+// effectiveReviewEvent resolves the posted review event from finding severities
+// and the review policy. The rollup model proposes an event, but the proposal
+// can only soften a major-only request_changes to a comment. It cannot approve
+// over a blocking or major finding, cannot request changes against the policy,
+// and cannot withhold approval from minor and nit findings, which are
+// suggestions rather than gates.
 func effectiveReviewEvent(rollupEvent review.ReviewEvent, findings []review.Finding, opts EventOptions) review.ReviewEvent {
-	severityEvent := ReviewEventForFindings(findings, opts)
-	if severityEvent == review.ReviewEventApprove {
-		return review.ReviewEventApprove
+	event := ReviewEventForFindings(findings, opts)
+	if event == review.ReviewEventRequestChanges && rollupEvent == review.ReviewEventComment && !hasBlockingFinding(findings) {
+		return review.ReviewEventComment
 	}
-	if rollupEvent == "" {
-		return severityEvent
+	return event
+}
+
+func hasBlockingFinding(findings []review.Finding) bool {
+	for _, finding := range findings {
+		if finding.Severity == review.SeverityBlocking {
+			return true
+		}
 	}
-	return rollupEvent
+	return false
 }
 
 func applySelfApprovalPolicy(event review.ReviewEvent, opts EventOptions) review.ReviewEvent {
@@ -478,10 +483,10 @@ func (b *builder) buildReview() (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	event := effectiveReviewEvent(b.req.Rollup.ReviewEvent, ordered, b.req.EventOptions)
-	if !event.Valid() {
-		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", event)
+	if proposed := b.req.Rollup.ReviewEvent; proposed != "" && !proposed.Valid() {
+		return Plan{}, fmt.Errorf("reviewplan: invalid rollup review event %q", proposed)
 	}
+	event := effectiveReviewEvent(b.req.Rollup.ReviewEvent, ordered, b.req.EventOptions)
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
 	approvalWithheld := false
 	if event == review.ReviewEventApprove && (len(b.req.RunSummary.ReviewerFailures) > 0 || len(b.req.RunSummary.ThreadAnalysisFailures) > 0 || hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)) {
@@ -1018,6 +1023,10 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 	}
 	writeThreadAnalysisDiagnostics(&out, summary.Run.ThreadAnalysisFailures)
 	writeThreadCountsLine(&out, summary.Threads)
+	if b.req.Rollup.Fallback {
+		out.WriteString("\n---\n\n")
+		out.WriteString("> Note: The rollup step did not return valid output, so duplicate findings were not merged. The review event comes from finding severities and the review policy.\n")
+	}
 	if b.req.AgentDefinitionsChanged {
 		out.WriteString("\n---\n\n")
 		out.WriteString("> Note: This PR modifies reviewer definitions under `.codereview/agents/`. The review was conducted using base-branch versions; changes will affect future reviews after merge.\n")
