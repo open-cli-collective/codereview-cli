@@ -459,6 +459,7 @@ func promptForInput(input analysisInput) (string, error) {
 		"Use acknowledge or concede when replying to a human and optionally resolving with a durable summary.",
 		"Use clarify when a human-facing question is needed and do not resolve.",
 		"Use summarize only when no reply is needed and the thread should be resolved with a durable summary.",
+		llm.SensitiveValueRule,
 		"Thread context JSON:",
 		string(contextJSON),
 	}, "\n\n")

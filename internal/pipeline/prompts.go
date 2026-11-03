@@ -1000,6 +1000,7 @@ func selectionOutputContract(candidates []agents.Agent, changedFiles []string, t
 	}
 	instructions = append(instructions,
 		"thread_actions must always be an empty array. Thread lifecycle replies and resolution are handled by the thread_analysis stage.",
+		llm.SensitiveValueRule,
 	)
 	example := map[string]any{
 		"schema_version":  1,
@@ -1062,6 +1063,7 @@ func findingsOutputContractWithRelocations(agentID string, changedFiles []string
 			"For a finding file_path, use the literal path value from a manifest path cell in assignment.scope_indices or from an exact cell in extra_citation_refs; do not cite other out-of-scope rows.",
 			"inspected_files and skipped_files must use only literal manifest path values from assignment.scope_indices.",
 			"Do not provide finding_id; the harness assigns IDs.",
+			llm.SensitiveValueRule,
 		},
 		ResponseSchema: map[string]any{
 			"schema_version":  "number, required, must be 1",
@@ -1141,6 +1143,7 @@ func rollupOutputContract(findings []review.Finding) outputContract {
 			"dedupe_log kept and dropped values must contain finding ID strings only, never finding objects.",
 			"Use finding location only to distinguish findings during dedupe; do not include finding fields such as severity, file_path, location, body, anchor, or finding_id in the response.",
 			"dedupe_log must be an empty array when no findings are duplicates.",
+			llm.SensitiveValueRule,
 		},
 		ResponseSchema: map[string]any{
 			"schema_version":         "number, required, must be 1",

@@ -486,6 +486,13 @@ preset; configured model mappings and exact model IDs use agent effort.
 agent should be chosen for a change. Reviewer execution instructions belong in
 `prompt.md` and are not sent to the selector.
 
+cr wraps every agent prompt in its own output contract. One rule in it forbids
+quoting a suspected credential, secret, or personal or financial value from the
+change in any posted text. Findings name the kind of value and its location
+instead, masked to at most its last 2 characters ("account number ending
+..21"). Agent prompts do not need to repeat the rule; see
+[Sensitive Values In Model-Written Text](docs/checkout-native-review-contract.md#sensitive-values-in-model-written-text).
+
 Set `required_on_match: true` when an agent must run whenever `file_globs`
 matches a changed file. This applies to profile, repo, and `--agents-dir`
 sources; invalid globs fail catalog loading, and an explicit `--max-agents`

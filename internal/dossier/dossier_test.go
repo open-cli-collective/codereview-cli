@@ -718,6 +718,29 @@ func TestPrepareDossierArtifactsRendersInlineThreadOmittedCounts(t *testing.T) {
 	assertFileContains(t, discussionPath, "Additional inline threads omitted: 1")
 }
 
+// Discussion summaries feed reviewer prompts and can quote a value a comment
+// leaked, so the summarizer is held to the same rule as posted text.
+func TestDossierDiscussionSummaryPromptCarriesSensitiveValueRule(t *testing.T) {
+	prompt, err := buildDossierDiscussionSummaryPrompt(dossierDiscussionPromptData{SourceFingerprint: "fingerprint"})
+	if err != nil {
+		t.Fatalf("buildDossierDiscussionSummaryPrompt: %v", err)
+	}
+	var payload struct {
+		OutputContract struct {
+			Rules []string `json:"rules"`
+		} `json:"output_contract"`
+	}
+	if err := json.Unmarshal([]byte(prompt), &payload); err != nil {
+		t.Fatalf("decode prompt: %v", err)
+	}
+	for _, rule := range payload.OutputContract.Rules {
+		if rule == llm.SensitiveValueRule {
+			return
+		}
+	}
+	t.Fatalf("discussion summary rules = %q, want the sensitive value rule", payload.OutputContract.Rules)
+}
+
 func TestPrepareDossierArtifactsSummaryPromptCarriesSplitDiscussionShape(t *testing.T) {
 	ctx := context.Background()
 	store := openPipelineStore(t)

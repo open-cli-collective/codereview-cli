@@ -521,3 +521,30 @@ The coverage status values are:
   prevented coverage
 - `incomplete_unassigned`: changed files were not assigned to any selected
   reviewer
+
+## Sensitive Values In Model-Written Text
+
+Every prompt whose output cr posts or logs carries one shared rule,
+`llm.SensitiveValueRule`. A model must never reproduce a suspected credential,
+secret, or personal or financial identifier or figure from its input in any
+response field, even when that value is what the text is about. It names the
+kind of value and its location (file, line, JSON path or key) instead. When a
+fragment is needed, it masks the value to at most its last 2 characters, as in
+"account number ending ..21". On a public repository a finding is public, so
+quoting a leaked value would publish it again.
+
+| Prompt | Model text that leaves the model |
+|--------|----------------------------------|
+| Reviewer findings, including coverage repair | finding bodies (inline comments and the rollup) and coverage `constraints` (rollup diagnostics) |
+| Thread analysis, for `cr review` and `cr respond` | `reply_body` and `summary`, posted as thread replies |
+| Rollup | `review_event_rationale` and `dedupe_log` reasons, in run artifacts |
+| Selection | `reasoning` and per-reviewer `rationale`, in progress logs |
+| Dossier discussion summary | thread and comment summaries, carried into reviewer prompts |
+
+Catalog prompts do not need to restate the rule: cr adds it to every prompt it
+builds. There is deliberately no redactor for personal data in posted text. A
+pattern cannot tell a real account number from an example one, and redacting
+after the fact would still leave the quoted value in local artifacts and logs.
+The rule stops the value at its source. Contract tests assert that each prompt
+carries the rule, and one dry-run test sends a review through every model
+stage and checks each prompt the adapter receives.

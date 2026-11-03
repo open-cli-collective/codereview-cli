@@ -430,6 +430,18 @@ func TestDecodeResultSchemaVersion(t *testing.T) {
 	}
 }
 
+// Thread replies and summaries are posted on the pull request, and the thread
+// may itself quote a leaked value, so the prompt must forbid repeating it.
+func TestPromptForInputCarriesSensitiveValueRule(t *testing.T) {
+	prompt, err := promptForInput(analysisInputForThread("thread-1", promptThread("human reply")))
+	if err != nil {
+		t.Fatalf("promptForInput: %v", err)
+	}
+	if !strings.Contains(prompt, llm.SensitiveValueRule) {
+		t.Fatalf("prompt missing sensitive value rule %q:\n%s", llm.SensitiveValueRule, prompt)
+	}
+}
+
 func TestPromptForInputEnumeratesSchemaVersion(t *testing.T) {
 	prompt, err := promptForInput(analysisInputForThread("thread-1", promptThread("human reply")))
 	if err != nil {
