@@ -61,8 +61,9 @@ type Options struct {
 	Provider Provider
 	Limiter  Limiter
 	Now      func() time.Time
-	// WriteRetry enables in-run recovery of retryable write failures in Post.
-	// Nil leaves a failed write pending after one attempt.
+	// WriteRetry enables in-run recovery of retryable write failures in Post, for
+	// providers that declare ProviderCaps.WriteSettle. Otherwise a failed write
+	// stays pending after one attempt.
 	WriteRetry *WriteRetry
 }
 
@@ -215,7 +216,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 
 		upstreamID, err := dispatch(ctx, opts.Provider, req.PRRef, plan)
-		if err != nil && opts.WriteRetry != nil && !writeRetriesSpent {
+		if err != nil && opts.WriteRetry != nil && !writeRetriesSpent && opts.Provider.Capabilities().WriteSettle > 0 {
 			recovery, recoverErr := recoverWrite(ctx, opts, req, actions, i, plan, err)
 			if recoverErr != nil {
 				if isContextError(recoverErr) {

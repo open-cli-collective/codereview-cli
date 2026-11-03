@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -358,6 +360,64 @@ func TestWritesAreNotRetriedByTheClient(t *testing.T) {
 	}
 }
 
+func TestRateLimitedWriteStaysRetryableWithItsWait(t *testing.T) {
+	ref := testPRRef()
+	writes := []struct {
+		name  string
+		write func(*Client) error
+	}{
+		{name: "review", write: func(c *Client) error {
+			_, err := c.SubmitReview(context.Background(), ref, gitprovider.ReviewRequest{CommitSHA: "head-sha", Event: review.ReviewEventComment, Body: "body"})
+			return err
+		}},
+		{name: "issue comment", write: func(c *Client) error {
+			_, err := c.PostIssueComment(context.Background(), ref, "body")
+			return err
+		}},
+		{name: "inline comment", write: func(c *Client) error {
+			_, err := c.PostInlineComment(context.Background(), ref, gitprovider.InlineComment{CommitSHA: "head-sha", Body: "body", Path: "a.go", Side: review.DiffSideRight, Line: 1, SubjectType: review.AnchorKindLine})
+			return err
+		}},
+	}
+	responses := []struct {
+		name       string
+		retryAfter string
+		body       string
+		wantWait   time.Duration
+	}{
+		{name: "retry-after", retryAfter: "30", body: `{"message":"forbidden"}`, wantWait: 30 * time.Second},
+		{name: "secondary limit message without headers", body: `{"message":"You have exceeded a secondary rate limit."}`, wantWait: defaultRateLimitWait},
+	}
+	for _, tt := range writes {
+		for _, response := range responses {
+			t.Run(tt.name+"/"+response.name, func(t *testing.T) {
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls.Add(1)
+					if response.retryAfter != "" {
+						w.Header().Set("Retry-After", response.retryAfter)
+					}
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(response.body))
+				}))
+				defer server.Close()
+				recorder := &retryRecorder{}
+
+				err := tt.write(retryClient(t, server.URL, recorder.policy()))
+				if !errors.Is(err, gitprovider.ErrRetryable) || errors.Is(err, gitprovider.ErrPermission) {
+					t.Fatalf("error = %v, want ErrRetryable and not ErrPermission", err)
+				}
+				if wait, ok := gitprovider.RetryAfterHint(err); !ok || wait != response.wantWait {
+					t.Fatalf("RetryAfterHint = %v, %v, want %v", wait, ok, response.wantWait)
+				}
+				if calls.Load() != 1 || len(recorder.delays) != 0 {
+					t.Fatalf("calls = %d delays = %v, want one send and no wait", calls.Load(), recorder.delays)
+				}
+			})
+		}
+	}
+}
+
 // Fails closed: a new write must be added here deliberately, never inherit retry.
 func TestRetrySafeOperationClassifiesEveryOperation(t *testing.T) {
 	want := map[gitprovider.Operation]bool{
@@ -495,6 +555,71 @@ func TestAppTokenMintRetriesEvenForAWrite(t *testing.T) {
 	if reviews.Load() != 1 {
 		t.Fatalf("comment sends = %d, want 1", reviews.Load())
 	}
+}
+
+func TestAppTokenRetriesOutlastingOneJWTStillAuthenticate(t *testing.T) {
+	var clockSeconds atomic.Int64
+	clockSeconds.Store(time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC).Unix())
+	now := func() time.Time { return time.Unix(clockSeconds.Load(), 0).UTC() }
+	_, privateKeyPEM := testPrivateKey(t)
+	var failuresLeft atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if jwtExpiry(t, r).Before(now()) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if failuresLeft.Add(-1) >= 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if r.URL.Path == "/app/installations/42" {
+			writeJSON(t, w, map[string]any{"id": 42, "app_id": 12345, "app_slug": "cr-reviewer"})
+			return
+		}
+		writeJSON(t, w, map[string]any{"token": "installation-token", "expires_at": now().Add(time.Hour).Format(time.RFC3339)})
+	}))
+	defer server.Close()
+	// Each failed attempt costs more than half a JWT's lifetime.
+	failuresLeft.Store(2)
+	policy := RetryPolicy{
+		MaxAttempts: 3,
+		MaxElapsed:  24 * time.Hour,
+		Sleep: func(context.Context, time.Duration) error {
+			clockSeconds.Add(int64((gitHubAppJWTLifetime * 2 / 3).Seconds()))
+			return nil
+		},
+	}
+
+	if _, _, err := NewFromGitConfig(githubAppGitConfig("codereview/app"), githubAppStore(t, "app", "12345", privateKeyPEM), Options{
+		BaseURL: server.URL, GraphQLURL: server.URL + "/graphql",
+		Now:            now,
+		InstallationID: "42",
+		Retry:          policy,
+	}); err != nil {
+		t.Fatalf("NewFromGitConfig: %v", err)
+	}
+}
+
+func jwtExpiry(t *testing.T, r *http.Request) time.Time {
+	t.Helper()
+	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+	if len(parts) != 3 {
+		t.Errorf("Authorization is not a JWT: %d parts", len(parts))
+		return time.Time{}
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Errorf("decode JWT payload: %v", err)
+		return time.Time{}
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Errorf("parse JWT payload: %v", err)
+		return time.Time{}
+	}
+	return time.Unix(claims.Exp, 0)
 }
 
 func TestThreadCommentBotAuthorMatchesPostingIdentity(t *testing.T) {

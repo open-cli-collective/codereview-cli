@@ -30,6 +30,9 @@ func TestCapabilities(t *testing.T) {
 	if caps.NativeFileLevelComments || !caps.ThreadResolution || !caps.BundleInlineOnSubmit {
 		t.Fatalf("Capabilities() = %#v, want bundled review comments with thread resolution and no native file comments", caps)
 	}
+	if caps.WriteSettle <= 10*time.Second {
+		t.Fatalf("WriteSettle = %v, want longer than GitHub's 10-second processing limit", caps.WriteSettle)
+	}
 }
 
 func TestDefaultHTTPClientIsBounded(t *testing.T) {

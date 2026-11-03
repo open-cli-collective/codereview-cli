@@ -118,6 +118,8 @@ not reached the PR.
   get one send each, so an outage cannot multiply the wait. Whatever is left stays
   pending, the run exits 5, and the next `cr review` reconciles it. Duplicates remain
   possible only if GitHub applies a write after the settle wait and the marker check.
+  GitLab declares no processing limit, so a GitLab write that fails retryably gets one
+  send and stays pending for the next `cr review` to reconcile.
 - A run that fails renders `Status: error` and the cause on stdout, or the same
   record as JSON, as well as the error on stderr and a non-zero exit code.
 - Thread replies are ordered before resolutions, and a resolution is not sent

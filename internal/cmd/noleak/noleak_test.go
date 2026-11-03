@@ -699,6 +699,7 @@ func (p noLeakRuntimeProvider) Capabilities() gitprovider.ProviderCaps {
 		NativeFileLevelComments: readCaps.NativeFileLevelComments || writeCaps.NativeFileLevelComments,
 		ThreadResolution:        readCaps.ThreadResolution || writeCaps.ThreadResolution,
 		BundleInlineOnSubmit:    readCaps.BundleInlineOnSubmit || writeCaps.BundleInlineOnSubmit,
+		WriteSettle:             writeCaps.WriteSettle,
 	}
 }
 

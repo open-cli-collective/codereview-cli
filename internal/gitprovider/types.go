@@ -130,6 +130,11 @@ type ProviderCaps struct {
 	// pull-request head commits (refs/<namespace>/<number>/head). Empty
 	// means the GitHub "pull" namespace.
 	HeadRefNamespace string
+	// WriteSettle is how long after a failed write the host has stopped
+	// processing it, so that a read can say whether the write landed. Zero means
+	// the host documents no such bound: a failed write is left for the next run
+	// to reconcile rather than resent in this one.
+	WriteSettle time.Duration
 }
 
 // PullHeadRefNamespace is the default virtual ref namespace for pull-request

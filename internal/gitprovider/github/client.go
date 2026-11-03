@@ -28,6 +28,9 @@ const (
 	gitHubAppRefreshSkew = 5 * time.Minute
 	gitHubAppJWTBackdate = 60 * time.Second
 	gitHubAppJWTLifetime = 9 * time.Minute
+	// writeSettle exceeds the 10 seconds after which GitHub documents that it
+	// terminates API request processing.
+	writeSettle = 12 * time.Second
 )
 
 var (
@@ -182,6 +185,7 @@ func (c *Client) Capabilities() gitprovider.ProviderCaps {
 		NativeFileLevelComments: false,
 		ThreadResolution:        true,
 		BundleInlineOnSubmit:    true,
+		WriteSettle:             writeSettle,
 	}
 }
 

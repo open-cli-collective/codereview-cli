@@ -108,7 +108,9 @@ else, including any operation added later, gets one attempt. A write can land at
 GitHub and still return 5xx, so a blind retry would post twice. Writes are retried
 by the outbox, which waits for GitHub's 10-second processing limit to pass, re-reads
 the PR, and sends again only when the action's marker is absent. If that read fails,
-the write stays pending rather than being sent unverified.
+the write stays pending rather than being sent unverified. The wait comes from the
+provider's `ProviderCaps.WriteSettle`. A provider that declares none, as GitLab does
+because nothing bounds its proxy and application timeouts, gets no resend in the run.
 
 Accepting a repository invitation is the one exception. It changes the posting
 identity's account, not a pull request, so it has no marker, no run, and

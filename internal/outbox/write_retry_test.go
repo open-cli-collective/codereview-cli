@@ -14,6 +14,8 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 )
 
+const testWriteSettle = 12 * time.Second
+
 // sendScript says what one write attempt does at the host.
 type sendScript struct {
 	land bool  // the host keeps the write
@@ -37,6 +39,7 @@ type simHost struct {
 func newSimHost(script map[string][]sendScript) *simHost {
 	return &simHost{
 		identity: botIdentity(),
+		caps:     gitprovider.ProviderCaps{WriteSettle: testWriteSettle},
 		script:   script,
 		sends:    map[string]int{},
 		thread:   gitprovider.InlineThread{ID: "thread-1", Path: "main.go", Side: review.DiffSideRight, Line: 12, SubjectType: review.AnchorKindLine},
@@ -272,7 +275,7 @@ func TestResentWriteThatLandsOnSecondFailureIsNotSentAThirdTime(t *testing.T) {
 	if host.sends["review"] != 2 || len(host.reviews) != 1 || result.ExitCode != exitOK {
 		t.Fatalf("sends = %d reviews = %d result = %#v, want two sends, one review, success", host.sends["review"], len(host.reviews), result)
 	}
-	if want := []time.Duration{defaultWriteSettle, 2 * defaultWriteSettle}; !slices.Equal(recorder.delays, want) {
+	if want := []time.Duration{testWriteSettle, 2 * testWriteSettle}; !slices.Equal(recorder.delays, want) {
 		t.Fatalf("delays = %v, want %v", recorder.delays, want)
 	}
 }
@@ -335,7 +338,7 @@ func TestBundledInlineCommentsFollowAReconciledReview(t *testing.T) {
 	store := openStore(t)
 	run := allocateRun(t, store, ledger.PostModeLive)
 	host := newSimHost(map[string][]sendScript{"review": {{land: true, err: retryableWriteError(gitprovider.OperationSubmitReview)}}})
-	host.caps = gitprovider.ProviderCaps{BundleInlineOnSubmit: true}
+	host.caps.BundleInlineOnSubmit = true
 	insertAction(t, store, plannedAction(run.RunID, "inline-1", ledger.PlannedActionInlineComment, true, "", InlineCommentPayload{Body: "inline", Path: "main.go", Side: review.DiffSideRight, Line: 12, SubjectType: review.AnchorKindLine}))
 	insertAction(t, store, plannedAction(run.RunID, "submit-1", ledger.PlannedActionSubmitReview, true, "", SubmitReviewPayload{Body: "review", Event: review.ReviewEventComment}))
 
@@ -478,9 +481,26 @@ func TestPostWithoutWriteRetrySendsOnce(t *testing.T) {
 	}
 }
 
+func TestProviderWithoutWriteSettleIsNotResentInRun(t *testing.T) {
+	store := openStore(t)
+	run := allocateRun(t, store, ledger.PostModeLive)
+	host := newSimHost(map[string][]sendScript{"rollup": {{err: retryableWriteError(gitprovider.OperationPostIssueComment)}}})
+	host.caps.WriteSettle = 0
+	insertAction(t, store, plannedAction(run.RunID, "action-1", ledger.PlannedActionRollupComment, true, "", RollupCommentPayload{Body: "rollup"}))
+	recorder := &writeRetryRecorder{}
+
+	result, err := Post(context.Background(), Options{Store: store, Provider: host, Limiter: noopLimiter{}, Now: fixedClock(), WriteRetry: recorder.policy()}, testRequest(run))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if host.sends["rollup"] != 1 || len(recorder.delays) != 0 || result.ExitCode != exitUpstream || result.Pending != 1 {
+		t.Fatalf("sends = %d delays = %v result = %#v, want one send left pending", host.sends["rollup"], recorder.delays, result)
+	}
+}
+
 func TestDefaultWriteJitterNeverShortensTheSettleWait(t *testing.T) {
 	for range 200 {
-		if got := addJitter(defaultWriteSettle); got < defaultWriteSettle || got >= defaultWriteSettle+defaultWriteSettle/4 {
+		if got := addJitter(testWriteSettle); got < testWriteSettle || got >= testWriteSettle+testWriteSettle/4 {
 			t.Fatalf("addJitter = %s", got)
 		}
 	}

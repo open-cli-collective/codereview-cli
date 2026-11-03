@@ -122,8 +122,7 @@ func (c *Client) Run(ctx context.Context, dir string, args ...string) ([]byte, e
 	}
 }
 
-// commandError keeps git's own output apart from its arguments, which carry
-// PR-controlled ref names that must not decide whether a failure is transient.
+// commandError keeps what is needed to judge a failure by git's own words.
 type commandError struct {
 	args   []string
 	detail string
@@ -135,7 +134,16 @@ func (e *commandError) Error() string {
 
 func transientFetchFailure(err error) bool {
 	var failure *commandError
-	return errors.As(err, &failure) && transientFetchOutput.MatchString(failure.detail)
+	if !errors.As(err, &failure) {
+		return false
+	}
+	// Git echoes the requested ref into its output, and ref names are controlled
+	// by the PR, so they must not decide whether a failure is transient.
+	detail := failure.detail
+	for _, arg := range failure.args[1:] {
+		detail = strings.ReplaceAll(detail, arg, "")
+	}
+	return transientFetchOutput.MatchString(detail)
 }
 
 func (c *Client) runOnce(ctx context.Context, dir string, args ...string) ([]byte, error) {

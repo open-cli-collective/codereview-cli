@@ -12,23 +12,17 @@ import (
 
 const (
 	defaultWriteMaxAttempts = 3
-	// defaultWriteSettle spaces a resend from the failure. GitHub stops
-	// processing an API request after 10 seconds, so a write that returned 5xx or
-	// timed out has finished one way or the other before the marker check runs.
-	defaultWriteSettle = 12 * time.Second
 	// defaultWriteMaxWait matches the GitHub client's longest honored wait.
 	defaultWriteMaxWait = 2 * time.Minute
 )
 
 // WriteRetry bounds in-run recovery of a write that failed retryably. A write
-// can land at the host and still report failure, so nothing is resent until a
-// fresh read of the PR shows the write's action marker is absent.
+// can land at the host and still report failure, so nothing is resent until the
+// provider's ProviderCaps.WriteSettle has passed and a fresh read of the PR shows
+// the write's action marker is absent. Later checks wait proportionally longer.
 type WriteRetry struct {
 	// MaxAttempts counts sends of one action, including the first.
 	MaxAttempts int
-	// Settle is the wait before the first marker check; later checks wait
-	// proportionally longer.
-	Settle time.Duration
 	// MaxWait is the longest host-requested wait worth sitting through.
 	MaxWait time.Duration
 	// Sleep waits for d or until ctx ends. Tests inject it to avoid real waits.
@@ -73,9 +67,6 @@ func (w WriteRetry) normalized() WriteRetry {
 	if w.MaxAttempts <= 0 {
 		w.MaxAttempts = defaultWriteMaxAttempts
 	}
-	if w.Settle <= 0 {
-		w.Settle = defaultWriteSettle
-	}
 	if w.MaxWait <= 0 {
 		w.MaxWait = defaultWriteMaxWait
 	}
@@ -119,6 +110,7 @@ type writeRecovery struct {
 // itself: the ledger, or ctx ending during a wait.
 func recoverWrite(ctx context.Context, opts Options, req Request, actions []ledger.PlannedAction, i int, plan actionPlan, sendErr error) (writeRecovery, error) {
 	policy := opts.WriteRetry.normalized()
+	settle := opts.Provider.Capabilities().WriteSettle
 	action := &actions[i]
 	emit := func(phase WriteRetryPhase, attempt int, delay time.Duration, reason string) {
 		if policy.OnEvent != nil {
@@ -130,7 +122,7 @@ func recoverWrite(ctx context.Context, opts Options, req Request, actions []ledg
 		if ctx.Err() != nil {
 			break
 		}
-		delay := policy.Jitter(policy.Settle * time.Duration(attempt))
+		delay := policy.Jitter(settle * time.Duration(attempt))
 		if hint, ok := gitprovider.RetryAfterHint(err); ok {
 			if hint > policy.MaxWait {
 				emit(WriteRetryAbandoned, attempt, 0, "host asked to wait "+hint.Round(time.Second).String())

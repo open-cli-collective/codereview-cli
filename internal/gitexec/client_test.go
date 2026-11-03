@@ -231,7 +231,7 @@ func TestPermanentFetchFailureAndOtherCommandsAreNotRetried(t *testing.T) {
 	}{
 		{name: "unadvertised sha", output: "fatal: remote error: upload-pack: not our ref abc", args: []string{"fetch", "--no-tags", testFetchURL, "abc"}},
 		{name: "missing repository", output: "fatal: unable to access: The requested URL returned error: 404", args: []string{"fetch", "--no-tags", testFetchURL, "abc"}},
-		{name: "transient words only in a ref name", output: "fatal: couldn't find remote ref", args: []string{"fetch", "--no-tags", testFetchURL, "refs/heads/gnutls_fix"}},
+		{name: "transient words only in a ref name", output: "fatal: couldn\x27t find remote ref refs/heads/gnutls_fix", args: []string{"fetch", "--no-tags", testFetchURL, "refs/heads/gnutls_fix"}},
 		{name: "not a fetch", output: "fatal: The requested URL returned error: 502", args: []string{"rev-parse", "HEAD"}},
 	}
 	for _, tt := range tests {

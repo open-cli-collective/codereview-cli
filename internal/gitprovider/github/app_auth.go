@@ -147,15 +147,11 @@ func (a *githubAppAuth) refresh(ctx context.Context, op gitprovider.Operation) (
 }
 
 func (a *githubAppAuth) refreshLocked(ctx context.Context, op gitprovider.Operation) (string, gitprovider.Identity, error) {
-	jwt, err := a.jwt()
-	if err != nil {
-		return "", gitprovider.Identity{}, gitprovider.WrapError(gitprovider.ErrAuth, op, err)
-	}
-	installation, err := a.resolveInstallation(ctx, op, jwt)
+	installation, err := a.resolveInstallation(ctx, op)
 	if err != nil {
 		return "", gitprovider.Identity{}, err
 	}
-	token, expiresAt, err := a.createInstallationToken(ctx, op, jwt, installation.ID)
+	token, expiresAt, err := a.createInstallationToken(ctx, op, installation.ID)
 	if err != nil {
 		return "", gitprovider.Identity{}, err
 	}
@@ -167,27 +163,27 @@ func (a *githubAppAuth) refreshLocked(ctx context.Context, op gitprovider.Operat
 	return token, identity, nil
 }
 
-func (a *githubAppAuth) resolveInstallation(ctx context.Context, op gitprovider.Operation, jwt string) (githubAppInstallation, error) {
+func (a *githubAppAuth) resolveInstallation(ctx context.Context, op gitprovider.Operation) (githubAppInstallation, error) {
 	if strings.TrimSpace(a.installationID) != "" {
 		endpoint := restURL(a.baseURL, "app", "installations", a.installationID)
 		var installation githubAppInstallation
-		if err := a.doAppREST(ctx, op, http.MethodGet, endpoint, jwt, nil, &installation); err != nil {
+		if err := a.doAppREST(ctx, op, http.MethodGet, endpoint, nil, &installation); err != nil {
 			return githubAppInstallation{}, mapPinnedInstallationLookupError(op, a.installationID, err)
 		}
 		return installation, nil
 	}
 	endpoint := restURL(a.baseURL, "repos", a.lookup.Owner, a.lookup.Repo, "installation")
 	var installation githubAppInstallation
-	if err := a.doAppREST(ctx, op, http.MethodGet, endpoint, jwt, nil, &installation); err != nil {
+	if err := a.doAppREST(ctx, op, http.MethodGet, endpoint, nil, &installation); err != nil {
 		return githubAppInstallation{}, mapRepositoryInstallationLookupError(op, a.lookup.Owner, a.lookup.Repo, err)
 	}
 	return installation, nil
 }
 
-func (a *githubAppAuth) createInstallationToken(ctx context.Context, op gitprovider.Operation, jwt string, installationID int64) (string, time.Time, error) {
+func (a *githubAppAuth) createInstallationToken(ctx context.Context, op gitprovider.Operation, installationID int64) (string, time.Time, error) {
 	endpoint := restURL(a.baseURL, "app", "installations", strconv.FormatInt(installationID, 10), "access_tokens")
 	var response installationTokenResponse
-	if err := a.doAppREST(ctx, op, http.MethodPost, endpoint, jwt, map[string]any{}, &response); err != nil {
+	if err := a.doAppREST(ctx, op, http.MethodPost, endpoint, map[string]any{}, &response); err != nil {
 		return "", time.Time{}, mapCreateInstallationTokenError(op, strconv.FormatInt(installationID, 10), err)
 	}
 	if strings.TrimSpace(response.Token) == "" {
@@ -233,7 +229,7 @@ func mapCreateInstallationTokenError(op gitprovider.Operation, installationID st
 	}
 }
 
-func (a *githubAppAuth) doAppREST(ctx context.Context, op gitprovider.Operation, method, endpoint, jwt string, in any, out any) error {
+func (a *githubAppAuth) doAppREST(ctx context.Context, op gitprovider.Operation, method, endpoint string, in any, out any) error {
 	var payload []byte
 	if in != nil {
 		var err error
@@ -244,7 +240,12 @@ func (a *githubAppAuth) doAppREST(ctx context.Context, op gitprovider.Operation,
 	}
 	// Installation lookups are reads and minting a token changes nothing a user
 	// can see, so these repeat even when op names the write that needed a token.
+	// Each attempt signs its own JWT, because retries can outlast one JWT's lifetime.
 	return a.retry.repeat(ctx, op, func() error {
+		jwt, err := a.jwt()
+		if err != nil {
+			return gitprovider.WrapError(gitprovider.ErrAuth, op, err)
+		}
 		return a.appRESTAttempt(ctx, op, method, endpoint, jwt, payload, in != nil, out)
 	})
 }
