@@ -13,9 +13,10 @@ import (
 )
 
 type userResponse struct {
-	Login string `json:"login"`
-	ID    int64  `json:"id"`
-	Name  string `json:"name"`
+	Login    string `json:"login"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Typename string `json:"__typename"`
 }
 
 type repoResponse struct {
@@ -313,8 +314,15 @@ func (c *Client) ListIssueComments(ctx context.Context, ref gitprovider.PRRef) (
 }
 
 func identityFromUser(user userResponse) gitprovider.Identity {
+	login := user.Login
+	// GraphQL names an app "slug" where REST and the posting identity say
+	// "slug[bot]". Outbox reconciliation matches authors by this login, so the
+	// two must agree or an app's own posted marker goes unrecognized.
+	if user.Typename == "Bot" && login != "" && !strings.HasSuffix(login, "[bot]") {
+		login += "[bot]"
+	}
 	return gitprovider.Identity{
-		Login:       user.Login,
+		Login:       login,
 		ID:          stringIDFromInt(user.ID),
 		DisplayName: user.Name,
 	}

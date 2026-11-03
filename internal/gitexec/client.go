@@ -4,10 +4,16 @@ package gitexec
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"strings"
+	"time"
+
+	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 )
 
 // TokenSource supplies the current repository access token.
@@ -24,11 +30,33 @@ func (f TokenSourceFunc) AccessToken(ctx context.Context) (string, error) { retu
 // defaultBasicAuthUsername is the GitHub HTTPS transport convention.
 const defaultBasicAuthUsername = "x-access-token"
 
+const (
+	fetchMaxAttempts = 4
+	fetchBaseDelay   = 2 * time.Second
+)
+
+// transientFetchOutput matches the messages git and curl print, under the LC_ALL=C
+// this client forces, for a failure another attempt can fix. A fetch the host
+// refuses for good, such as an unadvertised SHA, matches none of them.
+var transientFetchOutput = regexp.MustCompile(`(?i)returned error: (429|5\d\d)|rpc failed|connection reset|recv failure|failed to connect|could not resolve host|timed out|empty reply from server|early eof|unexpected disconnect|remote end hung up|tls connection|ssl_read|gnutls_|http/2 stream`)
+
+// RetryEvent describes one scheduled retry of a git fetch.
+type RetryEvent struct {
+	Attempt     int // the attempt that just failed, starting at 1
+	MaxAttempts int
+	Delay       time.Duration
+	Reason      string
+}
+
 // Client runs Git with host-scoped HTTPS authentication.
 type Client struct {
 	host     string
 	tokens   TokenSource
 	username string
+	// OnRetry observes each scheduled fetch retry.
+	OnRetry func(RetryEvent)
+	// sleep waits between fetch attempts. Tests replace it to avoid real waits.
+	sleep func(context.Context, time.Duration) error
 }
 
 // New constructs an authenticated Git client using the GitHub HTTPS username
@@ -52,11 +80,65 @@ func NewWithUsername(host string, tokens TokenSource, username string) (*Client,
 	if username == "" || strings.Contains(username, ":") {
 		return nil, fmt.Errorf("gitexec: valid basic auth username is required")
 	}
-	return &Client{host: host, tokens: tokens, username: username}, nil
+	return &Client{host: host, tokens: tokens, username: username, sleep: sleepContext}, nil
 }
 
-// Run executes Git in dir, or the current directory when dir is empty.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// Run executes Git in dir, or the current directory when dir is empty. A fetch
+// only reads, so one that fails transiently is repeated within a small bound.
 func (c *Client) Run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if len(args) == 0 || args[0] != "fetch" {
+		return c.runOnce(ctx, dir, args...)
+	}
+	for attempt := 1; ; attempt++ {
+		output, err := c.runOnce(ctx, dir, args...)
+		if err == nil || ctx.Err() != nil || !transientFetchFailure(err) {
+			return output, err
+		}
+		if attempt >= fetchMaxAttempts {
+			return nil, gitprovider.WrapError(gitprovider.ErrRetryable, "", fmt.Errorf("%w (gave up after %d attempts)", err, attempt))
+		}
+		backoff := fetchBaseDelay << (attempt - 1)
+		delay := backoff/2 + rand.N(backoff/2+1) // #nosec G404 -- backoff spacing, not a secret.
+		if c.OnRetry != nil {
+			c.OnRetry(RetryEvent{Attempt: attempt, MaxAttempts: fetchMaxAttempts, Delay: delay, Reason: err.Error()})
+		}
+		if sleepErr := c.sleep(ctx, delay); sleepErr != nil {
+			if errors.Is(sleepErr, context.Canceled) {
+				return nil, context.Canceled
+			}
+			return nil, gitprovider.WrapError(gitprovider.ErrRetryable, "", err)
+		}
+	}
+}
+
+// commandError keeps git's own output apart from its arguments, which carry
+// PR-controlled ref names that must not decide whether a failure is transient.
+type commandError struct {
+	args   []string
+	detail string
+}
+
+func (e *commandError) Error() string {
+	return fmt.Sprintf("git %s: %s", strings.Join(e.args, " "), e.detail)
+}
+
+func transientFetchFailure(err error) bool {
+	var failure *commandError
+	return errors.As(err, &failure) && transientFetchOutput.MatchString(failure.detail)
+}
+
+func (c *Client) runOnce(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	header := ""
 	token := ""
 	if requiresAuthentication(c.host, args) {
@@ -93,7 +175,7 @@ func (c *Client) Run(ctx context.Context, dir string, args ...string) ([]byte, e
 	if header != "" {
 		detail = strings.ReplaceAll(detail, header, "[REDACTED]")
 	}
-	return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), detail)
+	return nil, &commandError{args: args, detail: detail}
 }
 
 func requiresAuthentication(host string, args []string) bool {

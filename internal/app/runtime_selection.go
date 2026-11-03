@@ -34,12 +34,12 @@ func OpenSelection(ctx context.Context, req SelectionOpenRequest) (SelectionRunt
 	}
 	// Selection-only paths read with the profile git credential while keeping
 	// PR-scoped GitHub App installation lookup aligned with review runs.
-	provider, credential, err := deps.NewGitProvider(profile.Git, gitStore, gitProviderOptions(profile, profile.Git, req.PRRef))
+	provider, credential, err := deps.NewGitProvider(profile.Git, gitStore, gitProviderOptions(profile, profile.Git, req.PRRef, nil))
 	if err != nil {
 		cleanup()
 		return SelectionRuntime{}, err
 	}
-	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(provider, credential), gitproviders.GitBasicAuthUsername(profile.Git.ProviderKind()))
+	gitCommand, err := deps.gitCommandFactory(nil)(profile.Git.Host, repositoryTokenSource(provider, credential), gitproviders.GitBasicAuthUsername(profile.Git.ProviderKind()))
 	if err != nil {
 		cleanup()
 		return SelectionRuntime{}, err

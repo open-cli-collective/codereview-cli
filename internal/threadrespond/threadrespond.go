@@ -66,8 +66,10 @@ type Options struct {
 	Provider outbox.LiveProvider
 	Adapter  llm.Adapter
 	Limiter  outbox.Limiter
-	Layout   statepaths.Layout
-	Acquire  AcquireFunc
+	// WriteRetry enables in-run recovery of retryable posting failures.
+	WriteRetry *outbox.WriteRetry
+	Layout     statepaths.Layout
+	Acquire    AcquireFunc
 	// AcquireShared takes the shared data-root active-runs lock held for the
 	// run's duration. Defaults to runlock.AcquireShared.
 	AcquireShared AcquireFunc
@@ -335,10 +337,11 @@ func completeAndRefresh(ctx context.Context, store Store, result Result, message
 func postAndRefresh(ctx context.Context, opts Options, req Request, result Result, desiredOutcome ledger.Outcome) (Result, error) {
 	run := result.Run
 	postResult, err := outbox.Post(ctx, outbox.Options{
-		Store:    opts.Store,
-		Provider: opts.Provider,
-		Limiter:  opts.Limiter,
-		Now:      opts.now,
+		Store:      opts.Store,
+		Provider:   opts.Provider,
+		Limiter:    opts.Limiter,
+		Now:        opts.now,
+		WriteRetry: opts.WriteRetry,
 	}, outbox.Request{
 		Run:             run,
 		PRRef:           req.PRRef,

@@ -1,0 +1,43 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {"hasNextPage": false},
+          "nodes": [
+            {
+              "id": "thread-1",
+              "isResolved": false,
+              "path": "a.go",
+              "line": 1,
+              "diffSide": "RIGHT",
+              "comments": {
+                "pageInfo": {"hasNextPage": false},
+                "nodes": [
+                  {
+                    "id": "app",
+                    "databaseId": 1,
+                    "body": "from app",
+                    "author": {"__typename": "Bot", "login": "cr-reviewer"},
+                    "commit": {"oid": "head"},
+                    "path": "a.go",
+                    "line": 1
+                  },
+                  {
+                    "id": "person",
+                    "databaseId": 2,
+                    "body": "from person",
+                    "author": {"__typename": "User", "login": "cr-reviewer", "id": 9},
+                    "commit": {"oid": "head"},
+                    "path": "a.go",
+                    "line": 1
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

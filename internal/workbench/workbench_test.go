@@ -170,6 +170,29 @@ func TestPrepareRejectsUnsafeFetchRef(t *testing.T) {
 	}
 }
 
+func TestPrepareKeepsTransientFetchFailureInTheChain(t *testing.T) {
+	fixture := newForkWorkbenchFixture(t)
+	var fetches int
+	gitRunner := func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "fetch" {
+			fetches++
+			return nil, gitprovider.WrapError(gitprovider.ErrRetryable, "", errors.New("git fetch: The requested URL returned error: 502 (gave up after 4 attempts)"))
+		}
+		cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- tests invoke git with fixed command names and structured arguments.
+		cmd.Env = gittest.Env()
+		cmd.Dir = dir
+		return cmd.CombinedOutput()
+	}
+
+	err := Prepare(context.Background(), Deps{GitCommand: gitRunner}, Request{PRRef: fixture.pr.Ref, ReviewPR: fixture.pr, ChangedFiles: []string{"main.go"}, Artifacts: runartifact.FromDir(t.TempDir())})
+	if !errors.Is(err, gitprovider.ErrRetryable) || !strings.Contains(err.Error(), "returned error: 502") {
+		t.Fatalf("Prepare error = %v, want the transient cause", err)
+	}
+	if fetches != 1 {
+		t.Fatalf("fetches = %d, want the fallback ref skipped once the host is failing", fetches)
+	}
+}
+
 func TestPrepareRefreshesExistingArtifactRoot(t *testing.T) {
 	ctx := context.Background()
 	fixture := newWorkbenchGitFixture(t)

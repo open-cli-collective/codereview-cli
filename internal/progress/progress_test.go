@@ -144,3 +144,24 @@ func (c *fixedClock) Now() time.Time {
 	c.times = c.times[1:]
 	return t
 }
+
+func TestLoggerInfoReasonRedactsPathsAndHonorsDisabled(t *testing.T) {
+	var out bytes.Buffer
+	logger := New(&out, false, nil)
+	logger.InfoReason("review", "retry_read", "GetPR", `Get "https://github.example/repos/secret": connection reset`, Field{Key: "attempt", Value: "1"})
+	line := out.String()
+	for _, want := range []string{"event=info", `op="retry_read"`, `target="GetPR"`, `attempt="1"`, `error="Get [path] connection reset"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line = %q, want %q", line, want)
+		}
+	}
+	if strings.Contains(line, "secret") {
+		t.Fatalf("line = %q leaked the path", line)
+	}
+
+	out.Reset()
+	New(&out, true, nil).InfoReason("review", "retry_read", "GetPR", "boom")
+	if out.Len() != 0 {
+		t.Fatalf("disabled logger wrote %q", out.String())
+	}
+}

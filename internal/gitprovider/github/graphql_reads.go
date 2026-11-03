@@ -51,6 +51,7 @@ query($owner: String!, $repo: String!, $number: Int!, $threadAfter: String) {
               databaseId
               body
               author {
+                __typename
                 login
                 ... on User {
                   id: databaseId
@@ -88,6 +89,7 @@ query($threadID: ID!, $commentAfter: String) {
           databaseId
           body
           author {
+            __typename
             login
             ... on User {
               id: databaseId

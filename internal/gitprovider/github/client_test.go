@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
@@ -406,6 +407,9 @@ func mustClient(t *testing.T, opts Options) *Client {
 	}
 	if opts.Host == "" {
 		opts.Host = defaultHost
+	}
+	if opts.Retry.Sleep == nil {
+		opts.Retry.Sleep = func(context.Context, time.Duration) error { return nil }
 	}
 	client, err := New(opts)
 	if err != nil {

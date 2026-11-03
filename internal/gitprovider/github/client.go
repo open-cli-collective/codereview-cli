@@ -48,6 +48,7 @@ type Options struct {
 	AppID              string
 	InstallationID     string
 	InstallationLookup *InstallationLookup
+	Retry              RetryPolicy
 }
 
 // Client is a GitHub read adapter. CR-10 adds write methods and full
@@ -59,6 +60,7 @@ type Client struct {
 	baseURL    *url.URL
 	graphQLURL *url.URL
 	appAuth    *githubAppAuth
+	retry      retrier
 }
 
 // NewFromGitConfig builds a GitHub client and credential from config plus a token store.
@@ -148,6 +150,7 @@ func New(opts Options) (*Client, error) {
 		httpClient: httpClient,
 		baseURL:    baseURL,
 		graphQLURL: graphQLURL,
+		retry:      newRetrier(opts.Retry, opts.Now),
 	}, nil
 }
 

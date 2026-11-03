@@ -1158,6 +1158,78 @@ func TestReviewLiveCallsRunnerAndRendersText(t *testing.T) {
 	}
 }
 
+func TestReviewLiveFailureRendersStatusOnStdoutAndExitsUpstream(t *testing.T) {
+	failure := gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, errors.New("github: status 502 (gave up after 6 attempts)"))
+	tests := []struct {
+		name    string
+		factory func(*fakeRunner) RuntimeFactory
+	}{
+		{name: "runner failure", factory: fakeFactory},
+		{name: "runtime failure", factory: func(*fakeRunner) RuntimeFactory {
+			return func(context.Context, app.OpenRequest) (app.Runtime, error) { return app.Runtime{}, failure }
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd, out, _ := newTestCommandWithStderr(t, testConfig(), tt.factory(&fakeRunner{liveErr: failure}), true)
+			err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+			if exitcode.FromError(err) != exitcode.UpstreamError {
+				t.Fatalf("exit = %d for %v, want upstream", exitcode.FromError(err), err)
+			}
+			for _, want := range []string{"Status: error\n", "Exit code: 5\n", "gave up after 6 attempts"} {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("stdout = %q, want %q", out.String(), want)
+				}
+			}
+			if strings.Contains(out.String(), "Run: ") {
+				t.Fatalf("stdout = %q, want no empty run line", out.String())
+			}
+
+			cmd, out, _ = newTestCommandWithStderr(t, testConfig(), tt.factory(&fakeRunner{liveErr: failure}), true)
+			err = root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--json"})
+			if exitcode.FromError(err) != exitcode.UpstreamError {
+				t.Fatalf("json exit = %d for %v, want upstream", exitcode.FromError(err), err)
+			}
+			var rendered map[string]any
+			if decodeErr := json.Unmarshal(out.Bytes(), &rendered); decodeErr != nil {
+				t.Fatalf("decode %q: %v", out.String(), decodeErr)
+			}
+			assertJSONPath(t, rendered, "status", "error")
+			assertJSONPath(t, rendered, "message", failure.Error())
+			assertJSONPath(t, rendered, "outbox", "exit_code", float64(exitcode.UpstreamError))
+		})
+	}
+}
+
+func TestReviewDryRunFailureLeavesStdoutEmpty(t *testing.T) {
+	failure := gitprovider.WrapError(gitprovider.ErrRetryable, gitprovider.OperationGetPR, errors.New("github: status 502"))
+	cmd, out, _ := newTestCommandWithStderr(t, testConfig(), fakeFactory(&fakeRunner{err: failure}), true)
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run"})
+	if exitcode.FromError(err) != exitcode.UpstreamError {
+		t.Fatalf("exit = %d for %v, want upstream", exitcode.FromError(err), err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", out.String())
+	}
+}
+
+func TestReviewLiveIncompletePostsNameTheCause(t *testing.T) {
+	result := testLiveResult(false)
+	result.ExitCode = exitcode.UpstreamError
+	result.Outbox = outbox.Result{Outcome: ledger.OutcomeIncomplete, ExitCode: exitcode.UpstreamError, Pending: 2, PendingError: "SubmitReview: github: status 502"}
+	cmd, out, _ := newTestCommandWithStderr(t, testConfig(), fakeFactory(&fakeRunner{liveResult: result}), true)
+
+	err := root.Execute(cmd, []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29"})
+	if exitcode.FromError(err) != exitcode.UpstreamError {
+		t.Fatalf("exit = %d for %v, want upstream", exitcode.FromError(err), err)
+	}
+	for _, text := range []string{err.Error(), out.String()} {
+		if !strings.Contains(text, "2 post(s) still pending") || !strings.Contains(text, "status 502") || !strings.Contains(text, "run cr review again") {
+			t.Fatalf("text = %q, want pending count, cause and next step", text)
+		}
+	}
+}
+
 func TestReviewLivePassesReviewerModelAndEffortOverrides(t *testing.T) {
 	runner := &fakeRunner{liveResult: testLiveResult(false)}
 	cmd, _ := newTestCommand(t, testConfig(), fakeFactory(runner))

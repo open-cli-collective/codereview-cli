@@ -78,6 +78,11 @@ Review progress includes instant catalog-resolution, final selection, and
 per-reviewer assignment records. These expose IDs, winning provenance,
 selection reasoning, and assigned paths without logging prompt bodies.
 
+Retries during a review are `event=info` records with `op="retry_read"`,
+`op="retry_post"` or `op="retry_fetch"`. They carry `attempt`, `max_attempts`,
+`delay_ms` where a wait is scheduled, and the cause in `error`; `retry_post` adds the
+recovery `phase` (`waiting`, `reconciled`, `resending` or `abandoned`).
+
 Current command coverage is `benchmark run`, `benchmark select`,
 `benchmark compare`, `data prune`, `data purge`, `config clear`, `me`, and
 `sessions delete`.

@@ -456,7 +456,7 @@ func RenderReviewDryRunJSON(w io.Writer, result ReviewDryRun) error {
 
 // RenderReviewLiveText writes a human-readable live review summary.
 func RenderReviewLiveText(w io.Writer, result ReviewLive) error {
-	if err := writeKV(w, "Run", result.Run.RunID); err != nil {
+	if err := writeOptionalKV(w, "Run", result.Run.RunID); err != nil {
 		return err
 	}
 	if err := writeKV(w, "Status", result.Status); err != nil {

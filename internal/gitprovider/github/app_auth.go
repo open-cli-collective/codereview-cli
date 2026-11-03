@@ -43,6 +43,7 @@ type githubAppAuth struct {
 	tokenValue     string
 	expiresAt      time.Time
 	identity       gitprovider.Identity
+	retry          retrier
 }
 
 type githubAppInstallation struct {
@@ -92,6 +93,7 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store credentia
 	if !canResolveInstallation(installationID, opts.InstallationLookup) {
 		return nil, gitprovider.Credential{}, gitprovider.WrapError(gitprovider.ErrAuth, "", fmt.Errorf("github app installation discovery requires repository context; pin an installation id or run against a repository"))
 	}
+	retry := newRetrier(opts.Retry, now)
 	auth := &githubAppAuth{
 		issuer:         issuer,
 		privateKey:     privateKey,
@@ -100,6 +102,7 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store credentia
 		httpClient:     httpClient,
 		baseURL:        baseURL,
 		now:            now,
+		retry:          retry,
 	}
 	token, identity, err := auth.refresh(ctx, "")
 	if err != nil {
@@ -112,6 +115,7 @@ func newGitHubAppFromConfig(ctx context.Context, profile string, store credentia
 		baseURL:    baseURL,
 		graphQLURL: graphQLURL,
 		appAuth:    auth,
+		retry:      retry,
 	}
 	credential := gitprovider.Credential{
 		Type:        credentialTypeGitHubApp,
@@ -230,22 +234,28 @@ func mapCreateInstallationTokenError(op gitprovider.Operation, installationID st
 }
 
 func (a *githubAppAuth) doAppREST(ctx context.Context, op gitprovider.Operation, method, endpoint, jwt string, in any, out any) error {
-	var body *bytes.Reader
+	var payload []byte
 	if in != nil {
-		payload, err := json.Marshal(in)
+		var err error
+		payload, err = json.Marshal(in)
 		if err != nil {
 			return err
 		}
-		body = bytes.NewReader(payload)
-	} else {
-		body = bytes.NewReader(nil)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	// Installation lookups are reads and minting a token changes nothing a user
+	// can see, so these repeat even when op names the write that needed a token.
+	return a.retry.repeat(ctx, op, func() error {
+		return a.appRESTAttempt(ctx, op, method, endpoint, jwt, payload, in != nil, out)
+	})
+}
+
+func (a *githubAppAuth) appRESTAttempt(ctx context.Context, op gitprovider.Operation, method, endpoint, jwt string, payload []byte, hasBody bool, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	setHeaders(req, jwt, acceptJSON)
-	if in != nil {
+	if hasBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := a.httpClient.Do(req)
@@ -258,7 +268,7 @@ func (a *githubAppAuth) doAppREST(ctx context.Context, op gitprovider.Operation,
 		return gitprovider.WrapError(gitprovider.ErrRetryable, op, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return mapHTTPStatus(op, resp.StatusCode, responseBody)
+		return a.retry.responseError(op, resp.StatusCode, resp.Header, responseBody, mapHTTPStatus)
 	}
 	if out != nil {
 		if err := json.Unmarshal(responseBody, out); err != nil {
