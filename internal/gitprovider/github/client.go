@@ -28,6 +28,9 @@ const (
 	gitHubAppRefreshSkew = 5 * time.Minute
 	gitHubAppJWTBackdate = 60 * time.Second
 	gitHubAppJWTLifetime = 9 * time.Minute
+	// writeSettle exceeds the 10 seconds after which GitHub documents that it
+	// terminates API request processing.
+	writeSettle = 12 * time.Second
 )
 
 var (
@@ -48,6 +51,7 @@ type Options struct {
 	AppID              string
 	InstallationID     string
 	InstallationLookup *InstallationLookup
+	Retry              RetryPolicy
 }
 
 // Client is a GitHub read adapter. CR-10 adds write methods and full
@@ -59,6 +63,7 @@ type Client struct {
 	baseURL    *url.URL
 	graphQLURL *url.URL
 	appAuth    *githubAppAuth
+	retry      retrier
 }
 
 // NewFromGitConfig builds a GitHub client and credential from config plus a token store.
@@ -148,6 +153,7 @@ func New(opts Options) (*Client, error) {
 		httpClient: httpClient,
 		baseURL:    baseURL,
 		graphQLURL: graphQLURL,
+		retry:      newRetrier(opts.Retry, opts.Now),
 	}, nil
 }
 
@@ -179,6 +185,7 @@ func (c *Client) Capabilities() gitprovider.ProviderCaps {
 		NativeFileLevelComments: false,
 		ThreadResolution:        true,
 		BundleInlineOnSubmit:    true,
+		WriteSettle:             writeSettle,
 	}
 }
 

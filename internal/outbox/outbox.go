@@ -61,6 +61,10 @@ type Options struct {
 	Provider Provider
 	Limiter  Limiter
 	Now      func() time.Time
+	// WriteRetry enables in-run recovery of retryable write failures in Post, for
+	// providers that declare ProviderCaps.WriteSettle. Otherwise a failed write
+	// stays pending after one attempt.
+	WriteRetry *WriteRetry
 }
 
 // Request identifies the run and PR being posted.
@@ -80,6 +84,8 @@ type Result struct {
 	Pending        int
 	FailedTerminal int
 	Aborted        bool
+	// PendingError is the failure recorded on the first action still pending.
+	PendingError string
 }
 
 // InlineCommentPayload is an alias for the canonical inline comment payload.
@@ -141,6 +147,7 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		return Result{ExitCode: exitUpstream}, err
 	}
 
+	writeRetriesSpent := false
 	for i := range actions {
 		if actions[i].Status != ledger.PlannedActionPending {
 			continue
@@ -209,6 +216,17 @@ func Post(ctx context.Context, opts Options, req Request) (Result, error) {
 		}
 
 		upstreamID, err := dispatch(ctx, opts.Provider, req.PRRef, plan)
+		if err != nil && opts.WriteRetry != nil && !writeRetriesSpent && opts.Provider.Capabilities().WriteSettle > 0 {
+			recovery, recoverErr := recoverWrite(ctx, opts, req, actions, i, plan, err)
+			if recoverErr != nil {
+				if isContextError(recoverErr) {
+					return summarize(actions, ledger.OutcomeIncomplete, exitUpstream, false), recoverErr
+				}
+				return Result{ExitCode: exitFailed}, recoverErr
+			}
+			upstreamID, err = recovery.upstreamID, recovery.err
+			writeRetriesSpent = errors.Is(err, gitprovider.ErrRetryable)
+		}
 		if err == nil {
 			now := opts.Now().UTC()
 			actions[i].Status = ledger.PlannedActionPosted
@@ -969,6 +987,9 @@ func summarize(actions []ledger.PlannedAction, outcome ledger.Outcome, exitCode 
 			result.Posted++
 		case ledger.PlannedActionPending:
 			result.Pending++
+			if result.PendingError == "" && action.Error != nil {
+				result.PendingError = *action.Error
+			}
 		case ledger.PlannedActionFailedTerminal:
 			result.FailedTerminal++
 		case ledger.PlannedActionSuperseded, ledger.PlannedActionPlannedOnly:

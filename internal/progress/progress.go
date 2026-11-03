@@ -83,6 +83,22 @@ func (l *Logger) InfoFields(command, op, target string, fields ...Field) {
 	})
 }
 
+// InfoReason writes an instantaneous record that explains itself with a failure
+// message, redacted the same way an error line's summary is.
+func (l *Logger) InfoReason(command, op, target, reason string, fields ...Field) {
+	line := progressLine{
+		event:   "info",
+		command: command,
+		op:      op,
+		target:  target,
+		fields:  cloneFields(fields),
+	}
+	if reason != "" {
+		line.errSummary = sanitizeErrorSummary(reason)
+	}
+	l.writeLine(line)
+}
+
 // End writes a finish or error line and returns err. It is a no-op for disabled
 // loggers or a span that has already ended.
 func (s *Span) End(err error) error {

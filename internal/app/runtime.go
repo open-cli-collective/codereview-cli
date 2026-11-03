@@ -119,21 +119,28 @@ type Dependencies struct {
 	CheckAgentSources      func(context.Context, []string, io.Writer)
 }
 
+// gitCommandFactory returns the injected factory, or the production one reporting
+// fetch retries to onRetry.
+func (d Dependencies) gitCommandFactory(onRetry func(gitexec.RetryEvent)) func(string, gitexec.TokenSource, string) (func(context.Context, string, ...string) ([]byte, error), error) {
+	if d.NewGitCommand != nil {
+		return d.NewGitCommand
+	}
+	return func(host string, tokens gitexec.TokenSource, username string) (func(context.Context, string, ...string) ([]byte, error), error) {
+		client, err := gitexec.NewWithUsername(host, tokens, username)
+		if err != nil {
+			return nil, err
+		}
+		client.OnRetry = onRetry
+		return client.Run, nil
+	}
+}
+
 func (d Dependencies) withDefaults() Dependencies {
 	if d.NewGitProvider == nil {
 		d.NewGitProvider = gitproviders.New
 	}
 	if d.ResolvePostingIdentity == nil {
 		d.ResolvePostingIdentity = resolvePostingIdentity
-	}
-	if d.NewGitCommand == nil {
-		d.NewGitCommand = func(host string, tokens gitexec.TokenSource, username string) (func(context.Context, string, ...string) ([]byte, error), error) {
-			client, err := gitexec.NewWithUsername(host, tokens, username)
-			if err != nil {
-				return nil, err
-			}
-			return client.Run, nil
-		}
 	}
 	if d.ResolveRepoRoot == nil {
 		d.ResolveRepoRoot = appruntime.ResolveRepoRoot
@@ -175,12 +182,12 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		cleanup()
 		return Runtime{}, err
 	}
-	repoProvider, repoCredential, err := deps.NewGitProvider(profile.Git, repoProviderStore, gitProviderOptions(profile, profile.Git, req.PRRef))
+	repoProvider, repoCredential, err := deps.NewGitProvider(profile.Git, repoProviderStore, gitProviderOptions(profile, profile.Git, req.PRRef, githubRetryProgress(req.Progress, command)))
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
 	}
-	gitCommand, err := deps.NewGitCommand(profile.Git.Host, repositoryTokenSource(repoProvider, repoCredential), gitproviders.GitBasicAuthUsername(profile.Git.ProviderKind()))
+	gitCommand, err := deps.gitCommandFactory(gitFetchRetryProgress(req.Progress, command))(profile.Git.Host, repositoryTokenSource(repoProvider, repoCredential), gitproviders.GitBasicAuthUsername(profile.Git.ProviderKind()))
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
@@ -192,7 +199,7 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		cleanup()
 		return Runtime{}, err
 	}
-	postingProvider, credential, err := deps.NewGitProvider(postingGit, postingProviderStore, gitProviderOptions(profile, postingGit, req.PRRef))
+	postingProvider, credential, err := deps.NewGitProvider(postingGit, postingProviderStore, gitProviderOptions(profile, postingGit, req.PRRef, githubRetryProgress(req.Progress, command)))
 	if err != nil {
 		cleanup()
 		return Runtime{}, err
@@ -374,11 +381,12 @@ func normalizeRuntimeProfile(profile config.Profile) config.Profile {
 	}).Profiles["runtime"]
 }
 
-func gitProviderOptions(profile config.Profile, git config.GitConfig, ref gitprovider.PRRef) gitproviders.Options {
+func gitProviderOptions(profile config.Profile, git config.GitConfig, ref gitprovider.PRRef, onRetry func(githubprovider.RetryEvent)) gitproviders.Options {
 	opts := gitproviders.Options{}
 	if git.ProviderKind() != config.GitProviderGitHub {
 		return opts
 	}
+	opts.GitHub.Retry.OnRetry = onRetry
 	if installationID := config.PinnedGitHubAppInstallationIDForGit(profile, git); installationID != "" {
 		opts.GitHub.InstallationID = installationID
 		return opts
@@ -409,6 +417,7 @@ func runtimeLayout() (statepaths.Layout, error) {
 func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, dispatcher *hookDispatcher, req OpenRequest, command string, gitCommand func(context.Context, string, ...string) ([]byte, error), resolveRepoRoot func(context.Context) (string, error)) reviewRunner {
 	taskProgress := newPipelineTaskProgress(logger, command, dispatcher)
 	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
+	writeRetry := outbox.DefaultWriteRetry(writeRetryProgress(logger, command))
 	pipelineOpts := pipeline.Options{
 		Provider:            repoProvider,
 		Adapter:             adapter,
@@ -450,6 +459,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			Provider:                liveProvider,
 			Planner:                 withProgressPlanner(logger, dispatcher, livePlanner{opts: pipelineOpts}),
 			Limiter:                 limiter,
+			WriteRetry:              writeRetry,
 			Layout:                  layout,
 			StaleHeartbeatThreshold: 10 * time.Minute,
 			Warnings:                warnings,
@@ -464,6 +474,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			Provider:     liveProvider,
 			Adapter:      adapter,
 			Limiter:      limiter,
+			WriteRetry:   writeRetry,
 			Layout:       layout,
 			TaskProgress: taskProgress,
 			NewActionID:  pipelineOpts.NewActionID,

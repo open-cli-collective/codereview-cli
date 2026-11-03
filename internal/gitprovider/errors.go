@@ -3,6 +3,7 @@ package gitprovider
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Typed provider errors. Concrete adapters map host-specific failures into
@@ -80,4 +81,38 @@ func WrapError(kind error, op Operation, err error) error {
 		return err
 	}
 	return &ProviderError{Op: op, Kind: kind, Err: err}
+}
+
+// RetryAfterError carries the wait a host asked for through the error chain, so
+// whichever layer retries can honor it without knowing HTTP headers.
+type RetryAfterError struct {
+	After time.Duration
+	Err   error
+}
+
+func (e *RetryAfterError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	if e.Err == nil {
+		return "gitprovider: retry after " + e.After.String()
+	}
+	return e.Err.Error()
+}
+
+// Unwrap exposes the classified provider error.
+func (e *RetryAfterError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// RetryAfterHint reports the wait the host requested, if err carries one.
+func RetryAfterHint(err error) (time.Duration, bool) {
+	var hinted *RetryAfterError
+	if errors.As(err, &hinted) && hinted != nil {
+		return hinted.After, true
+	}
+	return 0, false
 }

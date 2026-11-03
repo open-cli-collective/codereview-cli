@@ -347,7 +347,11 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
 	runtime, err := factory(ctx, runtimeReq)
 	if err != nil {
-		return runtimeSpan.End(cmdruntime.MapRunError(err))
+		mapped := runtimeSpan.End(cmdruntime.MapRunError(err))
+		if !flags.dryRun {
+			renderLiveFailure(opts, flags, reviewrun.Result{}, mapped)
+		}
+		return mapped
 	}
 	_ = runtimeSpan.End(nil)
 	if runtime.Cleanup != nil {
@@ -475,11 +479,16 @@ func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, f
 	execSpan := logger.Start("review", "execute_live", "pr")
 	result, err := runner.Live(ctx, req, reviewrun.Flags{Rerun: flags.rerun, RetryPosts: flags.retryPosts})
 	if err != nil {
-		return execSpan.End(cmdruntime.MapRunError(err))
+		mapped := execSpan.End(cmdruntime.MapRunError(err))
+		renderLiveFailure(opts, flags, result, mapped)
+		return mapped
 	}
 	_ = execSpan.End(nil)
 	renderSpan := logger.Start("review", "render_result", "stdout")
 	rendered := newReviewLive(result)
+	if result.ExitCode != exitcode.Success && rendered.Message == "" {
+		rendered.Message = liveResultError(result).Error()
+	}
 	err = view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
 		return view.RenderReviewLiveText(w, rendered)
 	})
@@ -494,6 +503,23 @@ func runLive(ctx context.Context, logger *progress.Logger, opts *root.Options, f
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
 	}
 	return nil
+}
+
+// liveFailureStatus matches the status a gate error already renders with.
+const liveFailureStatus = "error"
+
+// renderLiveFailure gives a failed run the same stdout record as a finished one.
+// Without it a consumer reading stdout, for `Status:` or for JSON, sees nothing at
+// all when the run fails before producing a result. The error also reaches stderr
+// and the exit code through the normal return path.
+func renderLiveFailure(opts *root.Options, flags commandFlags, result reviewrun.Result, err error) {
+	rendered := newReviewLive(result)
+	rendered.Status = liveFailureStatus
+	rendered.Message = err.Error()
+	rendered.Outbox.ExitCode = exitcode.FromError(err)
+	_ = view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
+		return view.RenderReviewLiveText(w, rendered)
+	})
 }
 
 func newReviewLive(result reviewrun.Result) view.ReviewLive {
@@ -551,6 +577,9 @@ func newReviewLive(result reviewrun.Result) view.ReviewLive {
 func liveResultError(result reviewrun.Result) error {
 	if strings.TrimSpace(result.Message) != "" {
 		return errors.New(result.Message)
+	}
+	if result.Outbox.Pending > 0 && result.Outbox.PendingError != "" {
+		return fmt.Errorf("live review incomplete: %d post(s) still pending: %s; run cr review again to reconcile and post them", result.Outbox.Pending, result.Outbox.PendingError)
 	}
 	if result.Outbox.Outcome != "" {
 		return fmt.Errorf("live review completed with outcome %s", result.Outbox.Outcome)

@@ -33,6 +33,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
 	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
+	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
@@ -1428,5 +1429,82 @@ func pipelineRequest(ref gitprovider.PRRef, pr gitprovider.PR, profile config.Pr
 		ProfileName:     "home",
 		Profile:         profile,
 		PostingIdentity: identity,
+	}
+}
+
+func TestOpenReportsGitHubRetriesThroughProgressAndEnablesWriteRecovery(t *testing.T) {
+	provider := &gitprovider.Fake{}
+	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	var captured []gitproviders.Options
+	deps := testDependencies(t,
+		func(_ config.GitConfig, _ credentials.Reader, opts gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			captured = append(captured, opts)
+			return provider, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
+			return &llm.FakeAdapter{}, nil
+		},
+	)
+	cfg := testConfig()
+	var out bytes.Buffer
+	runtime, err := Open(context.Background(), OpenRequest{
+		Config:       cfg,
+		Profile:      cfg.Profiles["home"],
+		ProfileName:  "home",
+		Command:      "review",
+		Progress:     progress.New(&out, false, nil),
+		PRRef:        gitprovider.PRRef{Host: "github.com", Owner: "o", Repo: "r", Number: 1},
+		Dependencies: deps,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer runtime.Cleanup()
+
+	if len(captured) != 2 {
+		t.Fatalf("providers built = %d, want read and posting", len(captured))
+	}
+	for i, opts := range captured {
+		if opts.GitHub.Retry.OnRetry == nil {
+			t.Fatalf("provider %d has no retry observer", i)
+		}
+	}
+	captured[0].GitHub.Retry.OnRetry(githubprovider.RetryEvent{Op: gitprovider.OperationGetPR, Attempt: 2, MaxAttempts: 6, Delay: 3 * time.Second, Reason: "github: status 502"})
+	line := out.String()
+	for _, want := range []string{`event=info`, `command="review"`, `op="retry_read"`, `target="GetPR"`, `attempt="2"`, `max_attempts="6"`, `delay_ms="3000"`, `error="github: status 502"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("progress = %q, want %q", line, want)
+		}
+	}
+
+	runner, ok := runtime.Runner.(reviewRunner)
+	if !ok {
+		t.Fatalf("runner = %T", runtime.Runner)
+	}
+	if runner.live.WriteRetry == nil || runner.respond.WriteRetry == nil {
+		t.Fatalf("write recovery live = %v respond = %v, want both enabled", runner.live.WriteRetry, runner.respond.WriteRetry)
+	}
+	out.Reset()
+	runner.live.WriteRetry.OnEvent(outbox.WriteRetryEvent{Phase: outbox.WriteRetryWaiting, ActionID: "action-1", Kind: ledger.PlannedActionSubmitReview, Attempt: 1, MaxAttempts: 3, Delay: 12 * time.Second, Reason: "github: status 504"})
+	for _, want := range []string{`op="retry_post"`, `target="submit_review"`, `phase="waiting"`, `action="action-1"`, `delay_ms="12000"`, `error="github: status 504"`} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("progress = %q, want %q", out.String(), want)
+		}
+	}
+}
+
+func TestGitFetchRetryProgress(t *testing.T) {
+	var out bytes.Buffer
+	gitFetchRetryProgress(progress.New(&out, false, nil), "review")(gitexec.RetryEvent{Attempt: 1, MaxAttempts: 4, Delay: time.Second, Reason: "git fetch https://x/y: returned error: 502"})
+	for _, want := range []string{`op="retry_fetch"`, `attempt="1"`, `delay_ms="1000"`, `[path]`, `returned error: 502`} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("progress = %q, want %q", out.String(), want)
+		}
+	}
+	if strings.Contains(out.String(), "https://x/y") {
+		t.Fatalf("progress = %q, want the path redacted", out.String())
 	}
 }

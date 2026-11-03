@@ -57,6 +57,7 @@ type Options struct {
 	Provider                outbox.LiveProvider
 	Planner                 Planner
 	Limiter                 outbox.Limiter
+	WriteRetry              *outbox.WriteRetry
 	Layout                  statepaths.Layout
 	Acquire                 gateio.AcquireFunc
 	Now                     func() time.Time
@@ -223,6 +224,7 @@ func evaluateGate(ctx context.Context, opts Options, req Request, pr gitprovider
 			Store:                   opts.Store,
 			Provider:                opts.Provider,
 			Limiter:                 opts.Limiter,
+			WriteRetry:              opts.WriteRetry,
 			Layout:                  opts.Layout,
 			Acquire:                 opts.Acquire,
 			Now:                     opts.Now,
@@ -299,10 +301,11 @@ func continueRun(ctx context.Context, opts Options, req Request, result Result) 
 	}
 
 	postResult, err := outbox.Post(ctx, outbox.Options{
-		Store:    opts.Store,
-		Provider: opts.Provider,
-		Limiter:  opts.Limiter,
-		Now:      opts.Now,
+		Store:      opts.Store,
+		Provider:   opts.Provider,
+		Limiter:    opts.Limiter,
+		Now:        opts.Now,
+		WriteRetry: opts.WriteRetry,
 	}, outbox.Request{
 		Run:                             result.Run,
 		PRRef:                           req.Pipeline.PRRef,

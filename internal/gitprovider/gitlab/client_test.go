@@ -32,6 +32,9 @@ func TestCapabilities(t *testing.T) {
 	if !caps.ReviewSummaryAsComment {
 		t.Fatalf("Capabilities() = %#v, want review summaries as comments", caps)
 	}
+	if caps.WriteSettle != 0 {
+		t.Fatalf("WriteSettle = %v, want none: GitLab documents no processing limit", caps.WriteSettle)
+	}
 	if caps.HeadRefNamespace != "merge-requests" {
 		t.Fatalf("HeadRefNamespace = %q, want merge-requests", caps.HeadRefNamespace)
 	}

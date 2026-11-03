@@ -31,6 +31,20 @@ func (c *Client) doREST(ctx context.Context, op gitprovider.Operation, method, e
 }
 
 func (c *Client) doRESTWithToken(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, error) {
+	var body []byte
+	var header http.Header
+	err := c.retry.do(ctx, op, func() error {
+		var attemptErr error
+		body, header, attemptErr = c.restAttempt(ctx, op, method, endpoint, token, accept, out)
+		return attemptErr
+	})
+	if err != nil {
+		return nil, header, err
+	}
+	return body, header, nil
+}
+
+func (c *Client) restAttempt(ctx context.Context, op gitprovider.Operation, method, endpoint, token, accept string, out any) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
 	if err != nil {
 		return nil, nil, err
@@ -46,7 +60,7 @@ func (c *Client) doRESTWithToken(ctx context.Context, op gitprovider.Operation, 
 		return nil, nil, gitprovider.WrapError(gitprovider.ErrRetryable, op, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, resp.Header, mapHTTPStatus(op, resp.StatusCode, body)
+		return nil, resp.Header, c.retry.responseError(op, resp.StatusCode, resp.Header, body, mapHTTPStatus)
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
@@ -61,11 +75,17 @@ func (c *Client) doRESTJSON(ctx context.Context, op gitprovider.Operation, metho
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
+	token, err := c.bearerToken(ctx, op)
 	if err != nil {
 		return err
 	}
-	token, err := c.bearerToken(ctx, op)
+	return c.retry.do(ctx, op, func() error {
+		return c.restJSONAttempt(ctx, op, method, endpoint, token, payload, out)
+	})
+}
+
+func (c *Client) restJSONAttempt(ctx context.Context, op gitprovider.Operation, method, endpoint, token string, payload []byte, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -81,7 +101,7 @@ func (c *Client) doRESTJSON(ctx context.Context, op gitprovider.Operation, metho
 		return gitprovider.WrapError(gitprovider.ErrRetryable, op, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return mapWriteHTTPStatus(op, resp.StatusCode, body)
+		return c.retry.responseError(op, resp.StatusCode, resp.Header, body, mapWriteHTTPStatus)
 	}
 	if out != nil {
 		if err := json.Unmarshal(body, out); err != nil {
@@ -118,11 +138,17 @@ func (c *Client) doGraphQLWithErrorMapper(ctx context.Context, op gitprovider.Op
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.graphQLURL.String(), bytes.NewReader(payload))
+	token, err := c.bearerToken(ctx, op)
 	if err != nil {
 		return err
 	}
-	token, err := c.bearerToken(ctx, op)
+	return c.retry.do(ctx, op, func() error {
+		return c.graphQLAttempt(ctx, op, token, payload, out, mapErrors)
+	})
+}
+
+func (c *Client) graphQLAttempt(ctx context.Context, op gitprovider.Operation, token string, payload []byte, out any, mapErrors func(gitprovider.Operation, []graphQLError) error) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.graphQLURL.String(), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -138,7 +164,7 @@ func (c *Client) doGraphQLWithErrorMapper(ctx context.Context, op gitprovider.Op
 		return gitprovider.WrapError(gitprovider.ErrRetryable, op, readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return mapHTTPStatus(op, resp.StatusCode, body)
+		return c.retry.responseError(op, resp.StatusCode, resp.Header, body, mapHTTPStatus)
 	}
 
 	var envelope graphQLResponse
@@ -146,7 +172,7 @@ func (c *Client) doGraphQLWithErrorMapper(ctx context.Context, op gitprovider.Op
 		return fmt.Errorf("%w: decode GraphQL response: %w", ErrValidation, err)
 	}
 	if len(envelope.Errors) > 0 {
-		return mapErrors(op, envelope.Errors)
+		return c.retry.withRetryHint(mapErrors(op, envelope.Errors), resp.Header)
 	}
 	if out == nil {
 		return nil

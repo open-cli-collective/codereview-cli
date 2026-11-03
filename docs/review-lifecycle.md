@@ -110,6 +110,18 @@ not reached the PR.
 - Outbox reconciliation checks markers before every dispatch, so a process
   crash after a provider write but before the local update does not duplicate
   the reply or final review.
+- GitHub reads and `git fetch` retry 5xx, 429 and connection failures with
+  jittered backoff and honor `Retry-After`. A 404 fails immediately.
+- A write that fails retryably during the final outbox is checked against the PR
+  after a settle wait, marked posted if its marker is there, and otherwise resent,
+  up to three sends. Once one action uses up its sends, later actions in that run
+  get one send each, so an outage cannot multiply the wait. Whatever is left stays
+  pending, the run exits 5, and the next `cr review` reconciles it. Duplicates remain
+  possible only if GitHub applies a write after the settle wait and the marker check.
+  GitLab declares no processing limit, so a GitLab write that fails retryably gets one
+  send and stays pending for the next `cr review` to reconcile.
+- A run that fails renders `Status: error` and the cause on stdout, or the same
+  record as JSON, as well as the error on stderr and a non-zero exit code.
 - Thread replies are ordered before resolutions, and a resolution is not sent
   until its reply is posted or reconciled.
 - Completed summary markers on the PR outrank stale local fallback state.

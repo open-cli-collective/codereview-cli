@@ -310,15 +310,26 @@ func ensureCommit(ctx context.Context, deps Deps, repoDir string, branch gitprov
 	if commitPresent(ctx, deps, repoDir, branch.SHA) {
 		return nil
 	}
-	if _, err := deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, branch.SHA); err == nil && commitPresent(ctx, deps, repoDir, branch.SHA) {
+	_, fetchErr := deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, branch.SHA)
+	if fetchErr == nil && commitPresent(ctx, deps, repoDir, branch.SHA) {
 		return nil
 	}
-	if ref != "" {
-		if _, err := deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, ref); err == nil && commitPresent(ctx, deps, repoDir, branch.SHA) {
+	if ref != "" && !errors.Is(fetchErr, gitprovider.ErrRetryable) {
+		_, fetchErr = deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, ref)
+		if fetchErr == nil && commitPresent(ctx, deps, repoDir, branch.SHA) {
 			return nil
 		}
 	}
-	return fmt.Errorf("pipeline: fetch commit %s for %s/%s from %q", prref.ShortSHA(branch.SHA), branch.Owner, branch.Repo, remoteURL)
+	return fetchFailure(fmt.Sprintf("pipeline: fetch commit %s for %s/%s from %q", prref.ShortSHA(branch.SHA), branch.Owner, branch.Repo, remoteURL), fetchErr)
+}
+
+// fetchFailure keeps a transient cause in the chain, so the run exits as an
+// upstream failure and says what the host returned.
+func fetchFailure(message string, err error) error {
+	if errors.Is(err, gitprovider.ErrRetryable) {
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	return errors.New(message)
 }
 
 func ensurePullRequestHead(ctx context.Context, deps Deps, repoDir string, number int, headRefNamespace string, head gitprovider.PRBranchRef, remoteURL string) error {
@@ -326,10 +337,11 @@ func ensurePullRequestHead(ctx context.Context, deps Deps, repoDir string, numbe
 	if err != nil {
 		return err
 	}
-	if _, err := deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, ref); err == nil && commitPresent(ctx, deps, repoDir, head.SHA) {
+	_, fetchErr := deps.gitCommand(ctx, repoDir, "fetch", "--no-tags", remoteURL, ref)
+	if fetchErr == nil && commitPresent(ctx, deps, repoDir, head.SHA) {
 		return nil
 	}
-	return fmt.Errorf("pipeline: fetch PR head commit %s from %q ref %q", prref.ShortSHA(head.SHA), remoteURL, ref)
+	return fetchFailure(fmt.Sprintf("pipeline: fetch PR head commit %s from %q ref %q", prref.ShortSHA(head.SHA), remoteURL, ref), fetchErr)
 }
 
 func pullHeadRef(namespace string, number int) (string, error) {

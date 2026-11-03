@@ -45,6 +45,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/identity"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
+	"github.com/open-cli-collective/codereview-cli/internal/outbox"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
@@ -337,6 +338,8 @@ type auditHarness struct {
 	workbenchRepoDir string
 	now              time.Time
 	llmCalls         atomic.Int32
+	// githubFault, when set, answers a GitHub request instead of the fixture.
+	githubFault func(http.ResponseWriter, *http.Request) bool
 
 	gitSecret                     string
 	reviewerSecret                string
@@ -696,6 +699,7 @@ func (p noLeakRuntimeProvider) Capabilities() gitprovider.ProviderCaps {
 		NativeFileLevelComments: readCaps.NativeFileLevelComments || writeCaps.NativeFileLevelComments,
 		ThreadResolution:        readCaps.ThreadResolution || writeCaps.ThreadResolution,
 		BundleInlineOnSubmit:    readCaps.BundleInlineOnSubmit || writeCaps.BundleInlineOnSubmit,
+		WriteSettle:             writeCaps.WriteSettle,
 	}
 }
 
@@ -869,6 +873,7 @@ func (h *auditHarness) reviewRuntimeFactory(ctx context.Context, runtimeOpts app
 			Provider:                liveProvider,
 			Planner:                 livePlanner{opts: pipelineOpts},
 			Limiter:                 noLeakLimiter{},
+			WriteRetry:              &outbox.WriteRetry{Sleep: noRetryWait},
 			Layout:                  h.layout,
 			Now:                     func() time.Time { return h.now },
 			StaleHeartbeatThreshold: 10 * time.Minute,
@@ -897,12 +902,15 @@ func (h *auditHarness) newGitHubProvider(git config.GitConfig, store credentials
 		BaseURL:            h.githubURL,
 		GraphQLURL:         h.graphQLURL,
 		InstallationLookup: lookup,
+		Retry:              githubprovider.RetryPolicy{Sleep: noRetryWait},
 	}
 	if lookup == nil {
 		opts.InstallationID = h.githubAppInstallationIDSecret
 	}
 	return githubprovider.NewFromGitConfig(git, store, opts)
 }
+
+func noRetryWait(context.Context, time.Duration) error { return nil }
 
 func gitConfigForReviewerAuth(profile config.Profile) config.GitConfig {
 	if profile.ReviewerCredentials == nil {
@@ -983,6 +991,9 @@ func (h *auditHarness) openLedger(t *testing.T) *ledger.Store {
 }
 
 func (h *auditHarness) handleGitHub(w http.ResponseWriter, r *http.Request) {
+	if h.githubFault != nil && h.githubFault(w, r) {
+		return
+	}
 	if r.URL.EscapedPath() == "/graphql" {
 		h.handleGitHubGraphQL(w, r)
 		return

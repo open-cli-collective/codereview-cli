@@ -2,7 +2,9 @@ package gitprovider
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 )
 
 func TestProviderErrorMatchesKindAndCause(t *testing.T) {
@@ -49,5 +51,27 @@ func TestProviderErrorZeroValueDoesNotPanic(t *testing.T) {
 	withOp := (&ProviderError{Op: OperationGetPR}).Error()
 	if withOp == "" {
 		t.Fatal("ProviderError with op Error() = empty string, want non-empty")
+	}
+}
+
+func TestRetryAfterErrorKeepsClassificationAndHint(t *testing.T) {
+	inner := WrapError(ErrRetryable, OperationGetPR, errors.New("github: status 429"))
+	wrapped := fmt.Errorf("outer: %w", &RetryAfterError{After: 7 * time.Second, Err: inner})
+
+	if !errors.Is(wrapped, ErrRetryable) {
+		t.Fatalf("errors.Is(ErrRetryable) = false for %v", wrapped)
+	}
+	var providerErr *ProviderError
+	if !errors.As(wrapped, &providerErr) || providerErr.Op != OperationGetPR {
+		t.Fatalf("errors.As(ProviderError) = %#v", providerErr)
+	}
+	if hint, ok := RetryAfterHint(wrapped); !ok || hint != 7*time.Second {
+		t.Fatalf("RetryAfterHint = %s, %t", hint, ok)
+	}
+	if wrapped.Error() != "outer: "+inner.Error() {
+		t.Fatalf("Error() = %q", wrapped)
+	}
+	if _, ok := RetryAfterHint(inner); ok {
+		t.Fatal("RetryAfterHint found a hint on an unhinted error")
 	}
 }

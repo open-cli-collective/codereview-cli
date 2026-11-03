@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
@@ -28,6 +29,9 @@ func TestCapabilities(t *testing.T) {
 	caps := client.Capabilities()
 	if caps.NativeFileLevelComments || !caps.ThreadResolution || !caps.BundleInlineOnSubmit {
 		t.Fatalf("Capabilities() = %#v, want bundled review comments with thread resolution and no native file comments", caps)
+	}
+	if caps.WriteSettle <= 10*time.Second {
+		t.Fatalf("WriteSettle = %v, want longer than GitHub's 10-second processing limit", caps.WriteSettle)
 	}
 }
 
@@ -406,6 +410,9 @@ func mustClient(t *testing.T, opts Options) *Client {
 	}
 	if opts.Host == "" {
 		opts.Host = defaultHost
+	}
+	if opts.Retry.Sleep == nil {
+		opts.Retry.Sleep = func(context.Context, time.Duration) error { return nil }
 	}
 	client, err := New(opts)
 	if err != nil {

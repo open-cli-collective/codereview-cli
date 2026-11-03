@@ -65,6 +65,7 @@ type Options struct {
 	Store                   Store
 	Provider                outbox.LiveProvider
 	Limiter                 outbox.Limiter
+	WriteRetry              *outbox.WriteRetry
 	Layout                  statepaths.Layout
 	Acquire                 AcquireFunc
 	Now                     func() time.Time
@@ -565,10 +566,11 @@ func executeRepair(ctx context.Context, opts Options, req Request, decision gate
 		return repairExecution{}, err
 	}
 	postResult, err := outbox.Post(ctx, outbox.Options{
-		Store:    opts.Store,
-		Provider: opts.Provider,
-		Limiter:  opts.Limiter,
-		Now:      opts.Now,
+		Store:      opts.Store,
+		Provider:   opts.Provider,
+		Limiter:    opts.Limiter,
+		Now:        opts.Now,
+		WriteRetry: opts.WriteRetry,
 	}, outbox.Request{
 		Run:                             run,
 		PRRef:                           req.PRRef,
@@ -603,10 +605,11 @@ func executeApprovalOverride(ctx context.Context, opts Options, req Request) (ap
 		return approvalOverrideExecution{}, err
 	}
 	postResult, err := outbox.Post(ctx, outbox.Options{
-		Store:    opts.Store,
-		Provider: opts.Provider,
-		Limiter:  opts.Limiter,
-		Now:      opts.Now,
+		Store:      opts.Store,
+		Provider:   opts.Provider,
+		Limiter:    opts.Limiter,
+		Now:        opts.Now,
+		WriteRetry: opts.WriteRetry,
 	}, outbox.Request{
 		Run:                             run,
 		PRRef:                           req.PRRef,
@@ -647,10 +650,11 @@ func executeRetryPosts(ctx context.Context, opts Options, req Request, run ledge
 		return retryExecution{}, err
 	}
 	postResult, err := outbox.Post(ctx, outbox.Options{
-		Store:    opts.Store,
-		Provider: opts.Provider,
-		Limiter:  opts.Limiter,
-		Now:      opts.Now,
+		Store:      opts.Store,
+		Provider:   opts.Provider,
+		Limiter:    opts.Limiter,
+		Now:        opts.Now,
+		WriteRetry: opts.WriteRetry,
 	}, outbox.Request{
 		Run:                             run,
 		PRRef:                           req.PRRef,
