@@ -1,6 +1,7 @@
 package reviewplan
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/review"
@@ -55,5 +56,19 @@ func TestEffectiveReviewEvent(t *testing.T) {
 				t.Fatalf("effectiveReviewEvent = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildValidatesProposedRollupEvent(t *testing.T) {
+	unknown := summaryRequest()
+	unknown.Rollup.ReviewEvent = "merge"
+	if _, err := Build(unknown); err == nil || !strings.Contains(err.Error(), "invalid rollup review event") {
+		t.Fatalf("Build with unknown proposal error = %v, want invalid rollup review event", err)
+	}
+
+	unset := summaryRequest()
+	unset.Rollup.ReviewEvent = ""
+	if _, err := Build(unset); err != nil {
+		t.Fatalf("Build with no proposal: %v", err)
 	}
 }
