@@ -77,6 +77,14 @@ for the current user.
 | Windows | Credential Manager |
 | Linux | Secret Service |
 
+On macOS, `cr` reads Keychain secrets through the system `/usr/bin/security`
+executable, so access granted once carries across `cr` upgrades. The first read
+of an item that does not yet trust `security` raises one prompt naming `security`;
+choose **Always Allow**. Reads of that item do not prompt again. `cr set-credential`
+and other writes still run as the `cr` binary, and a newly created item raises that
+one prompt on its first read. A prompt left unanswered fails the read after 60
+seconds.
+
 Configured stores can also target `1Password` desktop, service account, or
 Connect backends, `pass`, encrypted file storage, or in-memory storage. Configure
 additional stores from interactive `cr init` under **Configure secrets

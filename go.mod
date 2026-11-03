@@ -15,7 +15,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/gobwas/glob v0.2.3
 	github.com/google/uuid v1.6.0
-	github.com/open-cli-collective/cli-common v0.4.1
+	github.com/open-cli-collective/cli-common v0.5.1
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/image v0.47.0
