@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "task": "prior_threads",
+  "findings": [
+    {"finding_id": "new-a", "severity": "major", "file_path": "src/alpha.go", "anchor": {"kind": "file"}, "body": "Synthetic current finding A."},
+    {"finding_id": "new-b", "severity": "minor", "file_path": "src/beta.go", "anchor": {"kind": "file"}, "body": "Synthetic current finding B."}
+  ],
+  "threads": [
+    {"thread_id": "thread-open", "eligible": true, "file_path": "src/alpha.go", "body": "Synthetic earlier review comment."},
+    {"thread_id": "thread-excluded", "eligible": false, "file_path": "src/beta.go", "body": "Synthetic ineligible thread."}
+  ],
+  "decisions": [
+    {"left_id": "new-a", "right_id": "thread-open", "choice": "same", "input_sha256": "28e258b44df1cb382e8a99ac5293a5220c48c8013992459df1fe4f510b843a30"},
+    {"left_id": "new-b", "right_id": "thread-open", "choice": "abstain", "input_sha256": "d020df6e24b61441f447a0fbd47e0fad00e36ab27f2a987a6a30c8e7ac8fec2a"}
+  ]
+}

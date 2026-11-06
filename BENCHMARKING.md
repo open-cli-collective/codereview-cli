@@ -270,6 +270,84 @@ cr benchmark compare .cr-bench/results/debug-run
 cr benchmark compare .cr-bench/results/debug-run --json
 ```
 
+Replay recorded report-identity decisions from one explicit local fixture:
+
+```bash
+cr benchmark replay .codereview/benchmarks/report-identity-example.json
+```
+
+`replay` emits one compact JSON result to stdout. It reads only the named fixture
+and does not load a profile, model catalog, ledger, provider, or adapter. It does
+not create result files or initiate model calls. The command returns 0 for
+`complete` and `unresolved`, 1 for a valid result with recorded `error` choices
+or for an I/O failure, and 2 for invalid arguments, flags, or fixture content.
+
+The v1 fixture is one JSON object with these required top-level fields:
+
+| Field | Values and shape |
+|-------|------------------|
+| `schema_version` | Integer `1`. |
+| `task` | `cohort` or `prior_threads`. |
+| `findings` | Required array of the normal finding fields `finding_id`, `severity`, `file_path`, `anchor`, and `body`; optional `anchoring` is preserved. `anchor` requires `kind` and may include `side` and `line`. |
+| `threads` | Required array of `thread_id`, `eligible`, `file_path`, and `body`. `cohort` requires an empty array. |
+| `decisions` | Required array of `left_id`, `right_id`, `choice`, and `input_sha256`. Choices are `same`, `different`, `abstain`, or `error`; each hash is 64 lowercase hexadecimal characters. |
+
+Finding IDs and thread IDs use unique, case-sensitive identifiers of 1–128
+ASCII bytes from `A-Z`, `a-z`, `0-9`, `.`, `_`, and `-`. IDs are unique across
+both arrays. Severity is exactly `blocking`, `major`, `minor`, or `nits`;
+`anchor.kind` is exactly `file` or `line`. A line anchor requires `side` of
+`LEFT` or `RIGHT` and a positive `line`; a file anchor omits both. Optional
+`anchoring` is `inline`, `file-level-native`, `file-level-fallback`, or
+`rollup-only`. Paths and bodies are preserved exactly; whitespace-only values
+are rejected. `eligible` must be a JSON boolean and is supplied by the caller,
+with no thread-status or author inference.
+
+For each expected pair, the hash is SHA-256 of compact UTF-8 JSON for the fixed
+projection `{"schema_version":1,"task":"...","left":<record>,"right":<record>}`.
+Finding keys follow `finding_id`, `severity`, `file_path`, `anchor`, `body`, and
+optional `anchoring`; anchor keys follow `kind`, optional `side`, optional
+`line`. Thread keys follow `thread_id`, `eligible`, `file_path`, `body`. Cohort
+pairs use finding input order; prior-thread pairs use finding then thread order.
+Hashes attest to this pair projection, not to fixture bytes, a model call, or
+provenance. Cohort decisions may list their IDs in reverse order; replay
+normalizes them to the pair's input order. Prior-thread decisions use finding
+then thread order.
+
+For example, an empty observation list is valid and leaves each expected pair
+`missing`:
+
+```json
+{
+  "schema_version": 1,
+  "task": "cohort",
+  "findings": [
+    {"finding_id": "finding-a", "severity": "major", "file_path": "src/a.go", "anchor": {"kind": "file"}, "body": "Synthetic example finding A"},
+    {"finding_id": "finding-b", "severity": "minor", "file_path": "src/b.go", "anchor": {"kind": "file"}, "body": "Synthetic example finding B"}
+  ],
+  "threads": [],
+  "decisions": []
+}
+```
+
+Every expected pair, including a missing pair, is returned with the hash of its
+fixed v1 input projection. A caller can replay once to obtain those hashes, then
+record decisions against that exact pair input. Fixture whitespace and decision
+ordering do not change pair hashes or result ordering. V1 rejects unknown and
+duplicate object keys, missing or null arrays, malformed IDs, invalid enums,
+unknown pairs, duplicate pairs, and hash mismatches. The input is limited to 4
+MiB, 100 findings, 100 threads, 10,000 decisions, 10,000 expected pairs, 16 KiB
+per body, and 4 KiB per path.
+
+For `cohort`, the command compares every unordered finding pair. A complete
+result forms groups only when `same` is an equivalence relation. Any missing,
+abstained, failed, or contradictory observation makes every group a singleton;
+the result includes deterministic issue records. For `prior_threads`, it compares
+each finding with every eligible thread and retains every `same` association,
+including multiple associations. Ineligible threads remain in the originals but
+never become pairs. Both tasks retain every input record in the result. The
+rollup fields are a compatibility projection; they do not choose a review event
+or an action.
+
 Use repeatable `--candidate <id>` and `--case <id>` flags for benchmark
 selection. Do not use ambiguous benchmark model-selection language. Models are
 stage recipe fields, not suite selectors.
@@ -343,6 +421,10 @@ and writes `comparison.json` and `comparison.md`. It is local-only: it does not
 invoke models, re-read live PR state, mutate Git provider state, or require
 provider credentials. `run` writes the same comparison artifacts automatically
 after the suite artifacts are written.
+
+`replay` is an offline pure assembly command. It does not read benchmark suites,
+configuration, profiles, credentials, catalogs, ledger state, or provider data;
+callers supply the input records and recorded pair decisions explicitly.
 
 ## Artifacts
 

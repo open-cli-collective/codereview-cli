@@ -169,6 +169,18 @@ provider, fake LLM, real ledger, temp state layout, deterministic IDs, dossier
 context, workbench preparation, planned actions, prompt inputs, and preserved
 task metadata.
 
+### Offline Report-Identity Replay
+
+`internal/reportidentity` is a pure helper for replaying caller-recorded finding
+and prior-thread identity observations. Its production imports are limited to
+the standard library and `internal/review`; only
+`internal/cmd/benchmarkcmd` may import it. Review pipeline, planner, provider,
+configuration, lifecycle, and posting packages must not call it. The
+`cr benchmark replay` command reads one explicitly named JSON fixture, joins
+recorded decisions to deterministic pair hashes, and returns the original
+records with complete, unresolved, or error status. Its rollup fields are a
+compatibility projection and do not select a live review event or action.
+
 ## Inline Thread Lifecycle
 
 Inline PR discussion threads are domain input, not provider-specific prompt

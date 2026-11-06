@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "task": "cohort",
+  "findings": [
+    {"finding_id": "error-a", "severity": "major", "file_path": "src/a.go", "anchor": {"kind": "file"}, "body": "Synthetic recorded-error finding A."},
+    {"finding_id": "error-b", "severity": "minor", "file_path": "src/b.go", "anchor": {"kind": "file"}, "body": "Synthetic recorded-error finding B."}
+  ],
+  "threads": [],
+  "decisions": [
+    {"left_id": "error-a", "right_id": "error-b", "choice": "error", "input_sha256": "1f5f663a5830dc3219ea6ec3898ef9183efe51baa95b2623c6481709eb0bc8b1"}
+  ]
+}
