@@ -1434,7 +1434,7 @@ and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 cr benchmark <command>
 ```
 
-Validates, inspects, runs, and compares benchmark suites. See
+Validates, inspects, runs, compares, and replays offline benchmark data. See
 [BENCHMARKING.md](BENCHMARKING.md) for the full benchmark guide.
 
 ### `cr benchmark validate`
@@ -1538,6 +1538,19 @@ write the same comparison artifacts automatically.
 
 `benchmark compare` emits progress on stderr while it loads the suite summary,
 builds the comparison model, and writes JSON and Markdown artifacts.
+
+### `cr benchmark replay`
+
+```text
+cr benchmark replay <fixture.json>
+```
+
+Replays caller-recorded report-identity decisions from one explicit local JSON
+fixture and emits one compact JSON result. It uses no profile, model catalog,
+ledger, provider, adapter, or model call. Complete and unresolved results exit
+0; a recorded error or I/O failure exits 1; invalid arguments or fixture
+content exits 2. See [BENCHMARKING.md](BENCHMARKING.md) for the v1 schema and
+uncertainty rules.
 
 ### `cr sessions list`
 

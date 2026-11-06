@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "task": "cohort",
+  "findings": [
+    {"finding_id": "alpha", "severity": "major", "file_path": "src/alpha.go", "anchor": {"kind": "file"}, "body": "Synthetic report A describes a missing nil guard."},
+    {"finding_id": "beta", "severity": "blocking", "file_path": "src/beta.go", "anchor": {"kind": "file"}, "body": "Synthetic report B describes the same nil guard."},
+    {"finding_id": "gamma", "severity": "minor", "file_path": "src/gamma.go", "anchor": {"kind": "file"}, "body": "Synthetic report C describes that guard too."}
+  ],
+  "threads": [],
+  "decisions": [
+    {"left_id": "alpha", "right_id": "beta", "choice": "same", "input_sha256": "51353b0608e9dc8ff30d4f77defb8beef5b4be95d83ce1adda1b2729be29a52f"},
+    {"left_id": "alpha", "right_id": "gamma", "choice": "same", "input_sha256": "fc3d86aa644faddc45e1f1d9d74c43d479977beeb2968431026357ed2d8e1607"},
+    {"left_id": "beta", "right_id": "gamma", "choice": "same", "input_sha256": "71ae490c4fae33d912ce6ec26512ec9d58ee64b5155137b22216661e4ad691e0"}
+  ]
+}
