@@ -155,6 +155,46 @@ func TestPairInputSHA256Golden(t *testing.T) {
 	}
 }
 
+func TestLineAnchorInputHashChangesWhenLineChanges(t *testing.T) {
+	for _, task := range []Task{TaskCohort, TaskPriorThread} {
+		for _, choice := range []Choice{ChoiceSame, ChoiceDifferent, ChoiceAbstain, ChoiceError} {
+			t.Run(string(task)+"/"+string(choice), func(t *testing.T) {
+				first := finding("f1", review.SeverityMajor)
+				first.Anchor = review.Anchor{Kind: review.AnchorKindLine, Side: review.DiffSideRight, Line: 22}
+				records := Records{
+					SchemaVersion: SchemaVersion,
+					Task:          task,
+					Findings:      []review.Finding{first},
+					Threads:       []Thread{},
+				}
+
+				key := pairKey{left: "f1", right: "f2"}
+				if task == TaskCohort {
+					records.Findings = append(records.Findings, finding("f2", review.SeverityMinor))
+				} else {
+					records.Threads = []Thread{{ID: "t1", Eligible: true, FilePath: "src/alpha.go", Body: "Synthetic earlier comment."}}
+					key = pairKey{left: "f1", right: "t1"}
+				}
+
+				decisions := decisionsFor(t, records, map[pairKey]Choice{key: choice})
+				if _, err := Assemble(records, decisions); err != nil {
+					t.Fatalf("Assemble original line-22 records: %v", err)
+				}
+
+				mutated := records
+				mutated.Findings = append([]review.Finding(nil), records.Findings...)
+				mutated.Findings[0].Anchor.Line = 23
+				if records.Findings[0].Anchor.Line != 22 {
+					t.Fatalf("original finding line = %d, want unchanged line 22", records.Findings[0].Anchor.Line)
+				}
+				if _, err := Assemble(mutated, decisions); err == nil || !strings.Contains(err.Error(), "input_sha256 does not match pair projection") {
+					t.Fatalf("Assemble mutated line-23 records error = %v, want hash mismatch", err)
+				}
+			})
+		}
+	}
+}
+
 func TestCompleteCohortAssemblesStableGroupsAndRollupProjection(t *testing.T) {
 	records := Records{
 		SchemaVersion: SchemaVersion,
