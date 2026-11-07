@@ -68,6 +68,8 @@ func defaultIdentityProviderRuntime(provider identityProviderConfig, flags ident
 			},
 			backend: inferSystemOneBackend(flags, dependencies),
 		}, nil
+	case "openai_decisions":
+		return openAIDecisionsIdentityProviderRuntime(provider, flags), nil
 	default:
 		return identityProviderRuntime{}, fmt.Errorf("unknown provider adapter kind %q", provider.Kind)
 	}
@@ -190,16 +192,21 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
-		if kind != "system_one" {
+		if kind != "system_one" && kind != "openai_decisions" {
 			return nil, fmt.Errorf("provider %q has unknown adapter kind %q", name, kind)
 		}
-		fields, err := identityYAMLMapping(value, "provider "+name, map[string]bool{
-			"kind": true, "endpoint": true, "api_key_env": true, "auth_scheme": true, "service_tier": true,
-		})
+		allowedFields := map[string]bool{"kind": true, "endpoint": true, "api_key_env": true}
+		requiredFields := []string{"endpoint", "api_key_env"}
+		if kind == "system_one" {
+			allowedFields["auth_scheme"] = true
+			allowedFields["service_tier"] = true
+			requiredFields = append(requiredFields, "auth_scheme")
+		}
+		fields, err := identityYAMLMapping(value, "provider "+name, allowedFields)
 		if err != nil {
 			return nil, err
 		}
-		for _, field := range []string{"endpoint", "api_key_env", "auth_scheme"} {
+		for _, field := range requiredFields {
 			if fields[field] == nil {
 				return nil, fmt.Errorf("provider %q requires %q", name, field)
 			}
@@ -217,16 +224,20 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 		if !validAPIKeyEnvName(provider.APIKeyEnv) {
 			return nil, fmt.Errorf("provider %q api_key_env must be an environment variable name", name)
 		}
-		if provider.AuthScheme, err = identityYAMLString(fields["auth_scheme"], "auth_scheme"); err != nil {
-			return nil, fmt.Errorf("provider %q: %w", name, err)
-		}
-		if _, valid := normalizedAuthScheme(provider.AuthScheme); !valid {
-			return nil, fmt.Errorf("provider %q auth_scheme must be api-key or bearer", name)
-		}
-		if fields["service_tier"] != nil {
-			if provider.ServiceTier, err = identityYAMLString(fields["service_tier"], "service_tier"); err != nil {
+		if kind == "system_one" {
+			if provider.AuthScheme, err = identityYAMLString(fields["auth_scheme"], "auth_scheme"); err != nil {
 				return nil, fmt.Errorf("provider %q: %w", name, err)
 			}
+			if _, valid := normalizedAuthScheme(provider.AuthScheme); !valid {
+				return nil, fmt.Errorf("provider %q auth_scheme must be api-key or bearer", name)
+			}
+			if fields["service_tier"] != nil {
+				if provider.ServiceTier, err = identityYAMLString(fields["service_tier"], "service_tier"); err != nil {
+					return nil, fmt.Errorf("provider %q: %w", name, err)
+				}
+			}
+		} else {
+			provider.AuthScheme = "bearer"
 		}
 		providers[name] = provider
 	}

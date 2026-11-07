@@ -1558,17 +1558,9 @@ uncertainty rules.
 cr benchmark run <identity.yml> (--provider NAME --model ID | --candidate ID) --max-calls N --results-dir DIR
 ```
 
-Runs one complete offline report-identity fixture through one explicitly configured provider and model, and may incur provider charges. The suite names its adapter kind, HTTPS endpoint, credential environment-variable name and authentication scheme; it contains no key value. There is no implicit provider, model or price. Direct mode requires both `--provider` and `--model`; a candidate supplies both. `--max-calls` must cover every expected pair.
+Runs one complete offline report-identity fixture through one explicitly configured provider and model, and may incur provider charges. The suite names its adapter kind, HTTPS endpoint and credential environment-variable name; System One also names its authentication scheme, while OpenAI Decisions uses fixed Bearer authentication and rejects configurable auth schemes and service tiers. The suite contains no key value. There is no implicit provider, model or price. Direct mode requires both `--provider` and `--model`; a candidate supplies both. `--max-calls` must cover every expected pair.
 
-The runner preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. The provider-neutral report projection and replay are shared by the selected adapter; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for the strict suite schema, flags, artifacts and accounting rules.
-
-### `cr benchmark infer-openai-decisions`
-
-```text
-cr benchmark infer-openai-decisions <fixture.json> --model MODEL --max-calls N --output-dir DIR [--timeout 30s]
-```
-
-Runs the shared report-pair projection and replay through the narrow OpenAI Decisions string-choice client and may incur provider charges. The required model has no default; the endpoint defaults to `https://api.openai.com/v1/decisions` and the API key environment variable defaults to `OPENAI_API_KEY`. Authentication uses Bearer, with no auth-scheme, tier or effort flag. Prices are caller supplied. Cost stays unknown unless both cached-input and cache-write counts are reported as zero; base token totals remain independent. This command does not run a model matrix or make quality or performance claims. See [BENCHMARKING.md](BENCHMARKING.md) for the shared fixture and artifact behavior and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions).
+The runner preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. OpenAI Decisions cost remains unknown unless both cache counts are known zero, while base token totals remain available independently. The provider-neutral report projection and replay are shared by the selected adapter; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for the strict suite schema, flags, artifacts, accounting rules and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions).
 
 ### `cr sessions list`
 

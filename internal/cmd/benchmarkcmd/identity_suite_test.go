@@ -35,6 +35,20 @@ candidates:
     expected_model: model-resolved
 `
 
+const validOpenAIDecisionsSuiteYAML = `task: report_identity
+fixture: ./fixture.json
+providers:
+  decisions:
+    kind: openai_decisions
+    endpoint: https://api.openai.com/v1/decisions
+    api_key_env: OPENAI_API_KEY
+candidates:
+  saved:
+    provider: decisions
+    model: gpt-6-luna
+    expected_model: gpt-6-luna
+`
+
 func TestParseIdentitySuiteIsStrictAndAcceptsSameKindProviders(t *testing.T) {
 	suite, err := parseIdentitySuite([]byte(validIdentitySuiteYAML))
 	if err != nil {
@@ -66,7 +80,7 @@ func TestParseIdentitySuiteRejectsInvalidSchema(t *testing.T) {
 		{name: "unknown provider key", data: strings.Replace(validIdentitySuiteYAML, "auth_scheme: bearer", "auth_scheme: bearer\n    secret: inline", 1)},
 		{name: "duplicate provider key", data: strings.Replace(validIdentitySuiteYAML, "kind: system_one\n    endpoint: https://primary.example", "kind: system_one\n    kind: system_one\n    endpoint: https://primary.example", 1)},
 		{name: "null provider endpoint", data: strings.Replace(validIdentitySuiteYAML, "endpoint: https://primary.example/v1/systemone", "endpoint: null", 1)},
-		{name: "unknown adapter kind", data: strings.Replace(validIdentitySuiteYAML, "kind: system_one", "kind: openai_decisions", 1)},
+		{name: "unknown adapter kind", data: strings.Replace(validIdentitySuiteYAML, "kind: system_one", "kind: unknown_adapter", 1)},
 		{name: "endpoint query", data: strings.Replace(validIdentitySuiteYAML, "https://primary.example/v1/systemone", "https://primary.example/v1/systemone?key=hidden", 1)},
 		{name: "bad environment name", data: strings.Replace(validIdentitySuiteYAML, "api_key_env: PRIMARY_KEY", "api_key_env: BAD-KEY", 1)},
 		{name: "bad auth scheme", data: strings.Replace(validIdentitySuiteYAML, "auth_scheme: bearer", "auth_scheme: basic", 1)},
@@ -85,6 +99,38 @@ func TestParseIdentitySuiteRejectsInvalidSchema(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := parseIdentitySuite([]byte(test.data)); err == nil {
 				t.Fatalf("parseIdentitySuite accepted invalid suite:\n%s", test.data)
+			}
+		})
+	}
+}
+
+func TestParseOpenAIDecisionsProviderUsesExplicitEndpointAndFixedBearer(t *testing.T) {
+	suite, err := parseIdentitySuite([]byte(validOpenAIDecisionsSuiteYAML))
+	if err != nil {
+		t.Fatalf("parse OpenAI Decisions identity suite: %v", err)
+	}
+	provider := suite.Providers["decisions"]
+	if provider.Name != "decisions" || provider.Kind != "openai_decisions" || provider.Endpoint != "https://api.openai.com/v1/decisions" || provider.APIKeyEnv != "OPENAI_API_KEY" || provider.AuthScheme != "bearer" || provider.ServiceTier != "" {
+		t.Fatalf("OpenAI Decisions provider = %#v", provider)
+	}
+	if candidate := suite.Candidates["saved"]; candidate.Provider != provider.Name || candidate.Model != "gpt-6-luna" || candidate.ExpectedModel != "gpt-6-luna" {
+		t.Fatalf("OpenAI Decisions candidate = %#v", candidate)
+	}
+
+	invalid := []struct {
+		name string
+		text string
+	}{
+		{name: "configurable auth scheme", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    api_key_env: OPENAI_API_KEY", "    api_key_env: OPENAI_API_KEY\n    auth_scheme: api-key", 1)},
+		{name: "configurable service tier", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    api_key_env: OPENAI_API_KEY", "    api_key_env: OPENAI_API_KEY\n    service_tier: batch", 1)},
+		{name: "account ID", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    api_key_env: OPENAI_API_KEY", "    api_key_env: OPENAI_API_KEY\n    account_id: abc123", 1)},
+		{name: "missing endpoint", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    endpoint: https://api.openai.com/v1/decisions\n", "", 1)},
+		{name: "missing key environment", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    api_key_env: OPENAI_API_KEY\n", "", 1)},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseIdentitySuite([]byte(test.text)); err == nil {
+				t.Fatalf("parseIdentitySuite accepted invalid OpenAI Decisions provider:\n%s", test.text)
 			}
 		})
 	}

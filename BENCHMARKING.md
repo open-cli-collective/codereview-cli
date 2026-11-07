@@ -445,11 +445,18 @@ providers:
     api_key_env: BASETEN_API_KEY
     auth_scheme: api-key
     service_tier: batch
+  openai:
+    kind: openai_decisions
+    endpoint: https://api.openai.com/v1/decisions
+    api_key_env: OPENAI_API_KEY
 candidates:
   jev:
     provider: typesafe
     model: jev-latest
     expected_model: jev-1.14.0
+  decisions:
+    provider: openai
+    model: gpt-6-luna
 ```
 
 Select exactly one route for each run. Direct selection requires both `--provider` and `--model`; candidate selection supplies the complete provider/model choice. Neither a single configured provider nor a single candidate is selected automatically:
@@ -458,9 +465,11 @@ Select exactly one route for each run. Direct selection requires both `--provide
 cr benchmark run identity.yml --provider typesafe --model jev-latest \
   --expected-model jev-1.14.0 --max-calls 3 --results-dir ./jev-run
 cr benchmark run identity.yml --candidate jev --max-calls 3 --results-dir ./jev-candidate-run
+cr benchmark run identity.yml --provider openai --model gpt-6-luna --max-calls 3 --results-dir ./decisions-run
+cr benchmark run identity.yml --candidate decisions --max-calls 3 --results-dir ./decisions-candidate-run
 ```
 
-`provider` is a user-defined connection name. Its required `kind` selects the adapter; this stack head supports `system_one`. Each configured provider explicitly names an HTTPS endpoint, an environment variable containing its key, and either `api-key` or `bearer` authentication. An optional `service_tier` is sent only when configured. The suite stores no key value. The endpoint receives the key and complete projected report text; URLs with user information, queries or fragments are rejected, and redirects are not followed. For TypeSafe Jev, choose the model from the account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); see the [System One API reference](https://docs.typesafe.ai/api/system-one). The optional `expected_model` in a candidate or `--expected-model` in direct mode checks the exact returned model locally and is not sent to the provider. Without it, the requested model must match the response.
+`provider` is a user-defined connection name. Its required `kind` selects the adapter; this stack head supports `system_one` and `openai_decisions`. Every provider explicitly names an HTTPS endpoint and the environment variable containing its key. System One also requires `auth_scheme` (`api-key` or `bearer`) and may set `service_tier`; OpenAI Decisions uses fixed Bearer authentication and rejects `auth_scheme` and `service_tier`. The suite stores no key value. The endpoint receives the key and complete projected report text; URLs with user information, queries or fragments are rejected, and redirects are not followed. For TypeSafe Jev, choose the model from the account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); see the [System One API reference](https://docs.typesafe.ai/api/system-one). OpenAI Decisions accepts its string-choice subset; see the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions). The optional `expected_model` in a candidate or `--expected-model` in direct mode checks the exact returned model locally and is not sent to the provider. Without it, the requested model must match the response.
 
 The top-level identity schema is strict: it accepts only `task`, `fixture`, `providers` and optional `candidates`; duplicates, aliases, merge keys, nulls, unknown fields and trailing YAML documents are rejected. `run` validates this suite as part of dispatch. `benchmark validate`, `doctor`, `select` and `compare` remain review-suite commands and do not validate identity suites. Identity runs reject review-only `--case`, `--cr-bin`, `--in-process` and `--json` flags, while review runs reject explicitly supplied identity-only flags.
 
@@ -468,7 +477,7 @@ The fixture is one v1 `cohort` or `prior_threads` input with an empty `decisions
 
 `--max-state-bytes` and `--max-request-bytes` set local compact-JSON limits, defaulting to 6144 and 8192 bytes. These limits do not establish a provider's token context window. Explicit truncation or context-overflow signals stop the run. `--timeout` is per request, defaults to 30s and accepts 1s–120s.
 
-Prices have no defaults. Supply both `--input-price-per-million` and `--output-price-per-million` with caller-verified, finite, nonnegative USD rates for an estimate. Without both rates or valid token usage, an attempted call's cost remains unknown; explicit zero rates produce known zero. The aggregate `estimated_cost_usd` is a known subtotal and is null when calls occurred but no estimate is available. `unknown_cost_calls` identifies incomplete accounting. A zero-call run has known zero cost. Estimates do not include cache discounts and are neither an invoice nor a monetary ceiling.
+Prices have no defaults. Supply both `--input-price-per-million` and `--output-price-per-million` with caller-verified, finite, nonnegative USD rates for an estimate. Without both rates or valid token usage, an attempted call's cost remains unknown; explicit zero rates produce known zero. OpenAI Decisions cost also remains unknown when either cached-input or cache-write counts are missing or nonzero, even when both prices are supplied; base token totals remain available independently. The aggregate `estimated_cost_usd` is a known subtotal and is null when calls occurred but no estimate is available. `unknown_cost_calls` identifies incomplete accounting. A zero-call run has known zero cost. Estimates do not include cache discounts and are neither an invoice nor a monetary ceiling.
 
 `--results-dir` is required and must name a new directory. It is created with mode 0700 and contains `fixture.json`, `replay.json`, `receipts.json` and `manifest.json` with mode 0600; the manifest publishes last. Artifacts contain complete original report text and must stay out of source control. Receipts include the selected candidate/provider, adapter kind, absolute suite path and suite SHA-256, endpoint, requested and expected model, credential environment-variable name, auth settings, limits, timeout, call limit, optional prices, pair hashes, choices, usage and nullable cost estimates. Raw provider request/response bodies and credential values are not saved. `cr benchmark replay` reproduces composition without a provider call.
 

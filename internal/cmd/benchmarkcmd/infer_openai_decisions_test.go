@@ -99,10 +99,17 @@ type inferOpenAIDecisionsTestState struct {
 	keyNames    []string
 	clientOpens int
 	options     openaidecisions.Options
+	provider    identityProviderConfig
+	flags       identityInferenceFlags
 	apiKey      string
 	keyPresent  bool
 	published   []string
 }
+
+const (
+	testOpenAIDecisionsEndpoint = "https://api.openai.com/v1/decisions"
+	testOpenAIKeyEnv            = "OPENAI_API_KEY"
+)
 
 func inferOpenAIDecisionsTestDependencies(t *testing.T, outcomes []inferOpenAIDecisionsFakeOutcome, apiKey string, keyPresent bool) (inferOpenAIDecisionsDependencies, *inferOpenAIDecisionsTestState) {
 	t.Helper()
@@ -128,24 +135,84 @@ func inferOpenAIDecisionsTestDependencies(t *testing.T, outcomes []inferOpenAIDe
 	return dependencies, state
 }
 
-func newInferOpenAIDecisionsTestCommand(t *testing.T, dependencies inferOpenAIDecisionsDependencies) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+func newInferOpenAIDecisionsTestCommand(t *testing.T, dependencies inferOpenAIDecisionsDependencies, state *inferOpenAIDecisionsTestState) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	opts := &root.Options{Stdin: strings.NewReader("")}
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
 	opts.Stdout = out
 	opts.Stderr = errOut
+	previousRuntime := identityProviderRuntimeFor
+	identityProviderRuntimeFor = func(provider identityProviderConfig, flags identityInferenceFlags) (identityProviderRuntime, error) {
+		if provider.Kind != "openai_decisions" {
+			return identityProviderRuntime{}, fmt.Errorf("unexpected adapter kind %q", provider.Kind)
+		}
+		if state != nil {
+			state.provider = provider
+			state.flags = flags
+		}
+		openAIDecisionsFlags := inferOpenAIDecisionsFlags{identityInferenceFlags: flags}
+		return identityProviderRuntime{
+			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			backend:      inferOpenAIDecisionsBackend(openAIDecisionsFlags, dependencies),
+		}, nil
+	}
+	t.Cleanup(func() { identityProviderRuntimeFor = previousRuntime })
 	cmd, rootOpts := root.NewCommandWithOptions(opts)
-	root.RegisterAll(cmd, rootOpts, func(rootCmd *cobra.Command, rootOptions *root.Options) {
-		benchmark := &cobra.Command{Use: "benchmark", Short: "Benchmark test tree"}
-		benchmark.AddCommand(newInferOpenAIDecisionsCommandWithDependencies(rootOptions, dependencies))
-		rootCmd.AddCommand(benchmark)
-	})
+	Register(cmd, rootOpts)
 	return cmd, out, errOut
 }
 
-func inferOpenAIDecisionsRunArgs(fixturePath, outputDir string, maxCalls int) []string {
-	return []string{"benchmark", "infer-openai-decisions", fixturePath, "--model", "provider/model-test", "--max-calls", fmt.Sprint(maxCalls), "--output-dir", outputDir}
+func inferOpenAIDecisionsRunArgs(suitePath, outputDir string, maxCalls int) []string {
+	return []string{"benchmark", "run", suitePath, "--provider", "openai", "--model", "provider/model-test", "--max-calls", fmt.Sprint(maxCalls), "--results-dir", outputDir}
+}
+
+func writeOpenAIDecisionsTestSuite(t *testing.T, fixturePath, endpoint, apiKeyEnv string, includeCandidate bool) string {
+	t.Helper()
+	fixtureName, err := json.Marshal(filepath.Base(fixturePath))
+	if err != nil {
+		t.Fatalf("marshal fixture path for suite: %v", err)
+	}
+	endpointValue, err := json.Marshal(endpoint)
+	if err != nil {
+		t.Fatalf("marshal endpoint for suite: %v", err)
+	}
+	apiKeyEnvValue, err := json.Marshal(apiKeyEnv)
+	if err != nil {
+		t.Fatalf("marshal API key environment name for suite: %v", err)
+	}
+	suite := fmt.Sprintf("task: report_identity\nfixture: %s\nproviders:\n  openai:\n    kind: openai_decisions\n    endpoint: %s\n    api_key_env: %s\n", fixtureName, endpointValue, apiKeyEnvValue)
+	if includeCandidate {
+		suite += "candidates:\n  saved:\n    provider: openai\n    model: gpt-6-luna\n    expected_model: gpt-6-luna\n"
+	}
+	suitePath := filepath.Join(filepath.Dir(fixturePath), "identity-openai-test.yml")
+	if err := os.WriteFile(suitePath, []byte(suite), 0o600); err != nil {
+		t.Fatalf("write OpenAI identity suite: %v", err)
+	}
+	return suitePath
+}
+
+func translateOpenAIDecisionsTestOverrides(t *testing.T, args []string) (string, string, []string) {
+	t.Helper()
+	endpoint, apiKeyEnv := testOpenAIDecisionsEndpoint, testOpenAIKeyEnv
+	forwarded := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		name := args[index]
+		if !strings.HasPrefix(name, "--") || index+1 >= len(args) {
+			t.Fatalf("invalid OpenAI test override sequence: %#v", args)
+		}
+		value := args[index+1]
+		index++
+		switch name {
+		case "--endpoint":
+			endpoint = value
+		case "--api-key-env":
+			apiKeyEnv = value
+		default:
+			forwarded = append(forwarded, name, value)
+		}
+	}
+	return endpoint, apiKeyEnv, forwarded
 }
 
 func runInferOpenAIDecisionsTestCase(t *testing.T, input reportidentity.Input, extraArgs []string, outcomes []inferOpenAIDecisionsFakeOutcome, apiKey string, keyPresent bool) (*inferOpenAIDecisionsTestState, *identityInferenceSummary, *identityInferenceReceipts, string, error) {
@@ -154,9 +221,11 @@ func runInferOpenAIDecisionsTestCase(t *testing.T, input reportidentity.Input, e
 	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(baseDir, "input"), input)
 	outputDir := filepath.Join(baseDir, "output")
 	dependencies, state := inferOpenAIDecisionsTestDependencies(t, outcomes, apiKey, keyPresent)
-	cmd, stdout, _ := newInferOpenAIDecisionsTestCommand(t, dependencies)
-	args := inferOpenAIDecisionsRunArgs(fixturePath, outputDir, 100)
-	args = append(args, extraArgs...)
+	endpoint, apiKeyEnv, forwarded := translateOpenAIDecisionsTestOverrides(t, extraArgs)
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, endpoint, apiKeyEnv, false)
+	args := inferOpenAIDecisionsRunArgs(suitePath, outputDir, 100)
+	args = append(args, forwarded...)
+	cmd, stdout, _ := newInferOpenAIDecisionsTestCommand(t, dependencies, state)
 	err := root.Execute(cmd, args)
 	var summary identityInferenceSummary
 	if stdout.Len() > 0 {
@@ -173,20 +242,22 @@ func runInferOpenAIDecisionsTestCase(t *testing.T, input reportidentity.Input, e
 	return state, &summary, &receipts, stdout.String(), err
 }
 
-func TestInferOpenAIDecisionsCommandDefaultsAndFixedFlags(t *testing.T) {
-	dependencies, _ := inferOpenAIDecisionsTestDependencies(t, nil, "", false)
-	cmd, _, _ := newInferOpenAIDecisionsTestCommand(t, dependencies)
-	command, _, err := cmd.Find([]string{"benchmark", "infer-openai-decisions"})
+func TestOpenAIDecisionsUsesUnifiedRunCommandAndSuiteConfiguredConnection(t *testing.T) {
+	dependencies, state := inferOpenAIDecisionsTestDependencies(t, nil, "", false)
+	cmd, _, _ := newInferOpenAIDecisionsTestCommand(t, dependencies, state)
+	command, _, err := cmd.Find([]string{"benchmark", "run"})
 	if err != nil {
-		t.Fatalf("Find command: %v", err)
+		t.Fatalf("Find benchmark run command: %v", err)
+	}
+	if legacy, _, legacyErr := cmd.Find([]string{"benchmark", "infer-openai-decisions"}); legacyErr == nil && legacy != nil && legacy.Name() == "infer-openai-decisions" {
+		t.Fatalf("retired OpenAI command is still registered: %s", legacy.CommandPath())
 	}
 	defaults := map[string]string{
-		"endpoint":          defaultOpenAIDecisionsEndpoint,
-		"api-key-env":       defaultOpenAIKeyEnv,
 		"timeout":           defaultIdentityInferenceTimeout.String(),
 		"max-state-bytes":   "6144",
 		"max-request-bytes": "8192",
 		"model":             "",
+		"provider":          "",
 	}
 	for name, want := range defaults {
 		flag := command.Flags().Lookup(name)
@@ -194,10 +265,130 @@ func TestInferOpenAIDecisionsCommandDefaultsAndFixedFlags(t *testing.T) {
 			t.Errorf("flag %q default = %#v, want %q", name, flag, want)
 		}
 	}
-	for _, name := range []string{"auth-scheme", "service-tier", "effort"} {
+	for _, name := range []string{"endpoint", "api-key-env", "auth-scheme", "service-tier", "effort"} {
 		if command.Flags().Lookup(name) != nil {
-			t.Errorf("unsupported flag %q is exposed", name)
+			t.Errorf("provider connection flag %q is exposed instead of being suite configured", name)
 		}
+	}
+}
+
+func TestOpenAIDecisionsCandidateRunsThroughDefaultRuntimeWithFixedBearer(t *testing.T) {
+	baseDir := t.TempDir()
+	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(baseDir, "input"), inferSystemOneCohortInput(1))
+	endpoint := "https://api.example.test/v1/decisions"
+	environmentName := "UNSET_IDENTITY_RUNNER_TEST"
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, endpoint, environmentName, true)
+	outputDir := filepath.Join(baseDir, "output")
+	cmd, stdout, _, _ := newReplayCommandForTest(t, nil)
+	args := []string{"benchmark", "run", suitePath, "--candidate", "saved", "--max-calls", "0", "--results-dir", outputDir}
+	if err := root.Execute(cmd, args); err != nil {
+		t.Fatalf("execute candidate report_identity run: %v", err)
+	}
+	var summary identityInferenceSummary
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("decode benchmark run summary: %v; stdout=%s", err, stdout.String())
+	}
+	if summary.Status != "complete" || summary.ExpectedPairs != 0 || summary.ProviderCalls != 0 {
+		t.Fatalf("zero-pair OpenAI candidate summary = %#v", summary)
+	}
+	configuration := summary.Configuration
+	if configuration.CandidateID == nil || *configuration.CandidateID != "saved" || configuration.ProviderName != "openai" || configuration.AdapterKind != "openai_decisions" || configuration.Endpoint != endpoint || configuration.RequestedModel != "gpt-6-luna" || configuration.ExpectedModel != "gpt-6-luna" || configuration.APIKeyEnv != environmentName || configuration.AuthScheme != "Bearer" || configuration.Provider != "openai_decisions" {
+		t.Fatalf("OpenAI candidate provenance = %#v", configuration)
+	}
+	var receipts identityInferenceReceipts
+	if err := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "receipts.json"), &receipts); err != nil {
+		t.Fatalf("decode receipts: %v", err)
+	}
+	if receipts.ProviderCalls != 0 || len(receipts.Attempts) != 0 || receipts.Configuration.AuthScheme != "Bearer" || receipts.Configuration.Endpoint != endpoint || receipts.Configuration.APIKeyEnv != environmentName {
+		t.Fatalf("zero-pair OpenAI receipts = %#v", receipts)
+	}
+}
+
+func TestOpenAIDecisionsPreparedHashesMatchHistoricalSmoke(t *testing.T) {
+	fixtures := []struct {
+		name string
+		path string
+		want map[string]string
+	}{
+		{
+			name: "cohort",
+			path: filepath.Join("testdata", "identity-smoke", "cohort.json"),
+			want: map[string]string{
+				"f1/f2": "4cc8f87b8c2e93113555273b45470c9633bb50dded84009842cdab8b9a339aa2",
+				"f1/f3": "796bb862949f45ebd0c28a78d3765462c33b1d3cfcf56ec98e09350277512168",
+				"f2/f3": "441354fe0eb3c4311a65d97f892f43ac3bf0535f9cc261e19a46af2d260a11f9",
+			},
+		},
+		{
+			name: "prior thread",
+			path: filepath.Join("testdata", "identity-smoke", "prior-threads.json"),
+			want: map[string]string{
+				"f1/t1": "e30bbb6945610d28ca888a0f50779ec356946d12da2124adcb8d70d9c4b5decb",
+			},
+		},
+	}
+	backend := inferOpenAIDecisionsBackend(inferOpenAIDecisionsFlags{identityInferenceFlags: identityInferenceFlags{
+		model: "gpt-6-luna", maxStateBytes: 6 * 1024, maxRequestBytes: 8 * 1024,
+	}}, inferOpenAIDecisionsDependencies{})
+
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			fixtureBytes, err := os.ReadFile(fixture.path)
+			if err != nil {
+				t.Fatalf("read shared identity fixture: %v", err)
+			}
+			input, err := reportidentity.Decode(fixtureBytes)
+			if err != nil {
+				t.Fatalf("decode shared identity fixture: %v", err)
+			}
+			replay, err := reportidentity.Replay(input)
+			if err != nil {
+				t.Fatalf("replay shared identity fixture: %v", err)
+			}
+
+			findings := make(map[string]review.Finding, len(input.Findings))
+			for _, finding := range input.Findings {
+				findings[string(finding.ID)] = finding
+			}
+			threads := make(map[string]reportidentity.Thread, len(input.Threads))
+			for _, thread := range input.Threads {
+				threads[thread.ID] = thread
+			}
+			if len(replay.Pairs) != len(fixture.want) {
+				t.Fatalf("shared fixture pair count = %d, want %d", len(replay.Pairs), len(fixture.want))
+			}
+			for _, pair := range replay.Pairs {
+				pairID := pair.LeftID + "/" + pair.RightID
+				wantHash, ok := fixture.want[pairID]
+				if !ok {
+					t.Fatalf("unexpected shared fixture pair %q", pairID)
+				}
+				left, ok := findings[pair.LeftID]
+				if !ok {
+					t.Fatalf("shared fixture finding %q is missing", pair.LeftID)
+				}
+				rightFinding, rightFindingExists := findings[pair.RightID]
+				right := inferenceFindingRecord(rightFinding)
+				if !rightFindingExists {
+					thread, threadExists := threads[pair.RightID]
+					if !threadExists {
+						t.Fatalf("shared fixture right record %q is missing", pair.RightID)
+					}
+					right = inferenceThreadRecord(thread)
+				}
+				projection, err := reportidentityinference.Project(reportidentityinference.Task(input.Task), inferenceFindingRecord(left), right)
+				if err != nil {
+					t.Fatalf("project pair %q: %v", pairID, err)
+				}
+				plan, err := backend.prepare(projection)
+				if err != nil {
+					t.Fatalf("prepare pair %q: %v", pairID, err)
+				}
+				if plan.RequestSHA256 != wantHash {
+					t.Errorf("prepared request hash for %s = %s, want %s", pairID, plan.RequestSHA256, wantHash)
+				}
+			}
+		})
 	}
 }
 
@@ -425,8 +616,9 @@ func TestInferOpenAIDecisionsRefusalPreservesUsageAndFailsStop(t *testing.T) {
 	baseDir := t.TempDir()
 	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(baseDir, "input"), input)
 	outputDir := filepath.Join(baseDir, "output")
-	cmd, stdout, _ := newInferOpenAIDecisionsTestCommand(t, dependencies)
-	args := inferOpenAIDecisionsRunArgs(fixturePath, outputDir, 100)
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, testOpenAIDecisionsEndpoint, testOpenAIKeyEnv, false)
+	cmd, stdout, _ := newInferOpenAIDecisionsTestCommand(t, dependencies, state)
+	args := inferOpenAIDecisionsRunArgs(suitePath, outputDir, 100)
 	args = append(args, "--input-price-per-million", "1", "--output-price-per-million", "1")
 	err := root.Execute(cmd, args)
 	var summary identityInferenceSummary
@@ -464,8 +656,9 @@ func TestInferOpenAIDecisionsPartialWriteDoesNotPublishManifest(t *testing.T) {
 		}
 		return originalRename(oldPath, newPath)
 	}
-	cmd, _, _ := newInferOpenAIDecisionsTestCommand(t, dependencies)
-	if err := root.Execute(cmd, inferOpenAIDecisionsRunArgs(fixturePath, outputDir, 1)); err == nil || state.client == nil || state.client.decides != 1 {
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, testOpenAIDecisionsEndpoint, testOpenAIKeyEnv, false)
+	cmd, _, _ := newInferOpenAIDecisionsTestCommand(t, dependencies, state)
+	if err := root.Execute(cmd, inferOpenAIDecisionsRunArgs(suitePath, outputDir, 1)); err == nil || state.client == nil || state.client.decides != 1 {
 		t.Fatalf("write error was not reported after one request: err=%v state=%#v", err, state)
 	}
 	if _, err := os.Stat(filepath.Join(outputDir, "fixture.json")); err != nil {

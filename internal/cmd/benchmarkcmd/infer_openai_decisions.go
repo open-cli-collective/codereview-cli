@@ -2,21 +2,11 @@ package benchmarkcmd
 
 import (
 	"context"
-	"errors"
 	"os"
 	"time"
 
-	"github.com/spf13/cobra"
-
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
-	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/openaidecisions"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentityinference"
-)
-
-const (
-	defaultOpenAIDecisionsEndpoint = "https://api.openai.com/v1/decisions"
-	defaultOpenAIKeyEnv            = "OPENAI_API_KEY"
 )
 
 type inferOpenAIDecisionsFlags struct {
@@ -39,35 +29,6 @@ type openAIDecisionsIdentityDecider struct {
 	flags  identityInferenceFlags
 }
 
-func newInferOpenAIDecisionsCommand(opts *root.Options) *cobra.Command {
-	return newInferOpenAIDecisionsCommandWithDependencies(opts, defaultInferOpenAIDecisionsDependencies())
-}
-
-func newInferOpenAIDecisionsCommandWithDependencies(opts *root.Options, dependencies inferOpenAIDecisionsDependencies) *cobra.Command {
-	flags := inferOpenAIDecisionsFlags{identityInferenceFlags: identityInferenceFlags{
-		maxCalls: -1, endpoint: defaultOpenAIDecisionsEndpoint, apiKeyEnv: defaultOpenAIKeyEnv,
-		authScheme: "bearer", maxStateBytes: 6 * 1024, maxRequestBytes: 8 * 1024,
-		timeout: defaultIdentityInferenceTimeout,
-	}}
-	cmd := &cobra.Command{
-		Use:   "infer-openai-decisions <fixture.json>",
-		Short: "Run explicit pairwise identity inference with OpenAI Decisions",
-		Args:  exitcode.ExactArgs(1, "benchmark infer-openai-decisions requires one fixture path"),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			flags.inputPriceSet = cmd.Flags().Changed("input-price-per-million")
-			flags.outputPriceSet = cmd.Flags().Changed("output-price-per-million")
-			if err := validateIdentityInferenceFlags("benchmark infer-openai-decisions", flags.identityInferenceFlags); err != nil {
-				return exitcode.Usage(err)
-			}
-			return runInferOpenAIDecisions(cmd.Context(), opts, args[0], flags, dependencies)
-		},
-	}
-	addIdentityInferenceFlags(cmd, &flags.identityInferenceFlags, "HTTPS OpenAI Decisions endpoint")
-	addIdentityInferenceLimitsFlags(cmd, &flags.identityInferenceFlags)
-	_ = cmd.MarkFlagRequired("model")
-	return cmd
-}
-
 func defaultInferOpenAIDecisionsDependencies() inferOpenAIDecisionsDependencies {
 	return inferOpenAIDecisionsDependencies{
 		lookupAPIKey: func(name string) (string, bool) { return os.LookupEnv(name) },
@@ -81,18 +42,6 @@ func defaultInferOpenAIDecisionsDependencies() inferOpenAIDecisionsDependencies 
 		now:    time.Now,
 		rename: os.Rename,
 	}
-}
-
-func runInferOpenAIDecisions(ctx context.Context, opts *root.Options, fixturePath string, flags inferOpenAIDecisionsFlags, dependencies inferOpenAIDecisionsDependencies) error {
-	if dependencies.now == nil || dependencies.lookupAPIKey == nil || dependencies.newClient == nil || dependencies.rename == nil {
-		return exitcode.With(exitcode.Failure, errors.New("benchmark infer-openai-decisions: command dependencies are unavailable"))
-	}
-	backend := inferOpenAIDecisionsBackend(flags, dependencies)
-	return runIdentityInference(ctx, opts, "benchmark infer-openai-decisions", fixturePath, flags.identityInferenceFlags, identityInferenceDependencies{
-		lookupAPIKey: dependencies.lookupAPIKey,
-		now:          dependencies.now,
-		rename:       dependencies.rename,
-	}, backend)
 }
 
 func inferOpenAIDecisionsBackend(flags inferOpenAIDecisionsFlags, dependencies inferOpenAIDecisionsDependencies) identityInferenceBackend {
