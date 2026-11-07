@@ -65,6 +65,7 @@ func TestIdentityInferenceClientsStayBehindBenchmarkCommand(t *testing.T) {
 	modulePath := "github.com/open-cli-collective/codereview-cli"
 	systemOneImport := modulePath + "/internal/systemone"
 	openAIDecisionsImport := modulePath + "/internal/openaidecisions"
+	cloudflareClefImport := modulePath + "/internal/cloudflareclef"
 	identityInferenceImport := modulePath + "/internal/reportidentityinference"
 	stdlib := standardLibraryImports(t, repoRoot)
 	fset := token.NewFileSet()
@@ -92,28 +93,32 @@ func TestIdentityInferenceClientsStayBehindBenchmarkCommand(t *testing.T) {
 		inCommand := strings.HasPrefix(rel, "internal/cmd/benchmarkcmd/")
 		inSystemOneClient := strings.HasPrefix(rel, "internal/systemone/")
 		inOpenAIDecisionsClient := strings.HasPrefix(rel, "internal/openaidecisions/")
+		inCloudflareClefClient := strings.HasPrefix(rel, "internal/cloudflareclef/")
 		inAdapter := strings.HasPrefix(rel, "internal/reportidentityinference/")
 		for _, spec := range parsed.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
 				return err
 			}
-			if (importPath == systemOneImport || strings.HasPrefix(importPath, systemOneImport+"/")) && !inCommand && !inAdapter {
-				t.Fatalf("%s imports internal/systemone; inference transport may be invoked only by benchmarkcmd or its identity adapter", rel)
+			if (importPath == systemOneImport || strings.HasPrefix(importPath, systemOneImport+"/")) && !inCommand && !inAdapter && !inCloudflareClefClient {
+				t.Fatalf("%s imports internal/systemone; inference transport may be invoked only by benchmarkcmd, Cloudflare Clef, or its identity adapter", rel)
 			}
 			if (importPath == openAIDecisionsImport || strings.HasPrefix(importPath, openAIDecisionsImport+"/")) && !inCommand {
 				t.Fatalf("%s imports internal/openaidecisions; Decisions transport may be invoked only by benchmarkcmd", rel)
 			}
+			if (importPath == cloudflareClefImport || strings.HasPrefix(importPath, cloudflareClefImport+"/")) && !inCommand {
+				t.Fatalf("%s imports internal/cloudflareclef; Cloudflare Clef transport may be invoked only by benchmarkcmd", rel)
+			}
 			if (importPath == identityInferenceImport || strings.HasPrefix(importPath, identityInferenceImport+"/")) && !inCommand {
 				t.Fatalf("%s imports internal/reportidentityinference; identity inference may be invoked only by benchmarkcmd", rel)
 			}
-			if !inSystemOneClient && !inOpenAIDecisionsClient && !inAdapter {
+			if !inSystemOneClient && !inOpenAIDecisionsClient && !inCloudflareClefClient && !inAdapter {
 				continue
 			}
-			if _, isStdlib := stdlib[importPath]; isStdlib || (inAdapter && importPath == systemOneImport) {
+			if _, isStdlib := stdlib[importPath]; isStdlib || ((inAdapter || inCloudflareClefClient) && importPath == systemOneImport) {
 				continue
 			}
-			t.Fatalf("%s imports %q; inference transports are standard-library only and the identity adapter may additionally import System One", rel, importPath)
+			t.Fatalf("%s imports %q; inference transports are standard-library only, while Cloudflare Clef and the identity adapter may additionally import System One", rel, importPath)
 		}
 		return nil
 	})

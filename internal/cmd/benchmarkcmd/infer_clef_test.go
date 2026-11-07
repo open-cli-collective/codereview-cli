@@ -13,11 +13,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/spf13/cobra"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cloudflareclef"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
@@ -147,40 +144,38 @@ func clefTestDependencies(t *testing.T, outcomes []clefFakeOutcome, keyPresent b
 	return dependencies, state
 }
 
-func newInferClefTestCommand(t *testing.T, dependencies inferClefDependencies) (*cobra.Command, *bytes.Buffer) {
-	t.Helper()
-	opts := &root.Options{Stdin: strings.NewReader("")}
-	stdout := &bytes.Buffer{}
-	opts.Stdout = stdout
-	opts.Stderr = &bytes.Buffer{}
-	command, rootOptions := root.NewCommandWithOptions(opts)
-	root.RegisterAll(command, rootOptions, func(rootCommand *cobra.Command, rootOpts *root.Options) {
-		benchmark := &cobra.Command{Use: "benchmark", Short: "Benchmark test tree"}
-		benchmark.AddCommand(newInferClefCommandWithDependencies(rootOpts, dependencies))
-		rootCommand.AddCommand(benchmark)
-	})
-	return command, stdout
+type clefTestRunOptions struct {
+	expectedModel         string
+	inputPricePerMillion  float64
+	outputPricePerMillion float64
+	pricesSet             bool
 }
 
-func clefRunArgs(fixturePath, outputDir, model, accountID string, maxCalls int) []string {
-	return []string{
-		"benchmark", "infer-clef", fixturePath,
-		"--model", model,
-		"--account-id", accountID,
-		"--allow-unverified-context",
-		"--max-calls", fmt.Sprint(maxCalls),
-		"--output-dir", outputDir,
-	}
-}
-
-func runInferClefTest(t *testing.T, input reportidentity.Input, outputDir, model, accountID string, maxCalls int, dependencies inferClefDependencies, extraArgs ...string) (*bytes.Buffer, error) {
+func runClefIdentityInferenceTest(t *testing.T, input reportidentity.Input, outputDir, model, accountID string, maxCalls int, dependencies inferClefDependencies, options clefTestRunOptions) (*bytes.Buffer, error) {
 	t.Helper()
 	fixtureDir := filepath.Join(t.TempDir(), "fixture-source")
 	fixturePath := writeClefFixture(t, fixtureDir, input)
-	args := append(clefRunArgs(fixturePath, outputDir, model, accountID, maxCalls), extraArgs...)
-	command, stdout := newInferClefTestCommand(t, dependencies)
-	command.SetArgs(args)
-	return stdout, command.Execute()
+	endpoint, err := cloudflareclef.Endpoint(accountID, model)
+	if err != nil {
+		t.Fatalf("resolve test Clef endpoint: %v", err)
+	}
+	flags := identityInferenceFlags{
+		model: model, expectedModel: options.expectedModel, endpoint: endpoint,
+		apiKeyEnv: defaultClefAPIKeyEnv, authScheme: "bearer",
+		maxStateBytes: clefTestLimits.MaxStateBytes, maxRequestBytes: clefTestLimits.MaxRequestBytes,
+		maxCalls: maxCalls, outputDir: outputDir, timeout: defaultIdentityInferenceTimeout,
+		inputPricePerMillion: options.inputPricePerMillion, outputPricePerMillion: options.outputPricePerMillion,
+		inputPriceSet: options.pricesSet, outputPriceSet: options.pricesSet,
+	}
+	clefFlags := inferClefFlags{identityInferenceFlags: flags, accountID: accountID}
+	sharedDependencies := identityInferenceDependencies{
+		lookupAPIKey: dependencies.lookupAPIKey,
+		now:          dependencies.now,
+		rename:       dependencies.rename,
+	}
+	stdout := &bytes.Buffer{}
+	opts := &root.Options{Stdout: stdout, Stderr: &bytes.Buffer{}}
+	return stdout, runIdentityInference(context.Background(), opts, "benchmark run", fixturePath, flags, sharedDependencies, inferClefBackend(clefFlags, dependencies))
 }
 
 func writeClefFixture(t *testing.T, directory string, input reportidentity.Input) string {
@@ -294,15 +289,15 @@ func assertClefOutputMode(t *testing.T, path string, want os.FileMode) {
 	}
 }
 
-func TestInferClefRoutesBothSelectorsThroughSharedProjection(t *testing.T) {
+func TestClefBackendUsesSharedProjectionForBothModels(t *testing.T) {
 	for _, model := range []string{"clef", "clef-flash"} {
 		t.Run(model, func(t *testing.T) {
 			outputDir := filepath.Join(t.TempDir(), "out")
 			dependencies, state := clefTestDependencies(t, nil, true)
 			input := clefCohortInput(t, 2)
-			_, err := runInferClefTest(t, input, outputDir, model, clefTestAccountID, 10, dependencies)
+			_, err := runClefIdentityInferenceTest(t, input, outputDir, model, clefTestAccountID, 10, dependencies, clefTestRunOptions{})
 			if err != nil {
-				t.Fatalf("infer-clef: %v", err)
+				t.Fatalf("Clef shared-runner inference: %v", err)
 			}
 			if state.keyLookups != 1 || state.clientOpens != 1 || len(state.client.requests) != 1 {
 				t.Fatalf("preflight/client counts: key lookups=%d clients=%d requests=%d", state.keyLookups, state.clientOpens, len(state.client.requests))
@@ -355,61 +350,11 @@ func TestInferClefRoutesBothSelectorsThroughSharedProjection(t *testing.T) {
 	}
 }
 
-func TestInferClefRequiresUnverifiedAcknowledgementAndValidRouteBeforeCredentials(t *testing.T) {
-	fixtureDir := t.TempDir()
-	fixture := writeClefFixture(t, fixtureDir, clefCohortInput(t, 2))
-	for _, test := range []struct {
-		name        string
-		model       string
-		accountID   string
-		acknowledge bool
-		extra       []string
-	}{
-		{name: "missing unverified context acknowledgement", model: "clef", accountID: clefTestAccountID},
-		{name: "invalid model", model: "@cf/cloudflare/clef", accountID: clefTestAccountID, acknowledge: true},
-		{name: "missing model", accountID: clefTestAccountID, acknowledge: true},
-		{name: "account path injection", model: "clef", accountID: "../account", acknowledge: true},
-		{name: "missing account", model: "clef", acknowledge: true},
-		{name: "invalid call cap", model: "clef", accountID: clefTestAccountID, acknowledge: true, extra: []string{"--max-calls=-1"}},
-		{name: "unpaired prices", model: "clef", accountID: clefTestAccountID, acknowledge: true, extra: []string{"--input-price-per-million=1"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			outputDir := filepath.Join(t.TempDir(), "out")
-			dependencies, state := clefTestDependencies(t, nil, true)
-			args := []string{"benchmark", "infer-clef", fixture, "--model", test.model, "--account-id", test.accountID, "--max-calls", "10", "--output-dir", outputDir}
-			if test.acknowledge {
-				args = append(args, "--allow-unverified-context")
-			}
-			args = append(args, test.extra...)
-			command, _ := newInferClefTestCommand(t, dependencies)
-			command.SetArgs(args)
-			err := command.Execute()
-			if err == nil || state.keyLookups != 0 || state.clientOpens != 0 {
-				t.Fatalf("invalid invocation result=%v keyLookups=%d clientOpens=%d", err, state.keyLookups, state.clientOpens)
-			}
-			if _, err := os.Stat(outputDir); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("invalid invocation created output directory: stat error=%v", err)
-			}
-		})
-	}
-
-	command := newInferClefCommandWithDependencies(nil, inferClefDependencies{})
-	usage := command.Flags().Lookup("allow-unverified-context").Usage
-	if !strings.Contains(usage, "silently truncate") || !strings.Contains(usage, "full input") {
-		t.Fatalf("context acknowledgement help = %q", usage)
-	}
-	for _, forbidden := range []string{"endpoint", "auth-scheme", "service-tier"} {
-		if command.Flags().Lookup(forbidden) != nil {
-			t.Fatalf("Clef command unexpectedly exposes --%s", forbidden)
-		}
-	}
-}
-
-func TestInferClefEmptyFixtureCreatesNoClientOrKeyLookup(t *testing.T) {
+func TestClefEmptyFixtureCreatesNoClientOrKeyLookup(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "out")
 	dependencies, state := clefTestDependencies(t, nil, false)
 	input := clefCohortInput(t, 0)
-	_, err := runInferClefTest(t, input, outputDir, "clef", clefTestAccountID, 10, dependencies)
+	_, err := runClefIdentityInferenceTest(t, input, outputDir, "clef", clefTestAccountID, 10, dependencies, clefTestRunOptions{})
 	if err != nil {
 		t.Fatalf("empty fixture inference: %v", err)
 	}
@@ -425,10 +370,10 @@ func TestInferClefEmptyFixtureCreatesNoClientOrKeyLookup(t *testing.T) {
 	}
 }
 
-func TestInferClefCallBudgetPreflightAvoidsCredentials(t *testing.T) {
+func TestClefCallBudgetPreflightAvoidsCredentials(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "out")
 	dependencies, state := clefTestDependencies(t, nil, true)
-	_, err := runInferClefTest(t, clefCohortInput(t, 3), outputDir, "clef", clefTestAccountID, 2, dependencies)
+	_, err := runClefIdentityInferenceTest(t, clefCohortInput(t, 3), outputDir, "clef", clefTestAccountID, 2, dependencies, clefTestRunOptions{})
 	if err == nil || state.keyLookups != 0 || state.clientOpens != 0 || state.client != nil {
 		t.Fatalf("budget preflight result=%v lookups=%d clients=%d", err, state.keyLookups, state.clientOpens)
 	}
@@ -441,12 +386,14 @@ func TestInferClefCallBudgetPreflightAvoidsCredentials(t *testing.T) {
 	}
 }
 
-func TestInferClefRetainsCohortAndPriorThreadInputsAndWritesManifestLast(t *testing.T) {
+func TestClefRetainsCohortAndPriorThreadInputsAndWritesManifestLast(t *testing.T) {
 	t.Run("cohort", func(t *testing.T) {
 		input := clefCohortInput(t, 3)
 		outputDir := filepath.Join(t.TempDir(), "out")
 		dependencies, state := clefTestDependencies(t, []clefFakeOutcome{{choice: "a"}, {choice: "b"}, {choice: "c"}}, true)
-		_, err := runInferClefTest(t, input, outputDir, "clef", clefTestAccountID, 10, dependencies, "--input-price-per-million", "12.5", "--output-price-per-million", "8")
+		_, err := runClefIdentityInferenceTest(t, input, outputDir, "clef", clefTestAccountID, 10, dependencies, clefTestRunOptions{
+			inputPricePerMillion: 12.5, outputPricePerMillion: 8, pricesSet: true,
+		})
 		if err != nil {
 			t.Fatalf("cohort inference: %v", err)
 		}
@@ -481,7 +428,7 @@ func TestInferClefRetainsCohortAndPriorThreadInputsAndWritesManifestLast(t *test
 		input := clefPriorThreadInput(t)
 		outputDir := filepath.Join(t.TempDir(), "out")
 		dependencies, state := clefTestDependencies(t, []clefFakeOutcome{{choice: "a"}}, true)
-		_, err := runInferClefTest(t, input, outputDir, "clef-flash", clefTestAccountID, 10, dependencies)
+		_, err := runClefIdentityInferenceTest(t, input, outputDir, "clef-flash", clefTestAccountID, 10, dependencies, clefTestRunOptions{})
 		if err != nil {
 			t.Fatalf("prior-thread inference: %v", err)
 		}
@@ -511,10 +458,10 @@ func TestInferClefRetainsCohortAndPriorThreadInputsAndWritesManifestLast(t *test
 	})
 }
 
-func TestInferClefExpectedModelOverrideAndUnverifiedReceipts(t *testing.T) {
+func TestClefExpectedModelOverrideAndUnverifiedReceipts(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "out")
 	dependencies, _ := clefTestDependencies(t, nil, true)
-	_, err := runInferClefTest(t, clefCohortInput(t, 2), outputDir, "clef", clefTestAccountID, 10, dependencies, "--expected-model", "clef-build-42")
+	_, err := runClefIdentityInferenceTest(t, clefCohortInput(t, 2), outputDir, "clef", clefTestAccountID, 10, dependencies, clefTestRunOptions{expectedModel: "clef-build-42"})
 	if err != nil {
 		t.Fatalf("alias inference: %v", err)
 	}
@@ -530,13 +477,14 @@ func TestInferClefExpectedModelOverrideAndUnverifiedReceipts(t *testing.T) {
 	}
 }
 
-func TestInferClefKeepsMissingTotalUnknownWhileEstimatingFromKnownBaseTokens(t *testing.T) {
+func TestClefKeepsMissingTotalUnknownWhileEstimatingFromKnownBaseTokens(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "out")
 	dependencies, _ := clefTestDependencies(t, []clefFakeOutcome{{
 		choice: "a", usage: &cloudflareclef.Usage{InputTokens: 10, OutputTokens: 2},
 	}}, true)
-	_, err := runInferClefTest(t, clefCohortInput(t, 2), outputDir, "clef", clefTestAccountID, 10, dependencies,
-		"--input-price-per-million", "4", "--output-price-per-million", "1")
+	_, err := runClefIdentityInferenceTest(t, clefCohortInput(t, 2), outputDir, "clef", clefTestAccountID, 10, dependencies, clefTestRunOptions{
+		inputPricePerMillion: 4, outputPricePerMillion: 1, pricesSet: true,
+	})
 	if err != nil {
 		t.Fatalf("inference with unknown total: %v", err)
 	}
@@ -553,11 +501,11 @@ func TestInferClefKeepsMissingTotalUnknownWhileEstimatingFromKnownBaseTokens(t *
 	}
 }
 
-func TestInferClefTruncationFailsStopWithPartialRecordsAndUsage(t *testing.T) {
+func TestClefTruncationFailsStopWithPartialRecordsAndUsage(t *testing.T) {
 	input := clefCohortInput(t, 3)
 	outputDir := filepath.Join(t.TempDir(), "out")
 	dependencies, state := clefTestDependencies(t, []clefFakeOutcome{{errorCode: "truncated"}, {choice: "b"}}, true)
-	_, err := runInferClefTest(t, input, outputDir, "clef", clefTestAccountID, 10, dependencies)
+	_, err := runClefIdentityInferenceTest(t, input, outputDir, "clef", clefTestAccountID, 10, dependencies, clefTestRunOptions{})
 	if err == nil {
 		t.Fatal("truncated provider result unexpectedly succeeded")
 	}

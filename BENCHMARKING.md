@@ -449,6 +449,10 @@ providers:
     kind: openai_decisions
     endpoint: https://api.openai.com/v1/decisions
     api_key_env: OPENAI_API_KEY
+  cloudflare:
+    kind: cloudflare_clef
+    account_id: abc123
+    api_key_env: CLOUDFLARE_AUTH_TOKEN
 candidates:
   jev:
     provider: typesafe
@@ -457,6 +461,9 @@ candidates:
   decisions:
     provider: openai
     model: gpt-6-luna
+  flash:
+    provider: cloudflare
+    model: clef-flash
 ```
 
 Select exactly one route for each run. Direct selection requires both `--provider` and `--model`; candidate selection supplies the complete provider/model choice. Neither a single configured provider nor a single candidate is selected automatically:
@@ -467,9 +474,13 @@ cr benchmark run identity.yml --provider typesafe --model jev-latest \
 cr benchmark run identity.yml --candidate jev --max-calls 3 --results-dir ./jev-candidate-run
 cr benchmark run identity.yml --provider openai --model gpt-6-luna --max-calls 3 --results-dir ./decisions-run
 cr benchmark run identity.yml --candidate decisions --max-calls 3 --results-dir ./decisions-candidate-run
+cr benchmark run identity.yml --provider cloudflare --model clef --allow-unverified-context --max-calls 3 --results-dir ./clef-run
+cr benchmark run identity.yml --candidate flash --allow-unverified-context --max-calls 3 --results-dir ./clef-flash-run
 ```
 
-`provider` is a user-defined connection name. Its required `kind` selects the adapter; this stack head supports `system_one` and `openai_decisions`. Every provider explicitly names an HTTPS endpoint and the environment variable containing its key. System One also requires `auth_scheme` (`api-key` or `bearer`) and may set `service_tier`; OpenAI Decisions uses fixed Bearer authentication and rejects `auth_scheme` and `service_tier`. The suite stores no key value. The endpoint receives the key and complete projected report text; URLs with user information, queries or fragments are rejected, and redirects are not followed. For TypeSafe Jev, choose the model from the account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); see the [System One API reference](https://docs.typesafe.ai/api/system-one). OpenAI Decisions accepts its string-choice subset; see the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions). The optional `expected_model` in a candidate or `--expected-model` in direct mode checks the exact returned model locally and is not sent to the provider. Without it, the requested model must match the response.
+`provider` is a user-defined connection name. Its required `kind` selects the adapter; this stack head supports `system_one`, `openai_decisions` and `cloudflare_clef`. System One and OpenAI Decisions providers explicitly name an HTTPS endpoint and the environment variable containing their key. System One also requires `auth_scheme` (`api-key` or `bearer`) and may set `service_tier`; OpenAI Decisions uses fixed Bearer authentication and rejects `auth_scheme` and `service_tier`. Cloudflare Clef requires `account_id` and `api_key_env`, rejects `endpoint`, `auth_scheme` and `service_tier`, and uses fixed Bearer authentication. It constructs the route with the existing Cloudflare endpoint helper from the account ID and selected `clef` or `clef-flash` model; every candidate using Clef must use one of those selectors. The suite stores no key value. Configured System One and OpenAI endpoints receive the key and complete projected report text; URLs with user information, queries or fragments are rejected, and redirects are not followed. For TypeSafe Jev, choose the model from the account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); see the [System One API reference](https://docs.typesafe.ai/api/system-one). OpenAI Decisions accepts its string-choice subset; see the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions). See the [Cloudflare Clef model reference](https://developers.cloudflare.com/workers-ai/models/clef/), [output schema](https://developers.cloudflare.com/workers-ai/models/clef/schema-output.json) and [REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/). The optional `expected_model` in a candidate or `--expected-model` in direct mode checks the exact returned model locally and is not sent to the provider. Without it, the requested model must match the response.
+
+Cloudflare can silently truncate text state to fit its remaining model context, and the response does not attest that it consumed the complete input. Clef runs therefore require `--allow-unverified-context` set to true, including for empty fixtures; supplying this flag for another adapter is a usage error. The resolved configuration and every Clef attempt are recorded with `context_status: "unverified"`, including valid answers. The acknowledgement does not relax local byte limits, model or answer validation, call budgets, retention or fail-stop behavior. Explicit truncation and context-overflow signals remain errors. A valid answer with unverified context is not evidence that all input was considered or that the model made a correct decision.
 
 The top-level identity schema is strict: it accepts only `task`, `fixture`, `providers` and optional `candidates`; duplicates, aliases, merge keys, nulls, unknown fields and trailing YAML documents are rejected. `run` validates this suite as part of dispatch. `benchmark validate`, `doctor`, `select` and `compare` remain review-suite commands and do not validate identity suites. Identity runs reject review-only `--case`, `--cr-bin`, `--in-process` and `--json` flags, while review runs reject explicitly supplied identity-only flags.
 
@@ -482,29 +493,6 @@ Prices have no defaults. Supply both `--input-price-per-million` and `--output-p
 `--results-dir` is required and must name a new directory. It is created with mode 0700 and contains `fixture.json`, `replay.json`, `receipts.json` and `manifest.json` with mode 0600; the manifest publishes last. Artifacts contain complete original report text and must stay out of source control. Receipts include the selected candidate/provider, adapter kind, absolute suite path and suite SHA-256, endpoint, requested and expected model, credential environment-variable name, auth settings, limits, timeout, call limit, optional prices, pair hashes, choices, usage and nullable cost estimates. Raw provider request/response bodies and credential values are not saved. `cr benchmark replay` reproduces composition without a provider call.
 
 The stdout summary repeats the resolved configuration and includes output paths, pair counts, usage and cost accounting. `complete` and `unresolved` exit 0; a failed request or output write exits 1. Invalid arguments/fixtures and valid-input preflight failures exit 2. Preflight failure publishes retained original data and error receipts when local output permits; invalid suites, selections or malformed fixtures create no output directory. The included smoke fixtures are synthetic controls rather than provider responses or a model-quality claim, and normal Go tests make no live provider calls.
-
-### `cr benchmark infer-clef`
-
-Run the same report-identity inference and replay over a local fixture with a Cloudflare Workers AI Clef choice model:
-
-```bash
-cr benchmark infer-clef ./identity-input.json \
-  --model clef \
-  --account-id "$CLOUDFLARE_ACCOUNT_ID" \
-  --allow-unverified-context \
-  --max-calls 100 \
-  --output-dir ./clef-identity-run
-```
-
-Choose `clef` or `clef-flash` explicitly. The command builds the fixed account/model route from `--account-id` and `--model`, uses Bearer authentication, and reads the token from `CLOUDFLARE_AUTH_TOKEN` by default. `--api-key-env` selects another environment variable name; a token value is never accepted as a flag or saved in artifacts. `--expected-model` is a local response check and defaults to the requested selector. There are no endpoint, authentication-scheme, service-tier, model-catalog or price-default flags.
-
-Cloudflare can silently truncate text state to fit its remaining model context, and the response does not attest that it consumed the complete input. Every Clef run therefore requires `--allow-unverified-context`; configuration and every attempt are recorded with `context_status: "unverified"`, including valid answers. This acknowledgement does not relax local byte limits, model or answer validation, call budgets, retention, or fail-stop behavior. Explicit truncation and context-overflow signals remain errors. A valid result with unverified context is not evidence that all input was considered and does not establish model quality.
-
-Clef uses the same fixture, shared report projection, question criteria, pair ordering and offline replay as the other explicit inference commands. The choice adapter sends one projected question and validates its complete answer. It does not expose another prompt or a second replay path. See the [Cloudflare Clef model reference](https://developers.cloudflare.com/workers-ai/models/clef/), [output schema](https://developers.cloudflare.com/workers-ai/models/clef/schema-output.json) and [REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/) for the upstream contract.
-
-The shared `--max-calls`, `--max-state-bytes`, `--max-request-bytes`, `--timeout` and optional paired input/output price flags apply. Both token rates must be supplied by the caller to estimate cost; there are no model-price defaults. Input and output usage remain separate, and an absent provider `total_tokens` value remains unknown. Cost accounting does not change the unverified context status. Empty pair sets make no provider call and need no key.
-
-The command uses the same preflight, lazy credential lookup, fail-stop behavior, complete-original retention, independent replay and private artifact publication rules described above. Synthetic fake-client tests do not make Cloudflare requests. See the upstream documentation links above when planning an explicitly authorized live use.
 
 ## Artifacts
 

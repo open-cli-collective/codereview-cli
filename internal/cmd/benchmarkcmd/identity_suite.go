@@ -26,6 +26,7 @@ type identityProviderConfig struct {
 	Name        string
 	Kind        string
 	Endpoint    string
+	AccountID   string
 	APIKeyEnv   string
 	AuthScheme  string
 	ServiceTier string
@@ -70,6 +71,8 @@ func defaultIdentityProviderRuntime(provider identityProviderConfig, flags ident
 		}, nil
 	case "openai_decisions":
 		return openAIDecisionsIdentityProviderRuntime(provider, flags), nil
+	case "cloudflare_clef":
+		return newIdentityClefProviderRuntime(provider, flags)
 	default:
 		return identityProviderRuntime{}, fmt.Errorf("unknown provider adapter kind %q", provider.Kind)
 	}
@@ -192,15 +195,23 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
-		if kind != "system_one" && kind != "openai_decisions" {
+		if kind != "system_one" && kind != "openai_decisions" && kind != "cloudflare_clef" {
 			return nil, fmt.Errorf("provider %q has unknown adapter kind %q", name, kind)
 		}
-		allowedFields := map[string]bool{"kind": true, "endpoint": true, "api_key_env": true}
-		requiredFields := []string{"endpoint", "api_key_env"}
-		if kind == "system_one" {
+		allowedFields := map[string]bool{"kind": true, "api_key_env": true}
+		requiredFields := []string{"api_key_env"}
+		switch kind {
+		case "system_one":
+			allowedFields["endpoint"] = true
 			allowedFields["auth_scheme"] = true
 			allowedFields["service_tier"] = true
-			requiredFields = append(requiredFields, "auth_scheme")
+			requiredFields = append(requiredFields, "endpoint", "auth_scheme")
+		case "openai_decisions":
+			allowedFields["endpoint"] = true
+			requiredFields = append(requiredFields, "endpoint")
+		case "cloudflare_clef":
+			allowedFields["account_id"] = true
+			requiredFields = append(requiredFields, "account_id")
 		}
 		fields, err := identityYAMLMapping(value, "provider "+name, allowedFields)
 		if err != nil {
@@ -212,19 +223,30 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 			}
 		}
 		provider := identityProviderConfig{Name: name, Kind: kind}
-		if provider.Endpoint, err = identityYAMLString(fields["endpoint"], "endpoint"); err != nil {
-			return nil, fmt.Errorf("provider %q: %w", name, err)
-		}
-		if !validIdentityInferenceEndpoint(provider.Endpoint) {
-			return nil, fmt.Errorf("provider %q endpoint must be a valid HTTPS URL without query, userinfo, or fragment", name)
-		}
 		if provider.APIKeyEnv, err = identityYAMLString(fields["api_key_env"], "api_key_env"); err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
 		if !validAPIKeyEnvName(provider.APIKeyEnv) {
 			return nil, fmt.Errorf("provider %q api_key_env must be an environment variable name", name)
 		}
-		if kind == "system_one" {
+		if kind == "cloudflare_clef" {
+			if provider.AccountID, err = identityYAMLString(fields["account_id"], "account_id"); err != nil {
+				return nil, fmt.Errorf("provider %q: %w", name, err)
+			}
+			if _, err := identityClefEndpoint(provider, "clef"); err != nil {
+				return nil, fmt.Errorf("provider %q account_id must be an ASCII Cloudflare account ID", name)
+			}
+			providers[name] = provider
+			continue
+		}
+		if provider.Endpoint, err = identityYAMLString(fields["endpoint"], "endpoint"); err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		if !validIdentityInferenceEndpoint(provider.Endpoint) {
+			return nil, fmt.Errorf("provider %q endpoint must be a valid HTTPS URL without query, userinfo, or fragment", name)
+		}
+		switch kind {
+		case "system_one":
 			if provider.AuthScheme, err = identityYAMLString(fields["auth_scheme"], "auth_scheme"); err != nil {
 				return nil, fmt.Errorf("provider %q: %w", name, err)
 			}
@@ -236,7 +258,7 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 					return nil, fmt.Errorf("provider %q: %w", name, err)
 				}
 			}
-		} else {
+		case "openai_decisions":
 			provider.AuthScheme = "bearer"
 		}
 		providers[name] = provider
@@ -275,6 +297,11 @@ func parseIdentityCandidates(node *yaml.Node, providers map[string]identityProvi
 		if fields["expected_model"] != nil {
 			if candidate.ExpectedModel, err = identityYAMLString(fields["expected_model"], "expected_model"); err != nil {
 				return nil, fmt.Errorf("candidate %q: %w", name, err)
+			}
+		}
+		if provider := providers[candidate.Provider]; provider.Kind == "cloudflare_clef" {
+			if _, err := identityClefEndpoint(provider, candidate.Model); err != nil {
+				return nil, fmt.Errorf("candidate %q: Cloudflare Clef model must be clef or clef-flash", name)
 			}
 		}
 		candidates[name] = candidate
@@ -395,13 +422,26 @@ func runIdentitySuite(ctx context.Context, cmd *cobra.Command, opts *root.Option
 	identity.flags.inputPriceSet = cmd.Flags().Changed("input-price-per-million")
 	identity.flags.outputPriceSet = cmd.Flags().Changed("output-price-per-million")
 	provider := suite.Providers[identity.flags.providerName]
-	identity.flags.endpoint = provider.Endpoint
 	identity.flags.apiKeyEnv = provider.APIKeyEnv
-	identity.flags.authScheme = provider.AuthScheme
-	identity.flags.serviceTier = provider.ServiceTier
 	identity.flags.adapterKind = provider.Kind
-	if cmd.Flags().Changed("allow-unverified-context") {
-		return exitcode.Usage(errors.New("benchmark run: --allow-unverified-context is supported only by providers that require context acknowledgement"))
+	if provider.Kind == "cloudflare_clef" {
+		endpoint, err := identityClefEndpoint(provider, identity.flags.model)
+		if err != nil {
+			return exitcode.Usage(fmt.Errorf("benchmark run: %w", err))
+		}
+		identity.flags.endpoint = endpoint
+		identity.flags.authScheme = "bearer"
+		identity.flags.serviceTier = ""
+		if !identity.allowUnverifiedCtx {
+			return exitcode.Usage(errors.New("benchmark run: --allow-unverified-context is required because Cloudflare Clef may silently truncate state"))
+		}
+	} else {
+		identity.flags.endpoint = provider.Endpoint
+		identity.flags.authScheme = provider.AuthScheme
+		identity.flags.serviceTier = provider.ServiceTier
+		if cmd.Flags().Changed("allow-unverified-context") {
+			return exitcode.Usage(errors.New("benchmark run: --allow-unverified-context is supported only by providers that require context acknowledgement"))
+		}
 	}
 	if err := validateIdentityInferenceFlags("benchmark run", identity.flags); err != nil {
 		return exitcode.Usage(err)
