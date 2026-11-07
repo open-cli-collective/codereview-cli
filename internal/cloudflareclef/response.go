@@ -50,7 +50,11 @@ func (e envelope) resultObject() (map[string]json.RawMessage, bool) {
 	return jsonObject(e.result)
 }
 
-func decodeResult(result map[string]json.RawMessage, request systemone.Request, limits systemone.Limits) (systemone.Response, *int64, bool, error) {
+func decodeResult(rawResult json.RawMessage, request systemone.Request, limits systemone.Limits) (systemone.Response, *int64, bool, error) {
+	result, ok := jsonObject(rawResult)
+	if !ok {
+		return systemone.Response{}, nil, true, newError(errorMalformedResponse, "cloudflareclef: malformed response")
+	}
 	var totalTokens *int64
 	var totalErr error
 	if rawUsage, exists := result["usage"]; exists {
@@ -66,26 +70,7 @@ func decodeResult(result map[string]json.RawMessage, request systemone.Request, 
 		}
 	}
 
-	projected := make(map[string]json.RawMessage, len(result))
-	for key, value := range result {
-		projected[key] = value
-	}
-	if rawUsage, exists := projected["usage"]; exists {
-		if usageFields, ok := jsonObject(rawUsage); ok {
-			baseUsage := make(map[string]json.RawMessage, 2)
-			for _, name := range []string{"input_tokens", "output_tokens"} {
-				if value, present := usageFields[name]; present {
-					baseUsage[name] = value
-				}
-			}
-			projectedUsage, err := json.Marshal(baseUsage)
-			if err != nil {
-				return systemone.Response{}, nil, true, newError(errorMalformedResponse, "cloudflareclef: malformed response")
-			}
-			projected["usage"] = projectedUsage
-		}
-	}
-	projectedResult, err := json.Marshal(projected)
+	projectedResult, err := projectUsageValue(rawResult)
 	if err != nil {
 		return systemone.Response{}, nil, true, newError(errorMalformedResponse, "cloudflareclef: malformed response")
 	}
@@ -94,6 +79,69 @@ func decodeResult(result map[string]json.RawMessage, request systemone.Request, 
 		return decoded, nil, false, totalErr
 	}
 	return decoded, totalTokens, true, decodeErr
+}
+
+func projectUsageValue(rawResult json.RawMessage) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(rawResult))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return nil, errors.New("invalid result object")
+	}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, errors.New("invalid result key")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		if key != "usage" {
+			continue
+		}
+		end := decoder.InputOffset()
+		start := end - int64(len(value))
+		if start < 0 || start > end || end > int64(len(rawResult)) || !bytes.Equal(rawResult[start:end], value) {
+			return nil, errors.New("could not locate result usage value")
+		}
+		usageFields, ok := jsonObject(value)
+		if !ok {
+			return rawResult, nil
+		}
+		projectedUsage := []byte{'{'}
+		for _, name := range []string{"input_tokens", "output_tokens"} {
+			if tokenValue, present := usageFields[name]; present {
+				if len(projectedUsage) > 1 {
+					projectedUsage = append(projectedUsage, ',')
+				}
+				projectedUsage = append(projectedUsage, '"')
+				projectedUsage = append(projectedUsage, name...)
+				projectedUsage = append(projectedUsage, '"', ':')
+				projectedUsage = append(projectedUsage, tokenValue...)
+			}
+		}
+		projectedUsage = append(projectedUsage, '}')
+		projectedResult := make([]byte, 0, len(rawResult)-len(value)+len(projectedUsage))
+		projectedResult = append(projectedResult, rawResult[:start]...)
+		projectedResult = append(projectedResult, projectedUsage...)
+		projectedResult = append(projectedResult, rawResult[end:]...)
+		return projectedResult, nil
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') {
+		return nil, errors.New("invalid result object")
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("trailing result data")
+		}
+		return nil, err
+	}
+	return rawResult, nil
 }
 
 func applyMetadata(receipt *Receipt, response systemone.Response, totalTokens *int64, totalValid bool) {

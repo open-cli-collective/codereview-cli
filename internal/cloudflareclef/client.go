@@ -241,8 +241,8 @@ func (c *Client) Decide(ctx context.Context, request systemone.Request) (Receipt
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		if envelope, envelopeErr := decodeEnvelope(responseBody); envelopeErr == nil {
-			if result, ok := envelope.resultObject(); ok {
-				decoded, total, totalValid, _ := decodeResult(result, request, c.limits)
+			if _, ok := envelope.resultObject(); ok {
+				decoded, total, totalValid, _ := decodeResult(envelope.result, request, c.limits)
 				applyMetadata(&receipt, decoded, total, totalValid)
 			}
 		}
@@ -260,7 +260,7 @@ func (c *Client) Decide(ctx context.Context, request systemone.Request) (Receipt
 	var decodeErr error
 	if result, ok := envelope.resultObject(); ok {
 		resultCategory, resultIncomplete := incompleteSignal(result)
-		decoded, total, totalValid, decodeErr = decodeResult(result, request, c.limits)
+		decoded, total, totalValid, decodeErr = decodeResult(envelope.result, request, c.limits)
 		applyMetadata(&receipt, decoded, total, totalValid)
 		if rootIncomplete {
 			return receipt, newError(rootCategory, incompleteMessage(rootCategory))

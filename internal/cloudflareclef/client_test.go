@@ -223,6 +223,40 @@ func TestDecideAppliesExpectedModelPolicyAndUsageProjection(t *testing.T) {
 	}
 }
 
+func TestDecidePreservesLargeRawResultMetadataDuringUsageProjection(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		metadata string
+	}{
+		{name: "less-than bytes", metadata: strings.Repeat("<", 180_000)},
+		{name: "raw U+2028 UTF-8", metadata: strings.Repeat("\u2028", 300_000)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := `{"model":"clef","metadata":"` + test.metadata + `","answers":{"route":` + clefAnswer("merge") + `},"usage" : { "input_tokens" : 5, "output_tokens": 2, "total_tokens": 7, "cache_tokens": 9 }}`
+			body := []byte(`{"success":true,"result":` + result + `,"errors":[],"messages":[]}`)
+			if len(body) >= maxResponseBytes {
+				t.Fatalf("test fixture must remain under the raw outer response bound: %d", len(body))
+			}
+			client := testClient(t, time.Second, func(request *http.Request) (*http.Response, error) {
+				return testResponse(request, http.StatusOK, body), nil
+			})
+			receipt, err := client.Decide(context.Background(), clefRequest("clef"))
+			if err != nil {
+				t.Fatalf("Decide: %v (%s), raw body bytes=%d", err, ErrorCode(err), len(body))
+			}
+			if receipt.ReturnedModel != "clef" || len(receipt.Answers) != 1 || receipt.Answers["route"].Choice != "merge" {
+				t.Fatalf("validated answer/model lost during projection: %#v", receipt)
+			}
+			if receipt.Usage == nil || receipt.Usage.InputTokens != 5 || receipt.Usage.OutputTokens != 2 || receipt.Usage.TotalTokens == nil || *receipt.Usage.TotalTokens != 7 {
+				t.Fatalf("base/optional usage lost during projection: %#v", receipt.Usage)
+			}
+			if receipt.ResponseSHA256 != fmt.Sprintf("%x", sha256.Sum256(body)) || receipt.ContextStatus != "unverified" {
+				t.Fatalf("raw receipt metadata changed: hash=%q context=%q", receipt.ResponseSHA256, receipt.ContextStatus)
+			}
+		})
+	}
+}
+
 func TestDecideFailsClosedOnMissingOrInvalidUsage(t *testing.T) {
 	for _, test := range []struct {
 		name  string
