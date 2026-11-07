@@ -1552,18 +1552,15 @@ ledger, provider, adapter, or model call. Complete and unresolved results exit
 content exits 2. See [BENCHMARKING.md](BENCHMARKING.md) for the v1 schema and
 uncertainty rules.
 
-### `cr benchmark infer-mammoth`
+### `cr benchmark infer-system-one`
 
 ```text
-cr benchmark infer-mammoth <fixture.json> --max-calls N --output-dir DIR [--timeout 30s]
+cr benchmark infer-system-one <fixture.json> --model MODEL --max-calls N --output-dir DIR [--timeout 30s]
 ```
 
-Runs explicit pairwise identity inference against Baseten Mammoth and may
-incur provider charges. It requires `BASETEN_API_KEY` when the fixture has
-expected pairs, creates four private receipt files in a new output directory,
-and stops on the first failed request. `--max-calls` is required; empty pair
-sets make no requests and do not require a key. See [BENCHMARKING.md](BENCHMARKING.md)
-for input, output, cost-estimate, and context-limit details.
+Runs explicit report-identity inference through a choice-only System One client and may incur provider charges. Model selection is required; endpoint, expected response model, auth scheme/key-env name, optional tier, byte guards and prices are caller settings. Defaults select Baseten's endpoint and `BASETEN_API_KEY`, without a default model or price. Missing prices remain unknown; explicit zero prices remain known zero.
+
+The command preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. A separate adapter owns the identity prompt and answer mapping; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for flags, artifacts and accounting rules.
 
 ### `cr sessions list`
 

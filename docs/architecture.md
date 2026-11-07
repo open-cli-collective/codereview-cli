@@ -181,17 +181,13 @@ recorded decisions to deterministic pair hashes, and returns the original
 records with complete, unresolved, or error status. Its rollup fields are a
 compatibility projection and do not select a live review event or action.
 
-### Explicit Mammoth Research Command
+### Explicit System One Identity Inference
 
-`internal/mammoth` is an isolated standard-library client for explicitly
-requested pairwise research inference. Only `internal/cmd/benchmarkcmd` may
-import it; application, review pipeline, lifecycle, provider, configuration,
-ledger, planner, and posting packages must not depend on it. The
-`cr benchmark infer-mammoth` command is separate from network-free
-`cr benchmark replay`: it reads one caller-supplied fixture, sends each
-preflighted pair to a fixed provider endpoint once, and writes caller-selected
-receipts. This adapter does not implement a production review stage or an
-automatic source of review decisions.
+`internal/systemone` is a standard-library HTTP client for the choice-question subset of System One. It accepts caller-supplied state, named questions, model IDs and endpoint/auth settings, validates answers against those requests and records bounded sanitized metadata. It contains no report types, identity prompt or pricing policy.
+
+`internal/reportidentityinference` projects retained report pairs into the versioned identity question and maps its choices into replay semantics. It may depend on the System One client; the client must not depend on it. Only `internal/cmd/benchmarkcmd` may import the identity adapter. The client may be imported only by that command package or the adapter. Application, live review, lifecycle, provider, configuration, ledger, planner and posting packages cannot import either inference package.
+
+`cr benchmark infer-system-one` preflights a local fixture, calls the selected endpoint once per pair and writes private replay/receipt artifacts with caller-selected configuration and optional prices. It is separate from network-free `cr benchmark replay` and is not a production review stage or an automatic source of review decisions.
 
 ## Inline Thread Lifecycle
 

@@ -60,10 +60,11 @@ func TestReportIdentityStaysOfflineAndOutsideReviewRuntime(t *testing.T) {
 	}
 }
 
-func TestMammothAdapterStaysBehindExplicitBenchmarkCommand(t *testing.T) {
+func TestSystemOneInferenceStaysBehindExplicitBenchmarkCommand(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
 	modulePath := "github.com/open-cli-collective/codereview-cli"
-	mammothImport := modulePath + "/internal/mammoth"
+	systemOneImport := modulePath + "/internal/systemone"
+	identityInferenceImport := modulePath + "/internal/reportidentityinference"
 	stdlib := standardLibraryImports(t, repoRoot)
 	fset := token.NewFileSet()
 
@@ -87,21 +88,27 @@ func TestMammothAdapterStaysBehindExplicitBenchmarkCommand(t *testing.T) {
 			return err
 		}
 		rel := filepath.ToSlash(mustRel(t, repoRoot, path))
+		inCommand := strings.HasPrefix(rel, "internal/cmd/benchmarkcmd/")
+		inClient := strings.HasPrefix(rel, "internal/systemone/")
+		inAdapter := strings.HasPrefix(rel, "internal/reportidentityinference/")
 		for _, spec := range parsed.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
 				return err
 			}
-			if (importPath == mammothImport || strings.HasPrefix(importPath, mammothImport+"/")) && !strings.HasPrefix(rel, "internal/cmd/benchmarkcmd/") {
-				t.Fatalf("%s imports internal/mammoth; research inference may be invoked only by benchmarkcmd", rel)
+			if (importPath == systemOneImport || strings.HasPrefix(importPath, systemOneImport+"/")) && !inCommand && !inAdapter {
+				t.Fatalf("%s imports internal/systemone; inference transport may be invoked only by benchmarkcmd or its identity adapter", rel)
 			}
-			if !strings.HasPrefix(rel, "internal/mammoth/") {
+			if (importPath == identityInferenceImport || strings.HasPrefix(importPath, identityInferenceImport+"/")) && !inCommand {
+				t.Fatalf("%s imports internal/reportidentityinference; identity inference may be invoked only by benchmarkcmd", rel)
+			}
+			if !inClient && !inAdapter {
 				continue
 			}
-			if _, isStdlib := stdlib[importPath]; isStdlib {
+			if _, isStdlib := stdlib[importPath]; isStdlib || (inAdapter && importPath == systemOneImport) {
 				continue
 			}
-			t.Fatalf("%s imports %q; internal/mammoth must stay standard-library only", rel, importPath)
+			t.Fatalf("%s imports %q; System One transport is standard-library only and its identity adapter may additionally import that transport", rel, importPath)
 		}
 		return nil
 	})
