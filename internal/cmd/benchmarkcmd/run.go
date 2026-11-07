@@ -219,6 +219,7 @@ type runFlags struct {
 	crBin      string
 	inProcess  bool
 	jsonOutput bool
+	identity   identityRunFlags
 }
 
 func newRunCommand(opts *root.Options) *cobra.Command {
@@ -231,9 +232,12 @@ func newRunCommand(opts *root.Options) *cobra.Command {
 			if flags.inProcess && cmd.Flags().Changed("cr-bin") {
 				return exitcode.Usage(fmt.Errorf("--in-process and --cr-bin cannot be used together"))
 			}
-			summary, err := runBenchmarkSuite(cmd.Context(), cmd, opts, flags, args[0])
+			summary, identityRun, err := dispatchBenchmarkSuiteRun(cmd.Context(), cmd, opts, flags, args[0])
 			if err != nil {
 				return err
+			}
+			if identityRun {
+				return nil
 			}
 			return view.Render(opts.Stdout, flags.jsonOutput, summary, func(io.Writer) error {
 				return renderRunText(opts, summary)
@@ -245,8 +249,65 @@ func newRunCommand(opts *root.Options) *cobra.Command {
 	cmd.Flags().StringVar(&flags.resultsDir, "results-dir", "", "Benchmark run output directory; defaults to .cr-bench/results/<suite-id>/<timestamp> under the current working directory")
 	cmd.Flags().StringVar(&flags.crBin, "cr-bin", "", "cr binary to run; defaults to the current cr binary")
 	cmd.Flags().BoolVar(&flags.inProcess, "in-process", false, "Run reviews in the benchmark process")
+	flags.identity.flags.maxCalls = -1
+	flags.identity.flags.maxStateBytes = 6 * 1024
+	flags.identity.flags.maxRequestBytes = 8 * 1024
+	flags.identity.flags.timeout = defaultIdentityInferenceTimeout
+	cmd.Flags().StringVar(&flags.identity.provider, "provider", "", "Configured provider name for a report_identity suite")
+	cmd.Flags().StringVar(&flags.identity.flags.model, "model", "", "Model ID for a report_identity suite")
+	cmd.Flags().StringVar(&flags.identity.flags.expectedModel, "expected-model", "", "Expected response model ID for a report_identity suite")
+	cmd.Flags().IntVar(&flags.identity.flags.maxCalls, "max-calls", flags.identity.flags.maxCalls, "Required complete pair call limit for a report_identity suite (0-10000)")
+	cmd.Flags().IntVar(&flags.identity.flags.maxStateBytes, "max-state-bytes", flags.identity.flags.maxStateBytes, "Maximum compact state bytes per report_identity request")
+	cmd.Flags().IntVar(&flags.identity.flags.maxRequestBytes, "max-request-bytes", flags.identity.flags.maxRequestBytes, "Maximum complete report_identity request bytes")
+	cmd.Flags().DurationVar(&flags.identity.flags.timeout, "timeout", flags.identity.flags.timeout, "Per-request report_identity timeout from 1s through 120s")
+	cmd.Flags().Float64Var(&flags.identity.flags.inputPricePerMillion, "input-price-per-million", 0, "Optional estimated USD per million report_identity input tokens")
+	cmd.Flags().Float64Var(&flags.identity.flags.outputPricePerMillion, "output-price-per-million", 0, "Optional estimated USD per million report_identity output tokens")
+	cmd.Flags().BoolVar(&flags.identity.allowUnverifiedCtx, "allow-unverified-context", false, "Acknowledge unverified provider context for supported report_identity adapters")
 	root.AddJSONFlag(cmd, &flags.jsonOutput)
 	return cmd
+}
+
+func dispatchBenchmarkSuiteRun(ctx context.Context, cmd *cobra.Command, opts *root.Options, flags runFlags, suitePath string) (benchmarkSuiteSummary, bool, error) {
+	data, err := readBenchmarkSuiteBytes(suitePath)
+	if err != nil {
+		return benchmarkSuiteSummary{}, false, exitcode.With(exitcode.Failure, fmt.Errorf("benchmark: read suite: %w", err))
+	}
+	explicitTask, err := explicitIdentitySuite(data)
+	if err != nil {
+		return benchmarkSuiteSummary{}, false, exitcode.Usage(fmt.Errorf("benchmark run: invalid suite: %w", err))
+	}
+	if explicitTask {
+		if err := validateReviewRunFlagsNotSupplied(cmd); err != nil {
+			return benchmarkSuiteSummary{}, true, exitcode.Usage(err)
+		}
+		return benchmarkSuiteSummary{}, true, runIdentitySuite(ctx, cmd, opts, flags, flags.identity, suitePath)
+	}
+	if err := validateIdentityRunFlagsNotSupplied(cmd); err != nil {
+		return benchmarkSuiteSummary{}, false, exitcode.Usage(err)
+	}
+	summary, err := runBenchmarkSuite(ctx, cmd, opts, flags, suitePath)
+	return summary, false, err
+}
+
+func validateIdentityRunFlagsNotSupplied(cmd *cobra.Command) error {
+	for _, name := range []string{
+		"provider", "model", "expected-model", "max-calls", "max-state-bytes", "max-request-bytes", "timeout",
+		"input-price-per-million", "output-price-per-million", "allow-unverified-context",
+	} {
+		if cmd.Flags().Changed(name) {
+			return fmt.Errorf("benchmark run: --%s is only supported for report_identity suites", name)
+		}
+	}
+	return nil
+}
+
+func validateReviewRunFlagsNotSupplied(cmd *cobra.Command) error {
+	for _, name := range []string{"case", "cr-bin", "in-process", "json"} {
+		if cmd.Flags().Changed(name) {
+			return fmt.Errorf("benchmark run: --%s is not supported for report_identity suites", name)
+		}
+	}
+	return nil
 }
 
 func runBenchmarkSuite(ctx context.Context, cmd *cobra.Command, opts *root.Options, flags runFlags, suitePath string) (benchmarkSuiteSummary, error) {

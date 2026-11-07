@@ -1552,23 +1552,15 @@ ledger, provider, adapter, or model call. Complete and unresolved results exit
 content exits 2. See [BENCHMARKING.md](BENCHMARKING.md) for the v1 schema and
 uncertainty rules.
 
-### `cr benchmark infer-system-one`
+### `cr benchmark run` for report identity
 
 ```text
-cr benchmark infer-system-one <fixture.json> --model MODEL --max-calls N --output-dir DIR [--timeout 30s]
+cr benchmark run <identity.yml> (--provider NAME --model ID | --candidate ID) --max-calls N --results-dir DIR
 ```
 
-Runs explicit report-identity inference through a choice-only System One client and may incur provider charges. Model selection is required; endpoint, expected response model, auth scheme/key-env name, optional tier, byte guards and prices are caller settings. Defaults select Baseten's endpoint and `BASETEN_API_KEY`, without a default model or price. Missing prices remain unknown; explicit zero prices remain known zero.
+Runs one complete offline report-identity fixture through one explicitly configured provider and model, and may incur provider charges. The suite names its adapter kind, HTTPS endpoint and credential environment-variable name; System One also names its authentication scheme, while OpenAI Decisions uses fixed Bearer authentication and rejects configurable auth schemes and service tiers. The suite contains no key value. There is no implicit provider, model or price. Direct mode requires both `--provider` and `--model`; a candidate supplies both. `--max-calls` must cover every expected pair.
 
-The command preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. A separate adapter owns the identity prompt and answer mapping; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for flags, artifacts and accounting rules.
-
-### `cr benchmark infer-openai-decisions`
-
-```text
-cr benchmark infer-openai-decisions <fixture.json> --model MODEL --max-calls N --output-dir DIR [--timeout 30s]
-```
-
-Runs the shared report-pair projection and replay through the narrow OpenAI Decisions string-choice client and may incur provider charges. The required model has no default; the endpoint defaults to `https://api.openai.com/v1/decisions` and the API key environment variable defaults to `OPENAI_API_KEY`. Authentication uses Bearer, with no auth-scheme, tier or effort flag. Prices are caller supplied. Cost stays unknown unless both cached-input and cache-write counts are reported as zero; base token totals remain independent. This command does not run a model matrix or make quality or performance claims. See [BENCHMARKING.md](BENCHMARKING.md) for the shared fixture and artifact behavior and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions).
+The runner preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. OpenAI Decisions cost remains unknown unless both cache counts are known zero, while base token totals remain available independently. The provider-neutral report projection and replay are shared by the selected adapter; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for the strict suite schema, flags, artifacts, accounting rules and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions).
 
 ### `cr benchmark infer-clef`
 
