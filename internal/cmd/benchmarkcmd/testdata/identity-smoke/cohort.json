@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "task": "cohort",
+  "findings": [
+    {
+      "finding_id": "f1",
+      "severity": "major",
+      "file_path": "pkg/import/apply.go",
+      "anchor": {"kind": "file"},
+      "body": "applyImport calls publishJournal before its database transaction commits. If commit fails, subscribers receive a journal that never exists. Move that single publishJournal call after successful commit."
+    },
+    {
+      "finding_id": "f2",
+      "severity": "major",
+      "file_path": "pkg/events/publish.go",
+      "anchor": {"kind": "file"},
+      "body": "The publishJournal call made by applyImport runs before the import transaction commits. A failed commit exposes a nonexistent journal to subscribers. Defer that same publishJournal call until commit succeeds."
+    },
+    {
+      "finding_id": "f3",
+      "severity": "minor",
+      "file_path": "pkg/import/preview.go",
+      "anchor": {"kind": "file"},
+      "body": "previewImport divides total by len(rows). Empty rows cause division by zero. Return an empty preview before averaging."
+    }
+  ],
+  "threads": [],
+  "decisions": []
+}

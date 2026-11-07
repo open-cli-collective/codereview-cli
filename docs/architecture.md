@@ -181,6 +181,14 @@ recorded decisions to deterministic pair hashes, and returns the original
 records with complete, unresolved, or error status. Its rollup fields are a
 compatibility projection and do not select a live review event or action.
 
+### Explicit System One Identity Inference
+
+`internal/systemone` is a standard-library HTTP client for the choice-question subset of System One. It accepts caller-supplied state, named questions, model IDs and endpoint/auth settings, validates answers against those requests and records bounded sanitized metadata. It contains no report types, identity prompt or pricing policy.
+
+`internal/reportidentityinference` projects retained report pairs into the versioned identity question and maps its choices into replay semantics. It may depend on the System One client; the client must not depend on it. Only `internal/cmd/benchmarkcmd` may import the identity adapter. The client may be imported only by that command package or the adapter. Application, live review, lifecycle, provider, configuration, ledger, planner and posting packages cannot import either inference package.
+
+`cr benchmark infer-system-one` preflights a local fixture, calls the selected endpoint once per pair and writes private replay/receipt artifacts with caller-selected configuration and optional prices. It is separate from network-free `cr benchmark replay` and is not a production review stage or an automatic source of review decisions.
+
 ## Inline Thread Lifecycle
 
 Inline PR discussion threads are domain input, not provider-specific prompt
