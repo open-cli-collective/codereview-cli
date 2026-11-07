@@ -1570,6 +1570,14 @@ cr benchmark infer-openai-decisions <fixture.json> --model MODEL --max-calls N -
 
 Runs the shared report-pair projection and replay through the narrow OpenAI Decisions string-choice client and may incur provider charges. The required model has no default; the endpoint defaults to `https://api.openai.com/v1/decisions` and the API key environment variable defaults to `OPENAI_API_KEY`. Authentication uses Bearer, with no auth-scheme, tier or effort flag. Prices are caller supplied. Cost stays unknown unless both cached-input and cache-write counts are reported as zero; base token totals remain independent. This command does not run a model matrix or make quality or performance claims. See [BENCHMARKING.md](BENCHMARKING.md) for the shared fixture and artifact behavior and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions).
 
+### `cr benchmark infer-clef`
+
+```text
+cr benchmark infer-clef <fixture.json> --model clef|clef-flash --account-id ID --allow-unverified-context --max-calls N --output-dir DIR
+```
+
+Runs the shared report-identity projection and replay through Cloudflare's Clef choice client. The account ID and model select a fixed Workers AI route; the token comes from `CLOUDFLARE_AUTH_TOKEN` by default, with Bearer authentication. The required `--allow-unverified-context` flag acknowledges that Clef can silently truncate state without attesting complete input consumption; every saved attempt remains marked `unverified`, even when it returns a valid answer. Local byte limits, validation and fail-stop rules still apply. No model or price is selected by default. See [BENCHMARKING.md](BENCHMARKING.md) for the shared fixture, private artifacts and Cloudflare documentation links.
+
 ### `cr sessions list`
 
 ```text
