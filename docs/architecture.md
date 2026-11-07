@@ -181,13 +181,13 @@ recorded decisions to deterministic pair hashes, and returns the original
 records with complete, unresolved, or error status. Its rollup fields are a
 compatibility projection and do not select a live review event or action.
 
-### Explicit System One Identity Inference
+### Explicit Report-Identity Inference
 
-`internal/systemone` is a standard-library HTTP client for the choice-question subset of System One. It accepts caller-supplied state, named questions, model IDs and endpoint/auth settings, validates answers against those requests and records bounded sanitized metadata. It contains no report types, identity prompt or pricing policy.
+`internal/reportidentityinference` validates retained report pairs and projects them into one versioned, provider-neutral question and compact state. Its `Project` and `ParseChoice` APIs own the shared report projection and same/different/abstain semantics. The System One `Request` and `ParseAnswer` APIs wrap those domain functions so the existing request bytes and answer behavior remain stable.
 
-`internal/reportidentityinference` projects retained report pairs into the versioned identity question and maps its choices into replay semantics. It may depend on the System One client; the client must not depend on it. Only `internal/cmd/benchmarkcmd` may import the identity adapter. The client may be imported only by that command package or the adapter. Application, live review, lifecycle, provider, configuration, ledger, planner and posting packages cannot import either inference package.
+`internal/systemone` and `internal/openaidecisions` are standard-library-only HTTP clients for bounded choice subsets of their respective APIs. Each validates responses against caller-supplied request policy and records sanitized metadata; neither client contains report types, identity prompt text or price policy. `internal/systemone` may be imported only by `internal/cmd/benchmarkcmd` and the identity adapter; `internal/openaidecisions` may be imported only by `internal/cmd/benchmarkcmd`; only `internal/cmd/benchmarkcmd` may import the identity adapter. Application, live review, lifecycle, provider, configuration, ledger, planner and posting packages cannot import these inference packages.
 
-`cr benchmark infer-system-one` preflights a local fixture, calls the selected endpoint once per pair and writes private replay/receipt artifacts with caller-selected configuration and optional prices. It is separate from network-free `cr benchmark replay` and is not a production review stage or an automatic source of review decisions.
+`cr benchmark infer-system-one` and `cr benchmark infer-openai-decisions` share pair preflight, request-hash verification, replay assembly, receipt accounting and private artifact publication. Each explicit command composes a typed provider adapter that rebuilds its request from the same immutable projection. OpenAI sends that compact state as the exact input string and supports one named string-choice question; it does not implement other Decisions question types. The commands are separate from network-free `cr benchmark replay`; they are not production review stages or automatic sources of review decisions. OpenAI cost remains unknown unless both cache token counts are known zero; base input and output totals remain available independently.
 
 ## Inline Thread Lifecycle
 

@@ -1562,6 +1562,14 @@ Runs explicit report-identity inference through a choice-only System One client 
 
 The command preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. A separate adapter owns the identity prompt and answer mapping; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for flags, artifacts and accounting rules.
 
+### `cr benchmark infer-openai-decisions`
+
+```text
+cr benchmark infer-openai-decisions <fixture.json> --model MODEL --max-calls N --output-dir DIR [--timeout 30s]
+```
+
+Runs the shared report-pair projection and replay through the narrow OpenAI Decisions string-choice client and may incur provider charges. The required model has no default; the endpoint defaults to `https://api.openai.com/v1/decisions` and the API key environment variable defaults to `OPENAI_API_KEY`. Authentication uses Bearer, with no auth-scheme, tier or effort flag. Prices are caller supplied. Cost stays unknown unless both cached-input and cache-write counts are reported as zero; base token totals remain independent. This command does not run a model matrix or make quality or performance claims. See [BENCHMARKING.md](BENCHMARKING.md) for the shared fixture and artifact behavior and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions).
+
 ### `cr sessions list`
 
 ```text
