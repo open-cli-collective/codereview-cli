@@ -490,6 +490,29 @@ The same `--max-calls`, `--max-state-bytes`, `--max-request-bytes`, `--timeout` 
 
 The command uses the same complete preflight, lazy credential lookup, fail-stop behavior and private output directory rules described above. It retains ineligible prior threads in `fixture.json` without sending them as pairs. Empty pair sets need no key and have known zero cost. Provider refusal is recorded as a failed attempt with validated usage retained, not as an abstention.
 
+### `cr benchmark infer-clef`
+
+Run the same report-identity inference and replay over a local fixture with a Cloudflare Workers AI Clef choice model:
+
+```bash
+cr benchmark infer-clef ./identity-input.json \
+  --model clef \
+  --account-id "$CLOUDFLARE_ACCOUNT_ID" \
+  --allow-unverified-context \
+  --max-calls 100 \
+  --output-dir ./clef-identity-run
+```
+
+Choose `clef` or `clef-flash` explicitly. The command builds the fixed account/model route from `--account-id` and `--model`, uses Bearer authentication, and reads the token from `CLOUDFLARE_AUTH_TOKEN` by default. `--api-key-env` selects another environment variable name; a token value is never accepted as a flag or saved in artifacts. `--expected-model` is a local response check and defaults to the requested selector. There are no endpoint, authentication-scheme, service-tier, model-catalog or price-default flags.
+
+Cloudflare can silently truncate text state to fit its remaining model context, and the response does not attest that it consumed the complete input. Every Clef run therefore requires `--allow-unverified-context`; configuration and every attempt are recorded with `context_status: "unverified"`, including valid answers. This acknowledgement does not relax local byte limits, model or answer validation, call budgets, retention, or fail-stop behavior. Explicit truncation and context-overflow signals remain errors. A valid result with unverified context is not evidence that all input was considered and does not establish model quality.
+
+Clef uses the same fixture, shared report projection, question criteria, pair ordering and offline replay as the other explicit inference commands. The choice adapter sends one projected question and validates its complete answer. It does not expose another prompt or a second replay path. See the [Cloudflare Clef model reference](https://developers.cloudflare.com/workers-ai/models/clef/), [output schema](https://developers.cloudflare.com/workers-ai/models/clef/schema-output.json) and [REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/) for the upstream contract.
+
+The shared `--max-calls`, `--max-state-bytes`, `--max-request-bytes`, `--timeout` and optional paired input/output price flags apply. Both token rates must be supplied by the caller to estimate cost; there are no model-price defaults. Input and output usage remain separate, and an absent provider `total_tokens` value remains unknown. Cost accounting does not change the unverified context status. Empty pair sets make no provider call and need no key.
+
+The command uses the same preflight, lazy credential lookup, fail-stop behavior, complete-original retention, independent replay and private artifact publication rules described above. Synthetic fake-client tests do not make Cloudflare requests. See the upstream documentation links above when planning an explicitly authorized live use.
+
 ## Artifacts
 
 Full-review `run` writes benchmark-owned artifacts under the selected results
