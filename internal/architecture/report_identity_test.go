@@ -59,3 +59,53 @@ func TestReportIdentityStaysOfflineAndOutsideReviewRuntime(t *testing.T) {
 		t.Fatalf("WalkDir(%s): %v", repoRoot, err)
 	}
 }
+
+func TestMammothAdapterStaysBehindExplicitBenchmarkCommand(t *testing.T) {
+	repoRoot := repoRootFromTest(t)
+	modulePath := "github.com/open-cli-collective/codereview-cli"
+	mammothImport := modulePath + "/internal/mammoth"
+	stdlib := standardLibraryImports(t, repoRoot)
+	fset := token.NewFileSet()
+
+	err := filepath.WalkDir(repoRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "dist", "vendor":
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parsed, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		rel := filepath.ToSlash(mustRel(t, repoRoot, path))
+		for _, spec := range parsed.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				return err
+			}
+			if (importPath == mammothImport || strings.HasPrefix(importPath, mammothImport+"/")) && !strings.HasPrefix(rel, "internal/cmd/benchmarkcmd/") {
+				t.Fatalf("%s imports internal/mammoth; research inference may be invoked only by benchmarkcmd", rel)
+			}
+			if !strings.HasPrefix(rel, "internal/mammoth/") {
+				continue
+			}
+			if _, isStdlib := stdlib[importPath]; isStdlib {
+				continue
+			}
+			t.Fatalf("%s imports %q; internal/mammoth must stay standard-library only", rel, importPath)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir(%s): %v", repoRoot, err)
+	}
+}

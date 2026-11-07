@@ -181,6 +181,18 @@ recorded decisions to deterministic pair hashes, and returns the original
 records with complete, unresolved, or error status. Its rollup fields are a
 compatibility projection and do not select a live review event or action.
 
+### Explicit Mammoth Research Command
+
+`internal/mammoth` is an isolated standard-library client for explicitly
+requested pairwise research inference. Only `internal/cmd/benchmarkcmd` may
+import it; application, review pipeline, lifecycle, provider, configuration,
+ledger, planner, and posting packages must not depend on it. The
+`cr benchmark infer-mammoth` command is separate from network-free
+`cr benchmark replay`: it reads one caller-supplied fixture, sends each
+preflighted pair to a fixed provider endpoint once, and writes caller-selected
+receipts. This adapter does not implement a production review stage or an
+automatic source of review decisions.
+
 ## Inline Thread Lifecycle
 
 Inline PR discussion threads are domain input, not provider-specific prompt

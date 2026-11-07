@@ -426,6 +426,55 @@ after the suite artifacts are written.
 configuration, profiles, credentials, catalogs, ledger state, or provider data;
 callers supply the input records and recorded pair decisions explicitly.
 
+### `cr benchmark infer-mammoth`
+
+Run explicit pairwise identity inference over one caller-supplied replay fixture:
+
+```bash
+cr benchmark infer-mammoth ./identity-input.json \
+  --max-calls 100 \
+  --output-dir ./identity-run
+```
+
+This command sends finding and prior-thread report text to Baseten's Mammoth
+model and may incur provider charges. It reads only the named fixture and the
+`BASETEN_API_KEY` environment variable. Each expected pair receives one
+sequential request; `--max-calls` is required and must cover the full pair set.
+The command does not shorten records, make hidden retries, resume runs, or
+continue after a failed request. Use `cr benchmark replay` separately to replay
+the resulting fixture without a provider call.
+
+The input is one v1 `cohort` or `prior_threads` fixture with an empty
+`decisions` array. `cohort` sends every unordered finding pair. `prior_threads`
+sends every finding and eligible thread pair; ineligible threads remain in the
+retained originals. Empty pair sets need no API key and make no requests.
+`--timeout` sets a per-request timeout from 1s through 120s and defaults to 30s.
+Before the first request, the command validates every expected pair against
+conservative local bounds of 6 KiB per serialized state and 8 KiB per request.
+Those byte bounds do not prove how the provider tokenizes or consumes a request;
+an explicit truncation or context-overflow signal stops the run. The rolling
+model alias is recorded but does not identify immutable model weights.
+
+`--output-dir` is required and must name a new directory. The command creates
+it with mode 0700 and writes `fixture.json`, `replay.json`, `receipts.json`, and
+`manifest.json` with mode 0600, publishing the manifest last. The directory
+retains the complete original finding and thread records, so treat it as
+sensitive and keep it out of source control. Receipts contain IDs, hashes,
+choices, probabilities, usage, timing, and cost estimates; raw provider requests
+and responses are not saved. At the reference price checked on 2026-11-06,
+input-token charges are estimated at $0.10 per million tokens without a cache
+discount; this is not a bill or a dollar cap. Failed attempts without usage
+have unknown cost.
+
+The command prints a compact summary, not report text. `complete` and
+`unresolved` exit 0. A failed provider request or output write exits 1. Invalid
+arguments or fixtures and valid-input preflight failures exit 2; preflight
+failure still publishes a retained error receipt when local output permits.
+The summary includes expected, attempted, completed, abstained, failed, and
+missing counts, output paths, token totals, estimated cost, and calls with
+unknown cost. Invalid arguments and malformed fixtures create no output
+directory.
+
 ## Artifacts
 
 Full-review `run` writes benchmark-owned artifacts under the selected results

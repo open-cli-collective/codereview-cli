@@ -1552,6 +1552,19 @@ ledger, provider, adapter, or model call. Complete and unresolved results exit
 content exits 2. See [BENCHMARKING.md](BENCHMARKING.md) for the v1 schema and
 uncertainty rules.
 
+### `cr benchmark infer-mammoth`
+
+```text
+cr benchmark infer-mammoth <fixture.json> --max-calls N --output-dir DIR [--timeout 30s]
+```
+
+Runs explicit pairwise identity inference against Baseten Mammoth and may
+incur provider charges. It requires `BASETEN_API_KEY` when the fixture has
+expected pairs, creates four private receipt files in a new output directory,
+and stops on the first failed request. `--max-calls` is required; empty pair
+sets make no requests and do not require a key. See [BENCHMARKING.md](BENCHMARKING.md)
+for input, output, cost-estimate, and context-limit details.
+
 ### `cr sessions list`
 
 ```text

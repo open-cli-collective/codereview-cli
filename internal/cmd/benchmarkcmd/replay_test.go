@@ -243,7 +243,7 @@ func TestBenchmarkCommandRegistrationKeepsExistingCommands(t *testing.T) {
 	if benchmark == nil {
 		t.Fatal("benchmark command not registered")
 	}
-	want := []string{"compare", "doctor", "replay", "run", "select", "validate"}
+	want := []string{"compare", "doctor", "infer-mammoth", "replay", "run", "select", "validate"}
 	got := make([]string, 0, len(benchmark.Commands()))
 	for _, child := range benchmark.Commands() {
 		got = append(got, child.Name())
