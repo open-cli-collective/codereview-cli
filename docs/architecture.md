@@ -181,13 +181,13 @@ recorded decisions to deterministic pair hashes, and returns the original
 records with complete, unresolved, or error status. Its rollup fields are a
 compatibility projection and do not select a live review event or action.
 
-### Explicit System One Identity Inference
+### Report-Identity Inference
 
-`internal/systemone` is a standard-library HTTP client for the choice-question subset of System One. It accepts caller-supplied state, named questions, model IDs and endpoint/auth settings, validates answers against those requests and records bounded sanitized metadata. It contains no report types, identity prompt or pricing policy.
+`internal/reportidentityinference` validates retained report pairs and projects them into one versioned, provider-neutral question and compact state. Its `Project` and `ParseChoice` APIs own the shared report projection and same/different/abstain semantics. Its `Request` and `ParseAnswer` APIs preserve the existing System One request bytes and answer behavior.
 
-`internal/reportidentityinference` projects retained report pairs into the versioned identity question and maps its choices into replay semantics. It may depend on the System One client; the client must not depend on it. Only `internal/cmd/benchmarkcmd` may import the identity adapter. The client may be imported only by that command package or the adapter. Application, live review, lifecycle, provider, configuration, ledger, planner and posting packages cannot import either inference package.
+`internal/systemone` is a standard-library HTTP client for the choice-question subset of System One. It accepts caller-supplied state, named questions, model IDs and endpoint/auth settings, validates answers against those requests and records bounded sanitized metadata. It contains no report types, identity prompt or pricing policy. Only `internal/cmd/benchmarkcmd` may import the identity adapter. The System One client may be imported only by that command package or the identity adapter. Application, live review, lifecycle, provider, configuration, ledger, planner and posting packages cannot import either inference package.
 
-`cr benchmark infer-system-one` preflights a local fixture, calls the selected endpoint once per pair and writes private replay/receipt artifacts with caller-selected configuration and optional prices. It is separate from network-free `cr benchmark replay` and is not a production review stage or an automatic source of review decisions.
+`cr benchmark run` handles the command-local `task: report_identity` suite alongside the unchanged review-suite path. The unified identity runner preflights a complete local fixture, calls one explicitly selected and configured endpoint once per pair, verifies the replay and request hashes, and writes private retained artifacts with caller-selected limits and prices. It is separate from network-free `cr benchmark replay` and is not a production review stage or an automatic source of review decisions.
 
 ## Inline Thread Lifecycle
 

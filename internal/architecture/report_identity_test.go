@@ -60,7 +60,7 @@ func TestReportIdentityStaysOfflineAndOutsideReviewRuntime(t *testing.T) {
 	}
 }
 
-func TestSystemOneInferenceStaysBehindExplicitBenchmarkCommand(t *testing.T) {
+func TestSystemOneInferenceStaysBehindBenchmarkCommand(t *testing.T) {
 	repoRoot := repoRootFromTest(t)
 	modulePath := "github.com/open-cli-collective/codereview-cli"
 	systemOneImport := modulePath + "/internal/systemone"

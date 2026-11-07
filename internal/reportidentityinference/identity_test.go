@@ -106,6 +106,55 @@ func TestRequestPreservesOriginalGoldenWire(t *testing.T) {
 	}
 }
 
+func TestProjectMatchesRequestProjectionForBothTasks(t *testing.T) {
+	tests := []struct {
+		name  string
+		task  Task
+		left  Record
+		right Record
+	}{
+		{
+			name:  "cohort",
+			task:  TaskCohort,
+			left:  findingRecord("f-1", "src/one.go", "first concern"),
+			right: findingRecord("f-2", "src/two.go", "second concern"),
+		},
+		{
+			name:  "prior thread",
+			task:  TaskPriorThreads,
+			left:  findingRecord("f-3", "src/three.go", "current concern"),
+			right: threadRecord("t-1", true, "src/four.go", "prior concern"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			projection, err := Project(test.task, test.left, test.right)
+			if err != nil {
+				t.Fatalf("Project: %v", err)
+			}
+			request, err := Request("provider/model", "default", test.task, test.left, test.right)
+			if err != nil {
+				t.Fatalf("Request: %v", err)
+			}
+			if !bytes.Equal(projection.State, request.State) {
+				t.Fatalf("projection state differs from System One request state\n got: %s\nwant: %s", projection.State, request.State)
+			}
+			if len(request.Questions) != 1 {
+				t.Fatalf("request question count = %d, want 1", len(request.Questions))
+			}
+			question, exists := request.Questions[projection.QuestionName]
+			if !exists || projection.QuestionName != "identity" || question.Instructions != projection.Question.Instructions || len(question.Criteria) != len(projection.Question.Criteria) {
+				t.Fatalf("projection question differs from System One request: %#v / %#v", projection.Question, request.Questions)
+			}
+			for label, description := range projection.Question.Criteria {
+				if question.Criteria[label] != description {
+					t.Errorf("criterion %q = %q, want %q", label, question.Criteria[label], description)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestRejectsInvalidPairs(t *testing.T) {
 	left := findingRecord("f-left", "src/a.go", "first concern")
 	right := findingRecord("f-right", "src/b.go", "second concern")
@@ -155,11 +204,14 @@ func TestParseAnswerMapsChoiceAndRejectsMalformedFakeAnswers(t *testing.T) {
 		{wireChoice: "c", wantChoice: ChoiceAbstain},
 	}
 	for _, test := range tests {
-		answer, err := ParseAnswer(map[string]systemone.ChoiceAnswer{
-			"identity": {Choice: test.wireChoice, Confidence: 0.9, Probabilities: map[string]float64{"a": 0.9, "b": 0.08, "c": 0.02}},
-		})
+		wireAnswer := systemone.ChoiceAnswer{Choice: test.wireChoice, Confidence: 0.9, Probabilities: map[string]float64{"a": 0.9, "b": 0.08, "c": 0.02}}
+		answer, err := ParseAnswer(map[string]systemone.ChoiceAnswer{"identity": wireAnswer})
 		if err != nil {
 			t.Fatalf("ParseAnswer(%s): %v", test.wireChoice, err)
+		}
+		direct, err := ParseChoice(ChoiceAnswer{Choice: wireAnswer.Choice, Confidence: wireAnswer.Confidence, Probabilities: wireAnswer.Probabilities})
+		if err != nil || direct != answer {
+			t.Fatalf("ParseChoice(%s) = %#v, err %v; ParseAnswer = %#v", test.wireChoice, direct, err, answer)
 		}
 		if answer.Choice != test.wantChoice || answer.Probabilities != [3]float64{0.9, 0.08, 0.02} || answer.Confidence != 0.9 {
 			t.Fatalf("ParseAnswer(%s) = %#v", test.wireChoice, answer)

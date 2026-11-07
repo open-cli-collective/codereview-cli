@@ -426,50 +426,53 @@ after the suite artifacts are written.
 configuration, profiles, credentials, catalogs, ledger state, or provider data;
 callers supply the input records and recorded pair decisions explicitly.
 
-### `cr benchmark infer-system-one`
+### `cr benchmark run` with `task: report_identity`
 
-Run explicit report-identity inference over one caller-supplied replay fixture through a System One choice endpoint:
+`benchmark run` accepts the historical review-suite format unchanged. A second, explicitly discriminated suite form runs one complete offline report-identity fixture through one configured provider and one model. The identity suite keeps its fixture path relative to the suite file:
 
-```bash
-cr benchmark infer-system-one ./identity-input.json \
-  --model decision-models/baseten-mammoth-27b-latest \
-  --max-calls 100 \
-  --output-dir ./identity-run
+```yaml
+task: report_identity
+fixture: ./cohort.json
+providers:
+  typesafe:
+    kind: system_one
+    endpoint: https://api.typesafe.ai/v1/systemone
+    api_key_env: TYPESAFE_API_KEY
+    auth_scheme: bearer
+  baseten:
+    kind: system_one
+    endpoint: https://inference.baseten.co/v1/systemone
+    api_key_env: BASETEN_API_KEY
+    auth_scheme: api-key
+    service_tier: batch
+candidates:
+  jev:
+    provider: typesafe
+    model: jev-latest
+    expected_model: jev-1.14.0
 ```
 
-Mammoth-1 is a Base Labs/Baseten model selection in this example. The command has no default model. Its defaults select Baseten's `https://inference.baseten.co/v1/systemone` endpoint, `api-key` authentication and the `BASETEN_API_KEY` environment variable. Use `--endpoint`, `--auth-scheme api-key|bearer` and `--api-key-env NAME` to select another compatible destination and credential source. The environment-variable flag takes a name, never a secret. The selected HTTPS endpoint receives the key and report text; URLs with user information, queries or fragments are rejected, and redirects are not followed.
-
-For TypeSafe Jev, choose the required `--model` from the authenticated account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); the [System One API reference](https://docs.typesafe.ai/api/system-one) documents the endpoint and response metadata. This example assumes the account lists `jev-latest` and returns the exact resolved model `jev-1.14.0`. `--expected-model` is an optional local check for that resolved model; it is not sent in the request. Without it, the response model must exactly match `--model`.
-
-Set `TYPESAFE_API_KEY` in the process environment through your existing secret manager. `--api-key-env` takes only the environment variable name, never the key value.
+Select exactly one route for each run. Direct selection requires both `--provider` and `--model`; candidate selection supplies the complete provider/model choice. Neither a single configured provider nor a single candidate is selected automatically:
 
 ```bash
-cr benchmark infer-system-one internal/cmd/benchmarkcmd/testdata/identity-smoke/cohort.json \
-  --model jev-latest --expected-model jev-1.14.0 --max-calls 3 \
-  --endpoint https://api.typesafe.ai/v1/systemone --auth-scheme bearer \
-  --api-key-env TYPESAFE_API_KEY --output-dir ./jev-cohort-smoke
-
-cr benchmark infer-system-one internal/cmd/benchmarkcmd/testdata/identity-smoke/prior-threads.json \
-  --model jev-latest --expected-model jev-1.14.0 --max-calls 1 \
-  --endpoint https://api.typesafe.ai/v1/systemone --auth-scheme bearer \
-  --api-key-env TYPESAFE_API_KEY --output-dir ./jev-prior-threads-smoke
+cr benchmark run identity.yml --provider typesafe --model jev-latest \
+  --expected-model jev-1.14.0 --max-calls 3 --results-dir ./jev-run
+cr benchmark run identity.yml --candidate jev --max-calls 3 --results-dir ./jev-candidate-run
 ```
 
-These shared fixtures contain synthetic same/different controls, not captured provider responses, and they make no model-quality claim. Together they cap the smoke at four calls: three unordered cohort pairs and one eligible prior-thread pair. No live TypeSafe request runs in the normal Go test suite. No service tier is sent unless `--service-tier` is supplied. Missing prices leave attempted-call costs unknown; they are not treated as zero.
+`provider` is a user-defined connection name. Its required `kind` selects the adapter; this stack head supports `system_one`. Each configured provider explicitly names an HTTPS endpoint, an environment variable containing its key, and either `api-key` or `bearer` authentication. An optional `service_tier` is sent only when configured. The suite stores no key value. The endpoint receives the key and complete projected report text; URLs with user information, queries or fragments are rejected, and redirects are not followed. For TypeSafe Jev, choose the model from the account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); see the [System One API reference](https://docs.typesafe.ai/api/system-one). The optional `expected_model` in a candidate or `--expected-model` in direct mode checks the exact returned model locally and is not sent to the provider. Without it, the requested model must match the response.
 
-The command uses a choice-only System One client, not a full API SDK. A separate report-identity adapter supplies the versioned prompt, complete report projection and same/different/abstain mapping. Other question types and live review stages are outside this command. It does not read reviewer profiles, catalogs or ledger state.
+The top-level identity schema is strict: it accepts only `task`, `fixture`, `providers` and optional `candidates`; duplicates, aliases, merge keys, nulls, unknown fields and trailing YAML documents are rejected. `run` validates this suite as part of dispatch. `benchmark validate`, `doctor`, `select` and `compare` remain review-suite commands and do not validate identity suites. Identity runs reject review-only `--case`, `--cr-bin`, `--in-process` and `--json` flags, while review runs reject explicitly supplied identity-only flags.
 
-The input is one v1 `cohort` or `prior_threads` fixture with an empty `decisions` array. `cohort` sends every unordered finding pair; `prior_threads` sends every finding and eligible thread pair. Every original record is retained, including ineligible threads. Each pair receives one sequential request. `--max-calls` is required, accepts 0–10000, and must cover the complete pair set. Empty pair sets need no key and make no requests. The command does not shorten records, retry, resume or continue after a failed request.
+The fixture is one v1 `cohort` or `prior_threads` input with an empty `decisions` array. A cohort sends every unordered finding pair; prior threads sends each finding against each eligible thread. Every original record is retained, including ineligible threads. Each pair receives one sequential request. `--max-calls` is required, accepts 0–10000 and must cover the complete pair set; it is never a partial budget or dollar ceiling. Empty pair sets need no key and make no requests. All pairs are prepared before credentials are read or a request is sent. The run does not shorten records, retry, resume or continue after the first failed request.
 
-`--expected-model` declares the exact returned model ID to validate and defaults to `--model`. Supply it explicitly when a provider resolves a requested alias to another known model ID. Both selected IDs are recorded; arbitrary returned IDs are rejected. A rolling alias does not identify immutable weights. `--service-tier` is an optional provider extension and is omitted from requests unless supplied.
+`--max-state-bytes` and `--max-request-bytes` set local compact-JSON limits, defaulting to 6144 and 8192 bytes. These limits do not establish a provider's token context window. Explicit truncation or context-overflow signals stop the run. `--timeout` is per request, defaults to 30s and accepts 1s–120s.
 
-All pairs are preflighted before any request. `--max-state-bytes` and `--max-request-bytes` set local compact-JSON bounds, defaulting to 6144 and 8192 bytes. These guards do not establish a provider's token context window. Explicit truncation or context-overflow signals stop the run. `--timeout` is per request, defaults to 30s, and accepts 1s–120s.
+Prices have no defaults. Supply both `--input-price-per-million` and `--output-price-per-million` with caller-verified, finite, nonnegative USD rates for an estimate. Without both rates or valid token usage, an attempted call's cost remains unknown; explicit zero rates produce known zero. The aggregate `estimated_cost_usd` is a known subtotal and is null when calls occurred but no estimate is available. `unknown_cost_calls` identifies incomplete accounting. A zero-call run has known zero cost. Estimates do not include cache discounts and are neither an invoice nor a monetary ceiling.
 
-Prices are optional and have no model-specific defaults. Supply both `--input-price-per-million` and `--output-price-per-million` with caller-verified USD rates to calculate estimates. An estimate requires both rates and valid token usage. Without either, an attempted call's cost remains unknown; explicit zero rates produce known zero. The aggregate `estimated_cost_usd` is a known subtotal and is null when calls occurred but no estimate is available. `unknown_cost_calls` identifies incomplete accounting. A zero-call run has known zero cost. Estimates do not include cache discounts and are neither an invoice nor a monetary ceiling.
+`--results-dir` is required and must name a new directory. It is created with mode 0700 and contains `fixture.json`, `replay.json`, `receipts.json` and `manifest.json` with mode 0600; the manifest publishes last. Artifacts contain complete original report text and must stay out of source control. Receipts include the selected candidate/provider, adapter kind, absolute suite path and suite SHA-256, endpoint, requested and expected model, credential environment-variable name, auth settings, limits, timeout, call limit, optional prices, pair hashes, choices, usage and nullable cost estimates. Raw provider request/response bodies and credential values are not saved. `cr benchmark replay` reproduces composition without a provider call.
 
-`--output-dir` is required and must name a new directory. It is created with mode 0700 and contains `fixture.json`, `replay.json`, `receipts.json` and `manifest.json` with mode 0600. The manifest publishes last. Artifacts contain complete original report text and must stay out of source control. Receipts include selected configuration, IDs, hashes, choices, probabilities, token usage, timing and nullable cost estimates; raw provider request/response bodies and credential values are not saved. Use `cr benchmark replay` on the saved fixture to reproduce composition without a provider call.
-
-The compact stdout summary includes configuration, output paths, pair counts, usage and cost accounting. `complete` and `unresolved` exit 0; a failed request or output write exits 1. Invalid arguments/fixtures and valid-input preflight failures exit 2. Preflight failure publishes retained error artifacts when local output permits; invalid arguments or malformed fixtures create no output directory. The unshipped `infer-mammoth` name has no compatibility alias.
+The stdout summary repeats the resolved configuration and includes output paths, pair counts, usage and cost accounting. `complete` and `unresolved` exit 0; a failed request or output write exits 1. Invalid arguments/fixtures and valid-input preflight failures exit 2. Preflight failure publishes retained original data and error receipts when local output permits; invalid suites, selections or malformed fixtures create no output directory. The included smoke fixtures are synthetic controls rather than provider responses or a model-quality claim, and normal Go tests make no live provider calls.
 
 ## Artifacts
 

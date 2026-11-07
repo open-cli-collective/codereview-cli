@@ -1067,16 +1067,16 @@ func TestRunReusesExplicitResultsDirAndOverwritesOwnedArtifacts(t *testing.T) {
 		"--case", "case_one",
 		"--results-dir", resultsDir,
 		"--cr-bin", crBin,
-		"--json",
+		"--json=false",
 	}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	var got benchmarkSuiteSummary
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("Unmarshal JSON: %v\n%s", err, out.String())
+	if !strings.Contains(out.String(), "Benchmark suite: suite1") {
+		t.Fatalf("text output = %q, want explicitly disabled JSON output", out.String())
 	}
-	assertFileContains(t, got.Artifacts.SummaryJSONL, `"run_id":"0001-c01-k01-first-case_one"`)
-	if strings.Contains(readFile(t, got.Artifacts.SummaryJSONL), "old summary") {
+	summaryJSONL := filepath.Join(resultsDir, "summary.jsonl")
+	assertFileContains(t, summaryJSONL, `"run_id":"0001-c01-k01-first-case_one"`)
+	if strings.Contains(readFile(t, summaryJSONL), "old summary") {
 		t.Fatalf("summary.jsonl still contains old content")
 	}
 	assertFileContains(t, unknownPath, "keep me")

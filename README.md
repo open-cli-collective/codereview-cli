@@ -1552,15 +1552,15 @@ ledger, provider, adapter, or model call. Complete and unresolved results exit
 content exits 2. See [BENCHMARKING.md](BENCHMARKING.md) for the v1 schema and
 uncertainty rules.
 
-### `cr benchmark infer-system-one`
+### `cr benchmark run` for report identity
 
 ```text
-cr benchmark infer-system-one <fixture.json> --model MODEL --max-calls N --output-dir DIR [--timeout 30s]
+cr benchmark run <identity.yml> (--provider NAME --model ID | --candidate ID) --max-calls N --results-dir DIR
 ```
 
-Runs explicit report-identity inference through a choice-only System One client and may incur provider charges. Model selection is required; endpoint, expected response model, auth scheme/key-env name, optional tier, byte guards and prices are caller settings. Defaults select Baseten's endpoint and `BASETEN_API_KEY`, without a default model or price. Missing prices remain unknown; explicit zero prices remain known zero.
+Runs one complete offline report-identity fixture through one explicitly configured provider and model, and may incur provider charges. The suite names its adapter kind, HTTPS endpoint, credential environment-variable name and authentication scheme; it contains no key value. There is no implicit provider, model or price. Direct mode requires both `--provider` and `--model`; a candidate supplies both. `--max-calls` must cover every expected pair.
 
-The command preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. A separate adapter owns the identity prompt and answer mapping; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for flags, artifacts and accounting rules.
+The runner preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. The provider-neutral report projection and replay are shared by the selected adapter; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for the strict suite schema, flags, artifacts and accounting rules.
 
 ### `cr sessions list`
 
