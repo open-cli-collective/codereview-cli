@@ -44,7 +44,7 @@ func TestParseResponseStrictlyRejectsMalformedAnswersAndJSON(t *testing.T) {
 		{name: "answers scalar", body: strings.Replace(valid, `"answers":[`, `"answers":true, "unused":[`, 1)},
 		{name: "answers object", body: strings.Replace(valid, `"answers":[`, `"answers":{}, "unused":[`, 1)},
 		{name: "empty answer array", body: strings.Replace(valid, `"answers":[{"type":"choice","name":"route","choice":"merge","confidence":0.95,"probabilities":[{"value":"merge","probability":0.95},{"value":"separate","probability":0.05}]}]`, `"answers":[]`, 1)},
-		{name: "extra answer", body: strings.Replace(valid, `}],"usage"`, `},{`+duplicateAnswer+`}],"usage"`, 1)},
+		{name: "extra answer", body: strings.Replace(valid, `}],"usage"`, `},`+duplicateAnswer+`],"usage"`, 1)},
 		{name: "answer null", body: strings.Replace(valid, `"answers":[{"type":"choice","name":"route","choice":"merge","confidence":0.95,"probabilities":[{"value":"merge","probability":0.95},{"value":"separate","probability":0.05}]}]`, `"answers":[null]`, 1)},
 		{name: "wrong answer name", body: strings.Replace(valid, `"name":"route"`, `"name":"other"`, 1)},
 		{name: "null answer name", body: strings.Replace(valid, `"name":"route"`, `"name":null`, 1)},
@@ -72,7 +72,11 @@ func TestParseResponseStrictlyRejectsMalformedAnswersAndJSON(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			answer, _, _, err := parseResponse([]byte(test.body), request)
+			body := []byte(test.body)
+			if test.name == "extra answer" && !json.Valid(body) {
+				t.Fatal("extra-answer fixture must be valid JSON")
+			}
+			answer, _, _, err := parseResponse(body, request)
 			if err == nil || ErrorCode(err) != "malformed_response" || answer != nil {
 				t.Fatalf("parseResponse = answer:%#v err:%v (%s), want malformed_response", answer, err, ErrorCode(err))
 			}

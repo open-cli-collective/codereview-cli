@@ -457,7 +457,7 @@ cr benchmark infer-system-one internal/cmd/benchmarkcmd/testdata/identity-smoke/
 
 These shared fixtures contain synthetic same/different controls, not captured provider responses, and they make no model-quality claim. Together they cap the smoke at four calls: three unordered cohort pairs and one eligible prior-thread pair. No live TypeSafe request runs in the normal Go test suite. No service tier is sent unless `--service-tier` is supplied. Missing prices leave attempted-call costs unknown; they are not treated as zero.
 
-The command uses a choice-only System One client, not a full API SDK. A separate report-identity adapter supplies the versioned prompt, complete report projection and same/different/abstain mapping. Other question types and live review stages are outside this command. It does not read reviewer profiles, catalogs or ledger state.
+The command uses a choice-only System One client, not a full API SDK. The provider-neutral report-identity projection supplies the versioned prompt, complete report state and same/different/abstain mapping. Other question types and live review stages are outside this command. It does not read reviewer profiles, catalogs or ledger state.
 
 The input is one v1 `cohort` or `prior_threads` fixture with an empty `decisions` array. `cohort` sends every unordered finding pair; `prior_threads` sends every finding and eligible thread pair. Every original record is retained, including ineligible threads. Each pair receives one sequential request. `--max-calls` is required, accepts 0–10000, and must cover the complete pair set. Empty pair sets need no key and make no requests. The command does not shorten records, retry, resume or continue after a failed request.
 
@@ -470,6 +470,25 @@ Prices are optional and have no model-specific defaults. Supply both `--input-pr
 `--output-dir` is required and must name a new directory. It is created with mode 0700 and contains `fixture.json`, `replay.json`, `receipts.json` and `manifest.json` with mode 0600. The manifest publishes last. Artifacts contain complete original report text and must stay out of source control. Receipts include selected configuration, IDs, hashes, choices, probabilities, token usage, timing and nullable cost estimates; raw provider request/response bodies and credential values are not saved. Use `cr benchmark replay` on the saved fixture to reproduce composition without a provider call.
 
 The compact stdout summary includes configuration, output paths, pair counts, usage and cost accounting. `complete` and `unresolved` exit 0; a failed request or output write exits 1. Invalid arguments/fixtures and valid-input preflight failures exit 2. Preflight failure publishes retained error artifacts when local output permits; invalid arguments or malformed fixtures create no output directory. The unshipped `infer-mammoth` name has no compatibility alias.
+
+### `cr benchmark infer-openai-decisions`
+
+Run the same report-identity inference and replay over a local fixture through OpenAI's Decisions choice API:
+
+```bash
+cr benchmark infer-openai-decisions ./identity-input.json \
+  --model gpt-6-luna \
+  --max-calls 100 \
+  --output-dir ./openai-identity-run
+```
+
+The command has no default model or price. Its default endpoint is `https://api.openai.com/v1/decisions`, and it reads the API key from `OPENAI_API_KEY` and sends it with Bearer authentication. `--endpoint` selects another HTTPS endpoint and `--api-key-env` selects another environment variable name; the key itself is never a flag value or saved in artifacts. `--expected-model` is an optional local check for a provider-resolved model ID and is not sent in the request. The command does not expose authentication-scheme, service-tier or reasoning-effort flags.
+
+The OpenAI client implements only one named string-choice question. It sends the exact compact projected report state as `input`, followed by the shared identity instructions and the ordered `a`, `b`, and `c` criteria. It validates the returned named choice, confidence and full probability distribution. Other Decisions question types and live review stages are outside the command. Both inference commands use the same fixture schema, prompt, pair ordering, validation, retained replay and artifact format; neither is a model matrix or a quality or performance claim. See the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [Decisions guide](https://developers.openai.com/api/docs/guides/decisions) for the upstream API contract.
+
+The same `--max-calls`, `--max-state-bytes`, `--max-request-bytes`, `--timeout` and optional input/output price flags apply. `--max-state-bytes` limits the UTF-8 projected input bytes. Input and output token totals remain available when usage reports them, but cost is estimated only when both cached-input and cache-write counts are known zero. Missing, null or nonzero cache counts make the attempted call's cost unknown, even when base token counts and caller-supplied rates are present. No cache pricing is inferred.
+
+The command uses the same complete preflight, lazy credential lookup, fail-stop behavior and private output directory rules described above. It retains ineligible prior threads in `fixture.json` without sending them as pairs. Empty pair sets need no key and have known zero cost. Provider refusal is recorded as a failed attempt with validated usage retained, not as an abstention.
 
 ## Artifacts
 

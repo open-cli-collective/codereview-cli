@@ -266,7 +266,7 @@ func inferSystemOneRunFlags() []string {
 	return []string{"--endpoint", "https://custom.example.test/v2/system-one", "--auth-scheme", "bearer", "--api-key-env", "ALT_TOKEN", "--expected-model", "provider/model-resolved", "--service-tier", "batch", "--max-state-bytes", "4096", "--max-request-bytes", "7168"}
 }
 
-func runInferSystemOneTestCase(t *testing.T, input reportidentity.Input, args []string, outcomes []inferSystemOneFakeOutcome, apiKey string, keyPresent bool) (*inferSystemOneTestState, *inferSystemOneSummary, *inferSystemOneReceipts, string, string, error) {
+func runInferSystemOneTestCase(t *testing.T, input reportidentity.Input, args []string, outcomes []inferSystemOneFakeOutcome, apiKey string, keyPresent bool) (*inferSystemOneTestState, *identityInferenceSummary, *identityInferenceReceipts, string, string, error) {
 	t.Helper()
 	baseDir := t.TempDir()
 	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(baseDir, "input"), input)
@@ -276,13 +276,13 @@ func runInferSystemOneTestCase(t *testing.T, input reportidentity.Input, args []
 	commandArgs := inferSystemOneRunArgs(fixturePath, outputDir, 100)
 	commandArgs = append(commandArgs, args...)
 	err := root.Execute(cmd, commandArgs)
-	var summary inferSystemOneSummary
+	var summary identityInferenceSummary
 	if stdout.Len() > 0 {
 		if jsonErr := json.Unmarshal(stdout.Bytes(), &summary); jsonErr != nil {
 			t.Fatalf("decode summary: %v; stdout=%s", jsonErr, stdout.String())
 		}
 	}
-	var receipts inferSystemOneReceipts
+	var receipts identityInferenceReceipts
 	if _, statErr := os.Stat(filepath.Join(outputDir, "receipts.json")); statErr == nil {
 		if jsonErr := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "receipts.json"), &receipts); jsonErr != nil {
 			t.Fatalf("decode receipts: %v", jsonErr)
@@ -321,7 +321,7 @@ func TestInferSystemOneCohortPublishesGenericConfigurationCostAndReplay(t *testi
 	if state.client == nil || len(state.client.requests) != 3 || state.client.requests[0].Model != "provider/model-test" || state.client.requests[0].ExpectedModel != "provider/model-resolved" || state.client.requests[0].ServiceTier != "batch" {
 		t.Fatalf("captured requests = %#v", state.client)
 	}
-	var summary inferSystemOneSummary
+	var summary identityInferenceSummary
 	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
 		t.Fatalf("decode stdout summary: %v", err)
 	}
@@ -345,14 +345,14 @@ func TestInferSystemOneCohortPublishesGenericConfigurationCostAndReplay(t *testi
 	replayBytes := readInferSystemOneOutput(t, outputDir, "replay.json")
 	receiptsBytes := readInferSystemOneOutput(t, outputDir, "receipts.json")
 	manifestBytes := readInferSystemOneOutput(t, outputDir, "manifest.json")
-	var manifest inferSystemOneManifest
+	var manifest identityInferenceManifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
 	if manifest.Files.FixtureSHA256 != sha256Hex(fixtureBytes) || manifest.Files.ReplaySHA256 != sha256Hex(replayBytes) || manifest.Files.ReceiptsSHA256 != sha256Hex(receiptsBytes) {
 		t.Fatalf("manifest hashes = %#v", manifest.Files)
 	}
-	var receipts inferSystemOneReceipts
+	var receipts identityInferenceReceipts
 	if err := json.Unmarshal(receiptsBytes, &receipts); err != nil {
 		t.Fatalf("decode receipts: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestInferSystemOnePriorThreadsRetainsIneligibleThreadsAndUnknownCost(t *tes
 	if err := json.Unmarshal(readInferSystemOneOutput(t, summary.OutputDir, "fixture.json"), &generated); err != nil || len(generated.Threads) != 3 || len(generated.Decisions) != 4 {
 		t.Fatalf("prior-thread fixture = %#v err=%v", generated, err)
 	}
-	var decoded inferSystemOneSummary
+	var decoded identityInferenceSummary
 	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil || decoded.EstimatedCostUSD != nil || decoded.UnknownCostCalls != 4 {
 		t.Fatalf("decoded summary = %#v err=%v", decoded, err)
 	}
@@ -517,11 +517,11 @@ func TestInferSystemOnePreflightFailuresDoNotLookupKeyOrCallClient(t *testing.T)
 			if err == nil || state.keyLookups != test.wantLookups || state.clientOpens != 0 {
 				t.Fatalf("preflight result err=%v state=%#v", err, state)
 			}
-			var summary inferSystemOneSummary
+			var summary identityInferenceSummary
 			if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
 				t.Fatalf("decode summary: %v", err)
 			}
-			var receipts inferSystemOneReceipts
+			var receipts identityInferenceReceipts
 			if err := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "receipts.json"), &receipts); err != nil {
 				t.Fatalf("decode receipts: %v", err)
 			}
@@ -560,11 +560,11 @@ func TestInferSystemOneStopsAfterErrorAndReportsMixedKnownUnknownCosts(t *testin
 	if err == nil || state.client == nil || state.client.decides != 2 {
 		t.Fatalf("expected stop-on-first-error: err=%v state=%#v", err, state)
 	}
-	var summary inferSystemOneSummary
+	var summary identityInferenceSummary
 	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
 		t.Fatalf("decode summary: %v", err)
 	}
-	var receipts inferSystemOneReceipts
+	var receipts identityInferenceReceipts
 	if err := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "receipts.json"), &receipts); err != nil {
 		t.Fatalf("decode receipts: %v", err)
 	}
@@ -595,11 +595,11 @@ func TestInferSystemOneAttemptedPairCanHaveNoHTTPCall(t *testing.T) {
 	if err == nil || state.client == nil || state.client.decides != 1 {
 		t.Fatalf("pre-HTTP result err=%v state=%#v", err, state)
 	}
-	var summary inferSystemOneSummary
+	var summary identityInferenceSummary
 	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
 		t.Fatal(err)
 	}
-	var receipts inferSystemOneReceipts
+	var receipts identityInferenceReceipts
 	if err := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "receipts.json"), &receipts); err != nil {
 		t.Fatal(err)
 	}
@@ -634,11 +634,11 @@ func TestInferSystemOneCancellationReachesActiveCallAndRetainsMissingPairs(t *te
 	if err == nil || cancelClient.calls != 1 {
 		t.Fatalf("canceled active call err=%v calls=%d", err, cancelClient.calls)
 	}
-	var summary inferSystemOneSummary
+	var summary identityInferenceSummary
 	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
 		t.Fatal(err)
 	}
-	var receipts inferSystemOneReceipts
+	var receipts identityInferenceReceipts
 	if err := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "receipts.json"), &receipts); err != nil {
 		t.Fatal(err)
 	}
@@ -706,30 +706,30 @@ func TestInferSystemOneFlagsFailBeforeCreatingOutput(t *testing.T) {
 }
 
 func TestInferSystemOneCostZeroAndFiniteArithmetic(t *testing.T) {
-	configuration := inferSystemOneConfiguration{}
-	usage := &inferSystemOneUsage{InputTokens: 100, OutputTokens: 20}
-	if estimateSystemOneCost(usage, configuration) != nil {
+	configuration := identityInferenceConfiguration{}
+	usage := &identityInferenceUsage{InputTokens: 100, OutputTokens: 20}
+	if estimateIdentityInferenceCost(usage, configuration) != nil {
 		t.Fatal("unset price pair produced an estimate")
 	}
 	zero := 0.0
 	configuration.InputPricePerMillion = &zero
 	configuration.OutputPricePerMillion = &zero
-	if got := estimateSystemOneCost(usage, configuration); got == nil || *got != 0 {
+	if got := estimateIdentityInferenceCost(usage, configuration); got == nil || *got != 0 {
 		t.Fatalf("explicit zero prices = %#v", got)
 	}
 	inputPrice, outputPrice := 2.0, 5.0
 	configuration.InputPricePerMillion = &inputPrice
 	configuration.OutputPricePerMillion = &outputPrice
-	if got := estimateSystemOneCost(usage, configuration); got == nil || math.Abs(*got-0.0003) > 1e-12 {
+	if got := estimateIdentityInferenceCost(usage, configuration); got == nil || math.Abs(*got-0.0003) > 1e-12 {
 		t.Fatalf("positive prices estimate = %#v", got)
 	}
-	if estimateSystemOneCost(nil, configuration) != nil {
+	if estimateIdentityInferenceCost(nil, configuration) != nil {
 		t.Fatal("missing usage produced an estimate")
 	}
 	maxFloat := math.MaxFloat64
 	configuration.InputPricePerMillion = &maxFloat
 	configuration.OutputPricePerMillion = &maxFloat
-	if estimateSystemOneCost(&inferSystemOneUsage{InputTokens: math.MaxInt64, OutputTokens: math.MaxInt64}, configuration) != nil {
+	if estimateIdentityInferenceCost(&identityInferenceUsage{InputTokens: math.MaxInt64, OutputTokens: math.MaxInt64}, configuration) != nil {
 		t.Fatal("nonfinite cost estimate was returned")
 	}
 }
