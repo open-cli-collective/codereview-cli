@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "task": "prior_threads",
+  "findings": [
+    {
+      "finding_id": "f1",
+      "severity": "major",
+      "file_path": "pkg/import/apply.go",
+      "anchor": {"kind": "file"},
+      "body": "applyImport calls publishJournal before its database transaction commits. If commit fails, subscribers receive a journal that never exists. Move that single publishJournal call after successful commit."
+    }
+  ],
+  "threads": [
+    {
+      "thread_id": "t1",
+      "eligible": true,
+      "file_path": "pkg/events/publish.go",
+      "body": "The publishJournal call made by applyImport runs before the import transaction commits. A failed commit exposes a nonexistent journal to subscribers. Defer that same publishJournal call until commit succeeds."
+    },
+    {
+      "thread_id": "t2",
+      "eligible": false,
+      "file_path": "pkg/import/preview.go",
+      "body": "previewImport divides total by len(rows). Empty rows cause division by zero. Return an empty preview before averaging."
+    }
+  ],
+  "decisions": []
+}

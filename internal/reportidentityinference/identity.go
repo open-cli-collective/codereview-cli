@@ -1,5 +1,5 @@
-// Package reportidentityinference projects retained report pairs into the
-// generic System One choice API and normalizes its identity answer.
+// Package reportidentityinference projects retained report pairs into a
+// provider-neutral identity question and normalizes its answer.
 package reportidentityinference
 
 import (
@@ -89,6 +89,26 @@ type Answer struct {
 	Confidence    float64
 }
 
+// Question contains the provider-neutral parts of one identity question.
+type Question struct {
+	Instructions string
+	Criteria     map[string]string
+}
+
+// Projection is the immutable identity input shared by provider adapters.
+type Projection struct {
+	State        json.RawMessage
+	QuestionName string
+	Question     Question
+}
+
+// ChoiceAnswer is the provider-neutral shape needed to validate one choice.
+type ChoiceAnswer struct {
+	Choice        string
+	Confidence    float64
+	Probabilities map[string]float64
+}
+
 type stateWire struct {
 	ProtocolVersion int        `json:"protocol_version"`
 	Task            Task       `json:"task"`
@@ -130,8 +150,28 @@ func Request(model, tier string, task Task, left, right Record) (systemone.Reque
 	if strings.TrimSpace(model) == "" || (tier != "" && strings.TrimSpace(tier) == "") || !utf8.ValidString(model) || !utf8.ValidString(tier) {
 		return systemone.Request{}, errors.New("reportidentityinference: invalid request")
 	}
+	projection, err := Project(task, left, right)
+	if err != nil {
+		return systemone.Request{}, err
+	}
+	return systemone.Request{
+		Model:       model,
+		ServiceTier: tier,
+		State:       projection.State,
+		Questions: map[string]systemone.ChoiceQuestion{
+			projection.QuestionName: {
+				Instructions: projection.Question.Instructions,
+				Criteria:     projection.Question.Criteria,
+			},
+		},
+	}, nil
+}
+
+// Project validates and serializes one complete report pair into the shared
+// provider-neutral identity input.
+func Project(task Task, left, right Record) (Projection, error) {
 	if err := validatePair(task, left, right); err != nil {
-		return systemone.Request{}, errors.New("reportidentityinference: invalid pair")
+		return Projection{}, errors.New("reportidentityinference: invalid pair")
 	}
 	state, err := marshalCompact(stateWire{
 		ProtocolVersion: protocolVersion,
@@ -140,20 +180,17 @@ func Request(model, tier string, task Task, left, right Record) (systemone.Reque
 		Right:           toRecordWire(right),
 	})
 	if err != nil {
-		return systemone.Request{}, errors.New("reportidentityinference: invalid pair")
+		return Projection{}, errors.New("reportidentityinference: invalid pair")
 	}
-	return systemone.Request{
-		Model:       model,
-		ServiceTier: tier,
-		State:       json.RawMessage(state),
-		Questions: map[string]systemone.ChoiceQuestion{
-			"identity": {
-				Instructions: identityInstructions,
-				Criteria: map[string]string{
-					"a": criterionSame,
-					"b": criterionDifferent,
-					"c": criterionAbstain,
-				},
+	return Projection{
+		State:        json.RawMessage(state),
+		QuestionName: "identity",
+		Question: Question{
+			Instructions: identityInstructions,
+			Criteria: map[string]string{
+				"a": criterionSame,
+				"b": criterionDifferent,
+				"c": criterionAbstain,
 			},
 		},
 	}, nil
@@ -166,7 +203,16 @@ func ParseAnswer(answers map[string]systemone.ChoiceAnswer) (Answer, error) {
 		return Answer{}, errors.New("reportidentityinference: malformed answer")
 	}
 	answer, exists := answers["identity"]
-	if !exists || !validChoice(answer.Choice) || len(answer.Probabilities) != 3 {
+	if !exists {
+		return Answer{}, errors.New("reportidentityinference: malformed answer")
+	}
+	return ParseChoice(ChoiceAnswer{Choice: answer.Choice, Confidence: answer.Confidence, Probabilities: answer.Probabilities})
+}
+
+// ParseChoice independently validates a provider-neutral identity answer
+// before converting it into replay semantics.
+func ParseChoice(answer ChoiceAnswer) (Answer, error) {
+	if !validChoice(answer.Choice) || len(answer.Probabilities) != 3 {
 		return Answer{}, errors.New("reportidentityinference: malformed answer")
 	}
 	for _, label := range []string{"a", "b", "c"} {
