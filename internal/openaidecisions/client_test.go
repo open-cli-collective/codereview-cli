@@ -196,13 +196,13 @@ func TestNewValidatesOptionsAndClonesHTTPClient(t *testing.T) {
 	}
 	invalid := []Options{
 		{Endpoint: "http://api.example.test/decisions", APIKey: testAPIKey, Limits: testLimits},
-		{Endpoint: "https://user:pass@api.example.test/decisions", APIKey: testAPIKey, Limits: testLimits},
+		{Endpoint: "https://user@api.example.test/decisions", APIKey: testAPIKey, Limits: testLimits},
 		{Endpoint: "https://api.example.test/decisions?x=1", APIKey: testAPIKey, Limits: testLimits},
 		{Endpoint: "https://api.example.test/decisions?", APIKey: testAPIKey, Limits: testLimits},
 		{Endpoint: "https://api.example.test/decisions#fragment", APIKey: testAPIKey, Limits: testLimits},
 		{Endpoint: testEndpoint, APIKey: "", Limits: testLimits},
 		{Endpoint: testEndpoint, APIKey: "with space", Limits: testLimits},
-		{Endpoint: testEndpoint, APIKey: "key\r\nInjected: x", Limits: testLimits},
+		{Endpoint: testEndpoint, APIKey: "bad\r\nkey", Limits: testLimits},
 		{Endpoint: testEndpoint, APIKey: testAPIKey, Timeout: -time.Second, Limits: testLimits},
 		{Endpoint: testEndpoint, APIKey: testAPIKey, Limits: Limits{MaxInputBytes: 0, MaxRequestBytes: 1}},
 	}
@@ -372,7 +372,7 @@ func TestDecideHonorsCancellationTimeoutAndDoesNotRetry(t *testing.T) {
 		return nil, request.Context().Err()
 	})
 	receipt, err := client.Decide(cancelCtx, choiceRequest())
-	if err == nil || ErrorCode(err) != "cancelled" || !receipt.Attempted || calls.Load() != 1 {
+	if err == nil || ErrorCode(err) != string(errorCancelled) || !receipt.Attempted || calls.Load() != 1 {
 		t.Fatalf("cancel result = %#v, %v (%s), calls=%d", receipt, err, ErrorCode(err), calls.Load())
 	}
 

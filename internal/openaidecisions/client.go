@@ -201,7 +201,7 @@ func prepare(request Request, limits Limits) (Plan, []byte, error) {
 			return Plan{}, nil, newError(errorInvalidInput, "openaidecisions: duplicate choice value")
 		}
 		seenValues[choice.Value] = struct{}{}
-		choices[index] = wireChoice{Value: choice.Value, Description: choice.Description}
+		choices[index] = wireChoice(choice)
 	}
 
 	body, err := marshalCompact(wireRequest{
