@@ -20,6 +20,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentity"
+	"github.com/open-cli-collective/codereview-cli/internal/reportidentityinference"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/systemone"
 )
@@ -170,13 +171,73 @@ func newInferSystemOneTestCommand(t *testing.T, opts *root.Options, dependencies
 	}
 	opts.Stdout = out
 	opts.Stderr = errOut
+	previousRuntime := identityProviderRuntimeFor
+	identityProviderRuntimeFor = func(provider identityProviderConfig, flags identityInferenceFlags) (identityProviderRuntime, error) {
+		if provider.Kind != "system_one" {
+			return identityProviderRuntime{}, fmt.Errorf("unexpected adapter kind %q", provider.Kind)
+		}
+		return identityProviderRuntime{
+			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			backend:      inferSystemOneBackend(flags, dependencies),
+		}, nil
+	}
+	t.Cleanup(func() { identityProviderRuntimeFor = previousRuntime })
 	cmd, rootOpts := root.NewCommandWithOptions(opts)
-	root.RegisterAll(cmd, rootOpts, func(rootCmd *cobra.Command, rootOptions *root.Options) {
-		benchmark := &cobra.Command{Use: "benchmark", Short: "Benchmark test tree"}
-		benchmark.AddCommand(newInferSystemOneCommandWithDependencies(rootOptions, dependencies))
-		rootCmd.AddCommand(benchmark)
-	})
+	Register(cmd, rootOpts)
 	return cmd, out, errOut
+}
+
+func executeLegacyInferSystemOne(t *testing.T, cmd *cobra.Command, args []string) error {
+	t.Helper()
+	translated, err := translateLegacyInferSystemOneArgs(t, args)
+	if err != nil {
+		return err
+	}
+	return root.Execute(cmd, translated)
+}
+
+func translateLegacyInferSystemOneArgs(t *testing.T, args []string) ([]string, error) {
+	t.Helper()
+	if len(args) < 3 || args[0] != "benchmark" || args[1] != "infer-system-one" {
+		return nil, fmt.Errorf("unexpected legacy test args: %#v", args)
+	}
+	fixturePath := args[2]
+	endpoint, apiKeyEnv, authScheme, serviceTier := defaultSystemOneEndpoint, defaultSystemOneKeyEnv, "api-key", ""
+	forwarded := make([]string, 0, len(args))
+	for index := 3; index < len(args); index++ {
+		name := args[index]
+		if !strings.HasPrefix(name, "--") {
+			return nil, fmt.Errorf("unexpected positional legacy test argument %q", name)
+		}
+		if index+1 >= len(args) {
+			return nil, fmt.Errorf("missing value for %s", name)
+		}
+		value := args[index+1]
+		index++
+		switch name {
+		case "--endpoint":
+			endpoint = value
+		case "--api-key-env":
+			apiKeyEnv = value
+		case "--auth-scheme":
+			authScheme = value
+		case "--service-tier":
+			serviceTier = value
+		case "--output-dir":
+			forwarded = append(forwarded, "--results-dir", value)
+		default:
+			forwarded = append(forwarded, name, value)
+		}
+	}
+	suitePath := filepath.Join(filepath.Dir(fixturePath), "identity-test-suite.yml")
+	suite := fmt.Sprintf("task: report_identity\nfixture: %q\nproviders:\n  test:\n    kind: system_one\n    endpoint: %q\n    api_key_env: %q\n    auth_scheme: %q\n", filepath.Base(fixturePath), endpoint, apiKeyEnv, authScheme)
+	if serviceTier != "" {
+		suite += fmt.Sprintf("    service_tier: %q\n", serviceTier)
+	}
+	if err := os.WriteFile(suitePath, []byte(suite), 0o600); err != nil {
+		return nil, fmt.Errorf("write test identity suite: %w", err)
+	}
+	return append([]string{"benchmark", "run", suitePath, "--provider", "test"}, forwarded...), nil
 }
 
 func writeInferSystemOneInput(t *testing.T, dir string, input reportidentity.Input) (string, []byte) {
@@ -275,7 +336,7 @@ func runInferSystemOneTestCase(t *testing.T, input reportidentity.Input, args []
 	cmd, stdout, stderr := newInferSystemOneTestCommand(t, nil, dependencies)
 	commandArgs := inferSystemOneRunArgs(fixturePath, outputDir, 100)
 	commandArgs = append(commandArgs, args...)
-	err := root.Execute(cmd, commandArgs)
+	err := executeLegacyInferSystemOne(t, cmd, commandArgs)
 	var summary identityInferenceSummary
 	if stdout.Len() > 0 {
 		if jsonErr := json.Unmarshal(stdout.Bytes(), &summary); jsonErr != nil {
@@ -306,7 +367,7 @@ func TestInferSystemOneCohortPublishesGenericConfigurationCostAndReplay(t *testi
 	args := inferSystemOneRunArgs(fixturePath, outputDir, 3)
 	args = append(args, inferSystemOneRunFlags()...)
 	args = append(args, "--input-price-per-million", "2", "--output-price-per-million", "5")
-	if err := root.Execute(cmd, args); err != nil {
+	if err := executeLegacyInferSystemOne(t, cmd, args); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if state.keyLookups != 1 || len(state.keyNames) != 1 || state.keyNames[0] != "ALT_TOKEN" || state.clientOpens != 1 || state.options.APIKey != "synthetic-test-key" {
@@ -420,6 +481,79 @@ func TestInferSystemOnePriorThreadsRetainsIneligibleThreadsAndUnknownCost(t *tes
 	assertInferSystemOneRetentionAndReplay(t, summary.OutputDir, input)
 }
 
+func TestUnifiedSystemOnePreparationMatchesSavedJevSmokeHashes(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want map[string]string
+	}{
+		{
+			name: "cohort",
+			path: "testdata/identity-smoke/cohort.json",
+			want: map[string]string{
+				"f1/f2": "989a0aa5968b5387281e6e35707e43825d8619ea6b0cb79d21613a6f7a2968d5",
+				"f1/f3": "f67bf42a1c4c95058f16f0f88eb32c7b1539ff1298be0ac79a24b85837d0b532",
+				"f2/f3": "b96fb00360b97c9bba8bbe9da37bdf8dcfb794a6ead36e241a1a7c26c82a7c5a",
+			},
+		},
+		{
+			name: "prior threads",
+			path: "testdata/identity-smoke/prior-threads.json",
+			want: map[string]string{
+				"f1/t1": "aa8966981ad05746f780eb6b4b71baca3d3939157a8847982117feed36751903",
+			},
+		},
+	}
+	flags := identityInferenceFlags{model: "jev-1.14.0", maxStateBytes: 6 * 1024, maxRequestBytes: 8 * 1024}
+	backend := inferSystemOneBackend(flags, inferSystemOneDependencies{})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := os.ReadFile(test.path)
+			if err != nil {
+				t.Fatalf("read smoke fixture: %v", err)
+			}
+			input, err := reportidentity.Decode(data)
+			if err != nil {
+				t.Fatalf("decode smoke fixture: %v", err)
+			}
+			result, err := reportidentity.Replay(input)
+			if err != nil {
+				t.Fatalf("replay smoke fixture: %v", err)
+			}
+			findings := make(map[string]review.Finding, len(input.Findings))
+			for _, finding := range input.Findings {
+				findings[string(finding.ID)] = finding
+			}
+			threads := make(map[string]reportidentity.Thread, len(input.Threads))
+			for _, thread := range input.Threads {
+				threads[thread.ID] = thread
+			}
+			got := make(map[string]string, len(result.Pairs))
+			for _, pair := range result.Pairs {
+				left := inferenceFindingRecord(findings[pair.LeftID])
+				var right reportidentityinference.Record
+				if input.Task == reportidentity.TaskCohort {
+					right = inferenceFindingRecord(findings[pair.RightID])
+				} else {
+					right = inferenceThreadRecord(threads[pair.RightID])
+				}
+				projection, err := reportidentityinference.Project(reportidentityinference.Task(input.Task), left, right)
+				if err != nil {
+					t.Fatalf("project %s/%s: %v", pair.LeftID, pair.RightID, err)
+				}
+				plan, err := backend.prepare(projection)
+				if err != nil {
+					t.Fatalf("prepare %s/%s: %v", pair.LeftID, pair.RightID, err)
+				}
+				got[pair.LeftID+"/"+pair.RightID] = plan.RequestSHA256
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("prepared request hashes = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestInferSystemOneExplicitZeroPricesAreKnownZero(t *testing.T) {
 	input := inferSystemOneCohortInput(2)
 	state, summary, receipts, _, _, err := runInferSystemOneTestCase(t, input, []string{"--input-price-per-million", "0", "--output-price-per-million", "0"}, []inferSystemOneFakeOutcome{{usage: &systemone.Usage{InputTokens: 100, OutputTokens: 20}}}, "key", true)
@@ -513,7 +647,7 @@ func TestInferSystemOnePreflightFailuresDoNotLookupKeyOrCallClient(t *testing.T)
 			dependencies, state := inferSystemOneTestDependencies(t, nil, test.apiKey, test.keyPresent)
 			cmd, stdout, _ := newInferSystemOneTestCommand(t, nil, dependencies)
 			args := inferSystemOneRunArgs(fixturePath, outputDir, test.maxCalls)
-			err := root.Execute(cmd, args)
+			err := executeLegacyInferSystemOne(t, cmd, args)
 			if err == nil || state.keyLookups != test.wantLookups || state.clientOpens != 0 {
 				t.Fatalf("preflight result err=%v state=%#v", err, state)
 			}
@@ -556,7 +690,7 @@ func TestInferSystemOneStopsAfterErrorAndReportsMixedKnownUnknownCosts(t *testin
 	cmd, stdout, _ := newInferSystemOneTestCommand(t, nil, dependencies)
 	args := inferSystemOneRunArgs(fixturePath, outputDir, 6)
 	args = append(args, "--input-price-per-million", "1", "--output-price-per-million", "0")
-	err := root.Execute(cmd, args)
+	err := executeLegacyInferSystemOne(t, cmd, args)
 	if err == nil || state.client == nil || state.client.decides != 2 {
 		t.Fatalf("expected stop-on-first-error: err=%v state=%#v", err, state)
 	}
@@ -591,7 +725,7 @@ func TestInferSystemOneAttemptedPairCanHaveNoHTTPCall(t *testing.T) {
 	outputDir := filepath.Join(baseDir, "output")
 	dependencies, state := inferSystemOneTestDependencies(t, outcomes, "key", true)
 	cmd, stdout, _ := newInferSystemOneTestCommand(t, nil, dependencies)
-	err := root.Execute(cmd, inferSystemOneRunArgs(fixturePath, outputDir, 1))
+	err := executeLegacyInferSystemOne(t, cmd, inferSystemOneRunArgs(fixturePath, outputDir, 1))
 	if err == nil || state.client == nil || state.client.decides != 1 {
 		t.Fatalf("pre-HTTP result err=%v state=%#v", err, state)
 	}
@@ -630,7 +764,7 @@ func TestInferSystemOneCancellationReachesActiveCallAndRetainsMissingPairs(t *te
 	cmd.SetContext(ctx)
 	args := inferSystemOneRunArgs(fixturePath, outputDir, 3)
 	args = append(args, "--input-price-per-million", "0", "--output-price-per-million", "0")
-	err := root.Execute(cmd, args)
+	err := executeLegacyInferSystemOne(t, cmd, args)
 	if err == nil || cancelClient.calls != 1 {
 		t.Fatalf("canceled active call err=%v calls=%d", err, cancelClient.calls)
 	}
@@ -689,7 +823,7 @@ func TestInferSystemOneFlagsFailBeforeCreatingOutput(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			dependencies, state := inferSystemOneTestDependencies(t, nil, "key", true)
 			cmd, _, _ := newInferSystemOneTestCommand(t, nil, dependencies)
-			err := root.Execute(cmd, test.args)
+			err := executeLegacyInferSystemOne(t, cmd, test.args)
 			if err == nil || state.keyLookups != 0 || state.clientOpens != 0 {
 				t.Fatalf("flag error=%v state=%#v", err, state)
 			}
@@ -750,7 +884,7 @@ func TestInferSystemOneDoesNotOverwriteExistingOutputOrFollowSymlink(t *testing.
 	}
 	dependencies, state := inferSystemOneTestDependencies(t, nil, "key", true)
 	cmd, _, _ := newInferSystemOneTestCommand(t, nil, dependencies)
-	if err := root.Execute(cmd, inferSystemOneRunArgs(fixturePath, existing, 1)); err == nil {
+	if err := executeLegacyInferSystemOne(t, cmd, inferSystemOneRunArgs(fixturePath, existing, 1)); err == nil {
 		t.Fatal("existing output directory was accepted")
 	}
 	if state.keyLookups != 0 || state.clientOpens != 0 {
@@ -770,7 +904,7 @@ func TestInferSystemOneDoesNotOverwriteExistingOutputOrFollowSymlink(t *testing.
 	}
 	dependencies, state = inferSystemOneTestDependencies(t, nil, "key", true)
 	cmd, _, _ = newInferSystemOneTestCommand(t, nil, dependencies)
-	if err := root.Execute(cmd, inferSystemOneRunArgs(fixturePath, link, 1)); err == nil {
+	if err := executeLegacyInferSystemOne(t, cmd, inferSystemOneRunArgs(fixturePath, link, 1)); err == nil {
 		t.Fatal("symlink output directory was accepted")
 	}
 	if state.keyLookups != 0 || state.clientOpens != 0 {
@@ -792,7 +926,7 @@ func TestInferSystemOnePartialPublicationLeavesManifestAbsent(t *testing.T) {
 		return originalRename(oldPath, newPath)
 	}
 	cmd, _, _ := newInferSystemOneTestCommand(t, nil, dependencies)
-	if err := root.Execute(cmd, inferSystemOneRunArgs(fixturePath, outputDir, 1)); err == nil {
+	if err := executeLegacyInferSystemOne(t, cmd, inferSystemOneRunArgs(fixturePath, outputDir, 1)); err == nil {
 		t.Fatal("publication failure was not returned")
 	}
 	if _, err := os.Stat(filepath.Join(outputDir, "fixture.json")); err != nil {

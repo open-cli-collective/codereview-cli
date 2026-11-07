@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentity"
@@ -46,6 +44,12 @@ type identityInferenceFlags struct {
 	outputPricePerMillion float64
 	inputPriceSet         bool
 	outputPriceSet        bool
+	task                  string
+	suitePath             string
+	suiteSHA256           string
+	candidateID           *string
+	providerName          string
+	adapterKind           string
 	// These settings are provider-specific at the CLI. OpenAI uses fixed
 	// Bearer authentication and does not set a service tier.
 	authScheme  string
@@ -79,6 +83,12 @@ type identityInferenceAnswer struct {
 }
 
 type identityInferenceConfiguration struct {
+	Task                  string   `json:"task"`
+	SuitePath             string   `json:"suite_path"`
+	SuiteSHA256           string   `json:"suite_sha256"`
+	CandidateID           *string  `json:"candidate_id"`
+	ProviderName          string   `json:"provider_name"`
+	AdapterKind           string   `json:"adapter_kind"`
 	Endpoint              string   `json:"endpoint"`
 	RequestedModel        string   `json:"requested_model"`
 	ExpectedModel         string   `json:"expected_model"`
@@ -87,6 +97,8 @@ type identityInferenceConfiguration struct {
 	APIKeyEnv             string   `json:"api_key_env"`
 	MaxStateBytes         int      `json:"max_state_bytes"`
 	MaxRequestBytes       int      `json:"max_request_bytes"`
+	TimeoutMS             int64    `json:"timeout_ms"`
+	MaxCalls              int      `json:"max_calls"`
 	InputPricePerMillion  *float64 `json:"input_price_per_million"`
 	OutputPricePerMillion *float64 `json:"output_price_per_million"`
 	Provider              string   `json:"provider,omitempty"`
@@ -250,7 +262,7 @@ func runIdentityInference(ctx context.Context, opts *root.Options, commandName, 
 	}
 	if err := checkIdentityInferenceOutputDirNew(flags.outputDir); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return exitcode.Usage(errors.New(commandName + ": output directory must be new"))
+			return exitcode.Usage(errors.New(commandName + ": results directory must be new"))
 		}
 		return exitcode.With(exitcode.Failure, errors.New(commandName+": could not inspect output directory"))
 	}
@@ -273,7 +285,7 @@ func runIdentityInference(ctx context.Context, opts *root.Options, commandName, 
 	outputDir, err := createIdentityInferenceOutputDir(flags.outputDir)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return exitcode.Usage(errors.New(commandName + ": output directory must be new"))
+			return exitcode.Usage(errors.New(commandName + ": results directory must be new"))
 		}
 		return exitcode.With(exitcode.Failure, errors.New(commandName+": could not create output directory"))
 	}
@@ -558,9 +570,12 @@ func identityInferenceConfigurationFor(flags identityInferenceFlags, backend ide
 		tier = &value
 	}
 	configuration := identityInferenceConfiguration{
+		Task: flags.task, SuitePath: flags.suitePath, SuiteSHA256: flags.suiteSHA256, CandidateID: flags.candidateID,
+		ProviderName: flags.providerName, AdapterKind: flags.adapterKind,
 		Endpoint: flags.endpoint, RequestedModel: flags.model, ExpectedModel: effectiveIdentityInferenceExpectedModel(flags),
 		ServiceTier: tier, AuthScheme: authScheme, APIKeyEnv: flags.apiKeyEnv,
 		MaxStateBytes: flags.maxStateBytes, MaxRequestBytes: flags.maxRequestBytes,
+		TimeoutMS: flags.timeout.Milliseconds(), MaxCalls: flags.maxCalls,
 		Provider: backend.provider, ContextStatus: backend.contextStatus,
 	}
 	if flags.inputPriceSet {
@@ -626,7 +641,7 @@ func validateIdentityInferenceCoreFlags(commandName string, flags identityInfere
 		return fmt.Errorf("%s: --max-calls must be in the range 0-%d", commandName, maximumIdentityInferenceCalls)
 	}
 	if strings.TrimSpace(flags.outputDir) == "" {
-		return errors.New(commandName + ": --output-dir is required")
+		return errors.New(commandName + ": --results-dir is required")
 	}
 	if flags.timeout < minimumIdentityInferenceTimeout || flags.timeout > maximumIdentityInferenceTimeout {
 		return errors.New(commandName + ": --timeout must be from 1s through 120s")
@@ -658,23 +673,6 @@ func validateIdentityInferenceFlags(commandName string, flags identityInferenceF
 		return err
 	}
 	return validateIdentityInferenceLimitsAndPrices(commandName, flags)
-}
-
-func addIdentityInferenceFlags(cmd *cobra.Command, flags *identityInferenceFlags, endpointDescription string) {
-	cmd.Flags().StringVar(&flags.model, "model", "", "Required model alias or ID to request")
-	cmd.Flags().StringVar(&flags.expectedModel, "expected-model", "", "Expected response model ID; defaults to --model")
-	cmd.Flags().IntVar(&flags.maxCalls, "max-calls", flags.maxCalls, "Maximum number of pairwise provider calls (required; 0-10000)")
-	cmd.Flags().StringVar(&flags.outputDir, "output-dir", "", "New private output directory for the fixture, replay, receipts, and manifest (required)")
-	cmd.Flags().StringVar(&flags.endpoint, "endpoint", flags.endpoint, endpointDescription)
-	cmd.Flags().StringVar(&flags.apiKeyEnv, "api-key-env", flags.apiKeyEnv, "Environment variable name containing the API key")
-}
-
-func addIdentityInferenceLimitsFlags(cmd *cobra.Command, flags *identityInferenceFlags) {
-	cmd.Flags().IntVar(&flags.maxStateBytes, "max-state-bytes", flags.maxStateBytes, "Maximum compact state bytes per request")
-	cmd.Flags().IntVar(&flags.maxRequestBytes, "max-request-bytes", flags.maxRequestBytes, "Maximum complete request bytes")
-	cmd.Flags().DurationVar(&flags.timeout, "timeout", flags.timeout, "Per-request timeout from 1s through 120s")
-	cmd.Flags().Float64Var(&flags.inputPricePerMillion, "input-price-per-million", 0, "Optional estimated USD per million input tokens")
-	cmd.Flags().Float64Var(&flags.outputPricePerMillion, "output-price-per-million", 0, "Optional estimated USD per million output tokens")
 }
 
 func estimateIdentityInferenceCost(usage *identityInferenceUsage, configuration identityInferenceConfiguration) *float64 {
