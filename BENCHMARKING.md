@@ -439,6 +439,24 @@ cr benchmark infer-system-one ./identity-input.json \
 
 Mammoth-1 is a Base Labs/Baseten model selection in this example. The command has no default model. Its defaults select Baseten's `https://inference.baseten.co/v1/systemone` endpoint, `api-key` authentication and the `BASETEN_API_KEY` environment variable. Use `--endpoint`, `--auth-scheme api-key|bearer` and `--api-key-env NAME` to select another compatible destination and credential source. The environment-variable flag takes a name, never a secret. The selected HTTPS endpoint receives the key and report text; URLs with user information, queries or fragments are rejected, and redirects are not followed.
 
+For TypeSafe Jev, choose the required `--model` from the authenticated account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); the [System One API reference](https://docs.typesafe.ai/api/system-one) documents the endpoint and response metadata. This example assumes the account lists `jev-latest` and returns the exact resolved model `jev-1.14.0`. `--expected-model` is an optional local check for that resolved model; it is not sent in the request. Without it, the response model must exactly match `--model`.
+
+Set `TYPESAFE_API_KEY` in the process environment through your existing secret manager. `--api-key-env` takes only the environment variable name, never the key value.
+
+```bash
+cr benchmark infer-system-one internal/cmd/benchmarkcmd/testdata/identity-smoke/cohort.json \
+  --model jev-latest --expected-model jev-1.14.0 --max-calls 3 \
+  --endpoint https://api.typesafe.ai/v1/systemone --auth-scheme bearer \
+  --api-key-env TYPESAFE_API_KEY --output-dir ./jev-cohort-smoke
+
+cr benchmark infer-system-one internal/cmd/benchmarkcmd/testdata/identity-smoke/prior-threads.json \
+  --model jev-latest --expected-model jev-1.14.0 --max-calls 1 \
+  --endpoint https://api.typesafe.ai/v1/systemone --auth-scheme bearer \
+  --api-key-env TYPESAFE_API_KEY --output-dir ./jev-prior-threads-smoke
+```
+
+These shared fixtures contain synthetic same/different controls, not captured provider responses, and they make no model-quality claim. Together they cap the smoke at four calls: three unordered cohort pairs and one eligible prior-thread pair. No live TypeSafe request runs in the normal Go test suite. No service tier is sent unless `--service-tier` is supplied. Missing prices leave attempted-call costs unknown; they are not treated as zero.
+
 The command uses a choice-only System One client, not a full API SDK. A separate report-identity adapter supplies the versioned prompt, complete report projection and same/different/abstain mapping. Other question types and live review stages are outside this command. It does not read reviewer profiles, catalogs or ledger state.
 
 The input is one v1 `cohort` or `prior_threads` fixture with an empty `decisions` array. `cohort` sends every unordered finding pair; `prior_threads` sends every finding and eligible thread pair. Every original record is retained, including ineligible threads. Each pair receives one sequential request. `--max-calls` is required, accepts 0–10000, and must cover the complete pair set. Empty pair sets need no key and make no requests. The command does not shorten records, retry, resume or continue after a failed request.
