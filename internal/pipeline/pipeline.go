@@ -3,6 +3,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +32,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/modelprefs"
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
+	"github.com/open-cli-collective/codereview-cli/internal/reportidentitysnapshot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
@@ -178,6 +181,9 @@ type Options struct {
 	Retention           datalifecycle.RetentionPolicy
 	RetentionManualOnly bool
 	KeepWorkbench       bool
+	// CaptureReportIdentity keeps a value-only, diagnostic snapshot of the
+	// completed report plan. The zero value leaves this path inert.
+	CaptureReportIdentity bool
 
 	GitCommand      func(context.Context, string, ...string) ([]byte, error)
 	ResolveRepoRoot func(context.Context) (string, error)
@@ -299,6 +305,7 @@ type Result struct {
 	ReviewHeadSHA          string
 	ThreadAnalysisFailures []threadanalysis.Failure
 	WithoutDiscussion      bool
+	ReportIdentity         *reportidentitysnapshot.Snapshot `json:"-"`
 	ReviewerFailures       []ReviewerFailure
 	ReviewerCoverage       []reviewplan.ReviewerCoverageSummary
 	RelocationAssessments  []ReviewerRelocationAssessments
@@ -766,6 +773,9 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			failureOutcome = ledger.OutcomeIncomplete
 		}
 		return Result{}, err
+	}
+	if opts.CaptureReportIdentity {
+		result.ReportIdentity = captureReportIdentitySnapshot(req, result, prepared.threadContext)
 	}
 	if err := persistExecutionResult(ctx, opts, req, run, prepared, findingSessions, &result); err != nil {
 		return Result{}, err
@@ -3040,32 +3050,205 @@ type planRunInputs struct {
 	startedAt     time.Time
 }
 
+// currentPriorRoot returns the opening finding comment eligible under the
+// planner's existing prior-thread predicate. In particular, replies do not
+// make a human-opened thread eligible, and resolution does not remove an
+// eligible root.
+func currentPriorRoot(thread threadcontext.Thread) (reportidentitysnapshot.PriorRoot, bool) {
+	if len(thread.Comments) == 0 {
+		return reportidentitysnapshot.PriorRoot{}, false
+	}
+	opening := thread.Comments[0]
+	if !opening.AuthoredByPostingIdentity || !opening.HasFindingMarker {
+		return reportidentitysnapshot.PriorRoot{}, false
+	}
+	return reportidentitysnapshot.PriorRoot{
+		ID:       string(thread.ID),
+		FilePath: thread.Anchor.Path,
+		Body:     opening.Body,
+		Resolved: thread.Resolved,
+	}, true
+}
+
+func currentPriorRoots(threads []threadcontext.Thread) []reportidentitysnapshot.PriorRoot {
+	var out []reportidentitysnapshot.PriorRoot
+	for _, thread := range threads {
+		if root, ok := currentPriorRoot(thread); ok {
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
 // existingFindingThreads reduces the PR's threads to the ones this identity
 // opened to report a finding, which are the only ones a repeat could duplicate.
-// A human quoting the same code is not this review repeating itself.
-//
-// The opening comment is tested directly rather than through
-// Status.CRAuthoredFinding, which is also set when this identity merely replied
-// to a thread someone else opened. That would carry the other author's text in
-// as a finding of ours and let it suppress a real one.
+// It deliberately shares the root predicate with diagnostic snapshot capture.
 func existingFindingThreads(threads []threadcontext.Thread) []reviewplan.ExistingThread {
 	var out []reviewplan.ExistingThread
 	for _, thread := range threads {
-		if len(thread.Comments) == 0 {
+		root, ok := currentPriorRoot(thread)
+		if !ok {
 			continue
 		}
-		// The opening comment is the finding; later comments are the
-		// conversation about it.
-		opening := thread.Comments[0]
-		if !opening.AuthoredByPostingIdentity || !opening.HasFindingMarker {
-			continue
-		}
-		out = append(out, reviewplan.ExistingThread{
-			Path: thread.Anchor.Path,
-			Body: opening.Body,
-		})
+		out = append(out, reviewplan.ExistingThread{Path: root.FilePath, Body: root.Body})
 	}
 	return out
+}
+
+func captureReportIdentitySnapshot(req Request, result Result, threads []threadcontext.Thread) *reportidentitysnapshot.Snapshot {
+	roots := currentPriorRoots(threads)
+	snapshot := reportidentitysnapshot.Snapshot{
+		Source: reportidentitysnapshot.Source{
+			RunID:             result.Run.RunID,
+			PRKey:             result.PRKey,
+			Profile:           req.ProfileName,
+			PostingIdentity:   runlifecycle.PostingKey(req.PostingIdentity),
+			CurrentBaseSHA:    result.CurrentBaseSHA,
+			CurrentHeadSHA:    result.CurrentHeadSHA,
+			ReviewBaseSHA:     result.ReviewBaseSHA,
+			ReviewHeadSHA:     result.ReviewHeadSHA,
+			CRVersion:         req.ToolVersion,
+			WithoutDiscussion: req.WithoutDiscussion,
+		},
+		Findings:   cloneReviewFindings(result.Findings),
+		PriorRoots: roots,
+		Baseline:   reportIdentityBaseline(result, roots),
+	}
+	return &snapshot
+}
+
+func reportIdentityBaseline(result Result, roots []reportidentitysnapshot.PriorRoot) reportidentitysnapshot.Baseline {
+	baseline := reportidentitysnapshot.Baseline{
+		SchemaVersion: 1,
+		CohortStatus:  "accepted_rollup",
+		PriorRule:     "planner_exact_path_normalized_body_v1",
+		Dedupe:        cloneDedupeLog(result.Rollup.DedupeLog),
+	}
+	if result.Rollup.Fallback {
+		baseline.CohortStatus = "fallback_no_dedupe"
+	}
+	if len(result.Rollup.OrderedFindings) > 0 {
+		baseline.EffectiveOrderedIDs = cloneFindingIDs(result.Rollup.OrderedFindings)
+	} else if len(result.Rollup.DedupeLog) == 0 {
+		baseline.EffectiveOrderedIDs = make([]review.FindingID, 0, len(result.Findings))
+		for _, finding := range result.Findings {
+			baseline.EffectiveOrderedIDs = append(baseline.EffectiveOrderedIDs, finding.ID)
+		}
+	}
+	baseline.Metrics = nativeReportIdentityMetrics(result.Plan)
+	if !result.Rollup.Fallback && !baseline.Metrics.RollupPresent && len(result.Findings) == 0 &&
+		len(result.Rollup.OrderedFindings) == 0 && len(result.Rollup.DedupeLog) == 0 {
+		baseline.CohortStatus = "unavailable"
+	}
+	baseline.PriorKeys = reportIdentityPriorKeys(result, roots)
+	return baseline
+}
+
+func cloneDedupeLog(entries []review.DedupeEntry) []reportidentitysnapshot.Dedupe {
+	if entries == nil {
+		return nil
+	}
+	out := make([]reportidentitysnapshot.Dedupe, len(entries))
+	for i, entry := range entries {
+		out[i] = reportidentitysnapshot.Dedupe{
+			Kept:    entry.Kept,
+			Dropped: cloneFindingIDs(entry.Dropped),
+		}
+	}
+	return out
+}
+
+func cloneReviewFindings(findings []review.Finding) []review.Finding {
+	if findings == nil {
+		return nil
+	}
+	out := make([]review.Finding, len(findings))
+	copy(out, findings)
+	return out
+}
+
+func cloneFindingIDs(ids []review.FindingID) []review.FindingID {
+	if ids == nil {
+		return nil
+	}
+	out := make([]review.FindingID, len(ids))
+	copy(out, ids)
+	return out
+}
+
+func reportIdentityPriorKeys(result Result, roots []reportidentitysnapshot.PriorRoot) []reportidentitysnapshot.PriorKey {
+	anchoredByID := make(map[review.FindingID]reviewplan.AnchoredFinding, len(result.Plan.AnchoredFindings))
+	for _, anchored := range result.Plan.AnchoredFindings {
+		anchoredByID[anchored.FindingID] = anchored
+	}
+	keys := make([]reportidentitysnapshot.PriorKey, 0, len(result.Findings)+len(roots))
+	for _, finding := range result.Findings {
+		path, body := finding.FilePath, finding.Body
+		if anchored, ok := anchoredByID[finding.ID]; ok {
+			path, body = anchored.FilePath, anchored.Body
+		}
+		keys = append(keys, reportIdentityPriorKey("finding", string(finding.ID), path, body))
+	}
+	for _, root := range roots {
+		keys = append(keys, reportIdentityPriorKey("thread", root.ID, root.FilePath, root.Body))
+	}
+	return keys
+}
+
+func reportIdentityPriorKey(recordKind, recordID, path, body string) reportidentitysnapshot.PriorKey {
+	key, ok := reviewplan.PriorFindingIdentityKey(path, body)
+	priorKey := reportidentitysnapshot.PriorKey{RecordKind: recordKind, RecordID: recordID}
+	if ok {
+		digest := sha256.Sum256([]byte(key))
+		digestText := hex.EncodeToString(digest[:])
+		priorKey.KeySHA256 = &digestText
+	}
+	return priorKey
+}
+
+func nativeReportIdentityMetrics(plan reviewplan.Plan) reportidentitysnapshot.NativeMetrics {
+	metrics := reportidentitysnapshot.NativeMetrics{
+		RunPlanningWallMS: cloneInt64(plan.Summary.Run.WallDurationMS),
+	}
+	for _, workstream := range plan.Summary.Run.Workstreams {
+		if workstream.Name != orchestratorRollupStage {
+			continue
+		}
+		metrics.RollupPresent = true
+		metrics.RollupModel = workstream.Model
+		metrics.RollupDurationMS = cloneInt64(workstream.DurationMS)
+		metrics.RollupTokensIn = int64FromInt(workstream.TokensIn)
+		metrics.RollupTokensOut = int64FromInt(workstream.TokensOut)
+		metrics.RollupCostUSD = cloneFloat64(workstream.CostUSD)
+		metrics.RollupCostEstimated = workstream.CostEstimated
+		metrics.RollupCostEstimateBasis = workstream.CostEstimateBasis
+		break
+	}
+	return metrics
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func int64FromInt(value *int) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := int64(*value)
+	return &copy
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewplan.RunSummary, map[review.FindingID]string) {

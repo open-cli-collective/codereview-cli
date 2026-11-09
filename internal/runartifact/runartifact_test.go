@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -181,5 +182,93 @@ func TestThreadAnalysisPathsRequireConfiguredAgentLogsDir(t *testing.T) {
 	}
 	if _, err := paths.ThreadAnalysisLog("thread-1"); err == nil {
 		t.Fatal("ThreadAnalysisLog blank agent log dir error = nil, want error")
+	}
+}
+
+func TestIdentityShadowAttemptUsesOnlyFreshFixedChildPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "run")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatalf("Mkdir run root: %v", err)
+	}
+	paths := FromDir(root)
+	const attemptID = "123e4567-e89b-12d3-a456-426614174000"
+
+	got, err := paths.IdentityShadowAttempt(attemptID)
+	if err != nil {
+		t.Fatalf("IdentityShadowAttempt: %v", err)
+	}
+	want := filepath.Join(root, "identity-shadow", "attempt-"+attemptID)
+	if got != want {
+		t.Fatalf("IdentityShadowAttempt = %q, want %q", got, want)
+	}
+	if _, err := os.Lstat(got); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("IdentityShadowAttempt created destination: Lstat error = %v, want not-exist", err)
+	}
+}
+
+func TestIdentityShadowAttemptRequiresCanonicalUUIDAndExistingRunRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "run")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatalf("Mkdir run root: %v", err)
+	}
+	paths := FromDir(root)
+	for _, invalid := range []string{
+		"",
+		" 123e4567-e89b-12d3-a456-426614174000",
+		"123E4567-E89B-12D3-A456-426614174000",
+		"123e4567e89b12d3a456426614174000",
+		"not-a-uuid",
+	} {
+		if got, err := paths.IdentityShadowAttempt(invalid); err == nil || got != "" {
+			t.Fatalf("IdentityShadowAttempt(%q) = %q, %v; want empty path and validation error", invalid, got, err)
+		}
+	}
+
+	if _, err := FromDir(filepath.Join(root, "missing")).IdentityShadowAttempt("123e4567-e89b-12d3-a456-426614174000"); err == nil {
+		t.Fatal("IdentityShadowAttempt accepted a missing run root")
+	}
+	if _, err := (Paths{}).IdentityShadowAttempt("123e4567-e89b-12d3-a456-426614174000"); err == nil {
+		t.Fatal("IdentityShadowAttempt accepted an empty run root")
+	}
+}
+
+func TestIdentityShadowAttemptRejectsSymlinkedOrExistingChildren(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink permissions differ on Windows")
+	}
+	const attemptID = "123e4567-e89b-12d3-a456-426614174000"
+	parent := t.TempDir()
+	root := filepath.Join(parent, "run")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatalf("Mkdir run root: %v", err)
+	}
+	paths := FromDir(root)
+	shadowRoot := filepath.Join(root, "identity-shadow")
+	if err := os.Symlink(parent, shadowRoot); err != nil {
+		t.Fatalf("Symlink identity-shadow: %v", err)
+	}
+	if _, err := paths.IdentityShadowAttempt(attemptID); err == nil {
+		t.Fatal("IdentityShadowAttempt accepted a symlinked identity-shadow directory")
+	}
+	if err := os.Remove(shadowRoot); err != nil {
+		t.Fatalf("Remove identity-shadow symlink: %v", err)
+	}
+	if err := os.Mkdir(shadowRoot, 0o700); err != nil {
+		t.Fatalf("Mkdir identity-shadow: %v", err)
+	}
+	attemptPath := filepath.Join(shadowRoot, "attempt-"+attemptID)
+	if err := os.Mkdir(attemptPath, 0o700); err != nil {
+		t.Fatalf("Mkdir existing attempt: %v", err)
+	}
+	if _, err := paths.IdentityShadowAttempt(attemptID); err == nil {
+		t.Fatal("IdentityShadowAttempt accepted an existing attempt directory")
+	}
+
+	rootLink := filepath.Join(parent, "run-link")
+	if err := os.Symlink(root, rootLink); err != nil {
+		t.Fatalf("Symlink run root: %v", err)
+	}
+	if _, err := FromDir(rootLink).IdentityShadowAttempt("123e4567-e89b-12d3-a456-426614174001"); err == nil {
+		t.Fatal("IdentityShadowAttempt accepted a symlinked run root")
 	}
 }

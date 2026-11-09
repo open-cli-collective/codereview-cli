@@ -203,3 +203,42 @@ func TestNormalizeFindingTextKeepsAnUnterminatedNonMarkerComment(t *testing.T) {
 		t.Fatalf("normalized = %q, want the quoted text kept", got)
 	}
 }
+
+func TestPriorFindingIdentityKeyExposesThePlannerRule(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		body   string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "folds formatting and removes planner markers and footer",
+			path:   " main.go ",
+			body:   "<!-- codereview:run-id=one --> Finding   body\n\nhere " + inlineFooter,
+			want:   "main.go\x00finding body here",
+			wantOK: true,
+		},
+		{
+			name:   "keeps quoted html comments significant",
+			path:   "main.go",
+			body:   "Finding <!-- user quote --> body",
+			want:   "main.go\x00finding <!-- user quote --> body",
+			wantOK: true,
+		},
+		{
+			name:   "empty after marker removal is invalid",
+			path:   "main.go",
+			body:   "<!-- codereview:run-id=one -->",
+			wantOK: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := PriorFindingIdentityKey(test.path, test.body)
+			if got != test.want || ok != test.wantOK {
+				t.Fatalf("PriorFindingIdentityKey(%q, %q) = (%q, %t), want (%q, %t)", test.path, test.body, got, ok, test.want, test.wantOK)
+			}
+		})
+	}
+}
