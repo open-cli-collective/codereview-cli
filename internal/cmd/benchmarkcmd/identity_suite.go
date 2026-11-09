@@ -62,12 +62,8 @@ func defaultIdentityProviderRuntime(provider identityProviderConfig, flags ident
 	case "system_one":
 		dependencies := defaultInferSystemOneDependencies()
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{
-				lookupAPIKey: dependencies.lookupAPIKey,
-				now:          dependencies.now,
-				rename:       dependencies.rename,
-			},
-			backend: inferSystemOneBackend(flags, dependencies),
+			dependencies: identityInferenceDependenciesForSystemOne(dependencies),
+			backend:      inferSystemOneBackend(flags, dependencies),
 		}, nil
 	case "openai_decisions":
 		return openAIDecisionsIdentityProviderRuntime(provider, flags), nil

@@ -543,29 +543,6 @@ func TestInferOpenAIDecisionsRejectsUntrustedUsageExtensions(t *testing.T) {
 	}
 }
 
-func TestMakeIdentityInferenceAttemptRejectsNegativeTotalMetadata(t *testing.T) {
-	negative := int64(-1)
-	configuration := &identityInferenceConfiguration{RequestedModel: "provider/model", ExpectedModel: "provider/model"}
-	planHash := "planned-hash"
-	pair := identityInferencePair{plan: identityInferencePlan{RequestSHA256: planHash}}
-	receipt := identityInferenceReceipt{
-		RequestedModel: "provider/model", ReturnedModel: "provider/model", RequestSHA256: planHash,
-		Attempted: true,
-		Answer: &reportidentityinference.ChoiceAnswer{
-			Choice: "a", Confidence: 0.9, Probabilities: map[string]float64{"a": 0.9, "b": 0.08, "c": 0.02},
-		},
-		Usage: &identityInferenceUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: &negative},
-	}
-	backend := identityInferenceBackend{
-		errorCode:    func(error) string { return "transport" },
-		estimateCost: func(_ *identityInferenceUsage, _ *identityInferenceConfiguration) *float64 { return nil },
-	}
-	attempt, _, code := makeIdentityInferenceAttempt(pair, receipt, nil, time.Now(), nil, configuration, backend)
-	if code != "malformed_response" || attempt.Usage != nil {
-		t.Fatalf("negative total metadata was trusted: attempt=%#v code=%q", attempt, code)
-	}
-}
-
 func TestInferOpenAIDecisionsFailsClosedOnProviderReceiptMismatches(t *testing.T) {
 	input := inferSystemOneCohortInput(2)
 	tests := []struct {

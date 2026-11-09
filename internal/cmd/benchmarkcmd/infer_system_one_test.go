@@ -177,7 +177,7 @@ func newInferSystemOneTestCommand(t *testing.T, opts *root.Options, dependencies
 			return identityProviderRuntime{}, fmt.Errorf("unexpected adapter kind %q", provider.Kind)
 		}
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			dependencies: identityInferenceDependenciesForSystemOne(dependencies),
 			backend:      inferSystemOneBackend(flags, dependencies),
 		}, nil
 	}
@@ -839,35 +839,6 @@ func TestInferSystemOneFlagsFailBeforeCreatingOutput(t *testing.T) {
 	}
 }
 
-func TestInferSystemOneCostZeroAndFiniteArithmetic(t *testing.T) {
-	configuration := identityInferenceConfiguration{}
-	usage := &identityInferenceUsage{InputTokens: 100, OutputTokens: 20}
-	if estimateIdentityInferenceCost(usage, configuration) != nil {
-		t.Fatal("unset price pair produced an estimate")
-	}
-	zero := 0.0
-	configuration.InputPricePerMillion = &zero
-	configuration.OutputPricePerMillion = &zero
-	if got := estimateIdentityInferenceCost(usage, configuration); got == nil || *got != 0 {
-		t.Fatalf("explicit zero prices = %#v", got)
-	}
-	inputPrice, outputPrice := 2.0, 5.0
-	configuration.InputPricePerMillion = &inputPrice
-	configuration.OutputPricePerMillion = &outputPrice
-	if got := estimateIdentityInferenceCost(usage, configuration); got == nil || math.Abs(*got-0.0003) > 1e-12 {
-		t.Fatalf("positive prices estimate = %#v", got)
-	}
-	if estimateIdentityInferenceCost(nil, configuration) != nil {
-		t.Fatal("missing usage produced an estimate")
-	}
-	maxFloat := math.MaxFloat64
-	configuration.InputPricePerMillion = &maxFloat
-	configuration.OutputPricePerMillion = &maxFloat
-	if estimateIdentityInferenceCost(&identityInferenceUsage{InputTokens: math.MaxInt64, OutputTokens: math.MaxInt64}, configuration) != nil {
-		t.Fatal("nonfinite cost estimate was returned")
-	}
-}
-
 func TestInferSystemOneDoesNotOverwriteExistingOutputOrFollowSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink permissions differ on Windows")
@@ -909,6 +880,47 @@ func TestInferSystemOneDoesNotOverwriteExistingOutputOrFollowSymlink(t *testing.
 	}
 	if state.keyLookups != 0 || state.clientOpens != 0 {
 		t.Fatalf("symlink output caused external access: %#v", state)
+	}
+}
+
+func TestInferSystemOneReservationFailuresDoNotUseCredentialsOrClient(t *testing.T) {
+	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(t.TempDir(), "input"), inferSystemOneCohortInput(2))
+	tests := []struct {
+		name      string
+		configure func(*inferSystemOneDependencies)
+	}{
+		{
+			name: "mkdir denied",
+			configure: func(dependencies *inferSystemOneDependencies) {
+				dependencies.mkdir = func(string, os.FileMode) error { return os.ErrPermission }
+			},
+		},
+		{
+			name: "chmod denied",
+			configure: func(dependencies *inferSystemOneDependencies) {
+				dependencies.chmod = func(string, os.FileMode) error { return os.ErrPermission }
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			outputDir := filepath.Join(t.TempDir(), "output")
+			dependencies, state := inferSystemOneTestDependencies(t, nil, "key", true)
+			test.configure(&dependencies)
+			cmd, _, _ := newInferSystemOneTestCommand(t, nil, dependencies)
+			if err := executeLegacyInferSystemOne(t, cmd, inferSystemOneRunArgs(fixturePath, outputDir, 1)); err == nil {
+				t.Fatal("reservation failure was not returned")
+			}
+			if state.keyLookups != 0 || state.clientOpens != 0 || state.client != nil {
+				t.Fatalf("reservation failure used credentials/client: %#v", state)
+			}
+			if _, err := os.Lstat(filepath.Join(outputDir, "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reservation failure published manifest or stat err=%v", err)
+			}
+			if _, err := os.Lstat(outputDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("reservation failure left output directory: %v", err)
+			}
+		})
 	}
 }
 

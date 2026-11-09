@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	protocolVersion = 1
+	// ProtocolVersion versions the compact projected report-pair state.
+	ProtocolVersion = 1
 	maxIDBytes      = 128
 	maxPathBytes    = 4096
 	maxBodyBytes    = 16 * 1024
@@ -174,7 +175,7 @@ func Project(task Task, left, right Record) (Projection, error) {
 		return Projection{}, errors.New("reportidentityinference: invalid pair")
 	}
 	state, err := marshalCompact(stateWire{
-		ProtocolVersion: protocolVersion,
+		ProtocolVersion: ProtocolVersion,
 		Task:            task,
 		Left:            toRecordWire(left),
 		Right:           toRecordWire(right),

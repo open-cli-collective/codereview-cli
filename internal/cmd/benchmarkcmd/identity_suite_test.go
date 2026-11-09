@@ -178,7 +178,7 @@ func TestIdentitySelectionRequiresOneExplicitCompleteSelector(t *testing.T) {
 			now: time.Now, rename: os.Rename,
 		}
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			dependencies: identityInferenceDependenciesForSystemOne(dependencies),
 			backend:      inferSystemOneBackend(flags, dependencies),
 		}, nil
 	}
@@ -242,7 +242,7 @@ func TestIdentityRunDirectAndCandidateSelectionPublishResolvedConfiguration(t *t
 			rename: os.Rename,
 		}
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			dependencies: identityInferenceDependenciesForSystemOne(dependencies),
 			backend:      inferSystemOneBackend(flags, dependencies),
 		}, nil
 	}
