@@ -692,7 +692,7 @@ Supported values:
 | `review_policy.major_event` | `comment`, `request_changes`. Sets the review event when the highest severity is major. Blocking findings always request changes, a major finding never approves, and the rollup model's proposed event cannot override either rule. Under `request_changes`, the rollup model may soften a major-only review to a comment. |
 | `review_policy.resolve_threads` | `auto`, `never` |
 | `data.retention.enforcement` | `at_write` applies review-time pruning before each `cr review`; `manual_only` disables review-time pruning and leaves `cr data prune` as the explicit maintenance path. Review-time pruning runs only when no other cr instance is mid-run (it requires the data-root active-runs lock exclusively) and is skipped, not queued, on contention. |
-| `data.keep_workbench` | `true` retains the run checkout under `workbench/` after a successful run. Failed and errored runs always retain it. |
+| `data.keep_workbench` | `true` retains the run workbench (`workbench/` and its checkout under the data root's `ws/`) after a successful run. Failed and errored runs always retain it. |
 
 `subscription` LLM auth means the adapter owns its own credentials, such as a
 logged-in CLI or local runtime. `api_key` LLM auth requires `llm.credential`
@@ -1716,8 +1716,11 @@ command remains the safe preview path for manual maintenance, and no-selector
 `cr data prune` uses its built-in live 90-day and dry-run 7-day windows
 independent from profile config.
 
-Successful runs delete their run checkout (`workbench/`) once the run reaches a
-successful terminal state. Failed and errored runs retain it for inspection, and
+Successful runs delete their run checkout (`workbench/`, plus the git checkout
+kept under the data root's `ws/` directory) once the run reaches a successful
+terminal state. Git checkouts live in `ws/` rather than inside the run directory
+so their `.git` paths fit Git for Windows' 220-character limit; `cr data prune`
+also removes any checkout whose run is gone. Failed and errored runs retain it for inspection, and
 `data.keep_workbench: true` retains it for successful runs too. `cr review
 --keep-workbench` overrides the config for one invocation; an explicit
 `--keep-workbench=false` forces deletion even when `data.keep_workbench: true`.

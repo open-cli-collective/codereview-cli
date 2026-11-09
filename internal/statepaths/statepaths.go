@@ -174,6 +174,16 @@ func (l Layout) LockFile(spec LockSpec) (string, error) {
 	return filepath.Join(l.DataRoot, "locks", prKey+"__"+spec.HeadSHA[:7]+"__"+keyHash+".lock"), nil
 }
 
+// WorkspacesDirName is the data-root child holding git workspaces.
+const WorkspacesDirName = "ws"
+
+// WorkspacesRoot returns the flat directory holding run git workspaces. They
+// live outside the deeply nested run artifact tree so a workspace's .git path
+// stays short: Git for Windows refuses a GIT_DIR longer than 220 characters.
+func (l Layout) WorkspacesRoot() string {
+	return filepath.Join(l.DataRoot, WorkspacesDirName)
+}
+
 // ActiveRunsLock returns the data-root-wide advisory lock path that
 // serializes destructive retention against live runs: every review run holds
 // it shared for its duration, and pruning requires it exclusively.

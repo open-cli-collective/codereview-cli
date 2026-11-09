@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -135,6 +136,11 @@ func Show(ctx context.Context, opts Options) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
+	workspaceOrphans, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), nil)
+	if err != nil {
+		return Stats{}, err
+	}
+	orphanItems = append(orphanItems, workspaceOrphans...)
 	stats := Stats{
 		DataRoot:      opts.Layout.DataRoot,
 		LedgerPath:    opts.Layout.LedgerDB(),
@@ -165,6 +171,11 @@ func Show(ctx context.Context, opts Options) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
+	workspaceBytes, err := dirBytes(opts.Layout.WorkspacesRoot())
+	if err != nil {
+		return Stats{}, err
+	}
+	stats.ArtifactBytes += workspaceBytes
 	for _, orphan := range orphanItems {
 		stats.OrphanCount++
 		stats.OrphanBytes += orphan.Bytes
@@ -232,8 +243,21 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 			orphanSpan.End(err)
 			return result, err
 		}
+		// Workspaces whose run this prune would delete are reported with it.
+		removing := map[string]bool{}
+		for _, run := range selected {
+			removing[filepath.Clean(run.ArtifactPath)] = true
+		}
+		for _, orphan := range orphanItems {
+			removing[filepath.Clean(orphan.Path)] = true
+		}
+		workspaceOrphans, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), removing)
+		if err != nil {
+			orphanSpan.End(err)
+			return result, err
+		}
 		orphanSpan.End(nil)
-		result.OrphansRemoved = orphanItems
+		result.OrphansRemoved = append(orphanItems, workspaceOrphans...)
 		return result, nil
 	}
 
@@ -271,6 +295,20 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 	for _, orphan := range orphans {
 		if err := opts.removeAll()(orphan.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("failed to remove orphan artifacts at %s: %v", orphan.Path, err))
+			continue
+		}
+		result.OrphansRemoved = append(result.OrphansRemoved, orphan)
+	}
+	// Run directories are gone by now, so this also catches the workspaces of
+	// every run deleted above.
+	workspaceOrphans, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), nil)
+	if err != nil {
+		orphanSpan.End(err)
+		return result, err
+	}
+	for _, orphan := range workspaceOrphans {
+		if err := opts.removeAll()(orphan.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("failed to remove orphan workspace at %s: %v", orphan.Path, err))
 			continue
 		}
 		result.OrphansRemoved = append(result.OrphansRemoved, orphan)
@@ -460,6 +498,67 @@ func orphanItems(layout statepaths.Layout, runs []ledger.Run, graceCutoff time.T
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
 	return items, nil
+}
+
+// orphanWorkspaces lists git workspaces whose owning run directory no longer
+// exists or is in removing. A workspace without a readable owner record (a run
+// that stopped between creating the directory and recording its owner) is
+// swept once it is older than graceCutoff. Symlinked entries are never
+// followed or removed.
+func orphanWorkspaces(layout statepaths.Layout, graceCutoff time.Time, removing map[string]bool) ([]OrphanItem, error) {
+	root := layout.WorkspacesRoot()
+	if err := rejectSymlink(root); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var items []OrphanItem
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		orphaned, err := workspaceOrphaned(path, entry, graceCutoff, removing)
+		if err != nil {
+			return nil, err
+		}
+		if !orphaned {
+			continue
+		}
+		bytes, err := dirBytes(path)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, OrphanItem{Path: path, Bytes: bytes})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	return items, nil
+}
+
+func workspaceOrphaned(path string, entry fs.DirEntry, graceCutoff time.Time, removing map[string]bool) (bool, error) {
+	owner, err := runartifact.ReadWorkspaceOwner(path)
+	if err != nil {
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return false, infoErr
+		}
+		return !info.ModTime().After(graceCutoff), nil
+	}
+	runDir := filepath.Clean(owner.RunDir)
+	if removing[runDir] {
+		return true, nil
+	}
+	if _, err := os.Stat(runDir); errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func referencedArtifacts(layout statepaths.Layout, runs []ledger.Run) (map[string]bool, error) {
