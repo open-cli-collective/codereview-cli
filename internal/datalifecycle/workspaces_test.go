@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
@@ -128,5 +130,47 @@ func TestShowCountsWorkspaceBytesAndOrphans(t *testing.T) {
 	}
 	if want := 5 + ownedBytes + orphanBytes; stats.ArtifactBytes != want {
 		t.Fatalf("ArtifactBytes = %d, want run artifacts plus workspaces = %d", stats.ArtifactBytes, want)
+	}
+}
+
+// An owner record that exists but cannot be read or parsed says nothing about
+// whether the run is gone, so prune keeps the workspace and warns instead of
+// treating it as unowned.
+func TestPruneKeepsWorkspacesWhoseOwnerCannotBeRead(t *testing.T) {
+	layout := testLayout(t)
+	root := layout.WorkspacesRoot()
+	corrupt := writeWorkspace(t, root, "aaaaaaaaaaaa", "")
+	writeFile(t, filepath.Join(corrupt, runartifact.WorkspaceOwnerFile), "{not json")
+	backdate(t, corrupt, testNow().Add(-2*OrphanGrace))
+	kept := []string{corrupt}
+
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		unreadable := writeWorkspace(t, root, "bbbbbbbbbbbb", filepath.Join(layout.DataRoot, "runs", "gone"))
+		ownerFile := filepath.Join(unreadable, runartifact.WorkspaceOwnerFile)
+		if err := os.Chmod(ownerFile, 0o000); err != nil {
+			t.Fatalf("Chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(ownerFile, 0o600) })
+		backdate(t, unreadable, testNow().Add(-2*OrphanGrace))
+		kept = append(kept, unreadable)
+	}
+
+	result, err := Prune(context.Background(), Options{Layout: layout, Store: &fakeStore{}, Now: testNow}, PruneOptions{})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(result.OrphansRemoved) != 0 {
+		t.Fatalf("orphans removed = %#v, want workspaces with unreadable owners kept", orphanPaths(result.OrphansRemoved))
+	}
+	if len(result.Warnings) != len(kept) {
+		t.Fatalf("warnings = %#v, want one per kept workspace %#v", result.Warnings, kept)
+	}
+	for i, path := range kept {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s removed: %v", path, err)
+		}
+		if !strings.Contains(result.Warnings[i], path) {
+			t.Fatalf("warning %q does not name %s", result.Warnings[i], path)
+		}
 	}
 }

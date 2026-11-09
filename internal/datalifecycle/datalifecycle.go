@@ -136,7 +136,7 @@ func Show(ctx context.Context, opts Options) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
-	workspaceOrphans, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), nil)
+	workspaceOrphans, _, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), nil)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -251,11 +251,12 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 		for _, orphan := range orphanItems {
 			removing[filepath.Clean(orphan.Path)] = true
 		}
-		workspaceOrphans, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), removing)
+		workspaceOrphans, warnings, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), removing)
 		if err != nil {
 			orphanSpan.End(err)
 			return result, err
 		}
+		result.Warnings = append(result.Warnings, warnings...)
 		orphanSpan.End(nil)
 		result.OrphansRemoved = append(orphanItems, workspaceOrphans...)
 		return result, nil
@@ -301,11 +302,12 @@ func Prune(ctx context.Context, opts Options, prune PruneOptions) (PruneResult, 
 	}
 	// Run directories are gone by now, so this also catches the workspaces of
 	// every run deleted above.
-	workspaceOrphans, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), nil)
+	workspaceOrphans, warnings, err := orphanWorkspaces(opts.Layout, opts.now().Add(-OrphanGrace), nil)
 	if err != nil {
 		orphanSpan.End(err)
 		return result, err
 	}
+	result.Warnings = append(result.Warnings, warnings...)
 	for _, orphan := range workspaceOrphans {
 		if err := opts.removeAll()(orphan.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("failed to remove orphan workspace at %s: %v", orphan.Path, err))
@@ -501,23 +503,26 @@ func orphanItems(layout statepaths.Layout, runs []ledger.Run, graceCutoff time.T
 }
 
 // orphanWorkspaces lists git workspaces whose owning run directory no longer
-// exists or is in removing. A workspace without a readable owner record (a run
-// that stopped between creating the directory and recording its owner) is
-// swept once it is older than graceCutoff. Symlinked entries are never
-// followed or removed.
-func orphanWorkspaces(layout statepaths.Layout, graceCutoff time.Time, removing map[string]bool) ([]OrphanItem, error) {
+// exists or is in removing. A workspace with no owner record (a run that
+// stopped between creating the directory and recording its owner) is swept
+// once it is older than graceCutoff. An owner record that exists but cannot be
+// read or parsed proves nothing about ownership, so that workspace is kept and
+// reported in the returned warnings. Symlinked entries are never followed or
+// removed.
+func orphanWorkspaces(layout statepaths.Layout, graceCutoff time.Time, removing map[string]bool) ([]OrphanItem, []string, error) {
 	root := layout.WorkspacesRoot()
 	if err := rejectSymlink(root); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var items []OrphanItem
+	var warnings []string
 	for _, entry := range entries {
 		if !entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
 			continue
@@ -525,29 +530,33 @@ func orphanWorkspaces(layout statepaths.Layout, graceCutoff time.Time, removing 
 		path := filepath.Join(root, entry.Name())
 		orphaned, err := workspaceOrphaned(path, entry, graceCutoff, removing)
 		if err != nil {
-			return nil, err
+			warnings = append(warnings, fmt.Sprintf("kept workspace %s: cannot determine its owner: %v", path, err))
+			continue
 		}
 		if !orphaned {
 			continue
 		}
 		bytes, err := dirBytes(path)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		items = append(items, OrphanItem{Path: path, Bytes: bytes})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
-	return items, nil
+	return items, warnings, nil
 }
 
 func workspaceOrphaned(path string, entry fs.DirEntry, graceCutoff time.Time, removing map[string]bool) (bool, error) {
 	owner, err := runartifact.ReadWorkspaceOwner(path)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		info, infoErr := entry.Info()
 		if infoErr != nil {
 			return false, infoErr
 		}
 		return !info.ModTime().After(graceCutoff), nil
+	}
+	if err != nil {
+		return false, err
 	}
 	runDir := filepath.Clean(owner.RunDir)
 	if removing[runDir] {
