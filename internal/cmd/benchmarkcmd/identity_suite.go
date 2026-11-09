@@ -14,6 +14,8 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -27,7 +29,7 @@ type identityProviderConfig struct {
 	Kind        string
 	Endpoint    string
 	AccountID   string
-	APIKeyEnv   string
+	Credential  config.CredentialLocation
 	AuthScheme  string
 	ServiceTier string
 }
@@ -194,8 +196,8 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 		if kind != "system_one" && kind != "openai_decisions" && kind != "cloudflare_clef" {
 			return nil, fmt.Errorf("provider %q has unknown adapter kind %q", name, kind)
 		}
-		allowedFields := map[string]bool{"kind": true, "api_key_env": true}
-		requiredFields := []string{"api_key_env"}
+		allowedFields := map[string]bool{"kind": true, "credential": true}
+		requiredFields := []string{"credential"}
 		switch kind {
 		case "system_one":
 			allowedFields["endpoint"] = true
@@ -219,11 +221,28 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 			}
 		}
 		provider := identityProviderConfig{Name: name, Kind: kind}
-		if provider.APIKeyEnv, err = identityYAMLString(fields["api_key_env"], "api_key_env"); err != nil {
+		credentialFields, err := identityYAMLMapping(fields["credential"], "provider "+name+" credential", map[string]bool{
+			"store": true, "name": true,
+		})
+		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
-		if !validAPIKeyEnvName(provider.APIKeyEnv) {
-			return nil, fmt.Errorf("provider %q api_key_env must be an environment variable name", name)
+		for _, field := range []string{"store", "name"} {
+			if credentialFields[field] == nil {
+				return nil, fmt.Errorf("provider %q credential requires %q", name, field)
+			}
+		}
+		if provider.Credential.Store, err = identityYAMLString(credentialFields["store"], "credential store"); err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		if provider.Credential.Name, err = identityYAMLString(credentialFields["name"], "credential name"); err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		if strings.TrimSpace(provider.Credential.Store) == "" || strings.TrimSpace(provider.Credential.Name) == "" {
+			return nil, fmt.Errorf("provider %q credential store and name must be nonempty", name)
+		}
+		if _, err := credentials.ParseRef(provider.Credential.Name); err != nil {
+			return nil, fmt.Errorf("provider %q credential name is invalid", name)
 		}
 		if kind == "cloudflare_clef" {
 			if provider.AccountID, err = identityYAMLString(fields["account_id"], "account_id"); err != nil {
@@ -418,7 +437,13 @@ func runIdentitySuite(ctx context.Context, cmd *cobra.Command, opts *root.Option
 	identity.flags.inputPriceSet = cmd.Flags().Changed("input-price-per-million")
 	identity.flags.outputPriceSet = cmd.Flags().Changed("output-price-per-million")
 	provider := suite.Providers[identity.flags.providerName]
-	identity.flags.apiKeyEnv = provider.APIKeyEnv
+	identity.flags.credentialStore = provider.Credential.Store
+	identity.flags.credentialName = provider.Credential.Name
+	credentialKey, err := credentials.IdentityAPIKeyForKind(provider.Kind)
+	if err != nil {
+		return exitcode.Usage(fmt.Errorf("benchmark run: %w", err))
+	}
+	identity.flags.credentialKey = credentialKey
 	identity.flags.adapterKind = provider.Kind
 	if provider.Kind == "cloudflare_clef" {
 		endpoint, err := identityClefEndpoint(provider, identity.flags.model)
@@ -445,6 +470,9 @@ func runIdentitySuite(ctx context.Context, cmd *cobra.Command, opts *root.Option
 	runtime, err := identityProviderRuntimeFor(provider, identity.flags)
 	if err != nil {
 		return exitcode.Usage(fmt.Errorf("benchmark run: %w", err))
+	}
+	if runtime.dependencies.resolveAPIKey == nil {
+		runtime.dependencies.resolveAPIKey = resolveIdentityAPIKey(opts, cmd, provider)
 	}
 	return runIdentityInference(ctx, opts, "benchmark run", suite.Fixture, identity.flags, runtime.dependencies, runtime.backend)
 }

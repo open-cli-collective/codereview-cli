@@ -1,6 +1,7 @@
 package benchmarkcmd
 
 import (
+	"context"
 	"os"
 	"time"
 
@@ -14,24 +15,22 @@ const (
 	maximumSystemOneTimeout  = maximumIdentityInferenceTimeout
 	maximumSystemOneCalls    = maximumIdentityInferenceCalls
 	defaultSystemOneEndpoint = "https://inference.baseten.co/v1/systemone"
-	defaultSystemOneKeyEnv   = "BASETEN_API_KEY"
 )
 
 type systemOneDecider = identityexperiment.SystemOneDecider
 
 type inferSystemOneDependencies struct {
-	lookupAPIKey func(string) (string, bool)
-	newClient    func(systemone.Options) (systemOneDecider, error)
-	now          func() time.Time
-	rename       func(string, string) error
-	lstat        func(string) (os.FileInfo, error)
-	mkdir        func(string, os.FileMode) error
-	chmod        func(string, os.FileMode) error
+	resolveAPIKey func(context.Context) (string, error)
+	newClient     func(systemone.Options) (systemOneDecider, error)
+	now           func() time.Time
+	rename        func(string, string) error
+	lstat         func(string) (os.FileInfo, error)
+	mkdir         func(string, os.FileMode) error
+	chmod         func(string, os.FileMode) error
 }
 
 func defaultInferSystemOneDependencies() inferSystemOneDependencies {
 	return inferSystemOneDependencies{
-		lookupAPIKey: func(name string) (string, bool) { return os.LookupEnv(name) },
 		newClient: func(options systemone.Options) (systemOneDecider, error) {
 			client, err := systemone.New(options)
 			if err != nil {

@@ -139,10 +139,13 @@ func inferSystemOneTestDependencies(t *testing.T, outcomes []inferSystemOneFakeO
 	t.Helper()
 	state := &inferSystemOneTestState{apiKey: apiKey, keyPresent: keyPresent}
 	dependencies := inferSystemOneDependencies{
-		lookupAPIKey: func(name string) (string, bool) {
+		resolveAPIKey: func(context.Context) (string, error) {
 			state.keyLookups++
-			state.keyNames = append(state.keyNames, name)
-			return state.apiKey, state.keyPresent
+			state.keyNames = append(state.keyNames, "codereview/identity-test")
+			if !state.keyPresent {
+				return "", errors.New("synthetic missing credential")
+			}
+			return state.apiKey, nil
 		},
 		newClient: func(options systemone.Options) (systemOneDecider, error) {
 			state.clientOpens++
@@ -202,7 +205,7 @@ func translateLegacyInferSystemOneArgs(t *testing.T, args []string) ([]string, e
 		return nil, fmt.Errorf("unexpected legacy test args: %#v", args)
 	}
 	fixturePath := args[2]
-	endpoint, apiKeyEnv, authScheme, serviceTier := defaultSystemOneEndpoint, defaultSystemOneKeyEnv, "api-key", ""
+	endpoint, authScheme, serviceTier := defaultSystemOneEndpoint, "api-key", ""
 	forwarded := make([]string, 0, len(args))
 	for index := 3; index < len(args); index++ {
 		name := args[index]
@@ -217,8 +220,6 @@ func translateLegacyInferSystemOneArgs(t *testing.T, args []string) ([]string, e
 		switch name {
 		case "--endpoint":
 			endpoint = value
-		case "--api-key-env":
-			apiKeyEnv = value
 		case "--auth-scheme":
 			authScheme = value
 		case "--service-tier":
@@ -230,7 +231,7 @@ func translateLegacyInferSystemOneArgs(t *testing.T, args []string) ([]string, e
 		}
 	}
 	suitePath := filepath.Join(filepath.Dir(fixturePath), "identity-test-suite.yml")
-	suite := fmt.Sprintf("task: report_identity\nfixture: %q\nproviders:\n  test:\n    kind: system_one\n    endpoint: %q\n    api_key_env: %q\n    auth_scheme: %q\n", filepath.Base(fixturePath), endpoint, apiKeyEnv, authScheme)
+	suite := fmt.Sprintf("task: report_identity\nfixture: %q\nproviders:\n  test:\n    kind: system_one\n    endpoint: %q\n    credential:\n      store: local-os\n      name: codereview/identity-test\n    auth_scheme: %q\n", filepath.Base(fixturePath), endpoint, authScheme)
 	if serviceTier != "" {
 		suite += fmt.Sprintf("    service_tier: %q\n", serviceTier)
 	}
@@ -324,7 +325,7 @@ func readInferSystemOneOutput(t *testing.T, outputDir, name string) []byte {
 }
 
 func inferSystemOneRunFlags() []string {
-	return []string{"--endpoint", "https://custom.example.test/v2/system-one", "--auth-scheme", "bearer", "--api-key-env", "ALT_TOKEN", "--expected-model", "provider/model-resolved", "--service-tier", "batch", "--max-state-bytes", "4096", "--max-request-bytes", "7168"}
+	return []string{"--endpoint", "https://custom.example.test/v2/system-one", "--auth-scheme", "bearer", "--expected-model", "provider/model-resolved", "--service-tier", "batch", "--max-state-bytes", "4096", "--max-request-bytes", "7168"}
 }
 
 func runInferSystemOneTestCase(t *testing.T, input reportidentity.Input, args []string, outcomes []inferSystemOneFakeOutcome, apiKey string, keyPresent bool) (*inferSystemOneTestState, *identityInferenceSummary, *identityInferenceReceipts, string, string, error) {
@@ -370,7 +371,7 @@ func TestInferSystemOneCohortPublishesGenericConfigurationCostAndReplay(t *testi
 	if err := executeLegacyInferSystemOne(t, cmd, args); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if state.keyLookups != 1 || len(state.keyNames) != 1 || state.keyNames[0] != "ALT_TOKEN" || state.clientOpens != 1 || state.options.APIKey != "synthetic-test-key" {
+	if state.keyLookups != 1 || len(state.keyNames) != 1 || state.keyNames[0] != "codereview/identity-test" || state.clientOpens != 1 || state.options.APIKey != "synthetic-test-key" {
 		t.Fatalf("credential/client use = %#v", state)
 	}
 	if want := []string{"fixture.json", "replay.json", "receipts.json", "manifest.json"}; !reflect.DeepEqual(state.published, want) {
@@ -382,6 +383,17 @@ func TestInferSystemOneCohortPublishesGenericConfigurationCostAndReplay(t *testi
 	if state.client == nil || len(state.client.requests) != 3 || state.client.requests[0].Model != "provider/model-test" || state.client.requests[0].ExpectedModel != "provider/model-resolved" || state.client.requests[0].ServiceTier != "batch" {
 		t.Fatalf("captured requests = %#v", state.client)
 	}
+	wantPairIndexes := [][2]int{{0, 1}, {0, 2}, {1, 2}}
+	for requestIndex, indexes := range wantPairIndexes {
+		stateValue := decodeInferenceState(t, state.client.requests[requestIndex])
+		left, right := input.Findings[indexes[0]], input.Findings[indexes[1]]
+		if stateValue.ProtocolVersion != reportidentityinference.ProtocolVersion || stateValue.Task != string(reportidentity.TaskCohort) ||
+			stateValue.Left.Kind != "finding" || stateValue.Right.Kind != "finding" {
+			t.Fatalf("cohort request %d state tags = %#v", requestIndex, stateValue)
+		}
+		assertInferenceFinding(t, stateValue.Left.Finding, left)
+		assertInferenceFinding(t, stateValue.Right.Finding, right)
+	}
 	var summary identityInferenceSummary
 	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
 		t.Fatalf("decode stdout summary: %v", err)
@@ -389,7 +401,7 @@ func TestInferSystemOneCohortPublishesGenericConfigurationCostAndReplay(t *testi
 	if summary.Status != "unresolved" || summary.ExpectedPairs != 3 || summary.AttemptedPairs != 3 || summary.ProviderCalls != 3 || summary.CompletedPairs != 3 || summary.AbstainedPairs != 1 || summary.MissingPairs != 0 {
 		t.Fatalf("summary = %#v", summary)
 	}
-	if summary.Configuration.AuthScheme != "Bearer" || summary.Configuration.APIKeyEnv != "ALT_TOKEN" || summary.Configuration.ExpectedModel != "provider/model-resolved" || summary.Configuration.ServiceTier == nil || *summary.Configuration.ServiceTier != "batch" {
+	if summary.Configuration.AuthScheme != "Bearer" || summary.Configuration.CredentialStore != "local-os" || summary.Configuration.CredentialName != "codereview/identity-test" || summary.Configuration.CredentialKey != "system_one_api_key" || summary.Configuration.ExpectedModel != "provider/model-resolved" || summary.Configuration.ServiceTier == nil || *summary.Configuration.ServiceTier != "batch" {
 		t.Fatalf("summary config = %#v", summary.Configuration)
 	}
 	if summary.EstimatedCostUSD == nil || math.Abs(*summary.EstimatedCostUSD-0.0009) > 1e-12 || summary.UnknownCostCalls != 0 {
@@ -603,9 +615,10 @@ func TestInferSystemOneZeroPairRunsNeedNoKeyAndHaveKnownZeroCost(t *testing.T) {
 
 func assertInferSystemOneRetentionAndReplay(t *testing.T, outputDir string, input reportidentity.Input) {
 	t.Helper()
-	var retained reportidentity.Input
-	if err := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "fixture.json"), &retained); err != nil {
-		t.Fatalf("decode retained fixture: %v", err)
+	retainedBytes := readInferSystemOneOutput(t, outputDir, "fixture.json")
+	retained, err := reportidentity.Decode(retainedBytes)
+	if err != nil {
+		t.Fatalf("Decode retained fixture: %v", err)
 	}
 	if !reflect.DeepEqual(retained.Findings, input.Findings) || !reflect.DeepEqual(retained.Threads, input.Threads) {
 		t.Fatalf("original records changed: got=%#v source=%#v", retained, input)
@@ -812,7 +825,7 @@ func TestInferSystemOneFlagsFailBeforeCreatingOutput(t *testing.T) {
 		{name: "whitespace model", args: []string{"benchmark", "infer-system-one", fixturePath, "--model", " ", "--max-calls", "1", "--output-dir", filepath.Join(baseDir, "blank-model")}},
 		{name: "invalid HTTPS endpoint", args: append(inferSystemOneRunArgs(fixturePath, filepath.Join(baseDir, "http"), 1), "--endpoint", "http://bad.example")},
 		{name: "endpoint query", args: append(inferSystemOneRunArgs(fixturePath, filepath.Join(baseDir, "query"), 1), "--endpoint", "https://example.test/path?q=secret")},
-		{name: "invalid key environment name", args: append(inferSystemOneRunArgs(fixturePath, filepath.Join(baseDir, "bad-env"), 1), "--api-key-env", "bad-name")},
+		{name: "runtime key environment flag removed", args: append(inferSystemOneRunArgs(fixturePath, filepath.Join(baseDir, "bad-env"), 1), "--api-key-env", "unused")},
 		{name: "invalid auth scheme", args: append(inferSystemOneRunArgs(fixturePath, filepath.Join(baseDir, "bad-auth"), 1), "--auth-scheme", "basic")},
 		{name: "nonpositive state limit", args: append(inferSystemOneRunArgs(fixturePath, filepath.Join(baseDir, "bad-state-limit"), 1), "--max-state-bytes", "0")},
 		{name: "one price only", args: append(inferSystemOneRunArgs(fixturePath, filepath.Join(baseDir, "one-price"), 1), "--input-price-per-million", "0")},
@@ -949,67 +962,57 @@ func TestInferSystemOnePartialPublicationLeavesManifestAbsent(t *testing.T) {
 	}
 }
 
-func decodeInferenceState(t *testing.T, request systemone.Request) struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	Task            string `json:"task"`
-	Left            struct {
-		Kind    string `json:"kind"`
-		Finding struct {
-			ID       string `json:"finding_id"`
-			Severity string `json:"severity"`
-			FilePath string `json:"file_path"`
-			Anchor   struct {
-				Kind string `json:"kind"`
-				Side string `json:"side,omitempty"`
-				Line int    `json:"line,omitempty"`
-			} `json:"anchor"`
-			Body      string `json:"body"`
-			Anchoring string `json:"anchoring,omitempty"`
-		} `json:"finding"`
-	} `json:"left"`
-	Right struct {
-		Kind   string `json:"kind"`
-		Thread struct {
-			ID       string `json:"thread_id"`
-			Eligible bool   `json:"eligible"`
-			FilePath string `json:"file_path"`
-			Body     string `json:"body"`
-		} `json:"thread"`
-	} `json:"right"`
-} {
+type decodedInferenceAnchor struct {
+	Kind string `json:"kind"`
+	Side string `json:"side,omitempty"`
+	Line int    `json:"line,omitempty"`
+}
+
+type decodedInferenceFinding struct {
+	ID        string                 `json:"finding_id"`
+	Severity  string                 `json:"severity"`
+	FilePath  string                 `json:"file_path"`
+	Anchor    decodedInferenceAnchor `json:"anchor"`
+	Body      string                 `json:"body"`
+	Anchoring string                 `json:"anchoring,omitempty"`
+}
+
+type decodedInferenceThread struct {
+	ID       string `json:"thread_id"`
+	Eligible bool   `json:"eligible"`
+	FilePath string `json:"file_path"`
+	Body     string `json:"body"`
+}
+
+type decodedInferenceRecord struct {
+	Kind    string                  `json:"kind"`
+	Finding decodedInferenceFinding `json:"finding"`
+	Thread  decodedInferenceThread  `json:"thread"`
+}
+
+type decodedInferenceState struct {
+	ProtocolVersion int                    `json:"protocol_version"`
+	Task            string                 `json:"task"`
+	Left            decodedInferenceRecord `json:"left"`
+	Right           decodedInferenceRecord `json:"right"`
+}
+
+func decodeInferenceState(t *testing.T, request systemone.Request) decodedInferenceState {
 	t.Helper()
-	var state struct {
-		ProtocolVersion int    `json:"protocol_version"`
-		Task            string `json:"task"`
-		Left            struct {
-			Kind    string `json:"kind"`
-			Finding struct {
-				ID       string `json:"finding_id"`
-				Severity string `json:"severity"`
-				FilePath string `json:"file_path"`
-				Anchor   struct {
-					Kind string `json:"kind"`
-					Side string `json:"side,omitempty"`
-					Line int    `json:"line,omitempty"`
-				} `json:"anchor"`
-				Body      string `json:"body"`
-				Anchoring string `json:"anchoring,omitempty"`
-			} `json:"finding"`
-		} `json:"left"`
-		Right struct {
-			Kind   string `json:"kind"`
-			Thread struct {
-				ID       string `json:"thread_id"`
-				Eligible bool   `json:"eligible"`
-				FilePath string `json:"file_path"`
-				Body     string `json:"body"`
-			} `json:"thread"`
-		} `json:"right"`
-	}
+	var state decodedInferenceState
 	if err := json.Unmarshal(request.State, &state); err != nil {
 		t.Fatalf("decode inference state: %v", err)
 	}
 	return state
+}
+
+func assertInferenceFinding(t *testing.T, got decodedInferenceFinding, want review.Finding) {
+	t.Helper()
+	if got.ID != string(want.ID) || got.Severity != string(want.Severity) || got.FilePath != want.FilePath ||
+		got.Anchor.Kind != string(want.Anchor.Kind) || got.Anchor.Side != string(want.Anchor.Side) || got.Anchor.Line != want.Anchor.Line ||
+		got.Body != want.Body || got.Anchoring != string(want.Anchoring) {
+		t.Fatalf("finding projection lost retained fields: got=%#v source=%#v", got, want)
+	}
 }
 
 func TestInferSystemOneInvalidFakeAnswerFailsClosedAndRecordsHashMismatch(t *testing.T) {

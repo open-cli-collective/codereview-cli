@@ -31,7 +31,9 @@ type identityInferenceFlags struct {
 	model                 string
 	expectedModel         string
 	endpoint              string
-	apiKeyEnv             string
+	credentialStore       string
+	credentialName        string
+	credentialKey         string
 	maxStateBytes         int
 	maxRequestBytes       int
 	maxCalls              int
@@ -83,25 +85,25 @@ func (backend identityInferenceBackend) shared() identityexperiment.Backend {
 
 func identityInferenceDependenciesForSystemOne(dependencies inferSystemOneDependencies) identityInferenceDependencies {
 	return identityInferenceDependencies{
-		lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename,
+		resolveAPIKey: dependencies.resolveAPIKey, now: dependencies.now, rename: dependencies.rename,
 		lstat: dependencies.lstat, mkdir: dependencies.mkdir, chmod: dependencies.chmod,
 	}
 }
 
 type identityInferenceDependencies struct {
-	lookupAPIKey func(string) (string, bool)
-	now          func() time.Time
-	rename       func(string, string) error
-	lstat        func(string) (os.FileInfo, error)
-	mkdir        func(string, os.FileMode) error
-	chmod        func(string, os.FileMode) error
+	resolveAPIKey func(context.Context) (string, error)
+	now           func() time.Time
+	rename        func(string, string) error
+	lstat         func(string) (os.FileInfo, error)
+	mkdir         func(string, os.FileMode) error
+	chmod         func(string, os.FileMode) error
 }
 
 func runIdentityInference(ctx context.Context, opts *root.Options, commandName, fixturePath string, flags identityInferenceFlags, dependencies identityInferenceDependencies, backend identityInferenceBackend) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if dependencies.now == nil || dependencies.lookupAPIKey == nil || dependencies.rename == nil || backend.prepare == nil || backend.newClient == nil || backend.errorCode == nil || backend.estimateCost == nil {
+	if dependencies.now == nil || dependencies.resolveAPIKey == nil || dependencies.rename == nil || backend.prepare == nil || backend.newClient == nil || backend.errorCode == nil || backend.estimateCost == nil {
 		return exitcode.With(exitcode.Failure, errors.New(commandName+": command dependencies are unavailable"))
 	}
 	inputBytes, err := readReplayFixture(fixturePath)
@@ -128,8 +130,8 @@ func runIdentityInference(ctx context.Context, opts *root.Options, commandName, 
 	}
 
 	result := identityexperiment.Execute(ctx, prepared, identityexperiment.Dependencies{
-		LookupAPIKey: dependencies.lookupAPIKey,
-		Now:          dependencies.now,
+		ResolveAPIKey: dependencies.resolveAPIKey,
+		Now:           dependencies.now,
 	}, backend.shared())
 	if result.Err() != nil {
 		return exitcode.With(exitcode.Failure, errors.New(commandName+": assemble retained replay"))
@@ -169,7 +171,8 @@ func identityInferenceConfigurationFor(flags identityInferenceFlags, backend ide
 		Task: flags.task, SuitePath: flags.suitePath, SuiteSHA256: flags.suiteSHA256, CandidateID: flags.candidateID,
 		ProviderName: flags.providerName, AdapterKind: flags.adapterKind,
 		Endpoint: flags.endpoint, RequestedModel: flags.model, ExpectedModel: effectiveIdentityInferenceExpectedModel(flags),
-		ServiceTier: tier, AuthScheme: authScheme, APIKeyEnv: flags.apiKeyEnv,
+		ServiceTier: tier, AuthScheme: authScheme,
+		CredentialStore: flags.credentialStore, CredentialName: flags.credentialName, CredentialKey: flags.credentialKey,
 		MaxStateBytes: flags.maxStateBytes, MaxRequestBytes: flags.maxRequestBytes,
 		TimeoutMS: flags.timeout.Milliseconds(), MaxCalls: flags.maxCalls,
 		Provider: backend.provider, ContextStatus: backend.contextStatus,
@@ -198,20 +201,6 @@ func validIdentityInferenceEndpoint(value string) bool {
 	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.Hostname() != "" && parsed.Opaque == "" && parsed.User == nil && parsed.RawQuery == "" && !parsed.ForceQuery && parsed.Fragment == "" && parsed.RawFragment == ""
 }
 
-func validAPIKeyEnvName(value string) bool {
-	if value == "" {
-		return false
-	}
-	for index, character := range []byte(value) {
-		letter := character == '_' || (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
-		digit := character >= '0' && character <= '9'
-		if (index == 0 && !letter) || (index > 0 && !letter && !digit) {
-			return false
-		}
-	}
-	return true
-}
-
 func finiteNonnegative(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }
@@ -234,9 +223,6 @@ func validateIdentityInferenceCoreFlags(commandName string, flags identityInfere
 	}
 	if !validIdentityInferenceEndpoint(flags.endpoint) {
 		return errors.New(commandName + ": --endpoint must be a valid HTTPS URL without query, userinfo, or fragment")
-	}
-	if !validAPIKeyEnvName(flags.apiKeyEnv) {
-		return errors.New(commandName + ": --api-key-env must be an environment variable name")
 	}
 	return nil
 }
