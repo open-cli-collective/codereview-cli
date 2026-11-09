@@ -95,7 +95,10 @@ characters; other platforms ignore the setting.
 
 `cr data prune` removes a workspace whose `owner.json` names a run directory
 that no longer exists (including runs that prune itself deletes), and one with
-no readable owner record once it is older than the orphan grace period.
+no `owner.json` at all once it is older than the orphan grace period. An
+`owner.json` that exists but cannot be read or parsed proves nothing about
+ownership: prune keeps that workspace and reports a warning rather than risk
+deleting a live run's checkout.
 `cr data purge` removes the whole data root, workspaces included. Run
 directories outside the standard `<data>/runs/.../run-<id>` layout, such as
 caller-owned benchmark directories, keep their checkouts under `workbench/` as
