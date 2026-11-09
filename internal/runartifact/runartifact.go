@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/open-cli-collective/codereview-cli/internal/fsatomic"
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/prref"
@@ -191,6 +192,43 @@ func (p Paths) DossierIndexPath() string {
 // WorkbenchMetadataPath returns the workbench metadata artifact path.
 func (p Paths) WorkbenchMetadataPath() string {
 	return filepath.Join(p.WorkbenchDir, "metadata.json")
+}
+
+// IdentityShadowAttempt returns the fixed private diagnostic child path for a
+// fresh canonical UUID attempt. It does not create the directory; the caller's
+// publisher must reserve it exclusively before writing.
+func (p Paths) IdentityShadowAttempt(attemptID string) (string, error) {
+	id, err := uuid.Parse(attemptID)
+	if err != nil || id.String() != attemptID {
+		return "", errors.New("runartifact: identity-shadow attempt ID must be a canonical UUID")
+	}
+	if strings.TrimSpace(p.Dir) == "" {
+		return "", errors.New("runartifact: run artifact directory is required")
+	}
+	rootInfo, err := os.Lstat(p.Dir)
+	if err != nil {
+		return "", fmt.Errorf("runartifact: inspect run artifact directory: %w", err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return "", errors.New("runartifact: run artifact root must be a real directory")
+	}
+
+	shadowRoot := filepath.Join(p.Dir, "identity-shadow")
+	if info, err := os.Lstat(shadowRoot); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", errors.New("runartifact: identity-shadow path must be a real directory")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("runartifact: inspect identity-shadow path: %w", err)
+	}
+
+	attemptPath := filepath.Join(shadowRoot, "attempt-"+attemptID)
+	if _, err := os.Lstat(attemptPath); err == nil {
+		return "", errors.New("runartifact: identity-shadow attempt path already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("runartifact: inspect identity-shadow attempt path: %w", err)
+	}
+	return attemptPath, nil
 }
 
 func dossierChildPath(dir, name string) (string, error) {
