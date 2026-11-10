@@ -1333,6 +1333,8 @@ Modes:
 | `--fresh-session` | Reset the PR-scoped reviewer cohort, reselect reviewers, and start fresh reviewer and orchestrator conversations without changing local review gates. Incompatible with `--retry-posts`, which does not run LLM planning. |
 | `--fast` | Enable fast execution for reviewer agents, overriding the profile default. Incompatible with `--retry-posts`. |
 | `--no-fast` | Disable fast execution for reviewer agents, overriding the profile default. Mutually exclusive with `--fast`. |
+| `--identity-shadow` | Default off. After a successful newly planned review and its completion hook, run a private diagnostic using the explicitly configured System One provider. It can make an inference request and write private local artifacts, but it does not change the review result, gates, posts, or normal output. Recovery and unsuccessful paths skip it. |
+| `--identity-shadow-config <path>` | Path to the standalone diagnostic YAML. Read only with `--identity-shadow`; a config path by itself is inert and does not change profile or init configuration. |
 
 Review selection and execution flags:
 
@@ -1366,6 +1368,70 @@ Policy and output flags:
 | `--no-resolve-threads` | Do not plan thread-resolution actions. Also implied by profile `resolve_threads: never`. |
 | `--keep-workbench` | Retain the run checkout (`workbench/`) after a successful review, overriding `data.keep_workbench`. Pass `--keep-workbench=false` to force deletion even when the config sets it true. Failed and errored runs always retain their workbench. |
 | `--json` | Emit JSON. |
+
+#### Report identity shadow diagnostic
+
+The report identity shadow is an opt-in diagnostic, not part of normal review
+execution. It runs synchronously after a successful authoritative review and
+the `run.completed` hook dispatch. A dry run still makes no Git-provider
+writes, while `--identity-shadow` can make the explicitly configured inference
+request. Approval fast paths, retry-posts, all resumed or recovery runs (even
+when resumed planning produces a new snapshot), aborted or incomplete posting,
+and authoritative failures skip inference. The config file is opened only
+after an eligible run completes.
+
+The standalone YAML selects one `system_one` provider, an HTTPS endpoint, the
+explicit model and exact expected response model, an authentication scheme,
+and a credential store/name. Store `system_one_api_key` with the existing
+credential command; never put a secret in the YAML. The strict v1 config also
+sets per-call state/request limits, a complete-run call/aggregate-request-byte
+budget, a 10-second per-call timeout, and a 30-second `inference_timeout` for
+the network phase. The default qualification envelope is 6,144 state bytes,
+8,192 request bytes, 40 calls, and 327,680 aggregate request bytes. Budgets
+refuse the whole pair set instead of sampling it. They do not promise a hard
+dollar ceiling; absent or uncertain usage/prices remain unknown.
+
+```yaml
+schema_version: 1
+provider:
+  kind: system_one
+  endpoint: https://inference.example/v1/systemone
+  credential:
+    store: local-os # or an explicitly configured cr store ID
+    name: codereview/identity
+  auth_scheme: bearer
+model: "explicit-provider-model-id"
+expected_model: "exact-qualified-response-model-id"
+limits:
+  max_state_bytes: 6144
+  max_request_bytes: 8192
+budget:
+  max_calls: 40
+  max_total_request_bytes: 327680
+timeout: 10s
+inference_timeout: 30s
+```
+
+Replace the example endpoint and model placeholders with values explicitly
+qualified for the selected provider. `expected_model` must match the provider's
+returned model exactly.
+
+The inference timer starts after synchronous credential lookup. On macOS, the
+existing Keychain backend has its own 60-second bound and cannot be interrupted
+through `Reader.Get`; other configured stores keep their backend-specific
+behavior. Credential lookup, inference, and local publication can therefore
+take longer than 30 seconds together. User cancellation during a synchronous
+lookup is observed when that lookup returns, and prevents subsequent HTTP.
+
+Private attempts live under the existing run artifact directory at
+`identity-shadow/attempt-<UUID>/` and follow that run's configured retention and
+prune/purge behavior. They retain complete report values, so treat the run
+artifact directory as private local data. The saved accepted finding partition
+and exact prior-thread rule are observed authoritative baselines, not gold
+labels. A disagreement does not establish which side is correct, and native
+whole-rollup timing/cost metrics are not identity-only performance evidence.
+The diagnostic does not affect findings, plans, thread actions, ledger state,
+hooks, gates, posting, fail-on behavior, or stdout.
 
 Fast mode defaults off; set `fast: true` on a profile to enable it by default.
 `--fast` and `--no-fast` override the profile. Unsupported runtime/model

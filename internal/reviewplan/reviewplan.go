@@ -678,6 +678,12 @@ func findingKey(path, body string) (string, bool) {
 	return strings.TrimSpace(path) + "\x00" + text, true
 }
 
+// PriorFindingIdentityKey exposes the exact path-and-normalized-body key used
+// by the planner to suppress a finding already raised in a prior thread.
+func PriorFindingIdentityKey(path, body string) (string, bool) {
+	return findingKey(path, body)
+}
+
 // normalizeFindingText strips everything a posted comment carries that is not
 // the finding, and folds whitespace so that formatting alone cannot make the
 // same text look new.

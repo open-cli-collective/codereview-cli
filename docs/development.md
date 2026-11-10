@@ -47,6 +47,38 @@ Within `internal/pipeline`, the public entry points are `DryRun`, `Live`, and
 and no ledger or posting side effects so benchmark tooling can reuse the real
 selector implementation.
 
+## Report Identity Shadow
+
+`cr review --identity-shadow` opts into a private post-review identity
+diagnostic; it is off by default and has no profile or init setting. Its
+standalone YAML must explicitly select a System One HTTPS endpoint, model,
+expected response model, auth scheme, and credential store/name. The YAML path
+is not opened unless the boolean opt-in is set, and semantic config failures
+stay isolated from the completed review.
+
+The app runs the observer synchronously after successful authoritative
+completion and the existing `run.completed` hook dispatch. Dry-run mode still
+makes no Git-provider writes, but the explicit diagnostic can send report
+values to its configured inference provider. All `DecisionResume` and other
+recovery paths skip inference even if resumed planning produces a new snapshot;
+incomplete or aborted posting and runs without a fresh pipeline snapshot also
+skip it.
+
+The network phase has a 30-second `inference_timeout` after credential lookup,
+with 10 seconds per call. The default complete-run limits are 40 calls,
+327,680 aggregate request bytes, 6,144 state bytes, and 8,192 request bytes.
+These are call, byte, and inference-time limits, not a hard dollar ceiling. The
+selected credential backend's synchronous lookup bound is separate and can
+extend total command time beyond `inference_timeout`.
+
+Artifacts are stored below the existing run directory at
+`identity-shadow/attempt-<UUID>/`, contain complete report text, and follow the
+run's normal retention and prune/purge behavior. The captured accepted finding
+partition and exact prior-thread rule are observed baselines, not gold labels.
+Native whole-rollup timing and cost values cover all review work and do not
+prove identity-only performance. The diagnostic has no authority over review
+plans, posting, gates, ledger state, hooks, normal output, or exit semantics.
+
 Review workbench preparation is location-independent. Runtime composition
 constructs the authenticated Git command adapter from the repository/read
 credential and injects it into the pipeline; workbench code derives remotes

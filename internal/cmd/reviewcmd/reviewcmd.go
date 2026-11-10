@@ -57,38 +57,48 @@ comments ask for override approval.
 
 --retry-posts is recovery-only: it retries missing or failed required posts for
 an existing run and does not check existing approvals, approval overrides, or
-run LLM planning.`
+run LLM planning.
+
+--identity-shadow optionally runs a private report identity diagnostic after a
+successful review. With --dry-run, it makes no Git-provider writes; opt-in still
+sends the explicitly configured report values to the selected System One
+provider and writes private diagnostic artifacts beneath the completed run's
+artifact directory. Its standalone configuration is read only when the opt-in
+flag is set; the diagnostic never changes the review, posting outcome, or
+normal output.`
 
 // RuntimeFactory builds the concrete runtime used by review lifecycle commands.
 type RuntimeFactory func(context.Context, app.OpenRequest) (app.Runtime, error)
 
 type commandFlags struct {
-	dryRun            bool
-	noPost            bool
-	rerun             bool
-	retryPosts        bool
-	freshSession      bool
-	fast              bool
-	noFast            bool
-	agentsDirs        []string
-	failOn            string
-	sessionName       string
-	jsonOutput        bool
-	selectionModel    string
-	selectionEffort   string
-	selectionPrompt   string
-	reviewerModel     string
-	reviewerModelTier string
-	reviewerEffort    string
-	reviewBaseSHA     string
-	reviewHeadSHA     string
-	withoutDiscussion bool
-	maxAgents         int
-	maxConcurrency    int
-	allowSelfReview   bool
-	allowSelfApprove  bool
-	noResolveThreads  bool
-	keepWorkbench     bool
+	dryRun                   bool
+	noPost                   bool
+	rerun                    bool
+	retryPosts               bool
+	freshSession             bool
+	fast                     bool
+	noFast                   bool
+	agentsDirs               []string
+	failOn                   string
+	sessionName              string
+	jsonOutput               bool
+	selectionModel           string
+	selectionEffort          string
+	selectionPrompt          string
+	reviewerModel            string
+	reviewerModelTier        string
+	reviewerEffort           string
+	reviewBaseSHA            string
+	reviewHeadSHA            string
+	withoutDiscussion        bool
+	maxAgents                int
+	maxConcurrency           int
+	allowSelfReview          bool
+	allowSelfApprove         bool
+	noResolveThreads         bool
+	keepWorkbench            bool
+	identityShadow           bool
+	identityShadowConfigPath string
 }
 
 // Register attaches the review command to rootCmd.
@@ -134,6 +144,8 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.allowSelfApprove, "allow-self-approve", false, "Allow approval when posting identity is the PR author")
 	cmd.Flags().BoolVar(&flags.noResolveThreads, "no-resolve-threads", false, "Do not plan thread-resolution actions")
 	cmd.Flags().BoolVar(&flags.keepWorkbench, "keep-workbench", false, "Keep the run workbench checkout instead of deleting it after a successful review")
+	cmd.Flags().BoolVar(&flags.identityShadow, "identity-shadow", false, "Run a private report identity diagnostic after review completion (default false)")
+	cmd.Flags().StringVar(&flags.identityShadowConfigPath, "identity-shadow-config", "", "Standalone shadow YAML path; read only with --identity-shadow")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -339,6 +351,8 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		PRRef:                             ref,
 		PRURL:                             prArg,
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
+		IdentityShadow:                    flags.identityShadow,
+		IdentityShadowConfigPath:          flags.identityShadowConfigPath,
 		CheckAgentSourceFreshness:         true,
 		Retention:                         appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
