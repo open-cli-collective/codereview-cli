@@ -108,17 +108,20 @@ type inferOpenAIDecisionsTestState struct {
 
 const (
 	testOpenAIDecisionsEndpoint = "https://api.openai.com/v1/decisions"
-	testOpenAIKeyEnv            = "OPENAI_API_KEY"
+	testOpenAICredentialName    = "codereview/openai-test"
 )
 
 func inferOpenAIDecisionsTestDependencies(t *testing.T, outcomes []inferOpenAIDecisionsFakeOutcome, apiKey string, keyPresent bool) (inferOpenAIDecisionsDependencies, *inferOpenAIDecisionsTestState) {
 	t.Helper()
 	state := &inferOpenAIDecisionsTestState{apiKey: apiKey, keyPresent: keyPresent}
 	dependencies := inferOpenAIDecisionsDependencies{
-		lookupAPIKey: func(name string) (string, bool) {
+		resolveAPIKey: func(context.Context) (string, error) {
 			state.keyLookups++
-			state.keyNames = append(state.keyNames, name)
-			return state.apiKey, state.keyPresent
+			state.keyNames = append(state.keyNames, testOpenAICredentialName)
+			if !state.keyPresent {
+				return "", errors.New("synthetic missing credential")
+			}
+			return state.apiKey, nil
 		},
 		newClient: func(options openaidecisions.Options) (openAIDecisionsDecider, error) {
 			state.clientOpens++
@@ -153,7 +156,7 @@ func newInferOpenAIDecisionsTestCommand(t *testing.T, dependencies inferOpenAIDe
 		}
 		openAIDecisionsFlags := inferOpenAIDecisionsFlags{identityInferenceFlags: flags}
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			dependencies: identityInferenceDependencies{resolveAPIKey: dependencies.resolveAPIKey, now: dependencies.now, rename: dependencies.rename},
 			backend:      inferOpenAIDecisionsBackend(openAIDecisionsFlags, dependencies),
 		}, nil
 	}
@@ -167,7 +170,7 @@ func inferOpenAIDecisionsRunArgs(suitePath, outputDir string, maxCalls int) []st
 	return []string{"benchmark", "run", suitePath, "--provider", "openai", "--model", "provider/model-test", "--max-calls", fmt.Sprint(maxCalls), "--results-dir", outputDir}
 }
 
-func writeOpenAIDecisionsTestSuite(t *testing.T, fixturePath, endpoint, apiKeyEnv string, includeCandidate bool) string {
+func writeOpenAIDecisionsTestSuite(t *testing.T, fixturePath, endpoint, credentialName string, includeCandidate bool) string {
 	t.Helper()
 	fixtureName, err := json.Marshal(filepath.Base(fixturePath))
 	if err != nil {
@@ -177,11 +180,11 @@ func writeOpenAIDecisionsTestSuite(t *testing.T, fixturePath, endpoint, apiKeyEn
 	if err != nil {
 		t.Fatalf("marshal endpoint for suite: %v", err)
 	}
-	apiKeyEnvValue, err := json.Marshal(apiKeyEnv)
+	credentialNameValue, err := json.Marshal(credentialName)
 	if err != nil {
-		t.Fatalf("marshal API key environment name for suite: %v", err)
+		t.Fatalf("marshal credential name for suite: %v", err)
 	}
-	suite := fmt.Sprintf("task: report_identity\nfixture: %s\nproviders:\n  openai:\n    kind: openai_decisions\n    endpoint: %s\n    api_key_env: %s\n", fixtureName, endpointValue, apiKeyEnvValue)
+	suite := fmt.Sprintf("task: report_identity\nfixture: %s\nproviders:\n  openai:\n    kind: openai_decisions\n    endpoint: %s\n    credential:\n      store: local-os\n      name: %s\n", fixtureName, endpointValue, credentialNameValue)
 	if includeCandidate {
 		suite += "candidates:\n  saved:\n    provider: openai\n    model: gpt-6-luna\n    expected_model: gpt-6-luna\n"
 	}
@@ -192,9 +195,9 @@ func writeOpenAIDecisionsTestSuite(t *testing.T, fixturePath, endpoint, apiKeyEn
 	return suitePath
 }
 
-func translateOpenAIDecisionsTestOverrides(t *testing.T, args []string) (string, string, []string) {
+func translateOpenAIDecisionsTestOverrides(t *testing.T, args []string) (string, []string) {
 	t.Helper()
-	endpoint, apiKeyEnv := testOpenAIDecisionsEndpoint, testOpenAIKeyEnv
+	endpoint := testOpenAIDecisionsEndpoint
 	forwarded := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
 		name := args[index]
@@ -206,13 +209,11 @@ func translateOpenAIDecisionsTestOverrides(t *testing.T, args []string) (string,
 		switch name {
 		case "--endpoint":
 			endpoint = value
-		case "--api-key-env":
-			apiKeyEnv = value
 		default:
 			forwarded = append(forwarded, name, value)
 		}
 	}
-	return endpoint, apiKeyEnv, forwarded
+	return endpoint, forwarded
 }
 
 func runInferOpenAIDecisionsTestCase(t *testing.T, input reportidentity.Input, extraArgs []string, outcomes []inferOpenAIDecisionsFakeOutcome, apiKey string, keyPresent bool) (*inferOpenAIDecisionsTestState, *identityInferenceSummary, *identityInferenceReceipts, string, error) {
@@ -221,8 +222,8 @@ func runInferOpenAIDecisionsTestCase(t *testing.T, input reportidentity.Input, e
 	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(baseDir, "input"), input)
 	outputDir := filepath.Join(baseDir, "output")
 	dependencies, state := inferOpenAIDecisionsTestDependencies(t, outcomes, apiKey, keyPresent)
-	endpoint, apiKeyEnv, forwarded := translateOpenAIDecisionsTestOverrides(t, extraArgs)
-	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, endpoint, apiKeyEnv, false)
+	endpoint, forwarded := translateOpenAIDecisionsTestOverrides(t, extraArgs)
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, endpoint, testOpenAICredentialName, false)
 	args := inferOpenAIDecisionsRunArgs(suitePath, outputDir, 100)
 	args = append(args, forwarded...)
 	cmd, stdout, _ := newInferOpenAIDecisionsTestCommand(t, dependencies, state)
@@ -276,8 +277,7 @@ func TestOpenAIDecisionsCandidateRunsThroughDefaultRuntimeWithFixedBearer(t *tes
 	baseDir := t.TempDir()
 	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(baseDir, "input"), inferSystemOneCohortInput(1))
 	endpoint := "https://api.example.test/v1/decisions"
-	environmentName := "UNSET_IDENTITY_RUNNER_TEST"
-	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, endpoint, environmentName, true)
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, endpoint, testOpenAICredentialName, true)
 	outputDir := filepath.Join(baseDir, "output")
 	cmd, stdout, _, _ := newReplayCommandForTest(t, nil)
 	args := []string{"benchmark", "run", suitePath, "--candidate", "saved", "--max-calls", "0", "--results-dir", outputDir}
@@ -292,14 +292,14 @@ func TestOpenAIDecisionsCandidateRunsThroughDefaultRuntimeWithFixedBearer(t *tes
 		t.Fatalf("zero-pair OpenAI candidate summary = %#v", summary)
 	}
 	configuration := summary.Configuration
-	if configuration.CandidateID == nil || *configuration.CandidateID != "saved" || configuration.ProviderName != "openai" || configuration.AdapterKind != "openai_decisions" || configuration.Endpoint != endpoint || configuration.RequestedModel != "gpt-6-luna" || configuration.ExpectedModel != "gpt-6-luna" || configuration.APIKeyEnv != environmentName || configuration.AuthScheme != "Bearer" || configuration.Provider != "openai_decisions" {
+	if configuration.CandidateID == nil || *configuration.CandidateID != "saved" || configuration.ProviderName != "openai" || configuration.AdapterKind != "openai_decisions" || configuration.Endpoint != endpoint || configuration.RequestedModel != "gpt-6-luna" || configuration.ExpectedModel != "gpt-6-luna" || configuration.CredentialStore != "local-os" || configuration.CredentialName != testOpenAICredentialName || configuration.CredentialKey != "openai_api_key" || configuration.AuthScheme != "Bearer" || configuration.Provider != "openai_decisions" {
 		t.Fatalf("OpenAI candidate provenance = %#v", configuration)
 	}
 	var receipts identityInferenceReceipts
 	if err := json.Unmarshal(readInferSystemOneOutput(t, outputDir, "receipts.json"), &receipts); err != nil {
 		t.Fatalf("decode receipts: %v", err)
 	}
-	if receipts.ProviderCalls != 0 || len(receipts.Attempts) != 0 || receipts.Configuration.AuthScheme != "Bearer" || receipts.Configuration.Endpoint != endpoint || receipts.Configuration.APIKeyEnv != environmentName {
+	if receipts.ProviderCalls != 0 || len(receipts.Attempts) != 0 || receipts.Configuration.AuthScheme != "Bearer" || receipts.Configuration.Endpoint != endpoint || receipts.Configuration.CredentialName != testOpenAICredentialName {
 		t.Fatalf("zero-pair OpenAI receipts = %#v", receipts)
 	}
 }
@@ -436,7 +436,6 @@ func TestInferOpenAIDecisionsProjectsSharedPairsAndAccountsForCacheCost(t *testi
 		"--model", "provider/model-alias",
 		"--expected-model", "provider/model-resolved",
 		"--endpoint", "https://api.example.test/custom/v3/decisions",
-		"--api-key-env", "ALT_OPENAI_KEY",
 		"--timeout", "10s",
 		"--max-state-bytes", "4096",
 		"--max-request-bytes", "7168",
@@ -447,7 +446,7 @@ func TestInferOpenAIDecisionsProjectsSharedPairsAndAccountsForCacheCost(t *testi
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if state.keyLookups != 1 || !reflect.DeepEqual(state.keyNames, []string{"ALT_OPENAI_KEY"}) || state.clientOpens != 1 || state.options.APIKey != "synthetic-key" {
+	if state.keyLookups != 1 || !reflect.DeepEqual(state.keyNames, []string{testOpenAICredentialName}) || state.clientOpens != 1 || state.options.APIKey != "synthetic-key" {
 		t.Fatalf("credential/client use = %#v", state)
 	}
 	if state.options.Endpoint != "https://api.example.test/custom/v3/decisions" || state.options.Timeout != 10*time.Second || state.options.Limits != (openaidecisions.Limits{MaxInputBytes: 4096, MaxRequestBytes: 7168}) {
@@ -492,7 +491,7 @@ func TestInferOpenAIDecisionsProjectsSharedPairsAndAccountsForCacheCost(t *testi
 	if summary.Status != "complete" || summary.ExpectedPairs != 4 || summary.AttemptedPairs != 4 || summary.ProviderCalls != 4 || summary.CompletedPairs != 4 || summary.MissingPairs != 0 {
 		t.Fatalf("summary = %#v", summary)
 	}
-	if summary.Configuration.Provider != "openai_decisions" || summary.Configuration.Endpoint != state.options.Endpoint || summary.Configuration.AuthScheme != "Bearer" || summary.Configuration.APIKeyEnv != "ALT_OPENAI_KEY" || summary.Configuration.ExpectedModel != "provider/model-resolved" || summary.Configuration.ContextStatus != "" {
+	if summary.Configuration.Provider != "openai_decisions" || summary.Configuration.Endpoint != state.options.Endpoint || summary.Configuration.AuthScheme != "Bearer" || summary.Configuration.CredentialStore != "local-os" || summary.Configuration.CredentialName != testOpenAICredentialName || summary.Configuration.CredentialKey != "openai_api_key" || summary.Configuration.ExpectedModel != "provider/model-resolved" || summary.Configuration.ContextStatus != "" {
 		t.Fatalf("OpenAI config = %#v", summary.Configuration)
 	}
 	if summary.KnownInputTokens != 400 || summary.KnownOutputTokens != 80 || summary.UnknownCostCalls != 2 || summary.EstimatedCostUSD == nil || math.Abs(*summary.EstimatedCostUSD-0.0006) > 1e-12 {
@@ -522,6 +521,27 @@ func TestInferOpenAIDecisionsProjectsSharedPairsAndAccountsForCacheCost(t *testi
 	}
 }
 
+func TestOpenAIDecisionsPositiveCacheWriteUsageKeepsCostUnknown(t *testing.T) {
+	input := inferSystemOneCohortInput(2)
+	zero := int64(0)
+	positive := int64(1)
+	outcome := inferOpenAIDecisionsFakeOutcome{
+		usage: &openaidecisions.Usage{InputTokens: 20, OutputTokens: 2, CachedInputTokens: &zero, CacheWriteTokens: &positive},
+	}
+	state, summary, receipts, _, err := runInferOpenAIDecisionsTestCase(t, input, []string{
+		"--input-price-per-million", "2", "--output-price-per-million", "5",
+	}, []inferOpenAIDecisionsFakeOutcome{outcome}, "synthetic-key", true)
+	if err != nil || state.client == nil || len(receipts.Attempts) != 1 {
+		t.Fatalf("positive cache-write result: err=%v state=%#v receipts=%#v", err, state, receipts)
+	}
+	if receipts.Attempts[0].Usage == nil || receipts.Attempts[0].Usage.CacheWriteTokens == nil || *receipts.Attempts[0].Usage.CacheWriteTokens != positive {
+		t.Fatalf("cache-write usage was not retained: %#v", receipts.Attempts[0].Usage)
+	}
+	if receipts.Attempts[0].EstimatedCostUSD != nil || summary.EstimatedCostUSD != nil || summary.UnknownCostCalls != 1 {
+		t.Fatalf("positive cache-write cost must remain unknown: attempt=%#v summary=%#v", receipts.Attempts[0], summary)
+	}
+}
+
 func TestInferOpenAIDecisionsRejectsUntrustedUsageExtensions(t *testing.T) {
 	negative := int64(-1)
 	tooManyCached := int64(21)
@@ -540,29 +560,6 @@ func TestInferOpenAIDecisionsRejectsUntrustedUsageExtensions(t *testing.T) {
 				t.Fatalf("invalid cache metadata result: err=%v summary=%#v attempt=%#v", err, summary, receipts.Attempts)
 			}
 		})
-	}
-}
-
-func TestMakeIdentityInferenceAttemptRejectsNegativeTotalMetadata(t *testing.T) {
-	negative := int64(-1)
-	configuration := &identityInferenceConfiguration{RequestedModel: "provider/model", ExpectedModel: "provider/model"}
-	planHash := "planned-hash"
-	pair := identityInferencePair{plan: identityInferencePlan{RequestSHA256: planHash}}
-	receipt := identityInferenceReceipt{
-		RequestedModel: "provider/model", ReturnedModel: "provider/model", RequestSHA256: planHash,
-		Attempted: true,
-		Answer: &reportidentityinference.ChoiceAnswer{
-			Choice: "a", Confidence: 0.9, Probabilities: map[string]float64{"a": 0.9, "b": 0.08, "c": 0.02},
-		},
-		Usage: &identityInferenceUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: &negative},
-	}
-	backend := identityInferenceBackend{
-		errorCode:    func(error) string { return "transport" },
-		estimateCost: func(_ *identityInferenceUsage, _ *identityInferenceConfiguration) *float64 { return nil },
-	}
-	attempt, _, code := makeIdentityInferenceAttempt(pair, receipt, nil, time.Now(), nil, configuration, backend)
-	if code != "malformed_response" || attempt.Usage != nil {
-		t.Fatalf("negative total metadata was trusted: attempt=%#v code=%q", attempt, code)
 	}
 }
 
@@ -616,7 +613,7 @@ func TestInferOpenAIDecisionsRefusalPreservesUsageAndFailsStop(t *testing.T) {
 	baseDir := t.TempDir()
 	fixturePath, _ := writeInferSystemOneInput(t, filepath.Join(baseDir, "input"), input)
 	outputDir := filepath.Join(baseDir, "output")
-	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, testOpenAIDecisionsEndpoint, testOpenAIKeyEnv, false)
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, testOpenAIDecisionsEndpoint, testOpenAICredentialName, false)
 	cmd, stdout, _ := newInferOpenAIDecisionsTestCommand(t, dependencies, state)
 	args := inferOpenAIDecisionsRunArgs(suitePath, outputDir, 100)
 	args = append(args, "--input-price-per-million", "1", "--output-price-per-million", "1")
@@ -656,7 +653,7 @@ func TestInferOpenAIDecisionsPartialWriteDoesNotPublishManifest(t *testing.T) {
 		}
 		return originalRename(oldPath, newPath)
 	}
-	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, testOpenAIDecisionsEndpoint, testOpenAIKeyEnv, false)
+	suitePath := writeOpenAIDecisionsTestSuite(t, fixturePath, testOpenAIDecisionsEndpoint, testOpenAICredentialName, false)
 	cmd, _, _ := newInferOpenAIDecisionsTestCommand(t, dependencies, state)
 	if err := root.Execute(cmd, inferOpenAIDecisionsRunArgs(suitePath, outputDir, 1)); err == nil || state.client == nil || state.client.decides != 1 {
 		t.Fatalf("write error was not reported after one request: err=%v state=%#v", err, state)

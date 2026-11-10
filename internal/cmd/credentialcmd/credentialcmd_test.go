@@ -55,6 +55,42 @@ func TestSetCredentialStdinJSONWritesFileBackend(t *testing.T) {
 	assertStored(t, "work", credentials.GitTokenKey, "distinctive-token")
 }
 
+func TestSetCredentialAcceptsIdentityProviderKeysForStandaloneRefs(t *testing.T) {
+	hermeticFileBackend(t)
+	path := filepath.Join(t.TempDir(), "config.yml")
+	saveCredentialTestConfig(t, path, testFileCredentialStoreConfig("work"))
+
+	for _, test := range []struct {
+		key   string
+		value string
+	}{
+		{key: credentials.SystemOneAPIKeyKey, value: "synthetic-system-one-token"},
+		{key: credentials.CloudflareAPIKeyKey, value: "synthetic-cloudflare-token"},
+	} {
+		t.Run(test.key, func(t *testing.T) {
+			name := "codereview/identity-" + strings.TrimSuffix(test.key, "_api_key")
+			cmd, out, _ := newTestCommand(path, strings.NewReader(test.value))
+			if err := root.Execute(cmd, []string{
+				"set-credential", "--store", testFileCredentialStoreID, "--name", name,
+				"--key", test.key, "--stdin", "--json",
+			}); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if strings.Contains(out.String(), test.value) {
+				t.Fatalf("stdout leaked secret: %q", out.String())
+			}
+			var got view.CredentialWrite
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+				t.Fatalf("Unmarshal JSON: %v\\n%s", err, out.String())
+			}
+			if got.Store != testFileCredentialStoreID || got.Name != name || got.Key != test.key || !got.Written {
+				t.Fatalf("credential write JSON = %#v, want identity key write", got)
+			}
+			assertStored(t, strings.TrimPrefix(name, "codereview/"), test.key, test.value)
+		})
+	}
+}
+
 func TestSetCredentialUsesExplicitConfiguredStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	hermeticFileBackend(t)

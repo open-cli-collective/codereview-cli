@@ -437,18 +437,30 @@ providers:
   typesafe:
     kind: system_one
     endpoint: https://api.typesafe.ai/v1/systemone
-    api_key_env: TYPESAFE_API_KEY
+    credential:
+      store: local-os
+      name: codereview/identity-typesafe
     auth_scheme: bearer
   baseten:
     kind: system_one
     endpoint: https://inference.baseten.co/v1/systemone
-    api_key_env: BASETEN_API_KEY
+    credential:
+      store: local-os
+      name: codereview/identity-baseten
     auth_scheme: api-key
     service_tier: batch
   openai:
     kind: openai_decisions
     endpoint: https://api.openai.com/v1/decisions
-    api_key_env: OPENAI_API_KEY
+    credential:
+      store: local-os
+      name: codereview/identity-openai
+  cloudflare:
+    kind: cloudflare_clef
+    account_id: abc123
+    credential:
+      store: local-os
+      name: codereview/identity-cloudflare
 candidates:
   jev:
     provider: typesafe
@@ -457,6 +469,9 @@ candidates:
   decisions:
     provider: openai
     model: gpt-6-luna
+  flash:
+    provider: cloudflare
+    model: clef-flash
 ```
 
 Select exactly one route for each run. Direct selection requires both `--provider` and `--model`; candidate selection supplies the complete provider/model choice. Neither a single configured provider nor a single candidate is selected automatically:
@@ -467,9 +482,22 @@ cr benchmark run identity.yml --provider typesafe --model jev-latest \
 cr benchmark run identity.yml --candidate jev --max-calls 3 --results-dir ./jev-candidate-run
 cr benchmark run identity.yml --provider openai --model gpt-6-luna --max-calls 3 --results-dir ./decisions-run
 cr benchmark run identity.yml --candidate decisions --max-calls 3 --results-dir ./decisions-candidate-run
+cr benchmark run identity.yml --provider cloudflare --model clef --allow-unverified-context --max-calls 3 --results-dir ./clef-run
+cr benchmark run identity.yml --candidate flash --allow-unverified-context --max-calls 3 --results-dir ./clef-flash-run
 ```
 
-`provider` is a user-defined connection name. Its required `kind` selects the adapter; this stack head supports `system_one` and `openai_decisions`. Every provider explicitly names an HTTPS endpoint and the environment variable containing its key. System One also requires `auth_scheme` (`api-key` or `bearer`) and may set `service_tier`; OpenAI Decisions uses fixed Bearer authentication and rejects `auth_scheme` and `service_tier`. The suite stores no key value. The endpoint receives the key and complete projected report text; URLs with user information, queries or fragments are rejected, and redirects are not followed. For TypeSafe Jev, choose the model from the account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); see the [System One API reference](https://docs.typesafe.ai/api/system-one). OpenAI Decisions accepts its string-choice subset; see the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions). The optional `expected_model` in a candidate or `--expected-model` in direct mode checks the exact returned model locally and is not sent to the provider. Without it, the requested model must match the response.
+`provider` is a user-defined connection name. Its required `kind` selects the adapter; this stack head supports `system_one`, `openai_decisions` and `cloudflare_clef`. Every provider requires `credential: {store, name}`. `store` is `local-os` for the built-in OS credential store or the ID of a store in `cr` configuration; `name` is a `codereview/<profile>` credential reference. The key name is fixed by provider kind and cannot be selected in the suite. `api_key_env` is rejected, and the command has no runtime environment-variable override. Existing `set-credential --from-env` is an optional setup ingress; it does not make runtime identity inference read environment variables. A named store must already exist in `cr` configuration. System One and OpenAI Decisions providers explicitly name an HTTPS endpoint. System One also requires `auth_scheme` (`api-key` or `bearer`) and may set `service_tier`; OpenAI Decisions uses fixed Bearer authentication and rejects `auth_scheme` and `service_tier`. Cloudflare Clef requires `account_id`, rejects `endpoint`, `auth_scheme` and `service_tier`, and uses fixed Bearer authentication. It constructs the route with the existing Cloudflare endpoint helper from the account ID and selected `clef` or `clef-flash` model; every candidate using Clef must use one of those selectors. The suite stores no key value. Configured System One and OpenAI endpoints receive the key and complete projected report text; URLs with user information, queries or fragments are rejected, and redirects are not followed. For TypeSafe Jev, choose the model from the account's [`GET /v1/models` catalog](https://docs.typesafe.ai/api/list-models); see the [System One API reference](https://docs.typesafe.ai/api/system-one). OpenAI Decisions accepts its string-choice subset; see the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create) and [guide](https://developers.openai.com/api/docs/guides/decisions). See the [Cloudflare Clef model reference](https://developers.cloudflare.com/workers-ai/models/clef/), [output schema](https://developers.cloudflare.com/workers-ai/models/clef/schema-output.json) and [REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/). The optional `expected_model` in a candidate or `--expected-model` in direct mode checks the exact returned model locally and is not sent to the provider. Without it, the requested model must match the response.
+
+For the YAML example, store keys using the fixed key for each provider kind. Supply the secret to each command on stdin; no key value belongs in the suite:
+
+```bash
+cr set-credential --store local-os --name codereview/identity-typesafe --key system_one_api_key --stdin
+cr set-credential --store local-os --name codereview/identity-baseten --key system_one_api_key --stdin
+cr set-credential --store local-os --name codereview/identity-openai --key openai_api_key --stdin
+cr set-credential --store local-os --name codereview/identity-cloudflare --key cloudflare_api_key --stdin
+```
+
+Cloudflare can silently truncate text state to fit its remaining model context, and the response does not attest that it consumed the complete input. Clef runs therefore require `--allow-unverified-context` set to true, including for empty fixtures; supplying this flag for another adapter is a usage error. The resolved configuration and every Clef attempt are recorded with `context_status: "unverified"`, including valid answers. The acknowledgement does not relax local byte limits, model or answer validation, call budgets, retention or fail-stop behavior. Explicit truncation and context-overflow signals remain errors. A valid answer with unverified context is not evidence that all input was considered or that the model made a correct decision.
 
 The top-level identity schema is strict: it accepts only `task`, `fixture`, `providers` and optional `candidates`; duplicates, aliases, merge keys, nulls, unknown fields and trailing YAML documents are rejected. `run` validates this suite as part of dispatch. `benchmark validate`, `doctor`, `select` and `compare` remain review-suite commands and do not validate identity suites. Identity runs reject review-only `--case`, `--cr-bin`, `--in-process` and `--json` flags, while review runs reject explicitly supplied identity-only flags.
 
@@ -479,7 +507,7 @@ The fixture is one v1 `cohort` or `prior_threads` input with an empty `decisions
 
 Prices have no defaults. Supply both `--input-price-per-million` and `--output-price-per-million` with caller-verified, finite, nonnegative USD rates for an estimate. Without both rates or valid token usage, an attempted call's cost remains unknown; explicit zero rates produce known zero. OpenAI Decisions cost also remains unknown when either cached-input or cache-write counts are missing or nonzero, even when both prices are supplied; base token totals remain available independently. The aggregate `estimated_cost_usd` is a known subtotal and is null when calls occurred but no estimate is available. `unknown_cost_calls` identifies incomplete accounting. A zero-call run has known zero cost. Estimates do not include cache discounts and are neither an invoice nor a monetary ceiling.
 
-`--results-dir` is required and must name a new directory. It is created with mode 0700 and contains `fixture.json`, `replay.json`, `receipts.json` and `manifest.json` with mode 0600; the manifest publishes last. Artifacts contain complete original report text and must stay out of source control. Receipts include the selected candidate/provider, adapter kind, absolute suite path and suite SHA-256, endpoint, requested and expected model, credential environment-variable name, auth settings, limits, timeout, call limit, optional prices, pair hashes, choices, usage and nullable cost estimates. Raw provider request/response bodies and credential values are not saved. `cr benchmark replay` reproduces composition without a provider call.
+`--results-dir` is required and must name a new directory. It is created with mode 0700 and contains `fixture.json`, `replay.json`, `receipts.json` and `manifest.json` with mode 0600; the manifest publishes last. Artifacts contain complete original report text and must stay out of source control. Receipts include the selected candidate/provider, adapter kind, absolute suite path and suite SHA-256, endpoint, requested and expected model, non-secret credential store/name/fixed-key metadata, auth settings, limits, timeout, call limit, optional prices, pair hashes, choices, usage and nullable cost estimates. Raw provider request/response bodies and credential values are not saved. `cr benchmark replay` reproduces composition without a provider call.
 
 The stdout summary repeats the resolved configuration and includes output paths, pair counts, usage and cost accounting. `complete` and `unresolved` exit 0; a failed request or output write exits 1. Invalid arguments/fixtures and valid-input preflight failures exit 2. Preflight failure publishes retained original data and error receipts when local output permits; invalid suites, selections or malformed fixtures create no output directory. The included smoke fixtures are synthetic controls rather than provider responses or a model-quality claim, and normal Go tests make no live provider calls.
 
