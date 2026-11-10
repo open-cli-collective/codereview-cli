@@ -1,6 +1,7 @@
 package benchmarkcmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/systemone"
 )
 
@@ -21,18 +23,38 @@ providers:
   primary:
     kind: system_one
     endpoint: https://primary.example/v1/systemone
-    api_key_env: PRIMARY_KEY
+    credential:
+      store: local-os
+      name: codereview/primary
     auth_scheme: bearer
   secondary:
     kind: system_one
     endpoint: https://secondary.example/v1/systemone
-    api_key_env: SECONDARY_KEY
+    credential:
+      store: local-os
+      name: codereview/secondary
     auth_scheme: api-key
 candidates:
   saved:
     provider: secondary
     model: model-candidate
     expected_model: model-resolved
+`
+
+const validOpenAIDecisionsSuiteYAML = `task: report_identity
+fixture: ./fixture.json
+providers:
+  decisions:
+    kind: openai_decisions
+    endpoint: https://api.openai.com/v1/decisions
+    credential:
+      store: local-os
+      name: codereview/openai
+candidates:
+  saved:
+    provider: decisions
+    model: gpt-6-luna
+    expected_model: gpt-6-luna
 `
 
 func TestParseIdentitySuiteIsStrictAndAcceptsSameKindProviders(t *testing.T) {
@@ -61,14 +83,16 @@ func TestParseIdentitySuiteRejectsInvalidSchema(t *testing.T) {
 		{name: "null task", data: strings.Replace(validIdentitySuiteYAML, "task: report_identity", "task: null", 1)},
 		{name: "numeric fixture", data: strings.Replace(validIdentitySuiteYAML, "fixture: ./fixture.json", "fixture: 4", 1)},
 		{name: "null providers", data: strings.Replace(validIdentitySuiteYAML, "providers:\n  primary:", "providers: null\n  primary:", 1)},
-		{name: "empty providers", data: strings.Replace(validIdentitySuiteYAML, "providers:\n  primary:\n    kind: system_one\n    endpoint: https://primary.example/v1/systemone\n    api_key_env: PRIMARY_KEY\n    auth_scheme: bearer\n  secondary:\n    kind: system_one\n    endpoint: https://secondary.example/v1/systemone\n    api_key_env: SECONDARY_KEY\n    auth_scheme: api-key", "providers: {}", 1)},
-		{name: "duplicate provider name", data: strings.Replace(validIdentitySuiteYAML, "  secondary:\n    kind: system_one", "  primary:\n    kind: system_one\n    endpoint: https://duplicate.example/v1/systemone\n    api_key_env: DUPLICATE_KEY\n    auth_scheme: bearer\n  secondary:\n    kind: system_one", 1)},
+		{name: "empty providers", data: strings.Replace(validIdentitySuiteYAML, "providers:\n  primary:\n    kind: system_one\n    endpoint: https://primary.example/v1/systemone\n    credential:\n      store: local-os\n      name: codereview/primary\n    auth_scheme: bearer\n  secondary:\n    kind: system_one\n    endpoint: https://secondary.example/v1/systemone\n    credential:\n      store: local-os\n      name: codereview/secondary\n    auth_scheme: api-key", "providers: {}", 1)},
+		{name: "duplicate provider name", data: strings.Replace(validIdentitySuiteYAML, "  secondary:\n    kind: system_one", "  primary:\n    kind: system_one\n    endpoint: https://duplicate.example/v1/systemone\n    credential:\n      store: local-os\n      name: codereview/duplicate\n    auth_scheme: bearer\n  secondary:\n    kind: system_one", 1)},
 		{name: "unknown provider key", data: strings.Replace(validIdentitySuiteYAML, "auth_scheme: bearer", "auth_scheme: bearer\n    secret: inline", 1)},
 		{name: "duplicate provider key", data: strings.Replace(validIdentitySuiteYAML, "kind: system_one\n    endpoint: https://primary.example", "kind: system_one\n    kind: system_one\n    endpoint: https://primary.example", 1)},
 		{name: "null provider endpoint", data: strings.Replace(validIdentitySuiteYAML, "endpoint: https://primary.example/v1/systemone", "endpoint: null", 1)},
-		{name: "unknown adapter kind", data: strings.Replace(validIdentitySuiteYAML, "kind: system_one", "kind: openai_decisions", 1)},
+		{name: "unknown adapter kind", data: strings.Replace(validIdentitySuiteYAML, "kind: system_one", "kind: unknown_adapter", 1)},
 		{name: "endpoint query", data: strings.Replace(validIdentitySuiteYAML, "https://primary.example/v1/systemone", "https://primary.example/v1/systemone?key=hidden", 1)},
-		{name: "bad environment name", data: strings.Replace(validIdentitySuiteYAML, "api_key_env: PRIMARY_KEY", "api_key_env: BAD-KEY", 1)},
+		{name: "unknown environment credential field", data: strings.Replace(validIdentitySuiteYAML, "    kind: system_one", "    kind: system_one\n    api_key_env: PRIMARY_KEY", 1)},
+		{name: "missing credential", data: strings.Replace(validIdentitySuiteYAML, "    credential:\n      store: local-os\n      name: codereview/primary\n", "", 1)},
+		{name: "invalid credential name", data: strings.Replace(validIdentitySuiteYAML, "name: codereview/primary", "name: other/primary", 1)},
 		{name: "bad auth scheme", data: strings.Replace(validIdentitySuiteYAML, "auth_scheme: bearer", "auth_scheme: basic", 1)},
 		{name: "blank service tier", data: strings.Replace(validIdentitySuiteYAML, "auth_scheme: bearer", "auth_scheme: bearer\n    service_tier: '  '", 1)},
 		{name: "duplicate candidate field", data: strings.Replace(validIdentitySuiteYAML, "provider: secondary", "provider: secondary\n    provider: primary", 1)},
@@ -78,13 +102,45 @@ func TestParseIdentitySuiteRejectsInvalidSchema(t *testing.T) {
 		{name: "unknown candidate field", data: strings.Replace(validIdentitySuiteYAML, "expected_model: model-resolved", "expected_model: model-resolved\n    default: true", 1)},
 		{name: "missing candidate provider", data: strings.Replace(validIdentitySuiteYAML, "provider: secondary", "provider: missing", 1)},
 		{name: "alias", data: strings.Replace(validIdentitySuiteYAML, "model: model-candidate\n    expected_model: model-resolved", "model: &model model-candidate\n    expected_model: *model", 1)},
-		{name: "merge key", data: "task: report_identity\nfixture: ./fixture.json\nproviders:\n  common: &common\n    kind: system_one\n    endpoint: https://primary.example/v1/systemone\n    api_key_env: PRIMARY_KEY\n    auth_scheme: bearer\n  p:\n    <<: *common\n"},
+		{name: "merge key", data: "task: report_identity\nfixture: ./fixture.json\nproviders:\n  common: &common\n    kind: system_one\n    endpoint: https://primary.example/v1/systemone\n    credential:\n      store: local-os\n      name: codereview/primary\n    auth_scheme: bearer\n  p:\n    <<: *common\n"},
 		{name: "trailing document", data: validIdentitySuiteYAML + "\n---\ntask: report_identity\n"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := parseIdentitySuite([]byte(test.data)); err == nil {
 				t.Fatalf("parseIdentitySuite accepted invalid suite:\n%s", test.data)
+			}
+		})
+	}
+}
+
+func TestParseOpenAIDecisionsProviderUsesExplicitEndpointAndFixedBearer(t *testing.T) {
+	suite, err := parseIdentitySuite([]byte(validOpenAIDecisionsSuiteYAML))
+	if err != nil {
+		t.Fatalf("parse OpenAI Decisions identity suite: %v", err)
+	}
+	provider := suite.Providers["decisions"]
+	if provider.Name != "decisions" || provider.Kind != "openai_decisions" || provider.Endpoint != "https://api.openai.com/v1/decisions" || provider.Credential != (config.CredentialLocation{Store: "local-os", Name: "codereview/openai"}) || provider.AuthScheme != "bearer" || provider.ServiceTier != "" {
+		t.Fatalf("OpenAI Decisions provider = %#v", provider)
+	}
+	if candidate := suite.Candidates["saved"]; candidate.Provider != provider.Name || candidate.Model != "gpt-6-luna" || candidate.ExpectedModel != "gpt-6-luna" {
+		t.Fatalf("OpenAI Decisions candidate = %#v", candidate)
+	}
+
+	invalid := []struct {
+		name string
+		text string
+	}{
+		{name: "configurable auth scheme", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    kind: openai_decisions", "    kind: openai_decisions\n    auth_scheme: api-key", 1)},
+		{name: "configurable service tier", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    kind: openai_decisions", "    kind: openai_decisions\n    service_tier: batch", 1)},
+		{name: "account ID", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    kind: openai_decisions", "    kind: openai_decisions\n    account_id: abc123", 1)},
+		{name: "missing endpoint", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    endpoint: https://api.openai.com/v1/decisions\n", "", 1)},
+		{name: "missing credential", text: strings.Replace(validOpenAIDecisionsSuiteYAML, "    credential:\n      store: local-os\n      name: codereview/openai\n", "", 1)},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseIdentitySuite([]byte(test.text)); err == nil {
+				t.Fatalf("parseIdentitySuite accepted invalid OpenAI Decisions provider:\n%s", test.text)
 			}
 		})
 	}
@@ -124,7 +180,7 @@ func TestIdentitySelectionRequiresOneExplicitCompleteSelector(t *testing.T) {
 	identityProviderRuntimeFor = func(_ identityProviderConfig, flags identityInferenceFlags) (identityProviderRuntime, error) {
 		resolverCalls++
 		dependencies := inferSystemOneDependencies{
-			lookupAPIKey: func(string) (string, bool) { keyLookups++; return "unused", true },
+			resolveAPIKey: func(context.Context) (string, error) { keyLookups++; return "unused", nil },
 			newClient: func(systemone.Options) (systemOneDecider, error) {
 				t.Fatal("invalid selection opened a provider client")
 				return nil, nil
@@ -132,7 +188,7 @@ func TestIdentitySelectionRequiresOneExplicitCompleteSelector(t *testing.T) {
 			now: time.Now, rename: os.Rename,
 		}
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			dependencies: identityInferenceDependenciesForSystemOne(dependencies),
 			backend:      inferSystemOneBackend(flags, dependencies),
 		}, nil
 	}
@@ -187,7 +243,7 @@ func TestIdentityRunDirectAndCandidateSelectionPublishResolvedConfiguration(t *t
 	keyLookups, clientOpens := 0, 0
 	identityProviderRuntimeFor = func(_ identityProviderConfig, flags identityInferenceFlags) (identityProviderRuntime, error) {
 		dependencies := inferSystemOneDependencies{
-			lookupAPIKey: func(string) (string, bool) { keyLookups++; return "unused", true },
+			resolveAPIKey: func(context.Context) (string, error) { keyLookups++; return "unused", nil },
 			newClient: func(systemone.Options) (systemOneDecider, error) {
 				clientOpens++
 				return nil, nil
@@ -196,32 +252,35 @@ func TestIdentityRunDirectAndCandidateSelectionPublishResolvedConfiguration(t *t
 			rename: os.Rename,
 		}
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{lookupAPIKey: dependencies.lookupAPIKey, now: dependencies.now, rename: dependencies.rename},
+			dependencies: identityInferenceDependenciesForSystemOne(dependencies),
 			backend:      inferSystemOneBackend(flags, dependencies),
 		}, nil
 	}
 	t.Cleanup(func() { identityProviderRuntimeFor = previous })
 
 	tests := []struct {
-		name            string
-		selector        []string
-		wantProvider    string
-		wantModel       string
-		wantExpected    string
-		wantEndpoint    string
-		wantAPIKeyEnv   string
-		wantAuthScheme  string
-		wantCandidateID *string
+		name              string
+		selector          []string
+		wantProvider      string
+		wantModel         string
+		wantExpected      string
+		wantEndpoint      string
+		wantCredential    config.CredentialLocation
+		wantCredentialKey string
+		wantAuthScheme    string
+		wantCandidateID   *string
 	}{
 		{
 			name: "direct", selector: []string{"--provider", "primary", "--model", "direct-model"},
 			wantProvider: "primary", wantModel: "direct-model", wantExpected: "direct-model",
-			wantEndpoint: "https://primary.example/v1/systemone", wantAPIKeyEnv: "PRIMARY_KEY", wantAuthScheme: "Bearer",
+			wantEndpoint: "https://primary.example/v1/systemone", wantCredential: config.CredentialLocation{Store: "local-os", Name: "codereview/primary"},
+			wantCredentialKey: "system_one_api_key", wantAuthScheme: "Bearer",
 		},
 		{
 			name: "candidate", selector: []string{"--candidate", "saved"},
 			wantProvider: "secondary", wantModel: "model-candidate", wantExpected: "model-resolved",
-			wantEndpoint: "https://secondary.example/v1/systemone", wantAPIKeyEnv: "SECONDARY_KEY", wantAuthScheme: "Api-Key",
+			wantEndpoint: "https://secondary.example/v1/systemone", wantCredential: config.CredentialLocation{Store: "local-os", Name: "codereview/secondary"},
+			wantCredentialKey: "system_one_api_key", wantAuthScheme: "Api-Key",
 			wantCandidateID: stringPtr("saved"),
 		},
 	}
@@ -249,7 +308,9 @@ func TestIdentityRunDirectAndCandidateSelectionPublishResolvedConfiguration(t *t
 			if configuration.Task != identitySuiteTask || configuration.SuitePath != suitePath || configuration.SuiteSHA256 != sha256Hex(suiteBytes) ||
 				configuration.ProviderName != test.wantProvider || configuration.AdapterKind != "system_one" || configuration.Provider != "system_one" ||
 				configuration.Endpoint != test.wantEndpoint || configuration.RequestedModel != test.wantModel || configuration.ExpectedModel != test.wantExpected ||
-				configuration.APIKeyEnv != test.wantAPIKeyEnv || configuration.AuthScheme != test.wantAuthScheme || configuration.TimeoutMS != 30_000 || configuration.MaxCalls != 0 {
+				configuration.CredentialStore != test.wantCredential.Store || configuration.CredentialName != test.wantCredential.Name ||
+				configuration.CredentialKey != test.wantCredentialKey || configuration.AuthScheme != test.wantAuthScheme ||
+				configuration.TimeoutMS != 30_000 || configuration.MaxCalls != 0 {
 				t.Fatalf("resolved configuration = %#v", configuration)
 			}
 			if !reflect.DeepEqual(configuration.CandidateID, test.wantCandidateID) {
@@ -315,9 +376,9 @@ func TestIdentityRunRejectsExplicitReviewOnlyFlagsAndSystemOneContextAcknowledge
 	identityProviderRuntimeFor = func(_ identityProviderConfig, _ identityInferenceFlags) (identityProviderRuntime, error) {
 		runtimeCalls++
 		return identityProviderRuntime{dependencies: identityInferenceDependencies{
-			lookupAPIKey: func(string) (string, bool) { keyLookups++; return "key", true },
-			now:          time.Now,
-			rename:       os.Rename,
+			resolveAPIKey: func(context.Context) (string, error) { keyLookups++; return "key", nil },
+			now:           time.Now,
+			rename:        os.Rename,
 		}}, errors.New("invalid options reached provider adapter")
 	}
 	t.Cleanup(func() { identityProviderRuntimeFor = previous })

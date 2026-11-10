@@ -14,6 +14,8 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/exitcode"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -26,7 +28,8 @@ type identityProviderConfig struct {
 	Name        string
 	Kind        string
 	Endpoint    string
-	APIKeyEnv   string
+	AccountID   string
+	Credential  config.CredentialLocation
 	AuthScheme  string
 	ServiceTier string
 }
@@ -61,13 +64,13 @@ func defaultIdentityProviderRuntime(provider identityProviderConfig, flags ident
 	case "system_one":
 		dependencies := defaultInferSystemOneDependencies()
 		return identityProviderRuntime{
-			dependencies: identityInferenceDependencies{
-				lookupAPIKey: dependencies.lookupAPIKey,
-				now:          dependencies.now,
-				rename:       dependencies.rename,
-			},
-			backend: inferSystemOneBackend(flags, dependencies),
+			dependencies: identityInferenceDependenciesForSystemOne(dependencies),
+			backend:      inferSystemOneBackend(flags, dependencies),
 		}, nil
+	case "openai_decisions":
+		return openAIDecisionsIdentityProviderRuntime(provider, flags), nil
+	case "cloudflare_clef":
+		return newIdentityClefProviderRuntime(provider, flags)
 	default:
 		return identityProviderRuntime{}, fmt.Errorf("unknown provider adapter kind %q", provider.Kind)
 	}
@@ -190,43 +193,88 @@ func parseIdentityProviders(node *yaml.Node) (map[string]identityProviderConfig,
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
-		if kind != "system_one" {
+		if kind != "system_one" && kind != "openai_decisions" && kind != "cloudflare_clef" {
 			return nil, fmt.Errorf("provider %q has unknown adapter kind %q", name, kind)
 		}
-		fields, err := identityYAMLMapping(value, "provider "+name, map[string]bool{
-			"kind": true, "endpoint": true, "api_key_env": true, "auth_scheme": true, "service_tier": true,
-		})
+		allowedFields := map[string]bool{"kind": true, "credential": true}
+		requiredFields := []string{"credential"}
+		switch kind {
+		case "system_one":
+			allowedFields["endpoint"] = true
+			allowedFields["auth_scheme"] = true
+			allowedFields["service_tier"] = true
+			requiredFields = append(requiredFields, "endpoint", "auth_scheme")
+		case "openai_decisions":
+			allowedFields["endpoint"] = true
+			requiredFields = append(requiredFields, "endpoint")
+		case "cloudflare_clef":
+			allowedFields["account_id"] = true
+			requiredFields = append(requiredFields, "account_id")
+		}
+		fields, err := identityYAMLMapping(value, "provider "+name, allowedFields)
 		if err != nil {
 			return nil, err
 		}
-		for _, field := range []string{"endpoint", "api_key_env", "auth_scheme"} {
+		for _, field := range requiredFields {
 			if fields[field] == nil {
 				return nil, fmt.Errorf("provider %q requires %q", name, field)
 			}
 		}
 		provider := identityProviderConfig{Name: name, Kind: kind}
+		credentialFields, err := identityYAMLMapping(fields["credential"], "provider "+name+" credential", map[string]bool{
+			"store": true, "name": true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		for _, field := range []string{"store", "name"} {
+			if credentialFields[field] == nil {
+				return nil, fmt.Errorf("provider %q credential requires %q", name, field)
+			}
+		}
+		if provider.Credential.Store, err = identityYAMLString(credentialFields["store"], "credential store"); err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		if provider.Credential.Name, err = identityYAMLString(credentialFields["name"], "credential name"); err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
+		if strings.TrimSpace(provider.Credential.Store) == "" || strings.TrimSpace(provider.Credential.Name) == "" {
+			return nil, fmt.Errorf("provider %q credential store and name must be nonempty", name)
+		}
+		if _, err := credentials.ParseRef(provider.Credential.Name); err != nil {
+			return nil, fmt.Errorf("provider %q credential name is invalid", name)
+		}
+		if kind == "cloudflare_clef" {
+			if provider.AccountID, err = identityYAMLString(fields["account_id"], "account_id"); err != nil {
+				return nil, fmt.Errorf("provider %q: %w", name, err)
+			}
+			if _, err := identityClefEndpoint(provider, "clef"); err != nil {
+				return nil, fmt.Errorf("provider %q account_id must be an ASCII Cloudflare account ID", name)
+			}
+			providers[name] = provider
+			continue
+		}
 		if provider.Endpoint, err = identityYAMLString(fields["endpoint"], "endpoint"); err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}
 		if !validIdentityInferenceEndpoint(provider.Endpoint) {
 			return nil, fmt.Errorf("provider %q endpoint must be a valid HTTPS URL without query, userinfo, or fragment", name)
 		}
-		if provider.APIKeyEnv, err = identityYAMLString(fields["api_key_env"], "api_key_env"); err != nil {
-			return nil, fmt.Errorf("provider %q: %w", name, err)
-		}
-		if !validAPIKeyEnvName(provider.APIKeyEnv) {
-			return nil, fmt.Errorf("provider %q api_key_env must be an environment variable name", name)
-		}
-		if provider.AuthScheme, err = identityYAMLString(fields["auth_scheme"], "auth_scheme"); err != nil {
-			return nil, fmt.Errorf("provider %q: %w", name, err)
-		}
-		if _, valid := normalizedAuthScheme(provider.AuthScheme); !valid {
-			return nil, fmt.Errorf("provider %q auth_scheme must be api-key or bearer", name)
-		}
-		if fields["service_tier"] != nil {
-			if provider.ServiceTier, err = identityYAMLString(fields["service_tier"], "service_tier"); err != nil {
+		switch kind {
+		case "system_one":
+			if provider.AuthScheme, err = identityYAMLString(fields["auth_scheme"], "auth_scheme"); err != nil {
 				return nil, fmt.Errorf("provider %q: %w", name, err)
 			}
+			if _, valid := normalizedAuthScheme(provider.AuthScheme); !valid {
+				return nil, fmt.Errorf("provider %q auth_scheme must be api-key or bearer", name)
+			}
+			if fields["service_tier"] != nil {
+				if provider.ServiceTier, err = identityYAMLString(fields["service_tier"], "service_tier"); err != nil {
+					return nil, fmt.Errorf("provider %q: %w", name, err)
+				}
+			}
+		case "openai_decisions":
+			provider.AuthScheme = "bearer"
 		}
 		providers[name] = provider
 	}
@@ -264,6 +312,11 @@ func parseIdentityCandidates(node *yaml.Node, providers map[string]identityProvi
 		if fields["expected_model"] != nil {
 			if candidate.ExpectedModel, err = identityYAMLString(fields["expected_model"], "expected_model"); err != nil {
 				return nil, fmt.Errorf("candidate %q: %w", name, err)
+			}
+		}
+		if provider := providers[candidate.Provider]; provider.Kind == "cloudflare_clef" {
+			if _, err := identityClefEndpoint(provider, candidate.Model); err != nil {
+				return nil, fmt.Errorf("candidate %q: Cloudflare Clef model must be clef or clef-flash", name)
 			}
 		}
 		candidates[name] = candidate
@@ -384,13 +437,32 @@ func runIdentitySuite(ctx context.Context, cmd *cobra.Command, opts *root.Option
 	identity.flags.inputPriceSet = cmd.Flags().Changed("input-price-per-million")
 	identity.flags.outputPriceSet = cmd.Flags().Changed("output-price-per-million")
 	provider := suite.Providers[identity.flags.providerName]
-	identity.flags.endpoint = provider.Endpoint
-	identity.flags.apiKeyEnv = provider.APIKeyEnv
-	identity.flags.authScheme = provider.AuthScheme
-	identity.flags.serviceTier = provider.ServiceTier
+	identity.flags.credentialStore = provider.Credential.Store
+	identity.flags.credentialName = provider.Credential.Name
+	credentialKey, err := credentials.IdentityAPIKeyForKind(provider.Kind)
+	if err != nil {
+		return exitcode.Usage(fmt.Errorf("benchmark run: %w", err))
+	}
+	identity.flags.credentialKey = credentialKey
 	identity.flags.adapterKind = provider.Kind
-	if cmd.Flags().Changed("allow-unverified-context") {
-		return exitcode.Usage(errors.New("benchmark run: --allow-unverified-context is supported only by providers that require context acknowledgement"))
+	if provider.Kind == "cloudflare_clef" {
+		endpoint, err := identityClefEndpoint(provider, identity.flags.model)
+		if err != nil {
+			return exitcode.Usage(fmt.Errorf("benchmark run: %w", err))
+		}
+		identity.flags.endpoint = endpoint
+		identity.flags.authScheme = "bearer"
+		identity.flags.serviceTier = ""
+		if !identity.allowUnverifiedCtx {
+			return exitcode.Usage(errors.New("benchmark run: --allow-unverified-context is required because Cloudflare Clef may silently truncate state"))
+		}
+	} else {
+		identity.flags.endpoint = provider.Endpoint
+		identity.flags.authScheme = provider.AuthScheme
+		identity.flags.serviceTier = provider.ServiceTier
+		if cmd.Flags().Changed("allow-unverified-context") {
+			return exitcode.Usage(errors.New("benchmark run: --allow-unverified-context is supported only by providers that require context acknowledgement"))
+		}
 	}
 	if err := validateIdentityInferenceFlags("benchmark run", identity.flags); err != nil {
 		return exitcode.Usage(err)
@@ -398,6 +470,9 @@ func runIdentitySuite(ctx context.Context, cmd *cobra.Command, opts *root.Option
 	runtime, err := identityProviderRuntimeFor(provider, identity.flags)
 	if err != nil {
 		return exitcode.Usage(fmt.Errorf("benchmark run: %w", err))
+	}
+	if runtime.dependencies.resolveAPIKey == nil {
+		runtime.dependencies.resolveAPIKey = resolveIdentityAPIKey(opts, cmd, provider)
 	}
 	return runIdentityInference(ctx, opts, "benchmark run", suite.Fixture, identity.flags, runtime.dependencies, runtime.backend)
 }
