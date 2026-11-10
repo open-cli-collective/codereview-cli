@@ -17,9 +17,6 @@ func identityClefEndpoint(provider identityProviderConfig, model string) (string
 	if provider.Endpoint != "" || provider.AuthScheme != "" || provider.ServiceTier != "" {
 		return "", fmt.Errorf("provider %q must not configure endpoint, auth_scheme, or service_tier for Cloudflare Clef", provider.Name)
 	}
-	if !validAPIKeyEnvName(provider.APIKeyEnv) {
-		return "", fmt.Errorf("provider %q api_key_env must be an environment variable name", provider.Name)
-	}
 	endpoint, err := cloudflareclef.Endpoint(provider.AccountID, model)
 	if err != nil {
 		return "", errors.New("cloudflare Clef requires an ASCII account ID and model clef or clef-flash")
@@ -37,15 +34,14 @@ func identityClefProviderRuntime(provider identityProviderConfig, flags identity
 		return identityProviderRuntime{}, err
 	}
 	flags.endpoint = endpoint
-	flags.apiKeyEnv = provider.APIKeyEnv
 	flags.authScheme = "bearer"
 	flags.serviceTier = ""
 	clefFlags := inferClefFlags{identityInferenceFlags: flags, accountID: provider.AccountID}
 	return identityProviderRuntime{
 		dependencies: identityInferenceDependencies{
-			lookupAPIKey: dependencies.lookupAPIKey,
-			now:          dependencies.now,
-			rename:       dependencies.rename,
+			resolveAPIKey: dependencies.resolveAPIKey,
+			now:           dependencies.now,
+			rename:        dependencies.rename,
 		},
 		backend: inferClefBackend(clefFlags, dependencies),
 	}, nil

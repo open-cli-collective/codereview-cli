@@ -18,10 +18,10 @@ type openAIDecisionsDecider interface {
 }
 
 type inferOpenAIDecisionsDependencies struct {
-	lookupAPIKey func(string) (string, bool)
-	newClient    func(openaidecisions.Options) (openAIDecisionsDecider, error)
-	now          func() time.Time
-	rename       func(string, string) error
+	resolveAPIKey func(context.Context) (string, error)
+	newClient     func(openaidecisions.Options) (openAIDecisionsDecider, error)
+	now           func() time.Time
+	rename        func(string, string) error
 }
 
 type openAIDecisionsIdentityDecider struct {
@@ -31,7 +31,6 @@ type openAIDecisionsIdentityDecider struct {
 
 func defaultInferOpenAIDecisionsDependencies() inferOpenAIDecisionsDependencies {
 	return inferOpenAIDecisionsDependencies{
-		lookupAPIKey: func(name string) (string, bool) { return os.LookupEnv(name) },
 		newClient: func(options openaidecisions.Options) (openAIDecisionsDecider, error) {
 			client, err := openaidecisions.New(options)
 			if err != nil {

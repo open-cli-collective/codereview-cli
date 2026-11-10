@@ -37,12 +37,13 @@ func TestReportIdentityStaysOfflineAndOutsideReviewRuntime(t *testing.T) {
 			return err
 		}
 		rel := filepath.ToSlash(mustRel(t, repoRoot, path))
+		inExperiment := strings.HasPrefix(rel, "internal/identityexperiment/")
 		for _, spec := range parsed.Imports {
 			importPath, err := strconv.Unquote(spec.Path.Value)
 			if err != nil {
 				return err
 			}
-			if importPath == identityImport && !strings.HasPrefix(rel, "internal/cmd/benchmarkcmd/") {
+			if importPath == identityImport && !strings.HasPrefix(rel, "internal/cmd/benchmarkcmd/") && !inExperiment {
 				t.Fatalf("%s imports internal/reportidentity; replay is offline tooling and cannot join production behavior", rel)
 			}
 			if !strings.HasPrefix(rel, "internal/reportidentity/") {
@@ -67,6 +68,8 @@ func TestIdentityInferenceClientsStayBehindBenchmarkCommand(t *testing.T) {
 	openAIDecisionsImport := modulePath + "/internal/openaidecisions"
 	cloudflareClefImport := modulePath + "/internal/cloudflareclef"
 	identityInferenceImport := modulePath + "/internal/reportidentityinference"
+	identityImport := modulePath + "/internal/reportidentity"
+	identityExperimentImport := modulePath + "/internal/identityexperiment"
 	stdlib := standardLibraryImports(t, repoRoot)
 	fset := token.NewFileSet()
 
@@ -91,6 +94,7 @@ func TestIdentityInferenceClientsStayBehindBenchmarkCommand(t *testing.T) {
 		}
 		rel := filepath.ToSlash(mustRel(t, repoRoot, path))
 		inCommand := strings.HasPrefix(rel, "internal/cmd/benchmarkcmd/")
+		inExperiment := strings.HasPrefix(rel, "internal/identityexperiment/")
 		inSystemOneClient := strings.HasPrefix(rel, "internal/systemone/")
 		inOpenAIDecisionsClient := strings.HasPrefix(rel, "internal/openaidecisions/")
 		inCloudflareClefClient := strings.HasPrefix(rel, "internal/cloudflareclef/")
@@ -100,8 +104,8 @@ func TestIdentityInferenceClientsStayBehindBenchmarkCommand(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if (importPath == systemOneImport || strings.HasPrefix(importPath, systemOneImport+"/")) && !inCommand && !inAdapter && !inCloudflareClefClient {
-				t.Fatalf("%s imports internal/systemone; inference transport may be invoked only by benchmarkcmd, Cloudflare Clef, or its identity adapter", rel)
+			if (importPath == systemOneImport || strings.HasPrefix(importPath, systemOneImport+"/")) && !inCommand && !inAdapter && !inCloudflareClefClient && !inExperiment {
+				t.Fatalf("%s imports internal/systemone; inference transport may be invoked only by benchmarkcmd, Cloudflare Clef, its identity adapter, or identityexperiment", rel)
 			}
 			if (importPath == openAIDecisionsImport || strings.HasPrefix(importPath, openAIDecisionsImport+"/")) && !inCommand {
 				t.Fatalf("%s imports internal/openaidecisions; Decisions transport may be invoked only by benchmarkcmd", rel)
@@ -109,8 +113,20 @@ func TestIdentityInferenceClientsStayBehindBenchmarkCommand(t *testing.T) {
 			if (importPath == cloudflareClefImport || strings.HasPrefix(importPath, cloudflareClefImport+"/")) && !inCommand {
 				t.Fatalf("%s imports internal/cloudflareclef; Cloudflare Clef transport may be invoked only by benchmarkcmd", rel)
 			}
-			if (importPath == identityInferenceImport || strings.HasPrefix(importPath, identityInferenceImport+"/")) && !inCommand {
-				t.Fatalf("%s imports internal/reportidentityinference; identity inference may be invoked only by benchmarkcmd", rel)
+			if (importPath == identityInferenceImport || strings.HasPrefix(importPath, identityInferenceImport+"/")) && !inCommand && !inExperiment {
+				t.Fatalf("%s imports internal/reportidentityinference; identity inference may be invoked only by benchmarkcmd or identityexperiment", rel)
+			}
+			if (importPath == identityImport || strings.HasPrefix(importPath, identityImport+"/")) && !inCommand && !inExperiment {
+				t.Fatalf("%s imports internal/reportidentity; replay may be invoked only by benchmarkcmd or identityexperiment", rel)
+			}
+			if (importPath == identityExperimentImport || strings.HasPrefix(importPath, identityExperimentImport+"/")) && !inCommand && !inExperiment {
+				t.Fatalf("%s imports internal/identityexperiment; shared identity experiments are not yet part of review runtime", rel)
+			}
+			if inExperiment {
+				if _, isStdlib := stdlib[importPath]; isStdlib || importPath == modulePath+"/internal/review" || importPath == identityImport || importPath == identityInferenceImport || importPath == systemOneImport {
+					continue
+				}
+				t.Fatalf("%s imports %q; identityexperiment may import only standard library packages, reportidentity, reportidentityinference, review, and System One", rel, importPath)
 			}
 			if !inSystemOneClient && !inOpenAIDecisionsClient && !inCloudflareClefClient && !inAdapter {
 				continue

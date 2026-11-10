@@ -10,9 +10,6 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/systemone"
 )
 
-// #nosec G101 -- this names an environment variable; it is not secret material.
-const defaultClefAPIKeyEnv = "CLOUDFLARE_AUTH_TOKEN"
-
 type inferClefFlags struct {
 	identityInferenceFlags
 	accountID string
@@ -23,10 +20,10 @@ type clefDecider interface {
 }
 
 type inferClefDependencies struct {
-	lookupAPIKey func(string) (string, bool)
-	newClient    func(cloudflareclef.Options) (clefDecider, error)
-	now          func() time.Time
-	rename       func(string, string) error
+	resolveAPIKey func(context.Context) (string, error)
+	newClient     func(cloudflareclef.Options) (clefDecider, error)
+	now           func() time.Time
+	rename        func(string, string) error
 }
 
 type clefProjectionDecider struct {
@@ -36,7 +33,6 @@ type clefProjectionDecider struct {
 
 func defaultInferClefDependencies() inferClefDependencies {
 	return inferClefDependencies{
-		lookupAPIKey: func(name string) (string, bool) { return os.LookupEnv(name) },
 		newClient: func(options cloudflareclef.Options) (clefDecider, error) {
 			client, err := cloudflareclef.New(options)
 			if err != nil {

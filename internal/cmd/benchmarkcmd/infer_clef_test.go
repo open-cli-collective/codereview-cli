@@ -18,6 +18,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cloudflareclef"
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
+	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentity"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentityinference"
 	"github.com/open-cli-collective/codereview-cli/internal/systemone"
@@ -120,14 +121,19 @@ type clefCommandTestState struct {
 	renamedFiles []string
 }
 
+const clefTestCredentialName = "codereview/clef-test"
+
 func clefTestDependencies(t *testing.T, outcomes []clefFakeOutcome, keyPresent bool) (inferClefDependencies, *clefCommandTestState) {
 	t.Helper()
 	state := &clefCommandTestState{apiKey: clefTestAPIKey, keyPresent: keyPresent}
 	dependencies := inferClefDependencies{
-		lookupAPIKey: func(name string) (string, bool) {
+		resolveAPIKey: func(context.Context) (string, error) {
 			state.keyLookups++
-			state.keyNames = append(state.keyNames, name)
-			return state.apiKey, state.keyPresent
+			state.keyNames = append(state.keyNames, clefTestCredentialName)
+			if !state.keyPresent {
+				return "", errors.New("synthetic missing credential")
+			}
+			return state.apiKey, nil
 		},
 		newClient: func(options cloudflareclef.Options) (clefDecider, error) {
 			state.clientOpens++
@@ -161,7 +167,7 @@ func runClefIdentityInferenceTest(t *testing.T, input reportidentity.Input, outp
 	}
 	flags := identityInferenceFlags{
 		model: model, expectedModel: options.expectedModel, endpoint: endpoint,
-		apiKeyEnv: defaultClefAPIKeyEnv, authScheme: "bearer",
+		credentialStore: "local-os", credentialName: clefTestCredentialName, credentialKey: credentials.CloudflareAPIKeyKey, authScheme: "bearer",
 		maxStateBytes: clefTestLimits.MaxStateBytes, maxRequestBytes: clefTestLimits.MaxRequestBytes,
 		maxCalls: maxCalls, outputDir: outputDir, timeout: defaultIdentityInferenceTimeout,
 		inputPricePerMillion: options.inputPricePerMillion, outputPricePerMillion: options.outputPricePerMillion,
@@ -169,9 +175,9 @@ func runClefIdentityInferenceTest(t *testing.T, input reportidentity.Input, outp
 	}
 	clefFlags := inferClefFlags{identityInferenceFlags: flags, accountID: accountID}
 	sharedDependencies := identityInferenceDependencies{
-		lookupAPIKey: dependencies.lookupAPIKey,
-		now:          dependencies.now,
-		rename:       dependencies.rename,
+		resolveAPIKey: dependencies.resolveAPIKey,
+		now:           dependencies.now,
+		rename:        dependencies.rename,
 	}
 	stdout := &bytes.Buffer{}
 	opts := &root.Options{Stdout: stdout, Stderr: &bytes.Buffer{}}
@@ -302,7 +308,7 @@ func TestClefBackendUsesSharedProjectionForBothModels(t *testing.T) {
 			if state.keyLookups != 1 || state.clientOpens != 1 || len(state.client.requests) != 1 {
 				t.Fatalf("preflight/client counts: key lookups=%d clients=%d requests=%d", state.keyLookups, state.clientOpens, len(state.client.requests))
 			}
-			if state.keyNames[0] != defaultClefAPIKeyEnv || state.clientOpts.AccountID != clefTestAccountID || state.clientOpts.APIKey != clefTestAPIKey || state.clientOpts.Timeout != defaultIdentityInferenceTimeout || state.clientOpts.Limits != clefTestLimits {
+			if state.keyNames[0] != clefTestCredentialName || state.clientOpts.AccountID != clefTestAccountID || state.clientOpts.APIKey != clefTestAPIKey || state.clientOpts.Timeout != defaultIdentityInferenceTimeout || state.clientOpts.Limits != clefTestLimits {
 				t.Fatalf("Cloudflare client options = %#v, key names=%v", state.clientOpts, state.keyNames)
 			}
 			request := state.client.requests[0]

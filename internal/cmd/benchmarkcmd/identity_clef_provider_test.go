@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"github.com/open-cli-collective/codereview-cli/internal/cloudflareclef"
+	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentityinference"
 )
 
 func TestIdentityClefEndpointResolvesTheSelectedAccountAndModel(t *testing.T) {
 	provider := identityProviderConfig{
 		Name: "cloudflare", Kind: "cloudflare_clef", AccountID: clefTestAccountID,
-		APIKeyEnv: defaultClefAPIKeyEnv,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/cloudflare"},
 	}
 	for _, model := range []string{"clef", "clef-flash"} {
 		t.Run(model, func(t *testing.T) {
@@ -34,7 +35,7 @@ func TestIdentityClefEndpointResolvesTheSelectedAccountAndModel(t *testing.T) {
 func TestIdentityClefEndpointRejectsInvalidConfigurationBeforeRuntime(t *testing.T) {
 	valid := identityProviderConfig{
 		Name: "cloudflare", Kind: "cloudflare_clef", AccountID: clefTestAccountID,
-		APIKeyEnv: defaultClefAPIKeyEnv,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/cloudflare"},
 	}
 	for _, test := range []struct {
 		name     string
@@ -45,7 +46,6 @@ func TestIdentityClefEndpointRejectsInvalidConfigurationBeforeRuntime(t *testing
 		{name: "literal endpoint", provider: func() identityProviderConfig { p := valid; p.Endpoint = "https://example.invalid"; return p }(), model: "clef"},
 		{name: "auth scheme", provider: func() identityProviderConfig { p := valid; p.AuthScheme = "bearer"; return p }(), model: "clef"},
 		{name: "service tier", provider: func() identityProviderConfig { p := valid; p.ServiceTier = "priority"; return p }(), model: "clef"},
-		{name: "bad key environment name", provider: func() identityProviderConfig { p := valid; p.APIKeyEnv = "CLOUDFLARE-TOKEN"; return p }(), model: "clef"},
 		{name: "invalid account", provider: func() identityProviderConfig { p := valid; p.AccountID = "../account"; return p }(), model: "clef"},
 		{name: "unknown model", provider: valid, model: "@cf/cloudflare/clef"},
 	} {
@@ -65,7 +65,7 @@ func TestIdentityClefEndpointRejectsInvalidConfigurationBeforeRuntime(t *testing
 func TestDefaultIdentityProviderRuntimeRegistersClefWithoutProviderCalls(t *testing.T) {
 	provider := identityProviderConfig{
 		Name: "cloudflare", Kind: "cloudflare_clef", AccountID: clefTestAccountID,
-		APIKeyEnv: defaultClefAPIKeyEnv,
+		Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/cloudflare"},
 	}
 	runtime, err := defaultIdentityProviderRuntime(provider, identityInferenceFlags{
 		model: "clef", maxStateBytes: clefTestLimits.MaxStateBytes,
@@ -74,7 +74,7 @@ func TestDefaultIdentityProviderRuntimeRegistersClefWithoutProviderCalls(t *test
 	if err != nil {
 		t.Fatalf("defaultIdentityProviderRuntime: %v", err)
 	}
-	if runtime.dependencies.lookupAPIKey == nil || runtime.dependencies.now == nil || runtime.dependencies.rename == nil {
+	if runtime.dependencies.resolveAPIKey != nil || runtime.dependencies.now == nil || runtime.dependencies.rename == nil {
 		t.Fatalf("Clef runtime dependencies are incomplete: %#v", runtime.dependencies)
 	}
 	if runtime.backend.provider != "cloudflare_clef" || runtime.backend.contextStatus != "unverified" {
@@ -87,7 +87,7 @@ func TestIdentityClefRuntimeUsesTheSharedProjectionAndForcesUnverifiedContext(t 
 		t.Run(model, func(t *testing.T) {
 			provider := identityProviderConfig{
 				Name: "cloudflare", Kind: "cloudflare_clef", AccountID: clefTestAccountID,
-				APIKeyEnv: defaultClefAPIKeyEnv,
+				Credential: config.CredentialLocation{Store: config.LocalOSCredentialStoreID, Name: "codereview/cloudflare"},
 			}
 			dependencies, state := clefTestDependencies(t, nil, true)
 			flags := identityInferenceFlags{
@@ -101,8 +101,8 @@ func TestIdentityClefRuntimeUsesTheSharedProjectionAndForcesUnverifiedContext(t 
 			if runtime.backend.provider != "cloudflare_clef" || runtime.backend.contextStatus != "unverified" {
 				t.Fatalf("Clef backend provenance = provider:%q context:%q", runtime.backend.provider, runtime.backend.contextStatus)
 			}
-			if key, ok := runtime.dependencies.lookupAPIKey(provider.APIKeyEnv); !ok || key != clefTestAPIKey {
-				t.Fatalf("runtime credential adapter = (%q, %t)", key, ok)
+			if key, err := runtime.dependencies.resolveAPIKey(context.Background()); err != nil || key != clefTestAPIKey {
+				t.Fatalf("runtime credential adapter = (%q, %v)", key, err)
 			}
 
 			input := clefCohortInput(t, 2)

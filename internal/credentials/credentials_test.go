@@ -348,7 +348,7 @@ func TestStoreOptionsInvalidBackendFlag(t *testing.T) {
 }
 
 func TestAllowedKeysExactCredentialMatrix(t *testing.T) {
-	want := []string{GitTokenKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	want := []string{GitTokenKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey, SystemOneAPIKeyKey, CloudflareAPIKeyKey}
 	if got := AllowedKeys(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("AllowedKeys = %#v, want %#v", got, want)
 	}
