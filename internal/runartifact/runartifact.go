@@ -52,6 +52,10 @@ type Paths struct {
 	RelocationsJSON     string `json:"relocations_json"`
 	SymlinkMetadataJSON string `json:"symlink_metadata_json"`
 	CoverageJSON        string `json:"coverage_json"`
+	// WorkspacesRoot is the flat directory holding this run's git workspaces,
+	// or "" when the run directory is not in the standard data-root layout and
+	// workspaces stay under WorkbenchDir.
+	WorkspacesRoot string `json:"workspaces_root,omitempty"`
 }
 
 // ForRun returns the artifact paths for a generated run ID.
@@ -70,6 +74,11 @@ func ForRun(layout statepaths.Layout, ref gitprovider.PRRef, pr gitprovider.PR, 
 
 // FromDir returns the artifact path set rooted at dir.
 func FromDir(dir string) Paths {
+	workspacesRoot := workspacesRootForRunDir(dir)
+	workbenchRepoDir := filepath.Join(dir, "workbench", "repo")
+	if workspacesRoot != "" {
+		workbenchRepoDir = filepath.Join(workspaceDir(workspacesRoot, dir, WorkspaceRoleWorkbench, ""), workspaceRepoName)
+	}
 	return Paths{
 		Dir:                 dir,
 		DiffPatch:           filepath.Join(dir, "diff.patch"),
@@ -81,11 +90,12 @@ func FromDir(dir string) Paths {
 		LLMTasksDir:         filepath.Join(dir, "llm-tasks"),
 		DossierDir:          filepath.Join(dir, "dossier"),
 		WorkbenchDir:        filepath.Join(dir, "workbench"),
-		WorkbenchRepoDir:    filepath.Join(dir, "workbench", "repo"),
+		WorkbenchRepoDir:    workbenchRepoDir,
 		WorkbenchScratch:    filepath.Join(dir, "workbench", "scratch"),
 		RelocationsJSON:     filepath.Join(dir, "relocations.json"),
 		SymlinkMetadataJSON: filepath.Join(dir, "symlink-metadata.json"),
 		CoverageJSON:        filepath.Join(dir, "coverage.json"),
+		WorkspacesRoot:      workspacesRoot,
 	}
 }
 

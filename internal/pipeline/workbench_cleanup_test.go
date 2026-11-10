@@ -10,6 +10,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/gitprovider"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 )
@@ -76,6 +77,12 @@ func TestDryRunRemovesWorkbenchAfterSuccess(t *testing.T) {
 	if _, err := os.Stat(artifacts.WorkbenchDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("workbench stat err = %v, want removed after success", err)
 	}
+	if artifacts.WorkbenchWorkspace() == "" {
+		t.Fatal("WorkbenchWorkspace is empty, want the checkout in the workspaces root")
+	}
+	if _, err := os.Stat(artifacts.WorkbenchWorkspace()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workbench workspace stat err = %v, want removed after success", err)
+	}
 	for _, path := range []string{artifacts.FindingsJSON, artifacts.RollupMarkdown} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("artifact %s missing after workbench cleanup: %v", path, err)
@@ -92,7 +99,7 @@ func TestDryRunRetainsWorkbenchAfterFailure(t *testing.T) {
 	if !errors.Is(err, providerErr) {
 		t.Fatalf("DryRun error = %v, want selection provider failure", err)
 	}
-	if _, err := os.Stat(filepath.Join(artifacts.WorkbenchDir, "repo")); err != nil {
+	if _, err := os.Stat(artifacts.WorkbenchRepoDir); err != nil {
 		t.Fatalf("workbench missing after failed run: %v", err)
 	}
 }
@@ -111,7 +118,7 @@ func TestDryRunRetainsWorkbenchWhenKeepWorkbenchEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(artifacts.WorkbenchDir, "repo")); err != nil {
+	if _, err := os.Stat(artifacts.WorkbenchRepoDir); err != nil {
 		t.Fatalf("workbench missing with KeepWorkbench enabled: %v", err)
 	}
 }
@@ -163,4 +170,14 @@ func TestLiveRetainsWorkbenchUntilPostCompletes(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(run.ArtifactPath, "workbench", "repo")); err != nil {
 		t.Fatalf("workbench removed before the live post: %v", err)
 	}
+}
+
+// isReviewerCloneForTest reports whether args clone the reviewer workspace for
+// agentID, identified by the owner record written beside the checkout.
+func isReviewerCloneForTest(args []string, agentID string) bool {
+	if len(args) == 0 || args[0] != "clone" {
+		return false
+	}
+	owner, err := runartifact.ReadWorkspaceOwner(filepath.Dir(args[len(args)-1]))
+	return err == nil && owner.Role == runartifact.WorkspaceRoleReviewer && owner.AgentID == agentID
 }

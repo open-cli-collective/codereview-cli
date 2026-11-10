@@ -1535,10 +1535,8 @@ func TestDryRunCoverageRepairWorkspaceFailurePreservesPrimaryReview(t *testing.T
 		ResolveRepoRoot: func(context.Context) (string, error) { return repoDir, nil },
 		GitCommand: func(gitCtx context.Context, dir string, args ...string) ([]byte, error) {
 			// Fail only the repair pass's clone, as a transient git or disk error would.
-			for _, arg := range args {
-				if strings.Contains(arg, workbench.ReviewerWorkspaceSegment(reviewerCoverageRepairIdentity("harness:reviewer"))) {
-					return nil, errors.New("disk full")
-				}
+			if isReviewerCloneForTest(args, reviewerCoverageRepairIdentity("harness:reviewer")) {
+				return nil, errors.New("disk full")
 			}
 			return gitCommand(gitCtx, dir, args...)
 		},
@@ -1766,10 +1764,8 @@ func TestRunReviewerRecordsPrimarySessionOnEveryCoverageRepairPath(t *testing.T)
 			if tc.failRepairClone {
 				gitCommand := opts.GitCommand
 				opts.GitCommand = func(gitCtx context.Context, dir string, args ...string) ([]byte, error) {
-					for _, arg := range args {
-						if strings.Contains(arg, workbench.ReviewerWorkspaceSegment(reviewerCoverageRepairIdentity("harness:reviewer"))) {
-							return nil, errors.New("disk full")
-						}
+					if isReviewerCloneForTest(args, reviewerCoverageRepairIdentity("harness:reviewer")) {
+						return nil, errors.New("disk full")
 					}
 					return gitCommand(gitCtx, dir, args...)
 				}
@@ -2052,7 +2048,7 @@ func TestDryRunWithPinnedReviewSHAsUsesCompareDiffAndPinnedFileRefs(t *testing.T
 		t.Fatalf("reviewer request = %#v, want reviewer workspace", requests[1])
 	}
 	workspace := requests[1].ReviewerWorkspace
-	if !strings.Contains(workspace.RepoDir, filepath.Join("workbench", "reviewers")) ||
+	if !strings.HasPrefix(workspace.RepoDir, result.Artifacts.WorkspacesRoot+string(filepath.Separator)) ||
 		!strings.HasPrefix(workspace.ScratchDir, result.Artifacts.WorkbenchScratch+string(filepath.Separator)) ||
 		workspace.DiffPath != result.Artifacts.DiffPatch ||
 		workspace.MaxToolOutputBytes != 32*1024 {
@@ -3247,7 +3243,8 @@ func TestDryRunReviewerFailureIsolation(t *testing.T) {
 	}
 	for _, agentID := range []string{"harness:alpha", "harness:beta", "harness:gamma"} {
 		encoded := workbench.ReviewerWorkspaceSegment(agentID)
-		if _, err := os.Stat(filepath.Join(result.Artifacts.WorkbenchDir, "reviewers", encoded)); !errors.Is(err, os.ErrNotExist) {
+		workspaceRoot, _ := result.Artifacts.ReviewerWorkspace(agentID, encoded)
+		if _, err := os.Stat(workspaceRoot); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("reviewer workspace %s stat err = %v, want cleaned", agentID, err)
 		}
 		if _, err := os.Stat(filepath.Join(result.Artifacts.WorkbenchScratch, encoded)); !errors.Is(err, os.ErrNotExist) {
