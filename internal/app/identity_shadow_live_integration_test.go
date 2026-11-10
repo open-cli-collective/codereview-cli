@@ -29,11 +29,13 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
+	"github.com/open-cli-collective/codereview-cli/internal/runartifact"
 	"github.com/open-cli-collective/codereview-cli/internal/runlifecycle"
 	"github.com/open-cli-collective/codereview-cli/internal/runlock"
 	"github.com/open-cli-collective/codereview-cli/internal/statepaths"
 	"github.com/open-cli-collective/codereview-cli/internal/systemone"
 	"github.com/open-cli-collective/codereview-cli/internal/view"
+	"github.com/open-cli-collective/codereview-cli/internal/workbench"
 )
 
 const (
@@ -264,6 +266,24 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 	if result.Pipeline == nil || result.Decision.Kind != gate.DecisionFresh || result.ExitCode != 0 || !result.FailOnTriggered || !result.Pipeline.FailOnTriggered {
 		t.Fatalf("live fixture failed to produce fresh, successful, fail-on-triggering plan: %#v", result)
 	}
+	expectedArtifacts := runartifact.FromDir(result.Pipeline.Artifacts.Dir)
+	if !reflect.DeepEqual(result.Pipeline.Artifacts, expectedArtifacts) {
+		t.Fatalf("actual artifact paths differ from paths derived from run directory: got=%#v want=%#v", result.Pipeline.Artifacts, expectedArtifacts)
+	}
+	for _, target := range []struct {
+		name string
+		path string
+	}{
+		{name: "workbench workspace", path: expectedArtifacts.WorkbenchWorkspace()},
+		{name: "workbench artifact directory", path: expectedArtifacts.WorkbenchDir},
+	} {
+		if target.path == "" {
+			t.Fatalf("expected %s path is empty", target.name)
+		}
+		if _, statErr := os.Lstat(target.path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("successful run did not remove %s %q: %v", target.name, target.path, statErr)
+		}
+	}
 	state := nativeState()
 	assertLiveShadowNativePosts(t, state)
 	threads, err := provider.ListInlineThreads(ctx, ref)
@@ -283,6 +303,14 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 	} else {
 		if observerCalls != 1 {
 			t.Fatalf("observer calls = %d, want 1", observerCalls)
+		}
+		shadowRoot := filepath.Join(expectedArtifacts.Dir, "identity-shadow")
+		relativeAttempt, relErr := filepath.Rel(shadowRoot, attemptDir)
+		if relErr != nil || relativeAttempt == "." || relativeAttempt == ".." || strings.HasPrefix(relativeAttempt, ".."+string(filepath.Separator)) {
+			t.Fatalf("identity-shadow attempt %q is outside %q: relative=%q err=%v", attemptDir, shadowRoot, relativeAttempt, relErr)
+		}
+		if info, statErr := os.Stat(attemptDir); statErr != nil || !info.IsDir() {
+			t.Fatalf("identity-shadow diagnostic attempt was not retained as a directory at %q: %v", attemptDir, statErr)
 		}
 		assertLiveShadowDiagnostics(t, scenario, attemptDir, keyCalls, clientCalls, shadow.requests, warnings.String())
 	}
@@ -317,7 +345,18 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 	if err := json.Unmarshal(rendered.Bytes(), &presentationJSON); err != nil {
 		t.Fatal(err)
 	}
-	return liveShadowObservation{authority: liveShadowCanonical(t, full, root), presentation: liveShadowCanonical(t, presentationJSON, root)}
+	workbenchRoot := expectedArtifacts.WorkbenchWorkspace()
+	reviewerRoot, reviewerRepo := expectedArtifacts.ReviewerWorkspace("harness:reviewer", workbench.ReviewerWorkspaceSegment("harness:reviewer"))
+	workspaceReplacements := []string{
+		expectedArtifacts.WorkbenchRepoDir, "<workbench-repo>",
+		workbenchRoot, "<workbench-root>",
+		reviewerRepo, "<reviewer-repo>",
+		reviewerRoot, "<reviewer-root>",
+	}
+	return liveShadowObservation{
+		authority:    liveShadowCanonical(t, full, root, workspaceReplacements...),
+		presentation: liveShadowCanonical(t, presentationJSON, root, workspaceReplacements...),
+	}
 }
 
 func liveShadowNativeAdapter() *llm.FakeAdapter {
@@ -563,8 +602,16 @@ func liveShadowReadJSON(t *testing.T, path string, target any) {
 	}
 }
 
-func liveShadowCanonical(t *testing.T, value any, root string) string {
+func liveShadowCanonical(t *testing.T, value any, root string, pathReplacements ...string) string {
 	t.Helper()
+	if len(pathReplacements)%2 != 0 {
+		t.Fatalf("workspace path replacements must be source/replacement pairs, got %d values", len(pathReplacements))
+	}
+	for index := 0; index < len(pathReplacements); index += 2 {
+		if pathReplacements[index] == "" || pathReplacements[index+1] == "" {
+			t.Fatalf("workspace path replacement %d contains an empty source or value", index/2)
+		}
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
@@ -592,7 +639,11 @@ func liveShadowCanonical(t *testing.T, value any, root string) string {
 				typed[index] = normalize(item)
 			}
 		case string:
-			return strings.ReplaceAll(typed, root, "<run-root>")
+			normalized := typed
+			for index := 0; index < len(pathReplacements); index += 2 {
+				normalized = strings.ReplaceAll(normalized, pathReplacements[index], pathReplacements[index+1])
+			}
+			return strings.ReplaceAll(normalized, root, "<run-root>")
 		}
 		return value
 	}
@@ -601,4 +652,31 @@ func liveShadowCanonical(t *testing.T, value any, root string) string {
 		t.Fatal(err)
 	}
 	return string(encoded)
+}
+
+func TestLiveShadowCanonicalNormalizesOnlyExpectedWorkspacePaths(t *testing.T) {
+	runRoot := filepath.Join(t.TempDir(), "run")
+	workbenchRoot := filepath.Join(t.TempDir(), "data", "ws", "workbench-hash")
+	workbenchRepo := filepath.Join(workbenchRoot, "r")
+	unknownHash := "deadbeef123456"
+	unknownWorkspace := filepath.Join(t.TempDir(), "data", "ws", unknownHash, "r")
+	value := map[string]string{
+		"workbench_repo":    workbenchRepo,
+		"workbench_root":    workbenchRoot,
+		"unknown_workspace": unknownWorkspace,
+		"unrelated_hash":    unknownHash,
+		"run_artifact_path": filepath.Join(runRoot, "findings.json"),
+	}
+	canonical := liveShadowCanonical(t, value, runRoot, workbenchRepo, "<workbench-repo>", workbenchRoot, "<workbench-root>")
+	var got map[string]string
+	if err := json.Unmarshal([]byte(canonical), &got); err != nil {
+		t.Fatalf("Decode normalized workspace fixture: %v", err)
+	}
+	if got["workbench_repo"] != "<workbench-repo>" || got["workbench_root"] != "<workbench-root>" ||
+		got["run_artifact_path"] != filepath.Join("<run-root>", "findings.json") {
+		t.Fatalf("known workspace/run paths were not normalized: %#v", got)
+	}
+	if got["unknown_workspace"] != unknownWorkspace || got["unrelated_hash"] != unknownHash {
+		t.Fatalf("unrelated hash or unknown workspace path was normalized: %#v", got)
+	}
 }

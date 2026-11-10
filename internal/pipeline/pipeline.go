@@ -3985,7 +3985,15 @@ func RemoveWorkbench(artifactDir string, keepWorkbench bool) error {
 	if keepWorkbench || strings.TrimSpace(artifactDir) == "" {
 		return nil
 	}
-	return os.RemoveAll(ArtifactPathsFromDir(artifactDir).WorkbenchDir)
+	paths := ArtifactPathsFromDir(artifactDir)
+	// The workbench checkout lives in the flat workspaces root, outside
+	// WorkbenchDir, so it is removed on its own.
+	if workspace := paths.WorkbenchWorkspace(); workspace != "" {
+		if err := os.RemoveAll(workspace); err != nil {
+			return err
+		}
+	}
+	return os.RemoveAll(paths.WorkbenchDir)
 }
 
 // tryPruneRetention runs automatic retention through the guarded entry

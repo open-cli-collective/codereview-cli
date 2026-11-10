@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -30,7 +31,15 @@ const (
 	// workbenchHeadRef gives the workbench a ref so it is a clonable repository.
 	workbenchHeadRef                        = "refs/heads/cr-review-head"
 	defaultReviewerWorkspaceToolOutputBytes = 32 * 1024
+	// windowsGitDirLimit is the longest GIT_DIR Git for Windows accepts: its
+	// PATH_MAX is 260, and setup.c rejects an explicit GIT_DIR longer than
+	// PATH_MAX - 40. Clones and fetches hand GIT_DIR to their index-pack child,
+	// so a longer checkout path fails mid-transfer with "'$GIT_DIR' too big".
+	windowsGitDirLimit = 220
 )
+
+// goos is the platform the Git path limit is checked for; tests override it.
+var goos = runtime.GOOS
 
 // ErrUnsafeFetchRef marks a provider ref that cannot be passed to Git safely.
 var ErrUnsafeFetchRef = errors.New("workbench: unsafe fetch ref")
@@ -135,12 +144,29 @@ func (p *RunPreparer) prepare(ctx context.Context, req Request) error {
 		return nil
 	}
 
-	if err := os.RemoveAll(req.Artifacts.WorkbenchDir); err != nil {
-		return fmt.Errorf("pipeline: reset workbench dir: %w", err)
+	if err := checkGitDirLength(req.Artifacts.WorkbenchRepoDir); err != nil {
+		return err
 	}
-	for _, dir := range []string{req.Artifacts.WorkbenchDir, req.Artifacts.WorkbenchScratch} {
+	workspace := req.Artifacts.WorkbenchWorkspace()
+	for _, dir := range []string{req.Artifacts.WorkbenchDir, workspace} {
+		if dir == "" {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("pipeline: reset workbench dir: %w", err)
+		}
+	}
+	for _, dir := range []string{req.Artifacts.WorkbenchDir, req.Artifacts.WorkbenchScratch, workspace} {
+		if dir == "" {
+			continue
+		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("pipeline: create workbench dir: %w", err)
+		}
+	}
+	if workspace != "" {
+		if err := req.Artifacts.WriteWorkspaceOwner(workspace, runartifact.WorkspaceRoleWorkbench, ""); err != nil {
+			return err
 		}
 	}
 
@@ -150,6 +176,9 @@ func (p *RunPreparer) prepare(ctx context.Context, req Request) error {
 	}
 	if _, err := p.deps.gitCommand(ctx, "", "init", req.Artifacts.WorkbenchRepoDir); err != nil {
 		return fmt.Errorf("pipeline: initialize workbench repo: %w", err)
+	}
+	if _, err := p.deps.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "config", "core.longpaths", "true"); err != nil {
+		return fmt.Errorf("pipeline: configure workbench long paths: %w", err)
 	}
 	if _, err := p.deps.gitCommand(ctx, req.Artifacts.WorkbenchRepoDir, "remote", "add", "origin", baseRemoteURL); err != nil {
 		return fmt.Errorf("pipeline: configure workbench origin: %w", err)
@@ -487,8 +516,10 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: agent ID is required for reviewer workspace")
 	}
 	segment := ReviewerWorkspaceSegment(agentID)
-	workspaceRoot := filepath.Join(artifacts.WorkbenchDir, "reviewers", segment)
-	workspaceRepo := filepath.Join(workspaceRoot, "repo")
+	workspaceRoot, workspaceRepo := artifacts.ReviewerWorkspace(agentID, segment)
+	if err := checkGitDirLength(workspaceRepo); err != nil {
+		return llm.ReviewerWorkspaceRequest{}, nil, err
+	}
 	workspaceScratch := filepath.Join(artifacts.WorkbenchScratch, segment)
 	for _, dir := range []string{workspaceRoot, workspaceScratch} {
 		if err := os.RemoveAll(dir); err != nil {
@@ -509,9 +540,15 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		}
 		return cleanupErr
 	}
+	if err := artifacts.WriteWorkspaceOwner(workspaceRoot, runartifact.WorkspaceRoleReviewer, agentID); err != nil {
+		_ = cleanup()
+		return llm.ReviewerWorkspaceRequest{}, nil, err
+	}
 	// Use Git transport instead of copying the source object directory. A
 	// background repack can remove a pack while local-copy cloning reads it.
-	if _, err := deps.gitCommand(ctx, "", "clone", "--no-local", artifacts.WorkbenchRepoDir, workspaceRepo); err != nil {
+	// core.longpaths lets Git for Windows check out files whose full path
+	// exceeds 260 characters; other platforms ignore it.
+	if _, err := deps.gitCommand(ctx, "", "clone", "--no-local", "--config", "core.longpaths=true", artifacts.WorkbenchRepoDir, workspaceRepo); err != nil {
 		_ = cleanup()
 		return llm.ReviewerWorkspaceRequest{}, nil, fmt.Errorf("pipeline: clone reviewer workspace: %w", err)
 	}
@@ -560,6 +597,19 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		}
 	}
 	return workspace, cleanup, nil
+}
+
+// checkGitDirLength fails early, with the fix, when a checkout's .git path
+// would exceed what Git for Windows accepts.
+func checkGitDirLength(repoDir string) error {
+	if goos != "windows" {
+		return nil
+	}
+	gitDir := filepath.Join(repoDir, ".git")
+	if n := len(gitDir); n > windowsGitDirLimit {
+		return fmt.Errorf("pipeline: git directory %s is %d characters, and Git for Windows accepts at most %d; move the cr data directory (%%LOCALAPPDATA%%\\cr\\data) to a shorter path", gitDir, n, windowsGitDirLimit)
+	}
+	return nil
 }
 
 func isReviewerWorkspaceEscapePath(clean string) bool {
