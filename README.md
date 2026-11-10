@@ -1074,14 +1074,15 @@ cr set-credential --store <id> --name <credential-name> --key <key> (--stdin | -
 ```
 
 Writes one secret value to the selected credential store. Globally allowed keys are
-`git_token`, `github_app_private_key`, `anthropic_api_key`, and
-`openai_api_key`. When
+`git_token`, `github_app_private_key`, `anthropic_api_key`, `openai_api_key`,
+`system_one_api_key`, and `cloudflare_api_key`. When
 `config.yml` declares the target credential location, `set-credential` narrows
 that global allowlist to the exact key set expected for that credential. PAT
 user Git credentials and PAT reviewer credentials use `git_token`; GitHub App
 credentials use `github_app_private_key`; Anthropic
 LLM API-key credentials use `anthropic_api_key`; OpenAI LLM API-key credentials use
-`openai_api_key`.
+`openai_api_key`; System One identity inference uses `system_one_api_key`; and
+Cloudflare Clef identity inference uses `cloudflare_api_key`.
 
 Flags:
 
