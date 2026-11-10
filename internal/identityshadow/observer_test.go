@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/open-cli-collective/codereview-cli/internal/identityexperiment"
+	"github.com/open-cli-collective/codereview-cli/internal/reportidentity"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentitysnapshot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/systemone"
@@ -158,36 +159,49 @@ func TestObserverFailedAttemptReservationDoesNotTouchExistingOrSymlinkTarget(t *
 }
 
 func TestObserverAggregateBudgetRefusalRetainsFullMissingUniverse(t *testing.T) {
-	dir := t.TempDir()
-	configPath := writeObserverConfig(t, dir, 2, 327680)
-	attemptDir := observerAttemptDir(t, dir, "00000000-0000-4000-8000-000000000002")
-	keyLookups := 0
-	factory := &captureFactory{}
-	observer := New(Options{
-		ConfigPath: configPath, Warnings: io.Discard,
-		ResolveSystemOneKey: func(context.Context, string, string) (string, error) {
-			keyLookups++
-			return "mock-key", nil
-		},
-		SystemOne: identityexperiment.SystemOneDependencies{NewClient: factory.newClient},
-	})
-	observer.Observe(context.Background(), comparisonSnapshot(), attemptDir)
+	for _, testCase := range []struct {
+		name     string
+		maxCalls int
+		maxBytes int64
+	}{
+		{name: "call cap", maxCalls: 2, maxBytes: 327680},
+		{name: "request byte cap", maxCalls: 40, maxBytes: 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := writeObserverConfig(t, dir, testCase.maxCalls, testCase.maxBytes)
+			attemptDir := observerAttemptDir(t, dir, "00000000-0000-4000-8000-000000000002")
+			keyLookups := 0
+			factory := &captureFactory{}
+			observer := New(Options{
+				ConfigPath: configPath, Warnings: io.Discard,
+				ResolveSystemOneKey: func(context.Context, string, string) (string, error) {
+					keyLookups++
+					return "mock-key", nil
+				},
+				SystemOne: identityexperiment.SystemOneDependencies{NewClient: factory.newClient},
+			})
+			observer.Observe(context.Background(), comparisonSnapshot(), attemptDir)
 
-	if keyLookups != 0 || factory.constructions != 0 || len(factory.requests) != 0 {
-		t.Fatalf("budget refusal accessed credentials/provider: key=%d clients=%d requests=%d", keyLookups, factory.constructions, len(factory.requests))
+			if keyLookups != 0 || factory.constructions != 0 || len(factory.requests) != 0 {
+				t.Fatalf("budget refusal accessed credentials/provider: key=%d clients=%d requests=%d", keyLookups, factory.constructions, len(factory.requests))
+			}
+			var receipt aggregateReceipt
+			readJSON(t, filepath.Join(attemptDir, receiptFileName), &receipt)
+			if receipt.Status != "budget_exceeded" || receipt.ExpectedPairs != 20 || receipt.MissingPairs != 20 || receipt.ProviderCalls != 0 {
+				t.Fatalf("budget receipt = %#v", receipt)
+			}
+			var comparison Comparison
+			readJSON(t, filepath.Join(attemptDir, comparisonFileName), &comparison)
+			for name, section := range map[string]ComparisonSection{"cohort": comparison.Cohort, "prior": comparison.PriorExact} {
+				if section.ExpectedPairs != 10 || section.ShadowMissing != 10 || section.UnresolvedPairs != 10 || section.ComparablePairs != 0 ||
+					section.ExpectedPairs != section.ComparablePairs+section.UnresolvedPairs {
+					t.Fatalf("budget refusal did not retain the full %s comparison denominator: %#v", name, section)
+				}
+			}
+			assertAggregateHashes(t, attemptDir)
+		})
 	}
-	var receipt aggregateReceipt
-	readJSON(t, filepath.Join(attemptDir, receiptFileName), &receipt)
-	if receipt.Status != "budget_exceeded" || receipt.ExpectedPairs != 20 || receipt.MissingPairs != 20 || receipt.ProviderCalls != 0 {
-		t.Fatalf("budget receipt = %#v", receipt)
-	}
-	var comparison Comparison
-	readJSON(t, filepath.Join(attemptDir, comparisonFileName), &comparison)
-	if comparison.Cohort.ExpectedPairs != 10 || comparison.Cohort.ShadowMissing != 10 || comparison.Cohort.UnresolvedPairs != 10 ||
-		comparison.PriorExact.ExpectedPairs != 10 || comparison.PriorExact.ShadowMissing != 10 || comparison.PriorExact.UnresolvedPairs != 10 {
-		t.Fatalf("budget refusal did not retain full expected universe: %#v", comparison)
-	}
-	assertAggregateHashes(t, attemptDir)
 }
 
 func TestObserverPriorReservationFailurePreventsKeyAndClientCreation(t *testing.T) {
@@ -277,6 +291,61 @@ func TestObserverExecutesBothTasksBeforePublishingAndExcludesPublishTime(t *test
 	}
 }
 
+func TestObserverInferenceDeadlineStartsAfterCredentialLookup(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeObserverConfigWithInferenceTimeout(t, dir, 40, 327680, "47s")
+	attemptDir := observerAttemptDir(t, dir, "00000000-0000-4000-8000-000000000015")
+	factory := &captureFactory{}
+	var lookupCompletedAt, firstDecideAt time.Time
+	deadlines := make([]time.Time, 0, 20)
+	newClient := func(options systemone.Options) (identityexperiment.SystemOneDecider, error) {
+		inner, err := factory.newClient(options)
+		if err != nil {
+			return nil, err
+		}
+		return systemOneDeciderFunc(func(ctx context.Context, request systemone.Request) (systemone.Receipt, error) {
+			if firstDecideAt.IsZero() {
+				firstDecideAt = time.Now()
+			}
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Error("provider Decide context has no inference deadline")
+			} else {
+				deadlines = append(deadlines, deadline)
+			}
+			return inner.Decide(ctx, request)
+		}), nil
+	}
+	observer := New(Options{
+		ConfigPath: configPath, Warnings: io.Discard,
+		ResolveSystemOneKey: func(ctx context.Context, _, _ string) (string, error) {
+			if _, ok := ctx.Deadline(); ok {
+				t.Error("credential resolver received a deadline instead of the original background context")
+			}
+			if err := ctx.Err(); err != nil {
+				t.Errorf("credential resolver received canceled context: %v", err)
+			}
+			lookupCompletedAt = time.Now()
+			return "mock-key", nil
+		},
+		SystemOne: identityexperiment.SystemOneDependencies{NewClient: newClient},
+	})
+	observer.Observe(context.Background(), comparisonSnapshot(), attemptDir)
+
+	if factory.constructions != 2 || len(factory.requests) != 20 || len(deadlines) != 20 || lookupCompletedAt.IsZero() || firstDecideAt.IsZero() {
+		t.Fatalf("deadline coverage: clients=%d requests=%d deadlines=%d lookup=%s first_decide=%s", factory.constructions, len(factory.requests), len(deadlines), lookupCompletedAt, firstDecideAt)
+	}
+	deadline := deadlines[0]
+	if firstDecideAt.Before(lookupCompletedAt) || deadline.Before(lookupCompletedAt.Add(47*time.Second)) || deadline.After(firstDecideAt.Add(47*time.Second)) {
+		t.Fatalf("inference deadline %s is not bounded by lookup completion %s + configured 47s and first Decide %s + configured 47s", deadline, lookupCompletedAt, firstDecideAt)
+	}
+	for index, observed := range deadlines {
+		if !observed.Equal(deadline) {
+			t.Fatalf("Decide %d deadline = %s, want shared inference deadline %s", index, observed, deadline)
+		}
+	}
+}
+
 func TestObserverCohortAbstainDoesNotSuppressPriorTask(t *testing.T) {
 	dir := t.TempDir()
 	configPath := writeObserverConfig(t, dir, 40, 327680)
@@ -296,6 +365,156 @@ func TestObserverCohortAbstainDoesNotSuppressPriorTask(t *testing.T) {
 	if receipt.Status != "unresolved" || receipt.Cohort.AbstainedPairs != 1 || receipt.PriorThreads.ProviderCalls != 10 {
 		t.Fatalf("abstain receipt = %#v", receipt)
 	}
+}
+
+func TestObserverAggregateStatusPreservesContradictoryReplay(t *testing.T) {
+	snapshot := comparisonSnapshot()
+	snapshot.Findings = append([]review.Finding{}, snapshot.Findings[:3]...)
+	snapshot.PriorRoots = append([]reportidentitysnapshot.PriorRoot{}, snapshot.PriorRoots[:2]...)
+	snapshot.Baseline.EffectiveOrderedIDs = []review.FindingID{"A", "B", "C"}
+	snapshot.Baseline.Dedupe = []reportidentitysnapshot.Dedupe{}
+	priorKeys := make([]reportidentitysnapshot.PriorKey, 0, len(snapshot.Baseline.PriorKeys))
+	for _, key := range snapshot.Baseline.PriorKeys {
+		if key.RecordKind == "finding" && key.RecordID != "A" && key.RecordID != "B" && key.RecordID != "C" {
+			continue
+		}
+		priorKeys = append(priorKeys, key)
+	}
+	snapshot.Baseline.PriorKeys = priorKeys
+
+	dir := t.TempDir()
+	configPath := writeObserverConfig(t, dir, 40, 327680)
+	attemptDir := observerAttemptDir(t, dir, "00000000-0000-4000-8000-000000000016")
+	factory := &captureFactory{}
+	taskCalls := map[string]int{}
+	pairCalls := map[string]int{}
+	mutatedContradictoryPair := 0
+	newClient := func(options systemone.Options) (identityexperiment.SystemOneDecider, error) {
+		inner, err := factory.newClient(options)
+		if err != nil {
+			return nil, err
+		}
+		return systemOneDeciderFunc(func(ctx context.Context, request systemone.Request) (systemone.Receipt, error) {
+			var state struct {
+				Task string `json:"task"`
+				Left struct {
+					Kind    string `json:"kind"`
+					Finding *struct {
+						ID string `json:"finding_id"`
+					} `json:"finding"`
+					Thread *struct {
+						ID string `json:"thread_id"`
+					} `json:"thread"`
+				} `json:"left"`
+				Right struct {
+					Kind    string `json:"kind"`
+					Finding *struct {
+						ID string `json:"finding_id"`
+					} `json:"finding"`
+					Thread *struct {
+						ID string `json:"thread_id"`
+					} `json:"thread"`
+				} `json:"right"`
+			}
+			if err := json.Unmarshal([]byte(request.State), &state); err != nil {
+				t.Fatalf("Decode provider request state: %v", err)
+			}
+			leftID, rightID := "", ""
+			if state.Left.Finding != nil {
+				leftID = state.Left.Finding.ID
+			}
+			if state.Left.Thread != nil {
+				leftID = state.Left.Thread.ID
+			}
+			if state.Right.Finding != nil {
+				rightID = state.Right.Finding.ID
+			}
+			if state.Right.Thread != nil {
+				rightID = state.Right.Thread.ID
+			}
+			if state.Task == "cohort" && (state.Left.Kind != "finding" || state.Right.Kind != "finding") {
+				t.Fatalf("cohort request record kinds = %q/%q", state.Left.Kind, state.Right.Kind)
+			}
+			if state.Task == "prior_threads" && (state.Left.Kind != "finding" || state.Right.Kind != "thread") {
+				t.Fatalf("prior request record kinds = %q/%q", state.Left.Kind, state.Right.Kind)
+			}
+			taskCalls[state.Task]++
+			pairCalls[state.Task+"/"+leftID+"/"+rightID]++
+
+			receipt, err := inner.Decide(ctx, request)
+			if err != nil {
+				return receipt, err
+			}
+			if state.Task == "cohort" && leftID == "A" && rightID == "C" {
+				answer, ok := receipt.Answers["identity"]
+				if !ok {
+					t.Fatal("capture decider omitted the identity answer")
+				}
+				answer.Choice = "b"
+				answer.Confidence = 0.9
+				answer.Probabilities = map[string]float64{"a": 0.05, "b": 0.9, "c": 0.05}
+				receipt.Answers["identity"] = answer
+				mutatedContradictoryPair++
+			}
+			return receipt, nil
+		}), nil
+	}
+	observer := New(Options{
+		ConfigPath: configPath, Warnings: io.Discard,
+		ResolveSystemOneKey: func(context.Context, string, string) (string, error) { return "mock-key", nil },
+		SystemOne:           identityexperiment.SystemOneDependencies{NewClient: newClient},
+	})
+	observer.Observe(context.Background(), snapshot, attemptDir)
+
+	if factory.constructions != 2 || len(factory.requests) != 9 || taskCalls["cohort"] != 3 || taskCalls["prior_threads"] != 6 || mutatedContradictoryPair != 1 || len(pairCalls) != 9 {
+		t.Fatalf("contradiction run coverage: clients=%d requests=%d tasks=%v unique_pairs=%d mutated=%d", factory.constructions, len(factory.requests), taskCalls, len(pairCalls), mutatedContradictoryPair)
+	}
+	for pair, calls := range pairCalls {
+		if calls != 1 {
+			t.Fatalf("provider pair %q called %d times", pair, calls)
+		}
+	}
+
+	var cohortReplay reportidentity.Result
+	readJSON(t, filepath.Join(attemptDir, "cohort", "replay.json"), &cohortReplay)
+	var cohortReceipts, priorReceipts identityexperiment.Receipts
+	readJSON(t, filepath.Join(attemptDir, "cohort", "receipts.json"), &cohortReceipts)
+	readJSON(t, filepath.Join(attemptDir, "prior_threads", "receipts.json"), &priorReceipts)
+	if cohortReplay.Status != "unresolved" || len(cohortReplay.Findings) != 3 || cohortReceipts.Status != "unresolved" ||
+		cohortReceipts.ExpectedPairs != 3 || cohortReceipts.ProviderCalls != 3 || cohortReceipts.CompletedPairs != 3 ||
+		cohortReceipts.MissingPairs != 0 || cohortReceipts.AbstainedPairs != 0 {
+		t.Fatalf("contradictory cohort replay/receipts = status:%s findings:%d receipts:%#v", cohortReplay.Status, len(cohortReplay.Findings), cohortReceipts)
+	}
+	if priorReceipts.Status != "complete" || priorReceipts.ExpectedPairs != 6 || priorReceipts.ProviderCalls != 6 ||
+		priorReceipts.CompletedPairs != 6 || priorReceipts.MissingPairs != 0 || priorReceipts.AbstainedPairs != 0 {
+		t.Fatalf("complete prior-thread receipts = %#v", priorReceipts)
+	}
+
+	var cohortFixture, priorFixture reportidentity.Input
+	readJSON(t, filepath.Join(attemptDir, "cohort", "fixture.json"), &cohortFixture)
+	readJSON(t, filepath.Join(attemptDir, "prior_threads", "fixture.json"), &priorFixture)
+	if len(cohortFixture.Findings) != 3 || !reflect.DeepEqual(cohortFixture.Findings, snapshot.Findings) ||
+		len(priorFixture.Findings) != 3 || !reflect.DeepEqual(priorFixture.Findings, snapshot.Findings) {
+		t.Fatalf("task fixtures did not retain all original findings: cohort=%d prior=%d", len(cohortFixture.Findings), len(priorFixture.Findings))
+	}
+	var source sourceArtifact
+	readJSON(t, filepath.Join(attemptDir, sourceFileName), &source)
+	if len(source.Findings) != 3 || !reflect.DeepEqual(source.Findings, snapshot.Findings) {
+		t.Fatalf("source artifact did not retain all original findings: %#v", source.Findings)
+	}
+	var aggregate aggregateReceipt
+	readJSON(t, filepath.Join(attemptDir, receiptFileName), &aggregate)
+	if aggregate.Status != "unresolved" || aggregate.Cohort.Status != "unresolved" || aggregate.PriorThreads.Status != "complete" ||
+		aggregate.ExpectedPairs != 9 || aggregate.ProviderCalls != 9 || aggregate.CompletedPairs != 9 ||
+		aggregate.MissingPairs != 0 || aggregate.AbstainedPairs != 0 {
+		t.Fatalf("aggregate status/counts = %#v", aggregate)
+	}
+	var manifest aggregateManifest
+	readJSON(t, filepath.Join(attemptDir, manifestFileName), &manifest)
+	if manifest.Status != "unresolved" {
+		t.Fatalf("aggregate manifest status = %q, want unresolved", manifest.Status)
+	}
+	assertAggregateHashes(t, attemptDir)
 }
 
 func TestObserverCohortErrorOrCancellationStopsPriorNetworkCalls(t *testing.T) {
@@ -555,6 +774,12 @@ func (factory *captureFactory) newClient(options systemone.Options) (identityexp
 type captureDecider struct {
 	factory *captureFactory
 	limits  systemone.Limits
+}
+
+type systemOneDeciderFunc func(context.Context, systemone.Request) (systemone.Receipt, error)
+
+func (decider systemOneDeciderFunc) Decide(ctx context.Context, request systemone.Request) (systemone.Receipt, error) {
+	return decider(ctx, request)
 }
 
 func (decider captureDecider) Decide(ctx context.Context, request systemone.Request) (systemone.Receipt, error) {

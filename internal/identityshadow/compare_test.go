@@ -87,6 +87,30 @@ func TestCompareIdentityPriorRuleUsesExactHashEqualityAndUnknownKeys(t *testing.
 	if section.ComparablePairs != section.Agreements+section.Disagreements || section.ExpectedPairs != section.ComparablePairs+section.UnresolvedPairs {
 		t.Fatalf("prior denominator identities fail: %#v", section)
 	}
+	firstRootReplayID := priorIDMap[snapshot.PriorRoots[0].ID]
+	secondRootReplayID := priorIDMap[snapshot.PriorRoots[1].ID]
+	var firstRootPair, secondRootPair *PairComparison
+	for index := range section.Pairs {
+		pair := &section.Pairs[index]
+		if pair.LeftID != "A" {
+			continue
+		}
+		switch pair.RightID {
+		case firstRootReplayID:
+			firstRootPair = pair
+		case secondRootReplayID:
+			secondRootPair = pair
+		}
+	}
+	if firstRootPair == nil || secondRootPair == nil {
+		t.Fatalf("comparison omitted A/prior-root pairs: root IDs=%q/%q pairs=%#v", firstRootReplayID, secondRootReplayID, section.Pairs)
+	}
+	if firstRootPair.BaselineChoice != baselineSame || firstRootPair.Disposition != "agreement" || firstRootPair.PredictionChoice != reportidentity.ChoiceSame {
+		t.Fatalf("A/first-prior-root comparison = %#v, want baseline same/agreement with the unchanged same prediction", firstRootPair)
+	}
+	if secondRootPair.BaselineChoice != baselineDifferent || secondRootPair.Disposition != "disagreement" || secondRootPair.PredictionChoice != reportidentity.ChoiceSame {
+		t.Fatalf("A/second-prior-root comparison = %#v, want baseline different/disagreement with the unchanged same prediction", secondRootPair)
+	}
 
 	badMap := cloneStringMap(priorIDMap)
 	badMap[snapshot.PriorRoots[0].ID] = "not-the-deterministic-id"

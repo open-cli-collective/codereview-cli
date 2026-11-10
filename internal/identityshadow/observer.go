@@ -331,7 +331,8 @@ func (runner observer) Observe(parent context.Context, snapshot reportidentitysn
 		}
 		if receipt.ErrorCode != "" {
 			receipt.Status = normalizeStatus(receipt.ErrorCode)
-		} else if cohortResult.Receipts.MissingPairs+priorResult.Receipts.MissingPairs > 0 || cohortResult.Receipts.AbstainedPairs+priorResult.Receipts.AbstainedPairs > 0 {
+		} else if cohortResult.Receipts.Status == "unresolved" || priorResult.Receipts.Status == "unresolved" ||
+			cohortResult.Receipts.MissingPairs+priorResult.Receipts.MissingPairs > 0 || cohortResult.Receipts.AbstainedPairs+priorResult.Receipts.AbstainedPairs > 0 {
 			receipt.Status = "unresolved"
 		} else {
 			receipt.Status = "complete"
