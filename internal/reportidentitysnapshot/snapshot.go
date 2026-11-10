@@ -108,8 +108,8 @@ func clonePointer[T any](value *T) *T {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	cloned := *value
+	return &cloned
 }
 
 func cloneSlice[T any](values []T) []T {

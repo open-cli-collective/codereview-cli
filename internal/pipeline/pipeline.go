@@ -3231,24 +3231,24 @@ func cloneInt64(value *int64) *int64 {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	cloned := *value
+	return &cloned
 }
 
 func int64FromInt(value *int) *int64 {
 	if value == nil {
 		return nil
 	}
-	copy := int64(*value)
-	return &copy
+	cloned := int64(*value)
+	return &cloned
 }
 
 func cloneFloat64(value *float64) *float64 {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	cloned := *value
+	return &cloned
 }
 
 func (opts Options) buildRunSummary(req Request, inputs planRunInputs) (reviewplan.RunSummary, map[review.FindingID]string) {
