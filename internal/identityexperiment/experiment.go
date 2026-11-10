@@ -53,7 +53,9 @@ type Configuration struct {
 	ExpectedModel         string   `json:"expected_model"`
 	ServiceTier           *string  `json:"service_tier"`
 	AuthScheme            string   `json:"auth_scheme"`
-	APIKeyEnv             string   `json:"api_key_env"`
+	CredentialStore       string   `json:"credential_store"`
+	CredentialName        string   `json:"credential_name"`
+	CredentialKey         string   `json:"credential_key"`
 	MaxStateBytes         int      `json:"max_state_bytes"`
 	MaxRequestBytes       int      `json:"max_request_bytes"`
 	TimeoutMS             int64    `json:"timeout_ms"`
@@ -160,8 +162,8 @@ type Backend struct {
 
 // Dependencies are the only runtime seams used by Execute.
 type Dependencies struct {
-	LookupAPIKey func(string) (string, bool)
-	Now          func() time.Time
+	ResolveAPIKey func(context.Context) (string, error)
+	Now           func() time.Time
 }
 
 type pair struct {
@@ -173,16 +175,17 @@ type pair struct {
 // Prepared is an immutable, local-only preparation of a complete fixture.
 // Its input bytes, pair list and projection storage are intentionally private.
 type Prepared struct {
-	inputJSON         []byte
-	input             reportidentity.Input
-	baseReplay        reportidentity.Result
-	inputSHA256       string
-	configuration     Configuration
-	pairs             []pair
-	preflightErrors   []PreflightError
-	expectedPairs     int
-	totalRequestBytes int64
-	valid             bool
+	inputJSON           []byte
+	input               reportidentity.Input
+	baseReplay          reportidentity.Result
+	inputSHA256         string
+	configuration       Configuration
+	pairs               []pair
+	preflightErrors     []PreflightError
+	expectedPairs       int
+	totalRequestBytes   int64
+	retainOriginalInput bool
+	valid               bool
 }
 
 // Result contains the retained typed outputs and exact bytes used by the
@@ -227,6 +230,19 @@ func Prepare(inputJSON []byte, configuration Configuration, backend Backend) (Pr
 		configuration: cloneConfiguration(configuration),
 		expectedPairs: len(baseReplay.Pairs),
 		valid:         true,
+	}
+	prospective, err := prospectiveFixture(input, baseReplay)
+	if err != nil {
+		return Prepared{}, errors.New("identityexperiment: invalid fixture")
+	}
+	prospectiveJSON, err := encodeFixture(prospective)
+	if err != nil {
+		return Prepared{}, errors.New("identityexperiment: invalid fixture")
+	}
+	if len(prospectiveJSON) > reportidentity.MaxFixtureBytes {
+		prepared.preflightErrors = []PreflightError{{ErrorCode: "retained_fixture_too_large"}}
+		prepared.retainOriginalInput = true
+		return prepared, nil
 	}
 	prepared.pairs, prepared.preflightErrors, prepared.totalRequestBytes = preparePairs(input, baseReplay, backend)
 	if len(baseReplay.Pairs) > configuration.MaxCalls {
@@ -316,6 +332,22 @@ func pairPreflightError(replayPair reportidentity.Pair, code string) PreflightEr
 	return PreflightError{LeftID: replayPair.LeftID, RightID: replayPair.RightID, PairSHA256: replayPair.InputSHA256, ErrorCode: code}
 }
 
+func prospectiveFixture(input reportidentity.Input, replay reportidentity.Result) (reportidentity.Input, error) {
+	decisions := make([]reportidentity.Decision, 0, len(replay.Pairs))
+	for _, pair := range replay.Pairs {
+		decisions = append(decisions, reportidentity.Decision{
+			LeftID: pair.LeftID, RightID: pair.RightID, Choice: reportidentity.ChoiceDifferent, InputSHA256: pair.InputSHA256,
+		})
+	}
+	return reportidentity.Input{
+		SchemaVersion: input.SchemaVersion,
+		Task:          input.Task,
+		Findings:      append([]review.Finding{}, input.Findings...),
+		Threads:       append([]reportidentity.Thread{}, input.Threads...),
+		Decisions:     decisions,
+	}, nil
+}
+
 func findingRecord(finding review.Finding) reportidentityinference.Record {
 	return reportidentityinference.Record{
 		Kind: "finding",
@@ -348,11 +380,15 @@ func Execute(ctx context.Context, prepared Prepared, dependencies Dependencies, 
 	preflightErrors := prepared.PreflightErrors()
 	var client Decider
 	if len(preflightErrors) == 0 && len(prepared.pairs) > 0 {
-		if dependencies.LookupAPIKey == nil || backend.NewClient == nil || backend.ErrorCode == nil || backend.EstimateCost == nil {
+		if dependencies.ResolveAPIKey == nil || backend.NewClient == nil || backend.ErrorCode == nil || backend.EstimateCost == nil {
 			preflightErrors = append(preflightErrors, PreflightError{ErrorCode: "invalid_input"})
+		} else if ctx.Err() != nil {
+			preflightErrors = append(preflightErrors, PreflightError{ErrorCode: contextErrorCode(ctx.Err())})
 		} else {
-			apiKey, ok := dependencies.LookupAPIKey(configuration.APIKeyEnv)
-			if !ok || apiKey == "" {
+			apiKey, resolveErr := dependencies.ResolveAPIKey(ctx)
+			if ctx.Err() != nil {
+				preflightErrors = append(preflightErrors, PreflightError{ErrorCode: contextErrorCode(ctx.Err())})
+			} else if resolveErr != nil || apiKey == "" {
 				preflightErrors = append(preflightErrors, PreflightError{ErrorCode: "auth"})
 			} else {
 				var err error
@@ -452,9 +488,14 @@ func Execute(ctx context.Context, prepared Prepared, dependencies Dependencies, 
 	if receipts.Status != "error" {
 		receipts.Status = replay.Status
 	}
-	fixtureJSON, err := json.Marshal(outputInput)
-	if err != nil {
-		return Result{Fixture: outputInput, Replay: replay, Receipts: receipts, err: errors.New("identityexperiment: encode retained fixture")}
+	var fixtureJSON []byte
+	if prepared.retainOriginalInput {
+		fixtureJSON = append([]byte(nil), prepared.inputJSON...)
+	} else {
+		fixtureJSON, err = encodeFixture(outputInput)
+		if err != nil {
+			return Result{Fixture: outputInput, Replay: replay, Receipts: receipts, err: errors.New("identityexperiment: encode retained fixture")}
+		}
 	}
 	replayJSON, err := json.Marshal(replay)
 	if err != nil {

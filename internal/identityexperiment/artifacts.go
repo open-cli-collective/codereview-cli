@@ -1,6 +1,7 @@
 package identityexperiment
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/open-cli-collective/codereview-cli/internal/reportidentity"
 )
 
 var errOutputInspection = errors.New("identityexperiment: output directory inspection failed")
@@ -72,6 +75,16 @@ type Publisher struct {
 func SHA256(data []byte) string {
 	digest := sha256.Sum256(data)
 	return hex.EncodeToString(digest[:])
+}
+
+func encodeFixture(input reportidentity.Input) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(input); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'})...), nil
 }
 
 // ReserveOutput refuses every existing destination and reserves a fresh

@@ -46,6 +46,12 @@ const (
 	// OpenAIAPIKeyKey stores the key name for OpenAI direct API adapters.
 	// #nosec G101 -- this is a keyring item name, not a secret value.
 	OpenAIAPIKeyKey = "openai_api_key"
+	// SystemOneAPIKeyKey stores the key name for System One inference.
+	// #nosec G101 -- this is a keyring item name, not a secret value.
+	SystemOneAPIKeyKey = "system_one_api_key"
+	// CloudflareAPIKeyKey stores the key name for Cloudflare Clef inference.
+	// #nosec G101 -- this is a keyring item name, not a secret value.
+	CloudflareAPIKeyKey = "cloudflare_api_key"
 	// LegacyLLMAPIKeyKey is the pre-matrix generic key. It is intentionally
 	// not in the v1 allowlist.
 	// #nosec G101 -- this is a keyring item name, not a secret value.
@@ -187,7 +193,7 @@ func (r *cachingReader) Close() error {
 
 // AllowedKeys is cr's keyring write allowlist.
 func AllowedKeys() []string {
-	return []string{GitTokenKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey}
+	return []string{GitTokenKey, GitHubAppPrivateKeyKey, AnthropicAPIKeyKey, OpenAIAPIKeyKey, SystemOneAPIKeyKey, CloudflareAPIKeyKey}
 }
 
 // Ref is a parsed cr credential name.

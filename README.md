@@ -1074,14 +1074,15 @@ cr set-credential --store <id> --name <credential-name> --key <key> (--stdin | -
 ```
 
 Writes one secret value to the selected credential store. Globally allowed keys are
-`git_token`, `github_app_private_key`, `anthropic_api_key`, and
-`openai_api_key`. When
+`git_token`, `github_app_private_key`, `anthropic_api_key`, `openai_api_key`,
+`system_one_api_key`, and `cloudflare_api_key`. When
 `config.yml` declares the target credential location, `set-credential` narrows
 that global allowlist to the exact key set expected for that credential. PAT
 user Git credentials and PAT reviewer credentials use `git_token`; GitHub App
 credentials use `github_app_private_key`; Anthropic
 LLM API-key credentials use `anthropic_api_key`; OpenAI LLM API-key credentials use
-`openai_api_key`.
+`openai_api_key`; System One identity inference uses `system_one_api_key`; and
+Cloudflare Clef identity inference uses `cloudflare_api_key`.
 
 Flags:
 
@@ -1558,9 +1559,9 @@ uncertainty rules.
 cr benchmark run <identity.yml> (--provider NAME --model ID | --candidate ID) --max-calls N --results-dir DIR
 ```
 
-Runs one complete offline report-identity fixture through one explicitly configured provider and model, and may incur provider charges. System One and OpenAI Decisions suites name an HTTPS endpoint; Cloudflare Clef names an account ID and uses the fixed account/model route. Every provider names its credential environment variable. System One also names its authentication scheme, while OpenAI Decisions and Clef use fixed Bearer authentication and reject configurable auth schemes and service tiers. The suite contains no key value. There is no implicit provider, model or price. Direct mode requires both `--provider` and `--model`; a candidate supplies both. `--max-calls` must cover every expected pair.
+Runs one complete offline report-identity fixture through one explicitly configured provider and model, and may incur provider charges. System One and OpenAI Decisions suites name an HTTPS endpoint; Cloudflare Clef names an account ID and uses the fixed account/model route. Every provider includes a non-secret `credential` map with its selected store ID and `codereview/<profile>` credential name. The key name is fixed by provider kind; `api_key_env` is rejected, there is no runtime environment-variable override, and no key value belongs in the suite. System One also names its authentication scheme, while OpenAI Decisions and Clef use fixed Bearer authentication and reject configurable auth schemes and service tiers. Set up each credential with the existing `cr set-credential` command; for example, `cr set-credential --store local-os --name codereview/identity-baseten --key system_one_api_key --stdin`. There is no implicit provider, model or price. Direct mode requires both `--provider` and `--model`; a candidate supplies both. `--max-calls` must cover every expected pair.
 
-The runner preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and need no key. OpenAI Decisions cost remains unknown unless both cache counts are known zero, while base token totals remain available independently. Cloudflare Clef requires `--allow-unverified-context` and marks every configuration and attempt `unverified` because its response does not attest that it consumed the complete input. The provider-neutral report projection and replay are shared by the selected adapter; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for the strict suite schema, flags, artifacts, accounting rules and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create), [Decisions guide](https://developers.openai.com/api/docs/guides/decisions), [Cloudflare Clef model reference](https://developers.cloudflare.com/workers-ai/models/clef/) and [Cloudflare REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/).
+The runner preflights every pair, creates private artifacts in a new directory, retains all originals and stops on the first failed request. Empty pair sets make no calls and open no credential store. OpenAI Decisions cost remains unknown unless both cache counts are known zero, while base token totals remain available independently. Cloudflare Clef requires `--allow-unverified-context` and marks every configuration and attempt `unverified` because its response does not attest that it consumed the complete input. The provider-neutral report projection and replay are shared by the selected adapter; live review behavior is unaffected. See [BENCHMARKING.md](BENCHMARKING.md) for the strict suite schema, flags, artifacts, accounting rules and links to the [Decisions API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create), [Decisions guide](https://developers.openai.com/api/docs/guides/decisions), [Cloudflare Clef model reference](https://developers.cloudflare.com/workers-ai/models/clef/) and [Cloudflare REST API guide](https://developers.cloudflare.com/workers-ai/get-started/rest-api/).
 
 ### `cr sessions list`
 

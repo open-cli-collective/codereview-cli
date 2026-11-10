@@ -22,7 +22,9 @@ providers:
   cloudflare:
     kind: cloudflare_clef
     account_id: account123
-    api_key_env: CLOUDFLARE_AUTH_TOKEN
+    credential:
+      store: local-os
+      name: codereview/cloudflare
 candidates:
   clef:
     provider: cloudflare
@@ -78,14 +80,14 @@ func TestIdentityClefRunDirectAndCandidateSelectorsUseTheSharedRunner(t *testing
 				(configuration.CandidateID == nil) != (test.candidateID == nil) || configuration.ProviderName != "cloudflare" ||
 				configuration.AdapterKind != "cloudflare_clef" || configuration.Provider != "cloudflare_clef" ||
 				configuration.Endpoint != wantEndpoint || configuration.RequestedModel != test.model || configuration.ExpectedModel != test.model ||
-				configuration.APIKeyEnv != "CLOUDFLARE_AUTH_TOKEN" || configuration.AuthScheme != "Bearer" || configuration.ServiceTier != nil ||
+				configuration.CredentialStore != "local-os" || configuration.CredentialName != "codereview/cloudflare" || configuration.CredentialKey != "cloudflare_api_key" || configuration.AuthScheme != "Bearer" || configuration.ServiceTier != nil ||
 				configuration.ContextStatus != "unverified" || configuration.TimeoutMS != 30_000 || configuration.MaxCalls != 10 {
 				t.Fatalf("resolved Clef configuration = %#v", configuration)
 			}
 			if !reflect.DeepEqual(configuration.CandidateID, test.candidateID) {
 				t.Fatalf("candidate ID = %#v, want %#v", configuration.CandidateID, test.candidateID)
 			}
-			if *runtimeCalls != 1 || state.keyLookups != 1 || !reflect.DeepEqual(state.keyNames, []string{"CLOUDFLARE_AUTH_TOKEN"}) || state.clientOpens != 1 || len(state.client.requests) != 1 {
+			if *runtimeCalls != 1 || state.keyLookups != 1 || !reflect.DeepEqual(state.keyNames, []string{clefTestCredentialName}) || state.clientOpens != 1 || len(state.client.requests) != 1 {
 				t.Fatalf("fake runtime/provider counts = runtimes:%d lookups:%d names:%v clients:%d requests:%d", *runtimeCalls, state.keyLookups, state.keyNames, state.clientOpens, len(state.client.requests))
 			}
 			if state.clientOpts.AccountID != clefTestAccountID || state.clientOpts.APIKey != clefTestAPIKey {
@@ -161,7 +163,7 @@ func TestIdentityClefSuiteRejectsGenericProviderFields(t *testing.T) {
 		{name: "service_tier", value: "priority"},
 	} {
 		t.Run(field.name, func(t *testing.T) {
-			data := strings.Replace(identityClefSuiteYAML, "    api_key_env: CLOUDFLARE_AUTH_TOKEN", "    api_key_env: CLOUDFLARE_AUTH_TOKEN\n    "+field.name+": "+field.value, 1)
+			data := strings.Replace(identityClefSuiteYAML, "    account_id: account123", "    account_id: account123\n    "+field.name+": "+field.value, 1)
 			if _, err := parseIdentitySuite([]byte(data)); err == nil {
 				t.Fatalf("identity suite accepted Clef provider field %q", field.name)
 			}
