@@ -43,9 +43,10 @@ dossier assembly, and the dossier is assembled before orchestrator selection.
 
 ## Artifact Model
 
-All checkout-native review artifacts are owned by the review run and must live
+All checkout-native review artifacts are owned by the review run and live
 under the run artifact directory so existing retention, `cr data prune`, and
-`cr data purge` remove them automatically.
+`cr data purge` remove them automatically. The one exception is git checkouts,
+which live in the flat workspaces root described below.
 
 The target layout is:
 
@@ -63,12 +64,6 @@ runs/<run-id>/
     final/
     index.json
   workbench/
-    repo/
-    reviewers/
-      <reviewer-id>/
-        repo/
-      <reviewer-id>-coverage-repair/
-        repo/
     scratch/
       <reviewer-id>/
         cache/
@@ -77,7 +72,37 @@ runs/<run-id>/
         cache/
         tmp/
     metadata.json
+
+ws/<key>/
+  r/            git checkout
+  owner.json    owning run directory, role, and agent ID
 ```
+
+Git checkouts (the run workbench repo and each reviewer clone) live under
+`<data>/ws/<key>/r` beside `runs/`, not inside the run directory. Git for
+Windows refuses a `GIT_DIR` longer than 220 characters (its `PATH_MAX` of 260
+minus the 40 that `setup.c` reserves), and a transport clone hands `GIT_DIR` to
+its `index-pack` child, so a checkout nested in the run tree failed with
+`'$GIT_DIR' too big` for longer repository or reviewer names. A workspace's
+`.git` path is the data root plus a fixed 23 characters, whatever the PR or
+reviewer. `<key>` is a 12-character hash of the run directory, role
+(`workbench` or `reviewer`), and agent ID, so a resumed run finds the same
+workspaces and no two runs or reviewers share one. On Windows, workspace
+preparation checks the `.git` length before running git and fails with the fix
+when the data root itself is too long. Checkouts set `core.longpaths=true` so
+Git for Windows can also check out files whose full path passes 260
+characters; other platforms ignore the setting.
+
+`cr data prune` removes a workspace whose `owner.json` names a run directory
+that no longer exists (including runs that prune itself deletes), and one with
+no `owner.json` at all once it is older than the orphan grace period. An
+`owner.json` that exists but cannot be read or parsed proves nothing about
+ownership: prune keeps that workspace and reports a warning rather than risk
+deleting a live run's checkout.
+`cr data purge` removes the whole data root, workspaces included. Run
+directories outside the standard `<data>/runs/.../run-<id>` layout, such as
+caller-owned benchmark directories, keep their checkouts under `workbench/` as
+before.
 
 Notes:
 
@@ -87,8 +112,8 @@ Notes:
 - `dossier/summary/` holds durable normalized discussion artifacts.
 - `dossier/final/` holds the reviewer-facing dossier files used by the
   orchestrator and specialists.
-- `workbench/repo/` is a clean pinned checkout at the PR head SHA, carrying
-  `refs/heads/cr-review-head` at that SHA. The ref is load-bearing: the
+- The workbench checkout (`ws/<key>/r`, role `workbench`) is a clean pinned
+  checkout at the PR head SHA, carrying `refs/heads/cr-review-head` at that SHA. The ref is load-bearing: the
   per-reviewer workspace is created with `git clone` from this directory, and
   git does not treat a directory without `refs/` as a repository. Only the head
   is given a ref, so the base commit is not transferred into reviewer
@@ -96,15 +121,15 @@ Notes:
   provider-generated `diff.patch` and nothing in the pipeline resolves the base
   SHA inside the workspace. That is a decision, not an oversight -- add
   `refs/heads/cr-review-base` if a reviewer ever needs `git log base..HEAD`.
-- `workbench/reviewers/<reviewer-id>/repo/` is a disposable reviewer checkout.
-  Clone it through Git transport (`--no-local`) rather than copying the
+- Each reviewer's `ws/<key>/r` (role `reviewer`) is a disposable reviewer
+  checkout. Clone it through Git transport (`--no-local`) rather than copying the
   canonical object directory: background repacking can replace pack files
   during a local-copy clone. Each checkout has its own object database and
   receives only history reachable from the canonical refs.
 - `workbench/scratch/<reviewer-id>/` holds reviewer-owned scratch, temp, and
   cache roots.
 - A coverage-repair pass runs under the derived identity
-  `<reviewer-id>-coverage-repair`, so a repaired run also has that reviewer
+  `<reviewer-id>-coverage-repair`, so a repaired run also has its own reviewer
   checkout, that scratch root, and its own encoded agent log. Workspace
   preparation clears the directory it is given, so the repair must never reuse
   the primary reviewer's identity.
@@ -117,8 +142,8 @@ Notes:
 The workbench is run-owned, not cache-owned. Shared clone or fetch caches are a
 possible future optimization but are not part of the correctness contract.
 
-A successful run removes its `workbench/` tree when it reaches a successful
-terminal state, after rollup and plan build, so retention no longer pins a full
+A successful run removes its `workbench/` tree and its workbench checkout when
+it reaches a successful terminal state, after rollup and plan build, so retention no longer pins a full
 checkout per run. A live run reaches that state when its outbox post succeeds;
 failed, aborted, and incomplete runs retain the workbench for inspection, and
 `data.keep_workbench: true` opts a run back into retention on success. The

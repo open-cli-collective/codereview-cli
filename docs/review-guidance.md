@@ -108,16 +108,21 @@ review run artifact root:
 runs/<run-id>/
   dossier/
   workbench/
+ws/<key>/
+  r/
+  owner.json
 ```
 
-Because those directories live under the run artifact root, existing data
-lifecycle commands clean them up automatically:
+Git checkouts live in `ws/` rather than the run directory so their `.git` paths
+stay within Git for Windows' 220-character limit; each records its owning run.
+Data lifecycle commands clean both up:
 
-- `cr data prune` removes dossier and workbench directories for pruned runs
-- `cr data purge` removes the entire data root, including dossier and workbench
-  artifacts
+- `cr data prune` removes dossier and workbench directories for pruned runs,
+  and any workspace whose owning run directory is gone
+- `cr data purge` removes the entire data root, including dossier, workbench,
+  and workspace artifacts
 
-A successful run also deletes its own `workbench/` directory once the run
+A successful run also deletes its own `workbench/` directory and checkout once the run
 reaches a successful terminal state, so dossier data is the durable artifact that
 remains. Failed and errored runs always retain the workbench for inspection, and
 `data.keep_workbench: true` opts successful runs back into retention.

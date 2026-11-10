@@ -345,7 +345,7 @@ func TestDryRunReviewerWorkspaceAvoidsContextStuffingBudgetFailures(t *testing.T
 				t.Fatalf("reviewer request = %#v, want reviewer workspace", requests[1])
 			}
 			workspace := requests[1].ReviewerWorkspace
-			if !strings.Contains(workspace.RepoDir, filepath.Join("workbench", "reviewers")) ||
+			if !strings.HasPrefix(workspace.RepoDir, result.Artifacts.WorkspacesRoot+string(filepath.Separator)) ||
 				!strings.HasPrefix(workspace.ScratchDir, result.Artifacts.WorkbenchScratch+string(filepath.Separator)) ||
 				workspace.MaxToolOutputBytes != 32*1024 {
 				t.Fatalf("reviewer workspace request = %#v, want disposable repo/scratch with default cap", workspace)
