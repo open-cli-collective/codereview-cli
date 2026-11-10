@@ -34,6 +34,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/plannedactions"
 	"github.com/open-cli-collective/codereview-cli/internal/pricing"
+	"github.com/open-cli-collective/codereview-cli/internal/reportidentitysnapshot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
@@ -97,6 +98,89 @@ func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	}
 	if text := out.String(); !strings.Contains(text, "Post mode: dry_run") || !strings.Contains(text, "Planned actions:") {
 		t.Fatalf("stdout = %q, want dry-run render", text)
+	}
+}
+
+func TestReviewIdentityShadowFlagsAreOptInAndDoNotChangeNormalOutput(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "not-read-shadow.yml")
+	tests := []struct {
+		name       string
+		flags      []string
+		wantEnable bool
+		wantPath   string
+	}{
+		{name: "default off"},
+		{name: "config path alone is inert", flags: []string{"--identity-shadow-config", configPath}, wantPath: configPath},
+		{name: "explicit opt in", flags: []string{"--identity-shadow", "--identity-shadow-config", configPath}, wantEnable: true, wantPath: configPath},
+	}
+	var normalOutput []byte
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{result: testPipelineResult(false)}
+			runner.result.ReportIdentity = &reportidentitysnapshot.Snapshot{
+				Source:   reportidentitysnapshot.Source{RunID: "private-snapshot"},
+				Findings: []review.Finding{{Body: "private shadow body sentinel"}},
+			}
+			var runtimeRequest app.OpenRequest
+			cmd, out := newTestCommand(t, testConfig(), func(_ context.Context, request app.OpenRequest) (app.Runtime, error) {
+				runtimeRequest = request
+				return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+			})
+			args := []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--json"}
+			args = append(args, test.flags...)
+			if err := root.Execute(cmd, args); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if runtimeRequest.IdentityShadow != test.wantEnable || runtimeRequest.IdentityShadowConfigPath != test.wantPath {
+				t.Fatalf("runtime shadow request = enabled:%t path:%q, want enabled:%t path:%q", runtimeRequest.IdentityShadow, runtimeRequest.IdentityShadowConfigPath, test.wantEnable, test.wantPath)
+			}
+			if len(runner.requests) != 1 || runner.requests[0].WithoutDiscussion {
+				t.Fatalf("ordinary pipeline request changed: %#v", runner.requests)
+			}
+			if strings.Contains(out.String(), "private shadow body sentinel") || strings.Contains(out.String(), "private-snapshot") || strings.Contains(out.String(), "identity_shadow") {
+				t.Fatalf("shadow data entered normal stdout: %s", out.String())
+			}
+			if test.name == "default off" {
+				normalOutput = append([]byte(nil), out.Bytes()...)
+			} else if !bytes.Equal(out.Bytes(), normalOutput) {
+				t.Fatalf("normal stdout changed for %s:\n%s\nwant:\n%s", test.name, out.Bytes(), normalOutput)
+			}
+		})
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config path without opt-in was read or created: %v", err)
+	}
+}
+
+func TestReviewIdentityShadowFlagsPreserveFailOnExitAndJSON(t *testing.T) {
+	var baselineOutput []byte
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled_%t", enabled), func(t *testing.T) {
+			runner := &fakeRunner{result: testPipelineResult(true)}
+			var runtimeRequest app.OpenRequest
+			cmd, out := newTestCommand(t, testConfig(), func(_ context.Context, request app.OpenRequest) (app.Runtime, error) {
+				runtimeRequest = request
+				return app.Runtime{Runner: runner, PostingIdentity: gitprovider.Identity{Login: "review-bot", ID: "bot-id"}}, nil
+			})
+			args := []string{"review", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--dry-run", "--json", "--fail-on", "major"}
+			if enabled {
+				args = append(args, "--identity-shadow", "--identity-shadow-config", filepath.Join(t.TempDir(), "invalid-shadow.yml"))
+			}
+			err := root.Execute(cmd, args)
+			if err == nil || exitcode.FromError(err) != exitcode.Failure {
+				t.Fatalf("fail-on error = %v, want ordinary failure", err)
+			}
+			if runtimeRequest.IdentityShadow != enabled || len(runner.requests) != 1 {
+				t.Fatalf("runtime opt-in/request = %t/%d, want %t/1", runtimeRequest.IdentityShadow, len(runner.requests), enabled)
+			}
+			if enabled {
+				if !bytes.Equal(out.Bytes(), baselineOutput) {
+					t.Fatalf("identity shadow changed fail-on JSON:\n%s\nwant:\n%s", out.Bytes(), baselineOutput)
+				}
+			} else {
+				baselineOutput = append([]byte(nil), out.Bytes()...)
+			}
+		})
 	}
 }
 
@@ -486,6 +570,11 @@ func TestReviewHelpDocumentsApprovalFastPaths(t *testing.T) {
 		"--fast requests fast execution for reviewer agents only",
 		"approval override request newer than that marker",
 		"--retry-posts is recovery-only",
+		"--identity-shadow optionally runs a private report identity diagnostic",
+		"--identity-shadow-config",
+		"With --dry-run, it makes no Git-provider writes",
+		"private diagnostic artifacts beneath the completed run's",
+		"artifact directory",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("help = %q, want substring %q", text, want)

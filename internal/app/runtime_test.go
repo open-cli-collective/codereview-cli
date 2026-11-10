@@ -28,6 +28,7 @@ import (
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/gittest"
+	"github.com/open-cli-collective/codereview-cli/internal/identityshadow"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/modelcatalog"
@@ -35,6 +36,7 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/progress"
 	"github.com/open-cli-collective/codereview-cli/internal/reporoot"
+	"github.com/open-cli-collective/codereview-cli/internal/reportidentitysnapshot"
 	"github.com/open-cli-collective/codereview-cli/internal/review"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
@@ -48,21 +50,29 @@ func (noopLimiter) Wait(context.Context, string) error { return nil }
 func TestOpenCanInstantiateWithoutCobra(t *testing.T) {
 	cfg := testConfig()
 	identity := gitprovider.Identity{Login: "review-bot", ID: "bot-id"}
+	configPath := filepath.Join(t.TempDir(), "missing-shadow.yml")
+	factoryCalls := 0
+	dependencies := testDependencies(t,
+		func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
+			return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
+		},
+		func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
+			return identity, nil
+		},
+		func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
+			return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
+		},
+	)
+	dependencies.NewIdentityShadowObserver = func(identityshadow.Options) identityshadow.Observer {
+		factoryCalls++
+		return nil
+	}
 	runtime, err := Open(context.Background(), OpenRequest{
-		Config:  cfg,
-		Profile: cfg.Profiles["home"],
-		PRRef:   testPRRef(),
-		Dependencies: testDependencies(t,
-			func(config.GitConfig, credentials.Reader, gitproviders.Options) (gitprovider.GitProvider, gitprovider.Credential, error) {
-				return &gitprovider.Fake{}, gitprovider.Credential{Type: "pat", Token: "token"}, nil
-			},
-			func(context.Context, gitprovider.GitProvider, gitprovider.Credential, credentials.Reader, config.Profile) (gitprovider.Identity, error) {
-				return identity, nil
-			},
-			func(config.LLMConfig, credentials.Reader) (llm.Adapter, error) {
-				return &llm.FakeAdapter{NameValue: "fake-llm"}, nil
-			},
-		),
+		Config:                   cfg,
+		Profile:                  cfg.Profiles["home"],
+		PRRef:                    testPRRef(),
+		IdentityShadowConfigPath: configPath,
+		Dependencies:             dependencies,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -72,6 +82,13 @@ func TestOpenCanInstantiateWithoutCobra(t *testing.T) {
 	}
 	if runtime.Runner == nil || runtime.Responder == nil || runtime.PostingIdentity != identity {
 		t.Fatalf("runtime = %#v, want runner, responder, and posting identity", runtime)
+	}
+	runner, ok := runtime.Runner.(reviewRunner)
+	if !ok || runner.identityShadow != nil || runner.pipeline.CaptureReportIdentity || factoryCalls != 0 {
+		t.Fatalf("config-path-only runtime enabled shadow work: runner=%#v factory calls=%d", runner, factoryCalls)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("inert shadow config path was opened or created: %v", err)
 	}
 }
 
@@ -115,6 +132,9 @@ func TestOpenRunsPipelineWithOneCatalogSnapshot(t *testing.T) {
 	catalog, catalogDir := runtimeCatalogFixture(t)
 	repoDir, baseSHA, headSHA := runtimeGitFixture(t)
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "system-temp"))
+	hookCapture := filepath.Join(t.TempDir(), "hooks.jsonl")
+	t.Setenv("GO_WANT_APP_HOOK_HELPER", "1")
+	t.Setenv("APP_HOOK_CAPTURE", hookCapture)
 	agentDir := runtimeAgentFixture(t, repoDir)
 	ref := testPRRef()
 	pr := testPR()
@@ -162,6 +182,7 @@ func TestOpenRunsPipelineWithOneCatalogSnapshot(t *testing.T) {
 	cfg := testConfig()
 	profile := cfg.Profiles["home"]
 	profile.AgentSources = []string{agentDir}
+	profile.Hooks = hookEntries([]string{"run.completed"})
 	profile.LLM = config.LLMConfig{
 		Provider:   config.LLMProviderOpenAI,
 		Auth:       config.LLMAuthAPIKey,
@@ -184,6 +205,36 @@ func TestOpenRunsPipelineWithOneCatalogSnapshot(t *testing.T) {
 			return adapter, nil
 		},
 	)
+	shadowConfigPath := filepath.Join(t.TempDir(), "not-read-shadow.yml")
+	var shadowOptions identityshadow.Options
+	shadowObserved := false
+	shadowAttemptDir := ""
+	deps.NewIdentityShadowObserver = func(options identityshadow.Options) identityshadow.Observer {
+		shadowOptions = options
+		return identityShadowObserverFunc(func(ctx context.Context, snapshot reportidentitysnapshot.Snapshot, attemptDir string) {
+			shadowObserved = true
+			shadowAttemptDir = attemptDir
+			if ctx == nil || options.ConfigPath != shadowConfigPath || options.ResolveSystemOneKey == nil {
+				t.Errorf("observer options/context are incomplete: config=%q resolver=%t ctx=%v", options.ConfigPath, options.ResolveSystemOneKey != nil, ctx)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				data, readErr := os.ReadFile(hookCapture) // #nosec G304 -- hook capture is under t.TempDir.
+				if readErr == nil && strings.Contains(string(data), `"event":"run.completed"`) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			data, readErr := os.ReadFile(hookCapture) // #nosec G304 -- hook capture is under t.TempDir.
+			if readErr != nil || !strings.Contains(string(data), `"event":"run.completed"`) {
+				t.Errorf("run.completed hook was not dispatched before observer: read=%v payload=%s", readErr, data)
+			}
+			if snapshot.Source.RunID == "" || attemptDir == "" {
+				t.Errorf("observer received incomplete snapshot/path: run=%q path=%q", snapshot.Source.RunID, attemptDir)
+			}
+			snapshot.Source.RunID = "observer mutation"
+		})
+	}
 	deps.ResolveRepoRoot = func(context.Context) (string, error) { return repoDir, nil }
 	deps.NewGitCommand = func(_ string, _ gitexec.TokenSource, _ string) (func(context.Context, string, ...string) ([]byte, error), error) {
 		return func(ctx context.Context, dir string, args ...string) ([]byte, error) {
@@ -203,11 +254,13 @@ func TestOpenRunsPipelineWithOneCatalogSnapshot(t *testing.T) {
 	}
 
 	runtime, err := Open(context.Background(), OpenRequest{
-		Config:       cfg,
-		Profile:      profile,
-		ProfileName:  "home",
-		PRRef:        ref,
-		Dependencies: deps,
+		Config:                   cfg,
+		Profile:                  profile,
+		ProfileName:              "home",
+		PRRef:                    ref,
+		IdentityShadow:           true,
+		IdentityShadowConfigPath: shadowConfigPath,
+		Dependencies:             deps,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -232,6 +285,15 @@ func TestOpenRunsPipelineWithOneCatalogSnapshot(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
+	}
+	if result.ReportIdentity == nil || !shadowObserved || shadowOptions.ConfigPath != shadowConfigPath {
+		t.Fatalf("opt-in snapshot/observer state: snapshot=%#v observed=%t options=%#v", result.ReportIdentity, shadowObserved, shadowOptions)
+	}
+	if filepath.Dir(filepath.Dir(shadowAttemptDir)) != result.Artifacts.Dir {
+		t.Fatalf("shadow attempt path = %q, want beneath run artifact %q", shadowAttemptDir, result.Artifacts.Dir)
+	}
+	if result.ReportIdentity.Source.RunID == "observer mutation" {
+		t.Fatal("observer mutation changed the returned authoritative snapshot")
 	}
 
 	requests := adapter.Requests()

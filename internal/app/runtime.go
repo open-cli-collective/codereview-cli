@@ -24,6 +24,7 @@ import (
 	githubprovider "github.com/open-cli-collective/codereview-cli/internal/gitprovider/github"
 	"github.com/open-cli-collective/codereview-cli/internal/gitproviders"
 	"github.com/open-cli-collective/codereview-cli/internal/hooks"
+	"github.com/open-cli-collective/codereview-cli/internal/identityshadow"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/llm"
 	"github.com/open-cli-collective/codereview-cli/internal/llmadapters"
@@ -73,6 +74,8 @@ type OpenRequest struct {
 	PRRef                             gitprovider.PRRef
 	PRURL                             string
 	RequireOpinionatedReviewAuthority bool
+	IdentityShadow                    bool
+	IdentityShadowConfigPath          string
 	// CheckAgentSourceFreshness reports profile agent sources that are behind
 	// their upstream or cannot be checked, before the runtime is assembled.
 	CheckAgentSourceFreshness bool
@@ -108,15 +111,16 @@ type AdapterFactory func(config.LLMConfig, credentials.Reader) (llm.Adapter, err
 // Dependencies contains fakeable assembly seams. Nil fields use production
 // defaults.
 type Dependencies struct {
-	NewGitProvider         GitProviderFactory
-	NewGitCommand          func(string, gitexec.TokenSource, string) (func(context.Context, string, ...string) ([]byte, error), error)
-	ResolveRepoRoot        func(context.Context) (string, error)
-	ResolvePostingIdentity PostingIdentityResolver
-	NewAdapter             AdapterFactory
-	RuntimeLayout          func() (statepaths.Layout, error)
-	OpenLedger             func(context.Context, string) (*ledger.Store, error)
-	NewLimiter             func() (outbox.Limiter, error)
-	CheckAgentSources      func(context.Context, []string, io.Writer)
+	NewGitProvider            GitProviderFactory
+	NewGitCommand             func(string, gitexec.TokenSource, string) (func(context.Context, string, ...string) ([]byte, error), error)
+	ResolveRepoRoot           func(context.Context) (string, error)
+	ResolvePostingIdentity    PostingIdentityResolver
+	NewAdapter                AdapterFactory
+	RuntimeLayout             func() (statepaths.Layout, error)
+	OpenLedger                func(context.Context, string) (*ledger.Store, error)
+	NewLimiter                func() (outbox.Limiter, error)
+	CheckAgentSources         func(context.Context, []string, io.Writer)
+	NewIdentityShadowObserver func(identityshadow.Options) identityshadow.Observer
 }
 
 // gitCommandFactory returns the injected factory, or the production one reporting
@@ -156,6 +160,9 @@ func (d Dependencies) withDefaults() Dependencies {
 	}
 	if d.CheckAgentSources == nil {
 		d.CheckAgentSources = agentfreshness.Warn
+	}
+	if d.NewIdentityShadowObserver == nil {
+		d.NewIdentityShadowObserver = identityshadow.New
 	}
 	if d.NewLimiter == nil {
 		d.NewLimiter = func() (outbox.Limiter, error) {
@@ -252,7 +259,15 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 		}
 		return withProgressAdapter(req.Progress, command, adapter, string(profile.LLM.Provider), string(profile.LLM.Adapter)), nil
 	})
-	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, req.Warnings, req.Progress, dispatcher, req, command, gitCommand, deps.ResolveRepoRoot)
+	var identityShadowObserver identityshadow.Observer
+	if req.IdentityShadow {
+		identityShadowObserver = deps.NewIdentityShadowObserver(identityshadow.Options{
+			ConfigPath:          req.IdentityShadowConfigPath,
+			Warnings:            req.Warnings,
+			ResolveSystemOneKey: identityShadowSystemOneKeyResolver(req.Config, stores),
+		})
+	}
+	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, req.Warnings, req.Progress, dispatcher, req, command, gitCommand, deps.ResolveRepoRoot, identityShadowObserver)
 	return Runtime{
 		Runner:          runner,
 		Responder:       runner,
@@ -414,27 +429,28 @@ func runtimeLayout() (statepaths.Layout, error) {
 	return layout, nil
 }
 
-func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, dispatcher *hookDispatcher, req OpenRequest, command string, gitCommand func(context.Context, string, ...string) ([]byte, error), resolveRepoRoot func(context.Context) (string, error)) reviewRunner {
+func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitProvider, postingProvider gitprovider.GitProvider, adapter llm.Adapter, profile config.Profile, limiter outbox.Limiter, layout statepaths.Layout, warnings io.Writer, logger *progress.Logger, dispatcher *hookDispatcher, req OpenRequest, command string, gitCommand func(context.Context, string, ...string) ([]byte, error), resolveRepoRoot func(context.Context) (string, error), identityShadowObserver identityshadow.Observer) reviewRunner {
 	taskProgress := newPipelineTaskProgress(logger, command, dispatcher)
 	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
 	writeRetry := outbox.DefaultWriteRetry(writeRetryProgress(logger, command))
 	pipelineOpts := pipeline.Options{
-		Provider:            repoProvider,
-		Adapter:             adapter,
-		Catalog:             profile.LLM.Catalog(),
-		Store:               ledgerStore,
-		NamedSessions:       ledgerStore,
-		Layout:              layout,
-		Warnings:            warnings,
-		TaskProgress:        taskProgress,
-		ReviewProgress:      newPipelineReviewerProgress(logger, command),
-		MaxAgents:           req.MaxAgents,
-		MaxConcurrency:      req.MaxConcurrency,
-		Retention:           req.Retention,
-		RetentionManualOnly: req.RetentionManualOnly,
-		KeepWorkbench:       req.KeepWorkbench,
-		ResolveRepoRoot:     resolveRepoRoot,
-		GitCommand:          gitCommand,
+		Provider:              repoProvider,
+		Adapter:               adapter,
+		Catalog:               profile.LLM.Catalog(),
+		Store:                 ledgerStore,
+		NamedSessions:         ledgerStore,
+		Layout:                layout,
+		Warnings:              warnings,
+		TaskProgress:          taskProgress,
+		ReviewProgress:        newPipelineReviewerProgress(logger, command),
+		MaxAgents:             req.MaxAgents,
+		MaxConcurrency:        req.MaxConcurrency,
+		Retention:             req.Retention,
+		RetentionManualOnly:   req.RetentionManualOnly,
+		KeepWorkbench:         req.KeepWorkbench,
+		CaptureReportIdentity: req.IdentityShadow,
+		ResolveRepoRoot:       resolveRepoRoot,
+		GitCommand:            gitCommand,
 		ThreadCheckpoint: func(ctx context.Context, run ledger.Run, pipelineReq pipeline.Request) error {
 			result, err := outbox.PostCheckpoint(ctx, outbox.Options{Store: ledgerStore, Provider: liveProvider, Limiter: limiter}, outbox.Request{
 				Run:                             run,
@@ -479,7 +495,8 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 			TaskProgress: taskProgress,
 			NewActionID:  pipelineOpts.NewActionID,
 		},
-		hooks: dispatcher,
+		hooks:          dispatcher,
+		identityShadow: identityShadowObserver,
 	}
 }
 
@@ -645,10 +662,11 @@ func (a *lazyAdapter) Resume(ctx context.Context, sessionID string, req llm.Requ
 }
 
 type reviewRunner struct {
-	pipeline pipeline.Options
-	live     reviewrun.Options
-	respond  threadrespond.Options
-	hooks    *hookDispatcher
+	pipeline       pipeline.Options
+	live           reviewrun.Options
+	respond        threadrespond.Options
+	hooks          *hookDispatcher
+	identityShadow identityshadow.Observer
 }
 
 func (r reviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {
@@ -656,10 +674,12 @@ func (r reviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipelin
 	result, err := pipeline.DryRun(ctx, r.pipeline, req)
 	if err != nil {
 		r.hooks.emit(r.hooks.event("run.failed"), hooks.Payload{Outcome: runOutcome(result.Run, ledger.OutcomeFailed)}, result.Run, true)
+		r.observeDryRunIdentityShadow(ctx, result, err)
 		return result, err
 	}
 	r.hooks.completeReview(result)
 	r.hooks.emit(r.hooks.event("run.completed"), hooks.Payload{Outcome: runOutcome(result.Run, ledger.OutcomeDryRun)}, result.Run, true)
+	r.observeDryRunIdentityShadow(ctx, result, nil)
 	return result, nil
 }
 
@@ -668,9 +688,11 @@ func (r reviewRunner) Live(ctx context.Context, req pipeline.Request, flags revi
 	result, err := reviewrun.Run(ctx, r.live, reviewrun.Request{Pipeline: req, Flags: flags})
 	if err != nil {
 		r.hooks.emit(r.hooks.event("run.failed"), hooks.Payload{Outcome: runOutcome(result.Run, ledger.OutcomeFailed)}, result.Run, true)
+		r.observeLiveIdentityShadow(ctx, result, flags, err)
 		return result, err
 	}
 	r.hooks.emit(r.hooks.event("run.completed"), hooks.Payload{Outcome: runOutcome(result.Run, result.Outbox.Outcome)}, result.Run, true)
+	r.observeLiveIdentityShadow(ctx, result, flags, nil)
 	return result, nil
 }
 
