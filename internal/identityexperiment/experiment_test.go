@@ -121,6 +121,93 @@ func marshalFixture(t *testing.T, input reportidentity.Input) []byte {
 	return data
 }
 
+func expectedBoundaryFixture(input reportidentity.Input, replay reportidentity.Result) reportidentity.Input {
+	decisions := make([]reportidentity.Decision, 0, len(replay.Pairs))
+	for _, pair := range replay.Pairs {
+		decisions = append(decisions, reportidentity.Decision{
+			LeftID: pair.LeftID, RightID: pair.RightID, Choice: reportidentity.ChoiceDifferent, InputSHA256: pair.InputSHA256,
+		})
+	}
+	return reportidentity.Input{
+		SchemaVersion: input.SchemaVersion,
+		Task:          input.Task,
+		Findings:      append([]review.Finding{}, input.Findings...),
+		Threads:       append([]reportidentity.Thread{}, input.Threads...),
+		Decisions:     decisions,
+	}
+}
+
+func encodeExpectedBoundaryFixture(input reportidentity.Input) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(input); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'})...), nil
+}
+
+func priorThreadBoundaryInput(t *testing.T, targetBytes int) ([]byte, []byte) {
+	t.Helper()
+	findingBodies := make([]string, 100)
+	threadBodies := make([]string, 100)
+	for index := range findingBodies {
+		findingBodies[index] = "x"
+		threadBodies[index] = "x"
+	}
+	input := priorInput(findingBodies, threadBodies, false)
+	replay, err := reportidentity.Replay(input)
+	if err != nil {
+		t.Fatalf("Replay minimal fixture: %v", err)
+	}
+	baseBytes, err := encodeExpectedBoundaryFixture(expectedBoundaryFixture(input, replay))
+	if err != nil {
+		t.Fatalf("encode expected base fixture: %v", err)
+	}
+	if len(baseBytes) >= targetBytes {
+		t.Fatalf("base expected fixture size = %d, want below target %d", len(baseBytes), targetBytes)
+	}
+
+	extraBytes := targetBytes - len(baseBytes)
+	recordCount := len(findingBodies) + len(threadBodies)
+	baseExtra, remainder := extraBytes/recordCount, extraBytes%recordCount
+	if 1+baseExtra > 16*1024 {
+		t.Fatalf("boundary body length %d exceeds schema bound", 1+baseExtra)
+	}
+	for index := range findingBodies {
+		extra := baseExtra
+		if index < remainder {
+			extra++
+		}
+		findingBodies[index] = strings.Repeat("x", 1+extra)
+	}
+	for index := range threadBodies {
+		extra := baseExtra
+		if len(findingBodies)+index < remainder {
+			extra++
+		}
+		threadBodies[index] = strings.Repeat("x", 1+extra)
+	}
+
+	input = priorInput(findingBodies, threadBodies, false)
+	replay, err = reportidentity.Replay(input)
+	if err != nil {
+		t.Fatalf("Replay boundary fixture: %v", err)
+	}
+	expectedBytes, err := encodeExpectedBoundaryFixture(expectedBoundaryFixture(input, replay))
+	if err != nil || len(expectedBytes) != targetBytes {
+		t.Fatalf("independent expected fixture bytes=%d err=%v, want %d", len(expectedBytes), err, targetBytes)
+	}
+	inputJSON := marshalFixture(t, input)
+	if len(inputJSON) >= reportidentity.MaxFixtureBytes {
+		t.Fatalf("original source fixture size = %d, want below limit %d", len(inputJSON), reportidentity.MaxFixtureBytes)
+	}
+	if _, err := reportidentity.Decode(inputJSON); err != nil {
+		t.Fatalf("Decode original boundary fixture: %v", err)
+	}
+	return inputJSON, expectedBytes
+}
+
 func testConfiguration() Configuration {
 	return Configuration{
 		Task: "report_identity", CredentialStore: "local-os", CredentialName: "codereview/identity-test",
@@ -368,69 +455,21 @@ func TestPrepareKeepsZeroPairHTMLFixtureCompactAndReplayable(t *testing.T) {
 }
 
 func TestPrepareAcceptsExactRetainedFixtureBoundary(t *testing.T) {
-	findingBodies := make([]string, 100)
-	threadBodies := make([]string, 100)
-	for index := range findingBodies {
-		findingBodies[index] = "x"
-		threadBodies[index] = "x"
-	}
-	input := priorInput(findingBodies, threadBodies, false)
-	baseReplay, err := reportidentity.Replay(input)
-	if err != nil {
-		t.Fatalf("Replay minimal fixture: %v", err)
-	}
-	baseProspective, err := prospectiveFixture(input, baseReplay)
-	if err != nil {
-		t.Fatalf("prospectiveFixture: %v", err)
-	}
-	baseBytes, err := encodeFixture(baseProspective)
-	if err != nil {
-		t.Fatalf("encode base prospective fixture: %v", err)
-	}
-	if len(baseBytes) >= reportidentity.MaxFixtureBytes {
-		t.Fatalf("base prospective size = %d, not below limit", len(baseBytes))
-	}
-	extraBytes := reportidentity.MaxFixtureBytes - len(baseBytes)
-	recordCount := len(findingBodies) + len(threadBodies)
-	baseExtra, remainder := extraBytes/recordCount, extraBytes%recordCount
-	if 1+baseExtra > 16*1024 {
-		t.Fatalf("exact-boundary body length %d exceeds schema bound", 1+baseExtra)
-	}
-	for index := range findingBodies {
-		extra := baseExtra
-		if index < remainder {
-			extra++
-		}
-		findingBodies[index] = strings.Repeat("x", 1+extra)
-	}
-	for index := range threadBodies {
-		extra := baseExtra
-		if len(findingBodies)+index < remainder {
-			extra++
-		}
-		threadBodies[index] = strings.Repeat("x", 1+extra)
-	}
-	input = priorInput(findingBodies, threadBodies, false)
-	inputJSON := marshalFixture(t, input)
-	finalReplay, err := reportidentity.Replay(input)
-	if err != nil {
-		t.Fatalf("Replay exact-boundary fixture: %v", err)
-	}
-	finalProspective, err := prospectiveFixture(input, finalReplay)
-	if err != nil {
-		t.Fatalf("prospectiveFixture exact boundary: %v", err)
-	}
-	finalBytes, err := encodeFixture(finalProspective)
-	if err != nil || len(finalBytes) != reportidentity.MaxFixtureBytes {
-		t.Fatalf("exact-boundary prospective bytes=%d err=%v, want %d", len(finalBytes), err, reportidentity.MaxFixtureBytes)
+	inputJSON, expectedBytes := priorThreadBoundaryInput(t, reportidentity.MaxFixtureBytes)
+	if len(expectedBytes) != reportidentity.MaxFixtureBytes {
+		t.Fatalf("independent expected fixture bytes = %d, want %d", len(expectedBytes), reportidentity.MaxFixtureBytes)
 	}
 	plans := 0
+	clients := 0
 	backend := Backend{
 		Prepare: func(projection reportidentityinference.Projection) (Plan, error) {
 			plans++
 			return Plan{RequestSHA256: strings.Repeat("a", 64), RequestBytes: len(projection.State)}, nil
 		},
-		NewClient:    func(string) (Decider, error) { return nil, errors.New("unused") },
+		NewClient: func(string) (Decider, error) {
+			clients++
+			return &testDecider{}, nil
+		},
 		ErrorCode:    func(error) string { return "transport" },
 		EstimateCost: func(*Usage, *Configuration) *float64 { return nil },
 	}
@@ -440,8 +479,8 @@ func TestPrepareAcceptsExactRetainedFixtureBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare exact-boundary fixture: %v", err)
 	}
-	if preflight := prepared.PreflightErrors(); len(preflight) != 0 || prepared.ExpectedPairs() != 10_000 || plans != 10_000 {
-		t.Fatalf("exact-boundary preparation preflight=%#v pairs=%d plans=%d", preflight, prepared.ExpectedPairs(), plans)
+	if preflight := prepared.PreflightErrors(); len(preflight) != 0 || prepared.ExpectedPairs() != 10_000 || plans != 10_000 || clients != 0 {
+		t.Fatalf("exact-boundary preparation preflight=%#v pairs=%d plans=%d clients=%d", preflight, prepared.ExpectedPairs(), plans, clients)
 	}
 }
 
@@ -481,54 +520,20 @@ func TestPrepareRefusesCanonicalUnicodeExpansionBeforeRequestPlanning(t *testing
 }
 
 func TestPrepareRefusesExactOneByteOverRetainedFixtureBoundary(t *testing.T) {
-	findingBodies := make([]string, 100)
-	threadBodies := make([]string, 100)
-	for index := range findingBodies {
-		findingBodies[index] = "x"
-		threadBodies[index] = "x"
+	inputJSON, expectedBytes := priorThreadBoundaryInput(t, reportidentity.MaxFixtureBytes+1)
+	if len(expectedBytes) != reportidentity.MaxFixtureBytes+1 {
+		t.Fatalf("independent expected fixture bytes = %d, want %d", len(expectedBytes), reportidentity.MaxFixtureBytes+1)
 	}
-	input := priorInput(findingBodies, threadBodies, false)
-	baseReplay, err := reportidentity.Replay(input)
-	if err != nil {
-		t.Fatalf("Replay minimal fixture: %v", err)
-	}
-	baseProspective, err := prospectiveFixture(input, baseReplay)
-	if err != nil {
-		t.Fatalf("prospectiveFixture: %v", err)
-	}
-	baseBytes, err := encodeFixture(baseProspective)
-	if err != nil {
-		t.Fatalf("encode base prospective fixture: %v", err)
-	}
-	extraBytes := reportidentity.MaxFixtureBytes + 1 - len(baseBytes)
-	recordCount := len(findingBodies) + len(threadBodies)
-	baseExtra, remainder := extraBytes/recordCount, extraBytes%recordCount
-	if 1+baseExtra > 16*1024 {
-		t.Fatalf("one-over-boundary body length %d exceeds schema bound", 1+baseExtra)
-	}
-	for index := range findingBodies {
-		extra := baseExtra
-		if index < remainder {
-			extra++
-		}
-		findingBodies[index] = strings.Repeat("x", 1+extra)
-	}
-	for index := range threadBodies {
-		extra := baseExtra
-		if len(findingBodies)+index < remainder {
-			extra++
-		}
-		threadBodies[index] = strings.Repeat("x", 1+extra)
-	}
-	input = priorInput(findingBodies, threadBodies, false)
-	inputJSON := marshalFixture(t, input)
-	backendPlans := 0
+	backendPlans, clients, keyResolutions := 0, 0, 0
 	backend := Backend{
 		Prepare: func(reportidentityinference.Projection) (Plan, error) {
 			backendPlans++
 			return Plan{RequestSHA256: strings.Repeat("a", 64), RequestBytes: 1}, nil
 		},
-		NewClient:    func(string) (Decider, error) { return nil, errors.New("unused") },
+		NewClient: func(string) (Decider, error) {
+			clients++
+			return &testDecider{}, nil
+		},
 		ErrorCode:    func(error) string { return "transport" },
 		EstimateCost: func(*Usage, *Configuration) *float64 { return nil },
 	}
@@ -538,8 +543,34 @@ func TestPrepareRefusesExactOneByteOverRetainedFixtureBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Prepare one-over-boundary fixture: %v", err)
 	}
-	if preflight := prepared.PreflightErrors(); len(preflight) != 1 || preflight[0].ErrorCode != "retained_fixture_too_large" || backendPlans != 0 {
-		t.Fatalf("one-over-boundary preflight=%#v plans=%d", preflight, backendPlans)
+	if preflight := prepared.PreflightErrors(); len(preflight) != 1 || preflight[0].ErrorCode != "retained_fixture_too_large" || prepared.ExpectedPairs() != 10_000 || backendPlans != 0 {
+		t.Fatalf("one-over-boundary preflight=%#v pairs=%d plans=%d", preflight, prepared.ExpectedPairs(), backendPlans)
+	}
+	result := Execute(context.Background(), prepared, Dependencies{
+		ResolveAPIKey: func(context.Context) (string, error) {
+			keyResolutions++
+			return "synthetic-key", nil
+		},
+		Now: time.Now,
+	}, backend)
+	if result.Err() != nil || keyResolutions != 0 || backendPlans != 0 || clients != 0 || result.Receipts.ProviderCalls != 0 || result.Receipts.MissingPairs != 10_000 {
+		t.Fatalf("one-over-boundary execution err=%v keys=%d plans=%d clients=%d receipts=%#v", result.Err(), keyResolutions, backendPlans, clients, result.Receipts)
+	}
+	if !bytes.Equal(result.fixtureJSON, inputJSON) {
+		t.Fatal("one-over-boundary preflight did not retain the exact original fixture bytes")
+	}
+	retained, err := reportidentity.Decode(result.fixtureJSON)
+	if err != nil || len(retained.Decisions) != 0 {
+		t.Fatalf("retained original fixture decisions=%d err=%v", len(retained.Decisions), err)
+	}
+	replay, err := reportidentity.Replay(retained)
+	if err != nil || len(replay.Pairs) != 10_000 {
+		t.Fatalf("retained original replay pairs=%d err=%v", len(replay.Pairs), err)
+	}
+	for _, replayPair := range replay.Pairs {
+		if replayPair.Choice != reportidentity.ChoiceMissing {
+			t.Fatalf("retained original pair choice = %q, want missing", replayPair.Choice)
+		}
 	}
 }
 
