@@ -24,7 +24,7 @@ func workspaceTestRun(t *testing.T, dataRoot, owner, repo string, number int, ru
 		Head: gitprovider.PRBranchRef{SHA: "0123456789abcdef0123456789abcdef01234567"},
 		Base: gitprovider.PRBranchRef{SHA: "fedcba9876543210fedcba9876543210fedcba98"},
 	}
-	paths, err := ForRun(statepaths.NewLayout(dataRoot, ""), ref, pr, "signalft-reviewer-profile", "signalft-reviewer-bot", runID)
+	paths, err := ForRun(statepaths.NewLayout(dataRoot, ""), ref, pr, "example-profile", "example-bot", runID)
 	if err != nil {
 		t.Fatalf("ForRun: %v", err)
 	}
@@ -69,8 +69,8 @@ func TestWorkspaceGitDirsFitWindowsLimitForWorstCaseNames(t *testing.T) {
 
 func TestWorkspaceDirsAreStableAndDistinct(t *testing.T) {
 	dataRoot := t.TempDir()
-	run := workspaceTestRun(t, dataRoot, "SignalFT", "Monit.PositivePay.Svc", 12, "run-a")
-	other := workspaceTestRun(t, dataRoot, "SignalFT", "Monit.PositivePay.Svc", 12, "run-b")
+	run := workspaceTestRun(t, dataRoot, "example-org", "payments-service", 12, "run-a")
+	other := workspaceTestRun(t, dataRoot, "example-org", "payments-service", 12, "run-b")
 
 	if resumed := FromDir(run.Dir); resumed != run {
 		t.Fatalf("FromDir(run.Dir) = %#v, want the ForRun paths %#v so a resumed run finds its workspaces", resumed, run)
@@ -122,7 +122,7 @@ func TestNonStandardRunDirKeepsWorkspacesInWorkbench(t *testing.T) {
 }
 
 func TestWorkspaceOwnerRoundTrip(t *testing.T) {
-	run := workspaceTestRun(t, t.TempDir(), "SignalFT", "signal-adminapp-frontend", 7, "run-owner")
+	run := workspaceTestRun(t, t.TempDir(), "example-org", "web-client", 7, "run-owner")
 	root, _ := run.ReviewerWorkspace("harness:alpha", "unused")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
