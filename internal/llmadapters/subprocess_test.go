@@ -1776,6 +1776,11 @@ func runClaudeBGHelper(mode string, args []string) {
 		stateFixture = "claude_bg_state_no_worker_running.json"
 		launchOutput = readClaudeBGHelperFixture("claude_bg_launch_resumed.txt")
 		writeResult = false
+	case "bg-added-folder-untrusted":
+		// The Claude CLI (2.1.326) refuses a --bg launch whose --add-dir is inside
+		// a git repository the user has not trusted, before any job exists.
+		fmt.Fprintf(os.Stderr, "Added folder not trusted: %s. Leave out its --add-dir or, if you trust it and everything in its repository or below it, start `claude` there once and accept the trust prompt.\n", resultDir)
+		os.Exit(1)
 	case "bg-resume-copy-no-worker":
 		jobID = "job-2"
 		stateFixture = "claude_bg_state_no_worker_running.json"
@@ -2166,7 +2171,7 @@ func runClaudeForegroundHelper(mode string, args []string) {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"ok":true}`), 0o600)
 		}
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"wrote the result file","session_id":"fg-session-1","total_cost_usd":0.1234,"usage":{"input_tokens":11,"output_tokens":22,"cache_read_input_tokens":33,"cache_creation_input_tokens":44,"cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":39},"speed":"standard"}}`)
-	case "bg-blocked-foreground-recovers", "bg-never-starts", "bg-resume-no-worker", "bg-resume-copy-no-worker", "bg-no-state":
+	case "bg-blocked-foreground-recovers", "bg-never-starts", "bg-resume-no-worker", "bg-resume-copy-no-worker", "bg-no-state", "bg-added-folder-untrusted":
 		if scratch != "" {
 			_ = os.WriteFile(filepath.Join(scratch, claudeBGResultFilename), []byte(`{"recovered":true}`), 0o600)
 		}
@@ -2507,6 +2512,32 @@ func TestSubprocessClaudeBackgroundFailureFallsBackToForeground(t *testing.T) {
 		Prompt:  "prompt",
 		LogPath: filepath.Join(tempDir, "events.log"),
 	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	response, err := stream.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if string(response.StructuredOutput) != `{"recovered":true}` {
+		t.Fatalf("StructuredOutput = %s, want the foreground result", response.StructuredOutput)
+	}
+	if stream.SessionID() != "fg-recovered" {
+		t.Fatalf("SessionID = %q, want the foreground session", stream.SessionID())
+	}
+}
+
+// The Claude CLI refuses a --bg launch whose added folder sits in an untrusted git
+// repository, and cr makes a new reviewer checkout for every run, so trusting
+// one folder never helps. Print mode accepts the same folder, so the review
+// runs there instead of failing.
+func TestSubprocessClaudeBackgroundUntrustedAddedFolderFallsBackToForeground(t *testing.T) {
+	tempDir := t.TempDir()
+	recordPath := filepath.Join(tempDir, "records.jsonl")
+	configDir := filepath.Join(tempDir, "claude")
+	adapter := newClaudeHelperAdapter("bg-added-folder-untrusted", recordPath, configDir, 5*time.Second)
+
+	stream, err := adapter.Start(context.Background(), Request{Prompt: "prompt", LogPath: filepath.Join(tempDir, "events.log")})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

@@ -90,6 +90,13 @@ const (
 // model failure and is not marked, since retrying would only repeat it.
 var ErrClaudeBGTransport = errors.New("llm subprocess: Claude background transport failed")
 
+// isClaudeAddedFolderUntrustedDetail reports whether a --bg launch was refused
+// because an --add-dir folder sits in a git repository the Claude CLI has not
+// trusted (Claude CLI 2.1.326 and later).
+func isClaudeAddedFolderUntrustedDetail(detail string) bool {
+	return strings.Contains(strings.ToLower(detail), "added folder not trusted")
+}
+
 // errClaudeBGNotStarted marks the transport failure where no worker ever
 // ran the job. Its session holds no conversation, so it must not be
 // reported for a later resume.
@@ -1213,7 +1220,16 @@ func (s *subprocessStream) runClaudeBG(ctx context.Context, adapter *SubprocessA
 		}
 		if detail != "" {
 			launchErr := fmt.Errorf("llm subprocess: Claude bg launch failed: %w: %s", waitErr, detail)
-			result.err = classifyCLIDetail(launchErr, detail)
+			if isClaudeAddedFolderUntrustedDetail(detail) {
+				// The job service refused the launch before any job existed, so
+				// it is a transport failure with no session behind it. Print mode
+				// accepts the same added folder, and the fallback stream retries
+				// there; trusting the folder cannot help, because every review
+				// gets a new reviewer checkout.
+				result.err = fmt.Errorf("%w: %w: %w", ErrClaudeBGTransport, errClaudeBGNotStarted, launchErr)
+			} else {
+				result.err = classifyCLIDetail(launchErr, detail)
+			}
 		} else {
 			result.err = waitErr
 		}
