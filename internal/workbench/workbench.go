@@ -77,6 +77,7 @@ type Request struct {
 
 // ReviewerOptions adjusts one reviewer workspace.
 type ReviewerOptions struct {
+	AddedPatchBlobs map[string]string
 	// SymlinkMetadata carries the pinned metadata identity into the workspace.
 	SymlinkMetadata symlinkmetadata.Artifact
 	// Offline removes the workspace clone's remotes and asks the adapter to
@@ -584,6 +585,7 @@ func prepareReviewerWorkspace(ctx context.Context, deps Deps, artifacts runartif
 		NoNetwork:          offline,
 	}
 	if len(options) > 0 {
+		workspace.AddedPatchBlobs = options[0].AddedPatchBlobs
 		metadata := options[0].SymlinkMetadata
 		if metadata.Digest != "" || metadata.BaseSHA != "" || metadata.HeadSHA != "" || len(metadata.Links) > 0 {
 			if strings.TrimSpace(artifacts.SymlinkMetadataJSON) == "" || metadata.Digest == "" || metadata.BaseSHA == "" || metadata.HeadSHA == "" {

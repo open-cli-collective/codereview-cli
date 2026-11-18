@@ -51,15 +51,16 @@ var ErrDenied = errors.New("pi reviewer tool request denied")
 
 // Config fixes the roots and output limit for one reviewer invocation.
 type Config struct {
-	RepoDir               string   `json:"repo_dir"`
-	DiffPath              string   `json:"diff_path"`
-	AllowedFiles          []string `json:"allowed_files,omitempty"`
-	SymlinkMetadataPath   string   `json:"symlink_metadata_path,omitempty"`
-	SymlinkMetadataDigest string   `json:"symlink_metadata_digest,omitempty"`
-	BaseSHA               string   `json:"base_sha,omitempty"`
-	HeadSHA               string   `json:"head_sha,omitempty"`
-	MaxOutputBytes        int      `json:"max_output_bytes"`
-	TimeoutMS             int      `json:"timeout_ms"`
+	RepoDir               string            `json:"repo_dir"`
+	DiffPath              string            `json:"diff_path"`
+	AllowedFiles          []string          `json:"allowed_files,omitempty"`
+	AddedPatchBlobs       map[string]string `json:"added_patch_blobs,omitempty"`
+	SymlinkMetadataPath   string            `json:"symlink_metadata_path,omitempty"`
+	SymlinkMetadataDigest string            `json:"symlink_metadata_digest,omitempty"`
+	BaseSHA               string            `json:"base_sha,omitempty"`
+	HeadSHA               string            `json:"head_sha,omitempty"`
+	MaxOutputBytes        int               `json:"max_output_bytes"`
+	TimeoutMS             int               `json:"timeout_ms"`
 }
 
 // Run implements the strict stdin/stdout protocol used by the generated Pi
@@ -176,7 +177,7 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 			}
 			break
 		}
-		if request.View != "" && request.View != "image" && request.View != "binary" && request.View != "binary-hex" {
+		if request.View != "" && request.View != "image" && request.View != "binary" && request.View != "binary-hex" && request.View != "patch" {
 			return "", fmt.Errorf("%w: unsupported read view %q", ErrDenied, request.View)
 		}
 		path, err := confinedPath(root, request.Path, false)
@@ -195,6 +196,10 @@ func Execute(ctx context.Context, config Config, request Request) (string, error
 		if request.View == "binary" || request.View == "binary-hex" {
 			defer file.Close()
 			return readNativeArtifact(ctx, file, request, config.MaxOutputBytes)
+		}
+		if request.View == "patch" {
+			defer file.Close()
+			return readGeneratedPatch(ctx, config, request, file)
 		}
 		if binaryErr := rejectBinaryFile(ctx, file); binaryErr != nil {
 			_ = file.Close()

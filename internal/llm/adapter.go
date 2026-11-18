@@ -67,6 +67,7 @@ type ReviewerWorkspaceRequest struct {
 	HeadSHA               string
 	Env                   []string
 	AllowedFiles          []string
+	AddedPatchBlobs       map[string]string
 	MaxToolOutputBytes    int
 	// NoNetwork asks the adapter to deny reviewer tools that reach the network
 	// (git hosts, web fetch, web search), so a reviewer cannot look up live PR
