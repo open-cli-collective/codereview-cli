@@ -47,7 +47,7 @@ if(!denied.isError || !malformed.isError || text.isError || text.content.length!
 	}
 }
 
-func TestPiRPCReviewerExtensionForwardsBinaryViewsAfterDiff(t *testing.T) {
+func TestPiRPCReviewerExtensionForwardsReadViewsAfterDiff(t *testing.T) {
 	nodePath, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("Node is not installed")
@@ -77,7 +77,11 @@ for(const view of ["binary","binary-hex"]){
   if(response.isError || response.content.length!==1 || response.content[0].type!=="text") throw new Error(JSON.stringify(response));
   const request=JSON.parse(response.content[0].text);
   if(request.tool!=="cr_read" || request.view!==view || request.path!=="lib.gz" || request.offset!==25 || request.limit!==100) throw new Error(JSON.stringify(request));
-}`
+}
+const patch=await read({path:"bundle.patch",view:"patch"});
+if(patch.isError || !tools.cr_read.parameters.properties.view.enum.includes("patch")) throw new Error(JSON.stringify(patch));
+const request=JSON.parse(patch.content[0].text);
+if(request.tool!=="cr_read" || request.view!=="patch" || request.path!=="bundle.patch") throw new Error(JSON.stringify(request));`
 	if err := os.WriteFile(runnerPath, []byte(runner), 0o600); err != nil {
 		t.Fatal(err)
 	}

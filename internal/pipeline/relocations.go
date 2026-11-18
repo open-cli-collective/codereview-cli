@@ -52,6 +52,25 @@ type relocationReviewState struct {
 	Symlinks symlinkmetadata.Artifact
 }
 
+// A head-only comparison covers a PR diff only when the outer patch is new.
+func (state relocationReviewState) addedPatchBlobs(patches []FilePatch, scope []string) map[string]string {
+	assigned := stringSet(scope)
+	blobs := make(map[string]string)
+	for _, patch := range patches {
+		if _, ok := assigned[patch.Path]; !ok || !patch.Added || !strings.HasSuffix(patch.Path, ".patch") {
+			continue
+		}
+		if _, exists := state.BaseTree[patch.Path]; exists {
+			continue
+		}
+		entry := state.HeadTree[patch.Path]
+		if entry.Type == "blob" && (entry.Mode == "100644" || entry.Mode == "100755") {
+			blobs[patch.Path] = entry.OID
+		}
+	}
+	return blobs
+}
+
 type relocationAssignment struct {
 	ManifestDigest        string
 	MoveCount             int

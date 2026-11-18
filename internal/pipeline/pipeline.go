@@ -2441,7 +2441,10 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return reviewerExecution{}, err
 	}
 	agentID := agent.ID
-	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion, SymlinkMetadata: resumeState.relocations.Symlinks})
+	request, cleanupWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, agent.ID, selected.AllowedFiles, model, effort, prompt, logPath, workbench.ReviewerOptions{
+		Offline: req.WithoutDiscussion, SymlinkMetadata: resumeState.relocations.Symlinks,
+		AddedPatchBlobs: resumeState.relocations.addedPatchBlobs(parsed.Patches, assignmentScope),
+	})
 	if err != nil {
 		return reviewerExecution{}, err
 	}
@@ -2566,7 +2569,10 @@ func runReviewer(ctx context.Context, opts Options, req Request, runID string, p
 		return repairSetupFailed(err)
 	}
 	// Its own identity: reusing agent.ID would reset the primary pass's workspace and scratch.
-	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, workbench.ReviewerOptions{Offline: req.WithoutDiscussion, SymlinkMetadata: resumeState.relocations.Symlinks})
+	repairRequest, cleanupRepairWorkspace, err := workbench.PrepareReviewerRequest(ctx, workbenchDeps(opts), opts.Adapter, artifacts, pr.Head.SHA, repairIdentity, repairSelected.AllowedFiles, model, effort, repairPrompt, repairLogPath, workbench.ReviewerOptions{
+		Offline: req.WithoutDiscussion, SymlinkMetadata: resumeState.relocations.Symlinks,
+		AddedPatchBlobs: resumeState.relocations.addedPatchBlobs(parsed.Patches, repairFiles),
+	})
 	if err != nil {
 		return repairSetupFailed(err)
 	}
