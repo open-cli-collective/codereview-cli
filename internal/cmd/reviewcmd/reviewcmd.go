@@ -185,7 +185,7 @@ func registerPreflightWithFactory(rootCmd *cobra.Command, opts *root.Options, fa
 
 func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags commandFlags, prArg string) error {
 	if cmd.Flags().Changed("judge-config") {
-		if flags.noJudge {
+		if cmd.Flags().Changed("no-judge") {
 			return exitcode.Usage(fmt.Errorf("--judge-config and --no-judge are mutually exclusive"))
 		}
 		if strings.TrimSpace(flags.judgeConfigPath) == "" || flags.identityShadow || flags.retryPosts {

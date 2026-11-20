@@ -883,7 +883,7 @@ cr preflight https://github.com/OWNER/REPO/pull/123
 
 Inspect the local findings and run the relevant tests before requesting formal
 review. Use [an optional judge configuration](#cr-preflight) on follow-ups to
-check for findings that may repeat an earlier thread.
+check for findings that may repeat a thread opened by the selected review identity.
 
 Preview a review action plan without posting:
 
@@ -1533,7 +1533,9 @@ cr --profile work config preflight judge unset
 
 Setting a judge stores an absolute path under `profiles.<profile>.preflight.judge_config`.
 Future preflights routed to that profile can send eligible finding and thread
-text to the provider in that file. Use a file you control and a provider
+text to the provider in that file. The judge considers earlier CR finding threads
+opened by the selected profile's review identity. For example, a profile using
+your personal identity cannot match threads opened by a separate review bot. Use a file you control and a provider
 appropriate for every repository routed to the profile. Older binaries may drop
 the setting when they rewrite the profile.
 
@@ -1544,9 +1546,9 @@ mutually exclusive. The saved setting is specific to `cr preflight`. A formal
 `cr review` takes its own explicit `--judge-config`.
 
 The judge makes zero calls and resolves no judge credentials when there are no
-eligible pairs. Preflight prints the judge status and attempt path to stderr.
-A judge error is advisory, and the reviewer report is still available.
-Inspect `suggestions.json` alongside the findings before acting.
+eligible pairs. Preflight prints the judge status and any attempt path to stderr.
+A skipped or unavailable judge can produce no suggestions file. When judging
+completes, inspect `suggestions.json` alongside the findings before acting.
 
 ### `cr judge prior-threads`
 

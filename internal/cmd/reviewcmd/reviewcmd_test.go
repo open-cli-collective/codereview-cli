@@ -146,6 +146,7 @@ func TestAuthorPreflightRejectsReviewControlFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"--dry-run=false"}, {"--retry-posts"}, {"--fresh-session"}, {"--allow-self-approve"},
 		{"--judge-config="}, {"--judge-config=judge.yml", "--no-judge"},
+		{"--judge-config=judge.yml", "--no-judge=false"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {

@@ -344,8 +344,15 @@ func checkDryRunThreadFailure(t *testing.T, preflight bool) {
 	adapter.Queue(fakeLLMResult("dossier", discussionSummaryJSON(nil, nil), 1, 1))
 	adapter.Queue(fakeLLMResult("selection", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 	adapter.Queue(llm.FakeResult{SessionID: "failed-thread", WaitErr: errors.New("thread provider failed")})
-	adapter.Queue(fakeLLMResult("reviewer", findingsWithCoverageJSON("harness:reviewer", []string{"main.go"}, nil, nil, nil), 1, 1))
-	adapter.Queue(fakeLLMResult("rollup", rollupJSON("approve", nil), 1, 1))
+	const findingBody = "Keep the recoverable reviewer finding."
+	var findings []findingJSONInput
+	var ordered []string
+	if preflight {
+		findings = []findingJSONInput{{Severity: "minor", File: "main.go", Line: 2, Body: findingBody}}
+		ordered = []string{"finding-1"}
+	}
+	adapter.Queue(fakeLLMResult("reviewer", findingsWithCoverageJSON("harness:reviewer", []string{"main.go"}, nil, nil, findings), 1, 1))
+	adapter.Queue(fakeLLMResult("rollup", rollupJSON("approve", ordered), 1, 1))
 
 	opts := withoutDiscussionOptions(t, provider, adapter, store, "run-with-thread-failure")
 	opts.CaptureReportIdentity = true
@@ -363,6 +370,10 @@ func checkDryRunThreadFailure(t *testing.T, preflight bool) {
 		}
 		if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeIncomplete || result.ReportIdentity != nil {
 			t.Fatal("partial preflight must be reported as incomplete and skip judge capture")
+		}
+		data, err := os.ReadFile(result.Artifacts.FindingsJSON) // #nosec G304 -- this test owns the run artifact directory.
+		if err != nil || !strings.Contains(string(data), findingBody) || !strings.Contains(result.Plan.RollupMarkdown, findingBody) {
+			t.Fatalf("incomplete preflight lost the reviewer finding in its report or artifacts: %v", err)
 		}
 	}
 	if len(result.ThreadAnalysisFailures) != 1 || result.ThreadAnalysisFailures[0].ThreadID != "thread-failed" {

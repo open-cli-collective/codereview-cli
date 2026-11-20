@@ -1,6 +1,7 @@
 package configcmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/open-cli-collective/codereview-cli/internal/cmd/root"
 	"github.com/open-cli-collective/codereview-cli/internal/config"
+	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
 func TestPreflightJudgeConfigSetShowAndUnset(t *testing.T) {
@@ -53,8 +55,12 @@ inference_timeout: 10s
 	if output := run("show"); !strings.Contains(output, judgePath) {
 		t.Fatalf("config show omitted saved judge path: %s", output)
 	}
-	if output := run("show", "--json"); !strings.Contains(output, `"judge_config": "`+judgePath+`"`) {
-		t.Fatalf("config show JSON omitted saved judge path: %s", output)
+	var rendered view.ConfigShow
+	if err := json.Unmarshal([]byte(run("show", "--json")), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.Profile.Preflight.JudgeConfigPath != judgePath {
+		t.Fatalf("config show JSON judge path = %q, want %q", rendered.Profile.Preflight.JudgeConfigPath, judgePath)
 	}
 	cfg, err := config.Load(configPath)
 	if err != nil || cfg.Profiles["work"].Preflight.JudgeConfigPath != judgePath ||
