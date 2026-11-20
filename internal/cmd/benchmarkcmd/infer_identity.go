@@ -270,11 +270,3 @@ func writeIdentityInferenceSummary(w io.Writer, outputDir string, receipts ident
 func sha256Hex(data []byte) string {
 	return identityexperiment.SHA256(data)
 }
-
-func cloneFloat64Map(source map[string]float64) map[string]float64 {
-	clone := make(map[string]float64, len(source))
-	for key, value := range source {
-		clone[key] = value
-	}
-	return clone
-}

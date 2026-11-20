@@ -76,6 +76,7 @@ type OpenRequest struct {
 	RequireOpinionatedReviewAuthority bool
 	IdentityShadow                    bool
 	IdentityShadowConfigPath          string
+	JudgeConfigPath                   string
 	// CheckAgentSourceFreshness reports profile agent sources that are behind
 	// their upstream or cannot be checked, before the runtime is assembled.
 	CheckAgentSourceFreshness bool
@@ -266,6 +267,11 @@ func Open(ctx context.Context, req OpenRequest) (Runtime, error) {
 			Warnings:            req.Warnings,
 			ResolveSystemOneKey: identityShadowSystemOneKeyResolver(req.Config, stores),
 		})
+	} else if req.JudgeConfigPath != "" {
+		identityShadowObserver = identityshadow.NewPriorJudgeObserver(identityshadow.JudgeOptions{
+			ConfigPath: req.JudgeConfigPath, Warnings: req.Warnings,
+			ResolveKey: identityJudgeKeyResolver(req.Config, stores),
+		})
 	}
 	runner := buildReviewRunner(ledgerStore, repoProvider, postingProvider, adapter, profile, limiter, layout, req.Warnings, req.Progress, dispatcher, req, command, gitCommand, deps.ResolveRepoRoot, identityShadowObserver)
 	return Runtime{
@@ -434,23 +440,24 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 	liveProvider := runtimeProvider{read: repoProvider, write: postingProvider}
 	writeRetry := outbox.DefaultWriteRetry(writeRetryProgress(logger, command))
 	pipelineOpts := pipeline.Options{
-		Provider:              repoProvider,
-		Adapter:               adapter,
-		Catalog:               profile.LLM.Catalog(),
-		Store:                 ledgerStore,
-		NamedSessions:         ledgerStore,
-		Layout:                layout,
-		Warnings:              warnings,
-		TaskProgress:          taskProgress,
-		ReviewProgress:        newPipelineReviewerProgress(logger, command),
-		MaxAgents:             req.MaxAgents,
-		MaxConcurrency:        req.MaxConcurrency,
-		Retention:             req.Retention,
-		RetentionManualOnly:   req.RetentionManualOnly,
-		KeepWorkbench:         req.KeepWorkbench,
-		CaptureReportIdentity: req.IdentityShadow,
-		ResolveRepoRoot:       resolveRepoRoot,
-		GitCommand:            gitCommand,
+		Provider:                       repoProvider,
+		Adapter:                        adapter,
+		Catalog:                        profile.LLM.Catalog(),
+		Store:                          ledgerStore,
+		NamedSessions:                  ledgerStore,
+		Layout:                         layout,
+		Warnings:                       warnings,
+		TaskProgress:                   taskProgress,
+		ReviewProgress:                 newPipelineReviewerProgress(logger, command),
+		MaxAgents:                      req.MaxAgents,
+		MaxConcurrency:                 req.MaxConcurrency,
+		Retention:                      req.Retention,
+		RetentionManualOnly:            req.RetentionManualOnly,
+		KeepWorkbench:                  req.KeepWorkbench,
+		CaptureReportIdentity:          req.IdentityShadow || req.JudgeConfigPath != "",
+		CaptureFreshReportIdentityOnly: req.JudgeConfigPath != "",
+		ResolveRepoRoot:                resolveRepoRoot,
+		GitCommand:                     gitCommand,
 		ThreadCheckpoint: func(ctx context.Context, run ledger.Run, pipelineReq pipeline.Request) error {
 			result, err := outbox.PostCheckpoint(ctx, outbox.Options{Store: ledgerStore, Provider: liveProvider, Limiter: limiter}, outbox.Request{
 				Run:                             run,
@@ -497,6 +504,7 @@ func buildReviewRunner(ledgerStore *ledger.Store, repoProvider gitprovider.GitPr
 		},
 		hooks:          dispatcher,
 		identityShadow: identityShadowObserver,
+		judgeEnabled:   req.JudgeConfigPath != "",
 	}
 }
 
@@ -667,6 +675,7 @@ type reviewRunner struct {
 	respond        threadrespond.Options
 	hooks          *hookDispatcher
 	identityShadow identityshadow.Observer
+	judgeEnabled   bool
 }
 
 func (r reviewRunner) DryRun(ctx context.Context, req pipeline.Request) (pipeline.Result, error) {

@@ -119,10 +119,11 @@ func TestCommandRuntimeStaysWithinCommandLayer(t *testing.T) {
 	modulePath := "github.com/open-cli-collective/codereview-cli"
 	cmdRuntimeDir := filepath.Join(repoRoot, "internal", "cmd", "cmdruntime")
 	allowedImports := map[string]bool{
-		"errors": true,
-		"fmt":    true,
-		"io":     true,
-		"os":     true,
+		"context": true,
+		"errors":  true,
+		"fmt":     true,
+		"io":      true,
+		"os":      true,
 
 		"github.com/open-cli-collective/cli-common/credstore": true,
 

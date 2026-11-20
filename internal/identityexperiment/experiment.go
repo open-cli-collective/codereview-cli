@@ -209,6 +209,16 @@ func (result Result) Err() error {
 
 // Prepare validates and preflights a retained fixture without performing I/O.
 func Prepare(inputJSON []byte, configuration Configuration, backend Backend) (Prepared, error) {
+	return prepare(inputJSON, configuration, backend, nil)
+}
+
+// PrepareSelected preflights only selected pairs and retains the complete replay
+// universe. Pairs outside the selection remain missing in the replay.
+func PrepareSelected(inputJSON []byte, configuration Configuration, backend Backend, selected func(reportidentity.Pair) bool) (Prepared, error) {
+	return prepare(inputJSON, configuration, backend, selected)
+}
+
+func prepare(inputJSON []byte, configuration Configuration, backend Backend, selected func(reportidentity.Pair) bool) (Prepared, error) {
 	if backend.Prepare == nil || backend.ErrorCode == nil {
 		return Prepared{}, errors.New("identityexperiment: backend is unavailable")
 	}
@@ -231,7 +241,7 @@ func Prepare(inputJSON []byte, configuration Configuration, backend Backend) (Pr
 		expectedPairs: len(baseReplay.Pairs),
 		valid:         true,
 	}
-	prospective, err := prospectiveFixture(input, baseReplay)
+	prospective, err := prospectiveFixture(input, baseReplay, selected)
 	if err != nil {
 		return Prepared{}, errors.New("identityexperiment: invalid fixture")
 	}
@@ -244,8 +254,8 @@ func Prepare(inputJSON []byte, configuration Configuration, backend Backend) (Pr
 		prepared.retainOriginalInput = true
 		return prepared, nil
 	}
-	prepared.pairs, prepared.preflightErrors, prepared.totalRequestBytes = preparePairs(input, baseReplay, backend)
-	if len(baseReplay.Pairs) > configuration.MaxCalls {
+	prepared.pairs, prepared.preflightErrors, prepared.totalRequestBytes = preparePairs(input, baseReplay, backend, selected)
+	if len(prepared.pairs)+len(prepared.preflightErrors) > configuration.MaxCalls {
 		prepared.preflightErrors = append(prepared.preflightErrors, PreflightError{ErrorCode: "invalid_input"})
 	}
 	return prepared, nil
@@ -277,7 +287,7 @@ func (prepared Prepared) WithPreflightError(code string) Prepared {
 	return clonedPrepared
 }
 
-func preparePairs(input reportidentity.Input, result reportidentity.Result, backend Backend) ([]pair, []PreflightError, int64) {
+func preparePairs(input reportidentity.Input, result reportidentity.Result, backend Backend, selected func(reportidentity.Pair) bool) ([]pair, []PreflightError, int64) {
 	findings := make(map[string]review.Finding, len(input.Findings))
 	for _, finding := range input.Findings {
 		findings[string(finding.ID)] = finding
@@ -290,6 +300,9 @@ func preparePairs(input reportidentity.Input, result reportidentity.Result, back
 	var failures []PreflightError
 	var totalRequestBytes int64
 	for _, replayPair := range result.Pairs {
+		if selected != nil && !selected(replayPair) {
+			continue
+		}
 		left, ok := findings[replayPair.LeftID]
 		if !ok {
 			failures = append(failures, pairPreflightError(replayPair, "invalid_input"))
@@ -332,9 +345,12 @@ func pairPreflightError(replayPair reportidentity.Pair, code string) PreflightEr
 	return PreflightError{LeftID: replayPair.LeftID, RightID: replayPair.RightID, PairSHA256: replayPair.InputSHA256, ErrorCode: code}
 }
 
-func prospectiveFixture(input reportidentity.Input, replay reportidentity.Result) (reportidentity.Input, error) {
+func prospectiveFixture(input reportidentity.Input, replay reportidentity.Result, selected func(reportidentity.Pair) bool) (reportidentity.Input, error) {
 	decisions := make([]reportidentity.Decision, 0, len(replay.Pairs))
 	for _, pair := range replay.Pairs {
+		if selected != nil && !selected(pair) {
+			continue
+		}
 		decisions = append(decisions, reportidentity.Decision{
 			LeftID: pair.LeftID, RightID: pair.RightID, Choice: reportidentity.ChoiceDifferent, InputSHA256: pair.InputSHA256,
 		})

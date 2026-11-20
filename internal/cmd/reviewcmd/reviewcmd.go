@@ -65,7 +65,12 @@ sends the explicitly configured report values to the selected System One
 provider and writes private diagnostic artifacts beneath the completed run's
 artifact directory. Its standalone configuration is read only when the opt-in
 flag is set; the diagnostic never changes the review, posting outcome, or
-normal output.`
+normal output.
+
+--judge-config optionally suggests matches to prior threads after a successful
+review, writing local suggestions and receipts. It sends selected report pairs
+to the configured provider and leaves verdicts, posts, and normal output
+unchanged.`
 
 // RuntimeFactory builds the concrete runtime used by review lifecycle commands.
 type RuntimeFactory func(context.Context, app.OpenRequest) (app.Runtime, error)
@@ -99,6 +104,7 @@ type commandFlags struct {
 	keepWorkbench            bool
 	identityShadow           bool
 	identityShadowConfigPath string
+	judgeConfigPath          string
 }
 
 // Register attaches the review command to rootCmd.
@@ -146,10 +152,16 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.keepWorkbench, "keep-workbench", false, "Keep the run workbench checkout instead of deleting it after a successful review")
 	cmd.Flags().BoolVar(&flags.identityShadow, "identity-shadow", false, "Run a private report identity diagnostic after review completion (default false)")
 	cmd.Flags().StringVar(&flags.identityShadowConfigPath, "identity-shadow-config", "", "Standalone shadow YAML path; read only with --identity-shadow")
+	cmd.Flags().StringVar(&flags.judgeConfigPath, "judge-config", "", "Run advisory prior-thread matching after review with the specified judge YAML")
 	rootCmd.AddCommand(cmd)
 }
 
 func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags commandFlags, prArg string) error {
+	if cmd.Flags().Changed("judge-config") {
+		if strings.TrimSpace(flags.judgeConfigPath) == "" || flags.identityShadow || flags.retryPosts {
+			return exitcode.Usage(fmt.Errorf("--judge-config requires a path and cannot be combined with --identity-shadow or --retry-posts"))
+		}
+	}
 	if cmd.Flags().Changed("fast") && cmd.Flags().Changed("no-fast") {
 		return exitcode.Usage(fmt.Errorf("--fast and --no-fast are mutually exclusive"))
 	}
@@ -353,6 +365,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		RequireOpinionatedReviewAuthority: !flags.dryRun,
 		IdentityShadow:                    flags.identityShadow,
 		IdentityShadowConfigPath:          flags.identityShadowConfigPath,
+		JudgeConfigPath:                   flags.judgeConfigPath,
 		CheckAgentSourceFreshness:         true,
 		Retention:                         appruntime.RetentionPolicyFromConfig(cfg.Data.Retention),
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,

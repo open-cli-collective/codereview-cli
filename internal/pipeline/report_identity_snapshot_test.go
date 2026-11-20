@@ -288,9 +288,13 @@ func TestDryRunReportIdentityCaptureIsOptInAndPlanPreserving(t *testing.T) {
 	req.ToolVersion = "0.0.0-test"
 	provider.diff.Raw = smallDiff("main.go") + smallDiff("other.go")
 
-	run := func(capture bool, runID string) Result {
+	run := func(capture, resumed bool, runID string) Result {
 		t.Helper()
 		store := openPipelineStore(t)
+		layout := statepaths.NewLayout(t.TempDir(), t.TempDir())
+		if resumed {
+			allocateDryRunForProvider(t, store, layout, provider, req, runID, fixedNow())
+		}
 		adapter := &llm.FakeAdapter{NameValue: "snapshot-plan-equivalence"}
 		adapter.Queue(fakeLLMResult("selection-session", selectionJSONForFiles("harness:alpha", "main.go", "other.go"), 10, 2))
 		adapter.Queue(fakeLLMResult("reviewer-session", `{
@@ -306,17 +310,23 @@ func TestDryRunReportIdentityCaptureIsOptInAndPlanPreserving(t *testing.T) {
 		}`, 20, 4))
 		adapter.Queue(fakeLLMResult("rollup-session", rollupJSON("comment", []string{"finding-1", "finding-2"}), 30, 6))
 		result, err := dryRunForTest(ctx, Options{
-			Provider:              provider,
-			Adapter:               adapter,
-			Store:                 store,
-			Layout:                statepaths.NewLayout(t.TempDir(), t.TempDir()),
-			Now:                   fixedNow,
-			NewRunID:              func() string { return runID },
-			NewSessionRowID:       sequence("snapshot-session"),
-			NewFindingID:          findingSequence("finding"),
-			NewActionID:           actionSequence(),
-			MaxConcurrency:        2,
-			CaptureReportIdentity: capture,
+			Provider: provider,
+			Adapter:  adapter,
+			Store:    store,
+			Layout:   layout,
+			Now:      fixedNow,
+			NewRunID: func() string {
+				if resumed {
+					t.Fatal("expected recovery of the prior dry run")
+				}
+				return runID
+			},
+			NewSessionRowID:                sequence("snapshot-session"),
+			NewFindingID:                   findingSequence("finding"),
+			NewActionID:                    actionSequence(),
+			MaxConcurrency:                 2,
+			CaptureReportIdentity:          capture,
+			CaptureFreshReportIdentityOnly: true,
 		}, req)
 		closeStore(t, store)
 		if err != nil {
@@ -325,8 +335,12 @@ func TestDryRunReportIdentityCaptureIsOptInAndPlanPreserving(t *testing.T) {
 		return result
 	}
 
-	off := run(false, "run-snapshot-off")
-	on := run(true, "run-snapshot-on")
+	off := run(false, false, "run-snapshot-off")
+	on := run(true, false, "run-snapshot-on")
+	recovered := run(true, true, "run-snapshot-recovered")
+	if recovered.ReportIdentity != nil || recovered.Run.RunID != "run-snapshot-recovered" || len(recovered.Findings) != 2 {
+		t.Fatalf("recovered dry run did not retain findings privately: %#v", recovered)
+	}
 	if off.ReportIdentity != nil {
 		t.Fatalf("disabled run captured a report snapshot: %#v", off.ReportIdentity)
 	}

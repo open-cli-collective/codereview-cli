@@ -111,8 +111,8 @@ func TestIdentityInferenceStaysBehindDiagnosticBoundaries(t *testing.T) {
 			if (importPath == systemOneImport || strings.HasPrefix(importPath, systemOneImport+"/")) && !inCommand && !inAdapter && !inCloudflareClefClient && !inExperiment {
 				t.Fatalf("%s imports internal/systemone; inference transport may be invoked only by benchmarkcmd, Cloudflare Clef, its identity adapter, or identityexperiment", rel)
 			}
-			if (importPath == openAIDecisionsImport || strings.HasPrefix(importPath, openAIDecisionsImport+"/")) && !inCommand {
-				t.Fatalf("%s imports internal/openaidecisions; Decisions transport may be invoked only by benchmarkcmd", rel)
+			if (importPath == openAIDecisionsImport || strings.HasPrefix(importPath, openAIDecisionsImport+"/")) && !inCommand && !inExperiment {
+				t.Fatalf("%s imports internal/openaidecisions; Decisions transport is limited to benchmarkcmd and identityexperiment", rel)
 			}
 			if (importPath == cloudflareClefImport || strings.HasPrefix(importPath, cloudflareClefImport+"/")) && !inCommand {
 				t.Fatalf("%s imports internal/cloudflareclef; Cloudflare Clef transport may be invoked only by benchmarkcmd", rel)
@@ -132,10 +132,10 @@ func TestIdentityInferenceStaysBehindDiagnosticBoundaries(t *testing.T) {
 				t.Fatalf("%s imports internal/identityshadow; the isolated observer may only be composed by app", rel)
 			}
 			if inExperiment {
-				if _, isStdlib := stdlib[importPath]; isStdlib || importPath == modulePath+"/internal/review" || importPath == identityImport || importPath == identityInferenceImport || importPath == systemOneImport {
+				if _, isStdlib := stdlib[importPath]; isStdlib || importPath == modulePath+"/internal/review" || importPath == identityImport || importPath == identityInferenceImport || importPath == systemOneImport || importPath == openAIDecisionsImport {
 					continue
 				}
-				t.Fatalf("%s imports %q; identityexperiment may import only standard library packages, reportidentity, reportidentityinference, review, and System One", rel, importPath)
+				t.Fatalf("%s imports %q; identityexperiment may import only standard library packages, reportidentity, reportidentityinference, review, and its System One and Decisions transports", rel, importPath)
 			}
 			if inShadow {
 				if _, isStdlib := stdlib[importPath]; isStdlib || importPath == modulePath+"/internal/review" || importPath == modulePath+"/internal/reportidentity" || importPath == modulePath+"/internal/reportidentitysnapshot" || importPath == identityExperimentImport || importPath == "go.yaml.in/yaml/v3" {

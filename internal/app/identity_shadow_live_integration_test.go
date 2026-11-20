@@ -54,7 +54,7 @@ func TestLiveIdentityShadowPreservesAuthoritativeReview(t *testing.T) {
 	t.Setenv("TMPDIR", systemTemp)
 	agentDir := runtimeAgentFixture(t, repoDir)
 	t.Setenv("GO_WANT_APP_HOOK_HELPER", "1")
-	for _, scenario := range []string{"success-same", "malformed-provider", "cancelled-in-observer", "invalid-config", "comparison-write-failure"} { //nolint:misspell // Stable diagnostic category.
+	for _, scenario := range []string{"success-same", "prior-judge", "malformed-provider", "cancelled-in-observer", "invalid-config", "comparison-write-failure"} { //nolint:misspell // Stable diagnostic category.
 		t.Run(scenario, func(t *testing.T) {
 			off := runLiveShadowIntegration(t, catalog, repoDir, agentDir, baseSHA, headSHA, scenario, false)
 			on := runLiveShadowIntegration(t, catalog, repoDir, agentDir, baseSHA, headSHA, scenario, true)
@@ -163,25 +163,26 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 	if err := os.WriteFile(configPath, []byte(liveShadowConfig(scenario)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	judgeEnabled := enabled && scenario == "prior-judge"
 	shadow := &liveShadowDecider{malformed: scenario == "malformed-provider"}
 	observerCalls, keyCalls, clientCalls := 0, 0, 0
 	attemptDir := ""
 	var observer identityshadow.Observer
 	if enabled {
+		resolveKey := func(_ context.Context, storeID, name string) (string, error) {
+			keyCalls++
+			if storeID != "local-os" || name != "codereview/identity" {
+				t.Errorf("unexpected diagnostic credential selection: %q %q", storeID, name)
+			}
+			return "synthetic-shadow-key", nil
+		}
+		systemOne := identityexperiment.SystemOneDependencies{NewClient: func(options systemone.Options) (identityexperiment.SystemOneDecider, error) {
+			clientCalls++
+			shadow.limits = options.Limits
+			return shadow, nil
+		}}
 		actual := identityshadow.New(identityshadow.Options{
-			ConfigPath: configPath, Warnings: &warnings,
-			ResolveSystemOneKey: func(_ context.Context, storeID, name string) (string, error) {
-				keyCalls++
-				if storeID != "local-os" || name != "codereview/identity" {
-					t.Errorf("unexpected shadow credential selection: %q %q", storeID, name)
-				}
-				return "synthetic-shadow-key", nil
-			},
-			SystemOne: identityexperiment.SystemOneDependencies{NewClient: func(options systemone.Options) (identityexperiment.SystemOneDecider, error) {
-				clientCalls++
-				shadow.limits = options.Limits
-				return shadow, nil
-			}},
+			ConfigPath: configPath, Warnings: &warnings, ResolveSystemOneKey: resolveKey, SystemOne: systemOne,
 			Files: identityexperiment.FileDependencies{Rename: func(oldPath, newPath string) error {
 				if scenario == "comparison-write-failure" && filepath.Base(newPath) == "comparison.json" {
 					return errors.New("synthetic comparison publication fault")
@@ -189,6 +190,17 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 				return os.Rename(oldPath, newPath)
 			}},
 		})
+		if judgeEnabled {
+			actual = identityshadow.NewPriorJudgeObserver(identityshadow.JudgeOptions{
+				ConfigPath: configPath, Warnings: &warnings, SystemOne: systemOne,
+				ResolveKey: func(ctx context.Context, kind string, ref identityshadow.Credential) (string, error) {
+					if kind != "system_one" {
+						t.Errorf("unexpected judge provider: %q", kind)
+					}
+					return resolveKey(ctx, ref.Store, ref.Name)
+				},
+			})
+		}
 		observer = identityShadowObserverFunc(func(entryCtx context.Context, snapshot reportidentitysnapshot.Snapshot, path string) {
 			observerCalls++
 			attemptDir = path
@@ -239,8 +251,12 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 		return out, nil
 	}
 	resolveRoot := func(context.Context) (string, error) { return repoDir, nil }
+	open := OpenRequest{IdentityShadow: enabled && !judgeEnabled, MaxConcurrency: 1, MaxAgents: 1}
+	if judgeEnabled {
+		open.JudgeConfigPath = configPath
+	}
 	runner := buildReviewRunner(store, provider, withHookProvider(dispatcher, provider), adapter, profile, noopLimiter{}, layout, &warnings, nil, dispatcher,
-		OpenRequest{IdentityShadow: enabled, MaxConcurrency: 1, MaxAgents: 1}, "review", gitCommand, resolveRoot, observer)
+		open, "review", gitCommand, resolveRoot, observer)
 	runner.pipeline.Now = func() time.Time { return fixed }
 	runner.live.Now = runner.pipeline.Now
 	runner.live.NewRunID = func() string { return "live-shadow-run" }
@@ -304,7 +320,11 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 		if observerCalls != 1 {
 			t.Fatalf("observer calls = %d, want 1", observerCalls)
 		}
-		shadowRoot := filepath.Join(expectedArtifacts.Dir, "identity-shadow")
+		directory := "identity-shadow"
+		if judgeEnabled {
+			directory = "judge"
+		}
+		shadowRoot := filepath.Join(expectedArtifacts.Dir, directory)
 		relativeAttempt, relErr := filepath.Rel(shadowRoot, attemptDir)
 		if relErr != nil || relativeAttempt == "." || relativeAttempt == ".." || strings.HasPrefix(relativeAttempt, ".."+string(filepath.Separator)) {
 			t.Fatalf("identity-shadow attempt %q is outside %q: relative=%q err=%v", attemptDir, shadowRoot, relativeAttempt, relErr)
@@ -312,7 +332,16 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 		if info, statErr := os.Stat(attemptDir); statErr != nil || !info.IsDir() {
 			t.Fatalf("identity-shadow diagnostic attempt was not retained as a directory at %q: %v", attemptDir, statErr)
 		}
-		assertLiveShadowDiagnostics(t, scenario, attemptDir, keyCalls, clientCalls, shadow.requests, warnings.String())
+		if judgeEnabled {
+			var report identityshadow.JudgeReport
+			liveShadowReadJSON(t, filepath.Join(attemptDir, "suggestions.json"), &report)
+			if report.Status != "complete" || keyCalls != 1 || clientCalls != 1 || report.Receipts.ProviderCalls != 2 ||
+				len(report.Suggestions) != 2 || report.Suggestions[0].ThreadID != "prior-thread" || report.Suggestions[1].ThreadID != "prior-thread" {
+				t.Fatalf("judge did not retain prior-thread suggestions: %+v; warnings: %s", report, &warnings)
+			}
+		} else {
+			assertLiveShadowDiagnostics(t, scenario, attemptDir, keyCalls, clientCalls, shadow.requests, warnings.String())
+		}
 	}
 	dispatcher.drain()
 	hookPayloads := readAppHookPayloads(t, hookCapture)

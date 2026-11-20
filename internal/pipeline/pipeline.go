@@ -184,6 +184,8 @@ type Options struct {
 	// CaptureReportIdentity keeps a value-only, diagnostic snapshot of the
 	// completed report plan. The zero value leaves this path inert.
 	CaptureReportIdentity bool
+	// CaptureFreshReportIdentityOnly excludes recovered dry-run plans from capture.
+	CaptureFreshReportIdentityOnly bool
 
 	GitCommand      func(context.Context, string, ...string) ([]byte, error)
 	ResolveRepoRoot func(context.Context) (string, error)
@@ -774,7 +776,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		return Result{}, err
 	}
-	if opts.CaptureReportIdentity {
+	if opts.CaptureReportIdentity && (!opts.CaptureFreshReportIdentityOnly || resumedDryRun == nil) {
 		result.ReportIdentity = captureReportIdentitySnapshot(req, result, prepared.threadContext)
 	}
 	if err := persistExecutionResult(ctx, opts, req, run, prepared, findingSessions, &result); err != nil {

@@ -484,6 +484,30 @@ func TestPrepareAcceptsExactRetainedFixtureBoundary(t *testing.T) {
 	}
 }
 
+func TestPrepareSelectedDoesNotBudgetUnselectedDecisions(t *testing.T) {
+	inputJSON, _ := priorThreadBoundaryInput(t, reportidentity.MaxFixtureBytes+1)
+	plans := 0
+	configuration := testConfiguration()
+	configuration.MaxCalls = 1
+	backend := Backend{
+		Prepare: func(reportidentityinference.Projection) (Plan, error) {
+			plans++
+			return Plan{RequestSHA256: strings.Repeat("a", 64), RequestBytes: 1}, nil
+		},
+		ErrorCode: func(error) string { return "transport" },
+	}
+	input, err := reportidentity.Decode(inputJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareSelected(inputJSON, configuration, backend, func(pair reportidentity.Pair) bool {
+		return pair.LeftID == string(input.Findings[0].ID) && pair.RightID == input.Threads[0].ID
+	})
+	if err != nil || len(prepared.PreflightErrors()) != 0 || prepared.ExpectedPairs() != 10_000 || plans != 1 {
+		t.Fatalf("sparse preparation rejected a valid selected pair: err=%v preflight=%#v expected=%d plans=%d", err, prepared.PreflightErrors(), prepared.ExpectedPairs(), plans)
+	}
+}
+
 func TestPrepareRefusesCanonicalUnicodeExpansionBeforeRequestPlanning(t *testing.T) {
 	body := "x" + strings.Repeat("\u2028", 5461)
 	input := priorInput(make([]string, 100), make([]string, 100), true)
