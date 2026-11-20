@@ -1335,6 +1335,7 @@ Modes:
 | `--no-fast` | Disable fast execution for reviewer agents, overriding the profile default. Mutually exclusive with `--fast`. |
 | `--identity-shadow` | Default off. After a successful newly planned review and its completion hook, run a private diagnostic using the explicitly configured System One provider. It can make an inference request and write private local artifacts, but it does not change the review result, gates, posts, or normal output. Recovery and unsuccessful paths skip it. |
 | `--identity-shadow-config <path>` | Path to the standalone diagnostic YAML. Read only with `--identity-shadow`; a config path by itself is inert and does not change profile or init configuration. |
+| `--judge-config <path>` | Opt in to [prior-thread suggestions](#cr-judge-prior-threads) after an eligible review. Uses the provider named in the standalone YAML and writes private receipts. Incompatible with `--identity-shadow` and `--retry-posts`. |
 
 Review selection and execution flags:
 
@@ -1494,6 +1495,45 @@ markers are reported as omitted because nothing is posted.
 Live text output includes run ID, gate status, decision, outcome, PR, artifacts,
 and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 `outbox`, `artifacts`, and `fail_on_triggered`.
+
+### `cr judge prior-threads`
+
+```sh
+cr review https://github.com/OWNER/REPO/pull/NUMBER --judge-config judge.yml
+cr judge prior-threads path/to/input.json --config judge.yml --results-dir path/to/new-attempt
+```
+
+The judge suggests which earlier thread may describe the same defect as a current finding. Review-time judging runs after the normal review and dispatch of the `run.completed` hook. It uses the prior threads already eligible for the native planner under the review's posting identity. The planner, verdict, posts, and stdout follow the normal review path. The same option works with a fresh dry run. Recovery, skipped, and failed reviews skip the judge.
+
+Use the standalone command to rerun judging on a saved `input.json`. It uses the configured inference provider without invoking the review pipeline. It also accepts a v1 `prior_threads` replay fixture with an empty `decisions` array. Use `--json` for the suggestion report on stdout. Each attempt needs a new output directory.
+
+Use a separate judge YAML. For Jev, configure its System One endpoint and model with `auth_scheme: bearer`. For Baseten Mammoth, use its System One endpoint and model with `auth_scheme: api-key`. Both read `system_one_api_key`. For OpenAI Decisions, set `kind: openai_decisions` and the Decisions endpoint, omit `auth_scheme` and `service_tier`, and store `openai_api_key`. The [provider setup and credential commands](BENCHMARKING.md#cr-benchmark-run-with-task-report_identity) also apply here.
+
+```yaml
+schema_version: 1
+provider:
+  kind: system_one
+  endpoint: https://inference.example/v1/systemone
+  credential:
+    store: local-os
+    name: codereview/prior-thread-judge
+  auth_scheme: bearer
+model: "explicit-provider-model-id"
+expected_model: "exact-provider-response-model-id"
+limits:
+  max_state_bytes: 6144
+  max_request_bytes: 8192
+budget:
+  max_calls: 12
+  max_total_request_bytes: 98304
+timeout: 5s
+inference_timeout: 20s
+minimum_confidence: 0.90
+```
+
+An eligible exact match stays with the native rule. The judge considers remaining pairs that share a file or enough terms across files. The endpoint receives the full selected finding and thread text. The combined call and byte budgets are checked before inference. A suggestion requires one confident match and confident rejections of any other selected candidates for the finding. Provider failures leave receipts and withhold suggestions. Optional `prices` record estimated usage cost when usage and rates are available.
+
+Review-time attempts live under `judge/attempt-<UUID>/` in the run artifacts. Read `suggestions.json` for advisory matches and `receipts.json` for call accounting. The replay and input retain private report text and raw comparison outcomes, including comparisons withheld from suggestions. This command covers prior-thread matching. Grouping findings within a review continues through the regular review pipeline.
 
 ### `cr benchmark`
 

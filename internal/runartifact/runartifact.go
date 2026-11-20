@@ -208,6 +208,15 @@ func (p Paths) WorkbenchMetadataPath() string {
 // fresh canonical UUID attempt. It does not create the directory; the caller's
 // publisher must reserve it exclusively before writing.
 func (p Paths) IdentityShadowAttempt(attemptID string) (string, error) {
+	return p.diagnosticAttempt("identity-shadow", attemptID)
+}
+
+// JudgeAttempt returns a fresh path inside the run's judge artifact directory.
+func (p Paths) JudgeAttempt(attemptID string) (string, error) {
+	return p.diagnosticAttempt("judge", attemptID)
+}
+
+func (p Paths) diagnosticAttempt(kind, attemptID string) (string, error) {
 	id, err := uuid.Parse(attemptID)
 	if err != nil || id.String() != attemptID {
 		return "", errors.New("runartifact: identity-shadow attempt ID must be a canonical UUID")
@@ -223,7 +232,7 @@ func (p Paths) IdentityShadowAttempt(attemptID string) (string, error) {
 		return "", errors.New("runartifact: run artifact root must be a real directory")
 	}
 
-	shadowRoot := filepath.Join(p.Dir, "identity-shadow")
+	shadowRoot := filepath.Join(p.Dir, kind)
 	if info, err := os.Lstat(shadowRoot); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return "", errors.New("runartifact: identity-shadow path must be a real directory")

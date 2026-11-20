@@ -19,21 +19,22 @@ const maxConfigBytes = 64 * 1024
 // Config is the standalone, opt-in identity shadow configuration. It is not
 // part of the user's normal Codex or review profile configuration.
 type Config struct {
-	SchemaVersion  int           `json:"schema_version" yaml:"schema_version"`
-	Provider       Provider      `json:"provider" yaml:"provider"`
-	Model          string        `json:"model" yaml:"model"`
-	ExpectedModel  string        `json:"expected_model" yaml:"expected_model"`
-	Limits         Limits        `json:"limits" yaml:"limits"`
-	Budget         Budget        `json:"budget" yaml:"budget"`
-	Timeout        time.Duration `json:"-" yaml:"-"`
-	TimeoutText    string        `json:"timeout" yaml:"timeout"`
-	InferenceLimit time.Duration `json:"-" yaml:"-"`
-	InferenceText  string        `json:"inference_timeout" yaml:"inference_timeout"`
-	ServiceTier    *string       `json:"service_tier,omitempty" yaml:"service_tier,omitempty"`
-	Prices         *Prices       `json:"prices,omitempty" yaml:"prices,omitempty"`
+	MinimumConfidence float64       `json:"minimum_confidence,omitempty" yaml:"minimum_confidence,omitempty"`
+	SchemaVersion     int           `json:"schema_version" yaml:"schema_version"`
+	Provider          Provider      `json:"provider" yaml:"provider"`
+	Model             string        `json:"model" yaml:"model"`
+	ExpectedModel     string        `json:"expected_model" yaml:"expected_model"`
+	Limits            Limits        `json:"limits" yaml:"limits"`
+	Budget            Budget        `json:"budget" yaml:"budget"`
+	Timeout           time.Duration `json:"-" yaml:"-"`
+	TimeoutText       string        `json:"timeout" yaml:"timeout"`
+	InferenceLimit    time.Duration `json:"-" yaml:"-"`
+	InferenceText     string        `json:"inference_timeout" yaml:"inference_timeout"`
+	ServiceTier       *string       `json:"service_tier,omitempty" yaml:"service_tier,omitempty"`
+	Prices            *Prices       `json:"prices,omitempty" yaml:"prices,omitempty"`
 }
 
-// Provider selects the sole supported standalone provider and its existing
+// Provider selects the standalone provider and its existing
 // credential reference. The API key itself is never stored in Config.
 type Provider struct {
 	Kind       string     `json:"kind" yaml:"kind"`
@@ -48,13 +49,13 @@ type Credential struct {
 	Name  string `json:"name" yaml:"name"`
 }
 
-// Limits bounds each System One request.
+// Limits bounds each inference request.
 type Limits struct {
 	MaxStateBytes   int `json:"max_state_bytes" yaml:"max_state_bytes"`
 	MaxRequestBytes int `json:"max_request_bytes" yaml:"max_request_bytes"`
 }
 
-// Budget bounds the complete pair universe across both tasks.
+// Budget bounds projected requests across the selected tasks.
 type Budget struct {
 	MaxCalls             int   `json:"max_calls" yaml:"max_calls"`
 	MaxTotalRequestBytes int64 `json:"max_total_request_bytes" yaml:"max_total_request_bytes"`
@@ -67,6 +68,10 @@ type Prices struct {
 }
 
 func parseConfig(data []byte) (Config, error) {
+	return parseIdentityConfig(data, false)
+}
+
+func parseIdentityConfig(data []byte, judge bool) (Config, error) {
 	if len(data) == 0 || len(data) > maxConfigBytes {
 		return Config{}, errors.New("identity shadow config size is invalid")
 	}
@@ -86,9 +91,11 @@ func parseConfig(data []byte) (Config, error) {
 	if err := rejectYAMLAliases(root); err != nil {
 		return Config{}, err
 	}
-	fields, err := mappingFields(root, "config", setOf(
-		"schema_version", "provider", "model", "expected_model", "limits", "budget", "timeout", "inference_timeout", "service_tier", "prices",
-	))
+	allowed := setOf("schema_version", "provider", "model", "expected_model", "limits", "budget", "timeout", "inference_timeout", "service_tier", "prices")
+	if judge {
+		allowed["minimum_confidence"] = struct{}{}
+	}
+	fields, err := mappingFields(root, "config", allowed)
 	if err != nil {
 		return Config{}, err
 	}
@@ -105,7 +112,7 @@ func parseConfig(data []byte) (Config, error) {
 	if config.SchemaVersion != 1 {
 		return Config{}, errors.New("identity shadow config schema_version must be 1")
 	}
-	if config.Provider, err = parseProvider(fields["provider"]); err != nil {
+	if config.Provider, err = parseProvider(fields["provider"], judge); err != nil {
 		return Config{}, err
 	}
 	if config.Model, err = stringValue(fields["model"], "model"); err != nil {
@@ -142,6 +149,18 @@ func parseConfig(data []byte) (Config, error) {
 		}
 		config.ServiceTier = &value
 	}
+	if judge {
+		config.MinimumConfidence = 0.90
+		if fields["minimum_confidence"] != nil {
+			config.MinimumConfidence, err = floatValue(fields["minimum_confidence"], "minimum_confidence")
+			if err != nil || !(config.MinimumConfidence > 0.5 && config.MinimumConfidence <= 1) {
+				return Config{}, errors.New("judge minimum_confidence must be above 0.5 and at most 1")
+			}
+		}
+	}
+	if config.Provider.Kind == "openai_decisions" && fields["service_tier"] != nil {
+		return Config{}, errors.New("judge OpenAI Decisions does not support service_tier")
+	}
 	if fields["prices"] != nil {
 		config.Prices, err = parsePrices(fields["prices"])
 		if err != nil {
@@ -151,12 +170,12 @@ func parseConfig(data []byte) (Config, error) {
 	return config, nil
 }
 
-func parseProvider(node *yaml.Node) (Provider, error) {
+func parseProvider(node *yaml.Node, judge bool) (Provider, error) {
 	fields, err := mappingFields(node, "provider", setOf("kind", "endpoint", "credential", "auth_scheme"))
 	if err != nil {
 		return Provider{}, err
 	}
-	for _, required := range []string{"kind", "endpoint", "credential", "auth_scheme"} {
+	for _, required := range []string{"kind", "endpoint", "credential"} {
 		if fields[required] == nil {
 			return Provider{}, fmt.Errorf("identity shadow provider requires %q", required)
 		}
@@ -165,8 +184,11 @@ func parseProvider(node *yaml.Node) (Provider, error) {
 	if provider.Kind, err = stringValue(fields["kind"], "provider.kind"); err != nil {
 		return Provider{}, err
 	}
-	if provider.Kind != "system_one" {
-		return Provider{}, errors.New("identity shadow provider.kind must be system_one")
+	if provider.Kind != "system_one" && (!judge || provider.Kind != "openai_decisions") {
+		if !judge {
+			return Provider{}, errors.New("identity shadow provider.kind must be system_one")
+		}
+		return Provider{}, errors.New("judge provider.kind must be system_one or openai_decisions")
 	}
 	if provider.Endpoint, err = stringValue(fields["endpoint"], "provider.endpoint"); err != nil {
 		return Provider{}, err
@@ -174,11 +196,18 @@ func parseProvider(node *yaml.Node) (Provider, error) {
 	if !validHTTPSURL(provider.Endpoint) {
 		return Provider{}, errors.New("identity shadow provider.endpoint must be HTTPS without userinfo, query, or fragment")
 	}
-	if provider.AuthScheme, err = stringValue(fields["auth_scheme"], "provider.auth_scheme"); err != nil {
-		return Provider{}, err
-	}
-	if provider.AuthScheme != "api-key" && provider.AuthScheme != "bearer" {
-		return Provider{}, errors.New("identity shadow provider.auth_scheme must be api-key or bearer")
+	if provider.Kind == "system_one" {
+		if fields["auth_scheme"] == nil {
+			return Provider{}, errors.New("identity shadow provider requires \"auth_scheme\"")
+		}
+		if provider.AuthScheme, err = stringValue(fields["auth_scheme"], "provider.auth_scheme"); err != nil {
+			return Provider{}, err
+		}
+		if provider.AuthScheme != "api-key" && provider.AuthScheme != "bearer" {
+			return Provider{}, errors.New("identity shadow provider.auth_scheme must be api-key or bearer")
+		}
+	} else if fields["auth_scheme"] != nil {
+		return Provider{}, errors.New("judge OpenAI Decisions uses fixed Bearer authentication")
 	}
 	credentialFields, err := mappingFields(fields["credential"], "provider.credential", setOf("store", "name"))
 	if err != nil {

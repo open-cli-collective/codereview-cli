@@ -53,7 +53,7 @@ func TestCloneIdentityShadowSnapshotAndAttemptPathOwnsValuesAndUsesRunArtifactPa
 			Metrics:   reportidentitysnapshot.NativeMetrics{RunPlanningWallMS: &planningMS, RollupCostUSD: &cost},
 		},
 	}
-	cloned, attemptDir, present, err := cloneIdentityShadowSnapshotAndAttemptPath(pipeline.ArtifactPathsFromDir(runDir), snapshot)
+	cloned, attemptDir, present, err := cloneIdentityShadowSnapshotAndAttemptPath(pipeline.ArtifactPathsFromDir(runDir), snapshot, false)
 	if err != nil || !present {
 		t.Fatalf("clone/path result: present=%t err=%v", present, err)
 	}
@@ -75,7 +75,7 @@ func TestCloneIdentityShadowSnapshotAndAttemptPathOwnsValuesAndUsesRunArtifactPa
 		*snapshot.Baseline.PriorKeys[0].KeySHA256 != "key-hash" || *snapshot.Baseline.Metrics.RunPlanningWallMS != 17 || *snapshot.Baseline.Metrics.RollupCostUSD != 0.42 {
 		t.Fatalf("observer-owned copy mutated the source snapshot: %#v", snapshot)
 	}
-	if _, _, present, err := cloneIdentityShadowSnapshotAndAttemptPath(pipeline.ArtifactPathsFromDir(runDir), nil); err != nil || present {
+	if _, _, present, err := cloneIdentityShadowSnapshotAndAttemptPath(pipeline.ArtifactPathsFromDir(runDir), nil, false); err != nil || present {
 		t.Fatalf("nil snapshot preparation = present:%t err:%v", present, err)
 	}
 }

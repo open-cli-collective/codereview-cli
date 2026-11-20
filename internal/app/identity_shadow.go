@@ -11,18 +11,27 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/config"
 	"github.com/open-cli-collective/codereview-cli/internal/credentials"
 	"github.com/open-cli-collective/codereview-cli/internal/gate"
+	"github.com/open-cli-collective/codereview-cli/internal/identityshadow"
 	"github.com/open-cli-collective/codereview-cli/internal/ledger"
 	"github.com/open-cli-collective/codereview-cli/internal/pipeline"
 	"github.com/open-cli-collective/codereview-cli/internal/reportidentitysnapshot"
+	"github.com/open-cli-collective/codereview-cli/internal/reviewplan"
 	"github.com/open-cli-collective/codereview-cli/internal/reviewrun"
 )
 
 func identityShadowSystemOneKeyResolver(cfg config.File, stores *runtimeCredentialStores) func(context.Context, string, string) (string, error) {
+	resolve := identityJudgeKeyResolver(cfg, stores)
 	return func(ctx context.Context, storeID, name string) (string, error) {
+		return resolve(ctx, "system_one", identityshadow.Credential{Store: storeID, Name: name})
+	}
+}
+
+func identityJudgeKeyResolver(cfg config.File, stores *runtimeCredentialStores) func(context.Context, string, identityshadow.Credential) (string, error) {
+	return func(ctx context.Context, kind string, ref identityshadow.Credential) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		location := config.CredentialLocation{Store: storeID, Name: name}
+		location := config.CredentialLocation{Store: ref.Store, Name: ref.Name}
 		_, reader, err := stores.Open(location)
 		if err != nil {
 			return "", err
@@ -30,7 +39,7 @@ func identityShadowSystemOneKeyResolver(cfg config.File, stores *runtimeCredenti
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		key, err := credentials.ReadIdentityAPIKey(ctx, cfg, reader, location, "system_one")
+		key, err := credentials.ReadIdentityAPIKey(ctx, cfg, reader, location, kind)
 		if err != nil {
 			return "", err
 		}
@@ -41,12 +50,17 @@ func identityShadowSystemOneKeyResolver(cfg config.File, stores *runtimeCredenti
 	}
 }
 
-func cloneIdentityShadowSnapshotAndAttemptPath(paths pipeline.ArtifactPaths, snapshot *reportidentitysnapshot.Snapshot) (reportidentitysnapshot.Snapshot, string, bool, error) {
+func cloneIdentityShadowSnapshotAndAttemptPath(paths pipeline.ArtifactPaths, snapshot *reportidentitysnapshot.Snapshot, judge bool) (reportidentitysnapshot.Snapshot, string, bool, error) {
 	if snapshot == nil {
 		return reportidentitysnapshot.Snapshot{}, "", false, nil
 	}
 	clone := reportidentitysnapshot.Clone(*snapshot)
-	attemptDir, err := paths.IdentityShadowAttempt(uuid.NewString())
+	id := uuid.NewString()
+	if judge {
+		attemptDir, err := paths.JudgeAttempt(id)
+		return clone, attemptDir, true, err
+	}
+	attemptDir, err := paths.IdentityShadowAttempt(id)
 	if err != nil {
 		return reportidentitysnapshot.Snapshot{}, "", true, err
 	}
@@ -94,20 +108,28 @@ func (runner reviewRunner) observeIdentityShadow(ctx context.Context, paths pipe
 	if runner.identityShadow == nil {
 		return
 	}
-	cloned, attemptDir, present, err := cloneIdentityShadowSnapshotAndAttemptPath(paths, snapshot)
+	cloned, attemptDir, present, err := cloneIdentityShadowSnapshotAndAttemptPath(paths, snapshot, runner.judgeEnabled)
 	if !present {
 		runner.warnIdentityShadowSkipped()
 		return
 	}
 	if err != nil {
-		writeIdentityShadowWarning(runner.pipeline.Warnings, "artifact_failure", paths.Dir)
+		runner.warnIdentityDiagnostic("artifact_failure", paths.Dir)
 		return
 	}
 	runner.identityShadow.Observe(ctx, cloned, attemptDir)
 }
 
 func (runner reviewRunner) warnIdentityShadowSkipped() {
-	writeIdentityShadowWarning(runner.pipeline.Warnings, "skipped_no_snapshot", "")
+	runner.warnIdentityDiagnostic("skipped_no_snapshot", "")
+}
+
+func (runner reviewRunner) warnIdentityDiagnostic(status, path string) {
+	if runner.judgeEnabled && runner.pipeline.Warnings != nil {
+		_, _ = fmt.Fprintf(runner.pipeline.Warnings, "cr judge prior-threads status=%s artifacts=%q\n", status, path)
+		return
+	}
+	writeIdentityShadowWarning(runner.pipeline.Warnings, status, path)
 }
 
 func writeIdentityShadowWarning(warnings io.Writer, status, artifactPath string) {
@@ -120,4 +142,24 @@ func writeIdentityShadowWarning(warnings io.Writer, status, artifactPath string)
 	}
 	path := strings.NewReplacer("\n", "_", "\r", "_", "\t", "_").Replace(artifactPath)
 	_, _ = fmt.Fprintf(warnings, "cr identity-shadow status=%s artifacts=%q\n", status, path)
+}
+
+// MaxPriorJudgeInputBytes bounds a local captured input or prior-thread fixture.
+const MaxPriorJudgeInputBytes = identityshadow.MaxJudgeInputBytes
+
+// PriorJudgeReport is the advisory report for a local judge run.
+type PriorJudgeReport = identityshadow.JudgeReport
+
+// JudgePriorThreads runs the advisory judge from a saved local input.
+func JudgePriorThreads(ctx context.Context, input []byte, configPath, outputDir string, resolve func(context.Context, string, config.CredentialLocation) (string, error)) (PriorJudgeReport, error) {
+	if resolve == nil {
+		return PriorJudgeReport{}, fmt.Errorf("judge: credential resolver is required")
+	}
+	return identityshadow.RunPriorJudge(ctx, identityshadow.JudgeOptions{
+		ConfigPath: configPath,
+		ExactKey:   reviewplan.PriorFindingIdentityKey,
+		ResolveKey: func(ctx context.Context, kind string, ref identityshadow.Credential) (string, error) {
+			return resolve(ctx, kind, config.CredentialLocation{Store: ref.Store, Name: ref.Name})
+		},
+	}, input, outputDir)
 }

@@ -79,6 +79,21 @@ Native whole-rollup timing and cost values cover all review work and do not
 prove identity-only performance. The diagnostic has no authority over review
 plans, posting, gates, ledger state, hooks, normal output, or exit semantics.
 
+## Prior-thread judge
+
+`cr judge prior-threads` runs on a local fixture. `cr review --judge-config`
+composes the same judge with the post-review observer. Review-time capture
+supplies the native exact-key digests and eligible prior roots. The standalone
+command can reuse that capture or take a decision-free replay fixture. For the
+latter, the app supplies the native exact-key function.
+
+Both paths use the report-identity projection and the shared inference runner.
+Only the composition layer resolves credentials. The judge writes suggestions
+and receipts in its own attempt directory after native review completion and
+hook dispatch. Authoritative review code has no consumer for the suggestions.
+
+## Review workbench
+
 Review workbench preparation is location-independent. Runtime composition
 constructs the authenticated Git command adapter from the repository/read
 credential and injects it into the pipeline; workbench code derives remotes
