@@ -118,6 +118,53 @@ func TestPriorJudgeProviderWiring(t *testing.T) {
 	}
 }
 
+func TestPriorJudgeMakesNoCallsWithoutEligiblePairs(t *testing.T) {
+	finding := comparisonFinding("finding")
+	finding.Body = "Preserve the pagination cursor."
+	for _, tc := range []struct {
+		name    string
+		threads []reportidentity.Thread
+	}{
+		{"first pass", []reportidentity.Thread{}},
+		{"ineligible and unrelated", []reportidentity.Thread{
+			{ID: "ineligible", Eligible: false, FilePath: finding.FilePath, Body: "The cursor is reset before the next page."},
+			{ID: "unrelated", Eligible: true, FilePath: "src/math.go", Body: "Round fractional cents consistently."},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			input, err := json.Marshal(reportidentity.Input{
+				SchemaVersion: reportidentity.SchemaVersion,
+				Task:          reportidentity.TaskPriorThread,
+				Findings:      []review.Finding{finding},
+				Threads:       tc.threads,
+				Decisions:     []reportidentity.Decision{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, err := RunPriorJudge(t.Context(), JudgeOptions{
+				ConfigPath: writeJudgeTestConfig(t, dir, validConfigYAML),
+				ExactKey:   reviewplan.PriorFindingIdentityKey,
+				ResolveKey: func(context.Context, string, Credential) (string, error) {
+					t.Fatal("judge tried to resolve credentials without eligible pairs")
+					return "", nil
+				},
+				SystemOne: identityexperiment.SystemOneDependencies{
+					NewClient: func(systemone.Options) (identityexperiment.SystemOneDecider, error) {
+						t.Fatal("judge opened a provider client without eligible pairs")
+						return nil, nil
+					},
+				},
+			}, input, filepath.Join(dir, "output"))
+			if err != nil || report.Status != "complete" || report.SelectedPairs != 0 ||
+				report.Receipts.ProviderCalls != 0 || len(report.Suggestions) != 0 {
+				t.Fatalf("unexpected zero-pair report: %+v, %v", report, err)
+			}
+		})
+	}
+}
+
 func TestPriorJudgeExceedsBudgetBeforeCredentialLookup(t *testing.T) {
 	dir := t.TempDir()
 	config := strings.Replace(validConfigYAML, "max_calls: 40", "max_calls: 0", 1)

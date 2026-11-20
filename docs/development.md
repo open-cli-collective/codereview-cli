@@ -79,6 +79,15 @@ Native whole-rollup timing and cost values cover all review work and do not
 prove identity-only performance. The diagnostic has no authority over review
 plans, posting, gates, ledger state, hooks, normal output, or exit semantics.
 
+## Author preflight
+
+`cr preflight` uses the normal dry-run pipeline against the current PR. Runtime
+composition clears lifecycle hooks for the command. The pipeline reads current
+discussion and bypasses cross-run reviewer cohorts and orchestrator conversations.
+It opens a fresh dry-run record for each invocation. The artifact marker keeps
+incomplete preflight attempts out of ordinary dry-run recovery while the existing
+dry-run retention policy covers their artifacts.
+
 ## Prior-thread judge
 
 `cr judge prior-threads` runs on a local fixture. `cr review --judge-config`

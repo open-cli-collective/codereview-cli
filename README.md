@@ -875,7 +875,17 @@ LLM API credentials. Re-provision API-key LLM refs with `anthropic_api_key` or
 
 ## Common Workflows
 
-Preview a review without posting:
+Check your draft PR before requesting review:
+
+```bash
+cr preflight https://github.com/OWNER/REPO/pull/123
+```
+
+Inspect the local findings and run the relevant tests before requesting formal
+review. Use [an optional judge configuration](#cr-preflight) on follow-ups to
+check for findings that may repeat a thread opened by the selected review identity.
+
+Preview a review action plan without posting:
 
 ```bash
 cr review --dry-run https://github.com/OWNER/REPO/pull/123
@@ -1495,6 +1505,50 @@ markers are reported as omitted because nothing is posted.
 Live text output includes run ID, gate status, decision, outcome, PR, artifacts,
 and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 `outbox`, `artifacts`, and `fail_on_triggered`.
+
+### `cr preflight`
+
+```sh
+cr preflight <PR> [--judge-config judge.yml | --no-judge] [--json]
+```
+
+Preflight checks the current GitHub pull request or GitLab merge request,
+including drafts. It uses repository profile routing, the configured reviewers,
+and current PR discussion. The check can run on your own PR with your own
+reviewer credentials. Each invocation starts fresh conversations, skips lifecycle
+hooks, and records a private dry-run report with the findings, reviewer coverage,
+and artifact paths. It makes no review posts or thread updates. JSON uses the
+dry-run result format, where actions describe the local plan. If the reviewers
+could not complete coverage or analyze required context, preflight preserves the
+report, records an incomplete outcome, and exits with status 1.
+
+Preflight runs the reviewers alone by default. To enable prior-thread judging
+for a profile, set its [judge YAML](#cr-judge-prior-threads):
+
+```sh
+cr --profile work config preflight judge set path/to/judge.yml
+cr --profile work config show
+cr --profile work config preflight judge unset
+```
+
+Setting a judge stores an absolute path under `profiles.<profile>.preflight.judge_config`.
+Future preflights routed to that profile can send eligible finding and thread
+text to the provider in that file. The judge considers earlier CR finding threads
+opened by the selected profile's review identity. For example, a profile using
+your personal identity cannot match threads opened by a separate review bot. Use a file you control and a provider
+appropriate for every repository routed to the profile. Older binaries may drop
+the setting when they rewrite the profile.
+
+`--judge-config <path>` selects a different YAML for one preflight, including
+on a profile with no saved judge. `--no-judge` runs the reviewers alone for one
+invocation and bypasses the saved file, even if it is missing. The flags are
+mutually exclusive. The saved setting is specific to `cr preflight`. A formal
+`cr review` takes its own explicit `--judge-config`.
+
+The judge makes zero calls and resolves no judge credentials when there are no
+eligible pairs. Preflight prints the judge status and any attempt path to stderr.
+A skipped or unavailable judge can produce no suggestions file. When judging
+completes, inspect `suggestions.json` alongside the findings before acting.
 
 ### `cr judge prior-threads`
 

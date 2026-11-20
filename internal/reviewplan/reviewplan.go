@@ -113,7 +113,8 @@ type ExistingThread struct {
 
 // Request is the pure input to Build.
 type Request struct {
-	PostMode PostMode
+	PostMode  PostMode
+	Preflight bool
 
 	ProviderCaps ProviderCaps
 	Diff         Diff
@@ -186,7 +187,9 @@ type DiffHunk struct {
 
 // Plan is the complete pure action plan.
 type Plan struct {
-	Outcome          Outcome
+	Outcome Outcome
+	// Incomplete means evidence or coverage was missing during the review.
+	Incomplete       bool
 	RollupMarkdown   string
 	Actions          []Action
 	AnchoredFindings []AnchoredFinding
@@ -472,6 +475,7 @@ func (b *builder) buildRepoGuidanceUnavailable() (Plan, error) {
 
 	return Plan{
 		Outcome:        OutcomeRequestChanges,
+		Incomplete:     true,
 		RollupMarkdown: body,
 		Actions:        []Action{submit},
 		Summary:        summary,
@@ -488,10 +492,12 @@ func (b *builder) buildReview() (Plan, error) {
 	}
 	event := effectiveReviewEvent(b.req.Rollup.ReviewEvent, ordered, b.req.EventOptions)
 	event = applySelfApprovalPolicy(event, b.req.EventOptions)
-	approvalWithheld := false
-	if event == review.ReviewEventApprove && (len(b.req.RunSummary.ReviewerFailures) > 0 || len(b.req.RunSummary.ThreadAnalysisFailures) > 0 || hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)) {
+	incomplete := len(b.req.RunSummary.ReviewerFailures) > 0 ||
+		len(b.req.RunSummary.ThreadAnalysisFailures) > 0 ||
+		hasIncompleteReviewerCoverage(b.req.RunSummary.ReviewerCoverage)
+	approvalWithheld := event == review.ReviewEventApprove && incomplete
+	if approvalWithheld {
 		event = review.ReviewEventComment
-		approvalWithheld = true
 	}
 	outcome, err := OutcomeFromReviewEvent(event)
 	if err != nil {
@@ -537,6 +543,7 @@ func (b *builder) buildReview() (Plan, error) {
 
 	return Plan{
 		Outcome:          outcome,
+		Incomplete:       incomplete,
 		RollupMarkdown:   rollupBody,
 		Actions:          actions,
 		AnchoredFindings: b.anchoredInInputOrder(),
@@ -996,7 +1003,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 	// Rendered after the counts, not before them: the table of zeros is what
 	// misleads, so the explanation has to be the next thing read.
 	withheld := func() {
-		if approvalWithheld {
+		if approvalWithheld && !b.req.Preflight {
 			writeApprovalWithheld(&out, summary.Run.ReviewerFailures, summary.Run.ReviewerCoverage, summary.Run.ThreadAnalysisFailures)
 		}
 	}
@@ -1028,7 +1035,7 @@ func (b *builder) renderRollup(ordered []review.Finding, anchored []AnchoredFind
 		writeReviewerFailureDiagnostics(&out, summary.Run.ReviewerFailures)
 	}
 	writeThreadAnalysisDiagnostics(&out, summary.Run.ThreadAnalysisFailures)
-	writeThreadCountsLine(&out, summary.Threads)
+	writeThreadCountsLine(&out, summary.Threads, b.req.Preflight)
 	if b.req.Rollup.Fallback {
 		out.WriteString("\n---\n\n")
 		out.WriteString("> Note: The rollup step did not return valid output, so duplicate findings were not merged. The review event comes from finding severities and the review policy.\n")
@@ -1097,23 +1104,35 @@ func (b *builder) renderNoDiffRollup() string {
 func (b *builder) renderRepoGuidanceUnavailableRollup(summary Summary) string {
 	var out strings.Builder
 	rollupHeader(&out, b.req)
-	out.WriteString("Requesting changes because trusted repo-local review guidance could not be loaded from `.codereview/agents/` on the PR base branch.\n\n")
+	if b.req.Preflight {
+		out.WriteString("Preflight is incomplete because trusted repo-local review guidance could not be loaded from `.codereview/agents/` on the PR base branch.\n\n")
+	} else {
+		out.WriteString("Requesting changes because trusted repo-local review guidance could not be loaded from `.codereview/agents/` on the PR base branch.\n\n")
+	}
 	if reason := strings.TrimSpace(b.req.RepoGuidanceUnavailableReason); reason != "" {
 		out.WriteString(sanitize(reason))
 		out.WriteString("\n\n")
 	}
-	writeThreadCountsLine(&out, summary.Threads)
+	writeThreadCountsLine(&out, summary.Threads, b.req.Preflight)
 	writeRunFooter(&out, summary.Run, summary.Totals)
 	return strings.TrimSpace(out.String())
 }
 
 func rollupHeader(out *strings.Builder, req Request) {
-	out.WriteString("## Automated PR Review\n\n")
+	if req.Preflight {
+		out.WriteString("## PR Preflight\n\n")
+	} else {
+		out.WriteString("## Automated PR Review\n\n")
+	}
 	writeRunMetadata(out, req)
 	out.WriteString("### Summary\n\n")
 }
 
-func writeThreadCountsLine(out *strings.Builder, counts ThreadCounts) {
+func writeThreadCountsLine(out *strings.Builder, counts ThreadCounts, preflight bool) {
+	if preflight {
+		fmt.Fprintf(out, "*%d PR discussion threads considered. %d summarized.*\n", counts.Considered, counts.Summarized)
+		return
+	}
 	fmt.Fprintf(out, "*%d PR discussion threads considered. %d summarized; %d resolved.*\n", counts.Considered, counts.Summarized, counts.Resolved)
 }
 
@@ -1127,7 +1146,11 @@ func writeRunMetadata(out *strings.Builder, req Request) {
 	if strings.TrimSpace(req.Profile) != "" || strings.TrimSpace(req.PostingIdentity) != "" {
 		out.WriteString("**Profile:** `")
 		out.WriteString(sanitize(req.Profile))
-		out.WriteString("` - **Posting as:** `")
+		if req.Preflight {
+			out.WriteString("` - **Thread identity:** `")
+		} else {
+			out.WriteString("` - **Posting as:** `")
+		}
 		out.WriteString(sanitize(req.PostingIdentity))
 		out.WriteString("`\n")
 	}

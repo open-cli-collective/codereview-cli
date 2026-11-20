@@ -43,6 +43,24 @@ func TestReviewRunExitCodesMatchCommandTaxonomy(t *testing.T) {
 	}
 }
 
+func TestLiveRunRejectsPreflightBeforeRecovery(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.req.Preflight = true
+	fixture.fake.SetCallHook(func(op gitprovider.Operation) {
+		t.Fatalf("live runner contacted the provider during preflight rejection: %v", op)
+	})
+	planner := &fakePlanner{store: fixture.store}
+	opts := fixture.opts(planner)
+	opts.ResolveRepoRoot = func(context.Context) (string, error) {
+		t.Fatal("live runner proceeded past request validation")
+		return "", nil
+	}
+	_, err := Run(t.Context(), opts, Request{Pipeline: fixture.req, Flags: Flags{RetryPosts: true}})
+	if err == nil || !strings.Contains(err.Error(), "preflight requires dry-run review") {
+		t.Fatalf("Run error = %v, want preflight rejection", err)
+	}
+}
+
 func TestRunFreshPlansPostsAndCompletes(t *testing.T) {
 	ctx := context.Background()
 	fixture := newFixture(t)

@@ -96,6 +96,9 @@ func RenderConfigText(w io.Writer, show ConfigShow) error {
 	if _, err := fmt.Fprintf(w, "Profile: %s\n", show.ActiveProfile); err != nil {
 		return err
 	}
+	if err := writeOptionalKV(w, "Preflight judge config", show.Profile.Preflight.JudgeConfigPath); err != nil {
+		return err
+	}
 	if show.Backend != "" {
 		if err := writeKV(w, "Credential backend", show.Backend); err != nil {
 			return err

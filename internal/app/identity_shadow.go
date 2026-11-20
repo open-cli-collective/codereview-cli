@@ -150,6 +150,16 @@ const MaxPriorJudgeInputBytes = identityshadow.MaxJudgeInputBytes
 // PriorJudgeReport is the advisory report for a local judge run.
 type PriorJudgeReport = identityshadow.JudgeReport
 
+// InspectPriorJudgeConfig validates the judge YAML and returns its destination
+// and model without reading credentials or contacting the provider.
+func InspectPriorJudgeConfig(path string) (endpoint, model string, err error) {
+	cfg, err := identityshadow.LoadJudgeConfig(path)
+	if err != nil {
+		return "", "", err
+	}
+	return cfg.Provider.Endpoint, cfg.Model, nil
+}
+
 // JudgePriorThreads runs the advisory judge from a saved local input.
 func JudgePriorThreads(ctx context.Context, input []byte, configPath, outputDir string, resolve func(context.Context, string, config.CredentialLocation) (string, error)) (PriorJudgeReport, error) {
 	if resolve == nil {

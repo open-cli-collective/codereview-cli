@@ -66,6 +66,9 @@ func TestLiveIdentityShadowPreservesAuthoritativeReview(t *testing.T) {
 			}
 		})
 	}
+	t.Run("preflight-judge", func(t *testing.T) {
+		runLiveShadowIntegration(t, catalog, repoDir, agentDir, baseSHA, headSHA, "preflight-judge", true)
+	})
 }
 
 type liveShadowObservation struct {
@@ -89,6 +92,11 @@ type liveShadowNativeState struct {
 func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoDir, agentDir, baseSHA, headSHA, scenario string, enabled bool) liveShadowObservation {
 	t.Helper()
 	ctx := context.Background()
+	preflight := scenario == "preflight-judge"
+	command := "review"
+	if preflight {
+		command = "preflight"
+	}
 	root := t.TempDir()
 	layout := statepaths.NewLayout(filepath.Join(root, "data"), filepath.Join(root, "cache"))
 	store, err := ledger.Open(ctx, filepath.Join(root, "ledger.db"))
@@ -106,7 +114,7 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 	var warnings bytes.Buffer
 	hookCapture := filepath.Join(root, "hooks.jsonl")
 	t.Setenv("APP_HOOK_CAPTURE", hookCapture)
-	dispatcher := newHookDispatcher(OpenRequest{Profile: profile, ProfileName: "home", Command: "review", PRURL: pr.URL, Warnings: &warnings}, store)
+	dispatcher := newHookDispatcher(OpenRequest{Profile: profile, ProfileName: "home", Command: command, Preflight: preflight, PRURL: pr.URL, Warnings: &warnings}, store)
 	t.Cleanup(dispatcher.drain)
 	provider := &liveShadowGitProvider{Fake: &gitprovider.Fake{}, identity: identity}
 	provider.SetCapabilities(gitprovider.ProviderCaps{NativeFileLevelComments: true, ThreadResolution: true})
@@ -163,7 +171,7 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 	if err := os.WriteFile(configPath, []byte(liveShadowConfig(scenario)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	judgeEnabled := enabled && scenario == "prior-judge"
+	judgeEnabled := enabled && (scenario == "prior-judge" || preflight)
 	shadow := &liveShadowDecider{malformed: scenario == "malformed-provider"}
 	observerCalls, keyCalls, clientCalls := 0, 0, 0
 	attemptDir := ""
@@ -206,6 +214,10 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 			attemptDir = path
 			if len(snapshot.Findings) != 2 || snapshot.Findings[0].Body != liveShadowFirstBody || snapshot.Findings[1].Body != liveShadowSecondBody || len(snapshot.PriorRoots) != 1 || snapshot.PriorRoots[0].Body != liveShadowPriorBody {
 				t.Fatalf("observer did not receive complete original source: %#v", snapshot)
+			}
+			if preflight {
+				actual.Observe(entryCtx, snapshot, path)
+				return
 			}
 			before := nativeState()
 			assertLiveShadowNativePosts(t, before)
@@ -251,12 +263,12 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 		return out, nil
 	}
 	resolveRoot := func(context.Context) (string, error) { return repoDir, nil }
-	open := OpenRequest{IdentityShadow: enabled && !judgeEnabled, MaxConcurrency: 1, MaxAgents: 1}
+	open := OpenRequest{Preflight: preflight, IdentityShadow: enabled && !judgeEnabled, MaxConcurrency: 1, MaxAgents: 1}
 	if judgeEnabled {
 		open.JudgeConfigPath = configPath
 	}
 	runner := buildReviewRunner(store, provider, withHookProvider(dispatcher, provider), adapter, profile, noopLimiter{}, layout, &warnings, nil, dispatcher,
-		open, "review", gitCommand, resolveRoot, observer)
+		open, command, gitCommand, resolveRoot, observer)
 	runner.pipeline.Now = func() time.Time { return fixed }
 	runner.live.Now = runner.pipeline.Now
 	runner.live.NewRunID = func() string { return "live-shadow-run" }
@@ -275,6 +287,27 @@ func runLiveShadowIntegration(t *testing.T, catalog *modelcatalog.Catalog, repoD
 	req := pipelineRequest(ref, pr, profile, identity)
 	major := review.SeverityMajor
 	req.FailOn, req.ToolVersion = &major, "identity-shadow-live-test"
+	if preflight {
+		req.Preflight = true
+		result, err := runner.DryRun(ctx, req)
+		if err != nil || result.Plan.Incomplete || result.ReportIdentity == nil {
+			t.Fatalf("preflight needs a complete report and judge snapshot: %v, warnings: %s", err, &warnings)
+		}
+		saved := nativeState()
+		if len(saved.Inline)+len(saved.Replies)+len(saved.Resolved)+len(saved.Rollups)+len(saved.Reviews) != 0 {
+			t.Fatal("preflight posted to the provider")
+		}
+		if observerCalls != 1 || keyCalls != 1 || clientCalls != 1 {
+			t.Fatalf("preflight did not invoke the configured judge: observer=%d keys=%d clients=%d", observerCalls, keyCalls, clientCalls)
+		}
+		var report identityshadow.JudgeReport
+		liveShadowReadJSON(t, filepath.Join(attemptDir, "suggestions.json"), &report)
+		if report.Status != "complete" || report.Receipts.ProviderCalls != 2 || len(report.Suggestions) != 2 ||
+			report.Suggestions[0].ThreadID != "prior-thread" || report.Suggestions[1].ThreadID != "prior-thread" {
+			t.Fatalf("preflight did not retain judge suggestions: %+v", report)
+		}
+		return liveShadowObservation{}
+	}
 	result, runErr := runner.Live(ctx, req, reviewrun.Flags{})
 	if runErr != nil {
 		t.Fatalf("actual Live(enabled=%t, %s): %v; warnings: %s", enabled, scenario, runErr, &warnings)

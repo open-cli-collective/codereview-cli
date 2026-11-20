@@ -470,7 +470,7 @@ func Register(rootCmd *cobra.Command, opts *root.Options) {
 	root.AddJSONFlag(clearCmd, &clearJSON)
 	clearCmd.Flags().BoolVar(&clearDryRun, "dry-run", false, "Report what would be cleared without deleting credentials, config, or cache")
 
-	configCmd.AddCommand(showCmd, pathCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsStoreCommand(opts), newRetentionCommand(opts), clearCmd, newLLMCommand(opts))
+	configCmd.AddCommand(showCmd, pathCmd, routeCmd, resolveProfileCmd, agentSourceCmd, newSecretsStoreCommand(opts), newRetentionCommand(opts), newPreflightCommand(opts), clearCmd, newLLMCommand(opts))
 	rootCmd.AddCommand(configCmd)
 }
 

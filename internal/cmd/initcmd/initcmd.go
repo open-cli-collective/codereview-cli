@@ -3453,6 +3453,9 @@ func buildNonInteractiveInitPlan(cmd *cobra.Command, opts *root.Options, flags i
 	}
 	if previousProfile != nil {
 		profile.LLMRuntime = previousProfile.LLMRuntime
+		if config.NormalizeHost(profile.Git.Host) == config.NormalizeHost(previousProfile.Git.Host) {
+			profile.Preflight = previousProfile.Preflight
+		}
 		profile.LLM.DefaultsVersion = previousProfile.LLM.DefaultsVersion
 		profile.Git.IdentityCache = previousProfile.Git.IdentityCache
 		if previousProfile.LLM.ModelMap != nil {

@@ -619,10 +619,12 @@ func TestInitAPIKeyAuthWithExistingKeyDoesNotPrintLLMFollowUpHint(t *testing.T) 
 
 func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
+	judgePath := filepath.Join(t.TempDir(), "judge.yml")
 	cfg := config.File{
 		Secrets: testFileSecretsConfig(),
 		Profiles: map[string]config.Profile{
 			"work": profileWithCredentialStore(config.Profile{
+				Preflight: config.PreflightConfig{JudgeConfigPath: judgePath},
 				Git: config.GitConfig{
 					Host:       "github.com",
 					AuthMode:   config.GitAuthModePAT,
@@ -658,6 +660,9 @@ func TestInitReplaceProfilePreservesExistingCredentialRefsByDefault(t *testing.T
 		t.Fatalf("Load config: %v", err)
 	}
 	profile := got.Profiles["work"]
+	if profile.Preflight.JudgeConfigPath != judgePath {
+		t.Fatalf("saved preflight judge = %q, want preserved path %q", profile.Preflight.JudgeConfigPath, judgePath)
+	}
 	if profile.Git.Credential.Name != "codereview/custom-git" {
 		t.Fatalf("git ref = %q, want preserved custom-git", profile.Git.Credential.Name)
 	}

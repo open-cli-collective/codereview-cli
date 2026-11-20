@@ -62,6 +62,7 @@ func buildRootCommand(stdin io.Reader, stdout, stderr io.Writer) (*cobra.Command
 		pireviewtoolcmd.Register,
 		agentscmd.Register,
 		reviewcmd.Register,
+		reviewcmd.RegisterPreflight,
 		respondcmd.Register,
 		sessionscmd.Register,
 		datacmd.Register,

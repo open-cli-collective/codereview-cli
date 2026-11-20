@@ -214,8 +214,10 @@ type Request struct {
 	// PR discussion is fetched, and no PR-scoped orchestrator or reviewer
 	// session (which saw earlier discussion) is resumed or updated.
 	WithoutDiscussion bool
-	Rerun             bool
-	FreshSession      bool
+	// Preflight keeps current PR discussion but starts fresh local review state.
+	Preflight    bool
+	Rerun        bool
+	FreshSession bool
 
 	FailOn              *review.Severity
 	AllowSelfReview     bool
@@ -475,6 +477,9 @@ func DryRun(ctx context.Context, opts Options, req Request) (Result, error) {
 // Live executes the review planning phases into a gate-allocated live run.
 func Live(ctx context.Context, opts Options, req Request, run ledger.Run) (Result, error) {
 	req.Profile = profileWithCatalog(opts, req.Profile)
+	if req.Preflight {
+		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: preflight requires dry-run review"))
+	}
 	if hasDryRunStageOverrides(req) {
 		return Result{}, Failure(FailureTerminal, fmt.Errorf("pipeline: selection and reviewer overrides require dry-run review"))
 	}
@@ -657,7 +662,7 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		return Result{}, err
 	}
 	var resumedDryRun *ledger.Run
-	if !mode.live && !req.Rerun {
+	if !mode.live && !req.Rerun && !req.Preflight {
 		run, ok, err := findIncompleteDryRun(ctx, opts.Store, req, reviewCtx.reviewPR)
 		if err != nil {
 			return Result{}, err
@@ -721,7 +726,11 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 			if err != nil {
 				return Result{}, err
 			}
-			if err := runartifact.WriteMarkerWithOptions(prepared.artifacts.Dir, runartifact.KindReview, run.RunID, runartifact.MarkerOptions{WithoutDiscussion: req.WithoutDiscussion}); err != nil {
+			kind := runartifact.KindReview
+			if req.Preflight {
+				kind = runartifact.KindPreflight
+			}
+			if err := runartifact.WriteMarkerWithOptions(prepared.artifacts.Dir, kind, run.RunID, runartifact.MarkerOptions{WithoutDiscussion: req.WithoutDiscussion}); err != nil {
 				return Result{}, err
 			}
 		}
@@ -776,7 +785,8 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 		}
 		return Result{}, err
 	}
-	if opts.CaptureReportIdentity && (!opts.CaptureFreshReportIdentityOnly || resumedDryRun == nil) {
+	incompletePreflight := req.Preflight && result.Plan.Incomplete
+	if opts.CaptureReportIdentity && !incompletePreflight && (!opts.CaptureFreshReportIdentityOnly || resumedDryRun == nil) {
 		result.ReportIdentity = captureReportIdentitySnapshot(req, result, prepared.threadContext)
 	}
 	if err := persistExecutionResult(ctx, opts, req, run, prepared, findingSessions, &result); err != nil {
@@ -788,7 +798,12 @@ func execute(ctx context.Context, opts Options, req Request, mode executionMode)
 				return Result{}, err
 			}
 		}
-		if err := opts.Store.CompleteRun(ctx, run.RunID, mode.completeAs, opts.now()); err != nil {
+		outcome := mode.completeAs
+		if incompletePreflight {
+			outcome = ledger.OutcomeIncomplete
+			result.Run.Outcome = &outcome
+		}
+		if err := opts.Store.CompleteRun(ctx, run.RunID, outcome, opts.now()); err != nil {
 			return Result{}, err
 		}
 	}
@@ -840,16 +855,16 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	if err != nil {
 		return nil, false, Failure(FailureTerminal, err)
 	}
-	// A review without discussion must not resume the PR's orchestrator or
-	// reviewer sessions: they carry earlier discussion. It also leaves them
-	// untouched, so a replay never becomes the PR's next live context. The zero
-	// named-session state and cohort scope make every checkpoint a no-op.
+	// Private author checks and discussion-free replays leave the PR's
+	// persistent conversations alone. Empty session and cohort state also
+	// makes the cross-run checkpoints no-ops.
+	reuseConversations := !req.WithoutDiscussion && !req.Preflight
 	var namedSession namedSessionState
 	var cohortScope ledger.ReviewerCohortScope
 	var selection llm.Selection
 	var reviewerResumeIDs map[string]string
 	reusedCohort := false
-	if !req.WithoutDiscussion {
+	if reuseConversations {
 		namedSession, err = prepareNamedSession(ctx, opts, req, mode.live, runtimeConfig.model, now)
 		if err != nil {
 			return nil, false, err
@@ -922,7 +937,7 @@ func executeLLMPhases(ctx context.Context, opts Options, req Request, mode execu
 	prepared.fastIgnored = req.ReviewerFast && !effectiveFast
 	req.ReviewerFast = effectiveFast
 	opts.emitWarning(warning)
-	if !reusedCohort && !req.WithoutDiscussion {
+	if !reusedCohort && reuseConversations {
 		if err := persistReviewerCohort(ctx, opts, req, cohortScope, prepared.catalog, selection, now); err != nil {
 			return nil, false, err
 		}
@@ -3941,6 +3956,7 @@ func (opts Options) buildPlan(req Request, pr gitprovider.PR, postMode reviewpla
 	runSummary, findingReviewers := opts.buildRunSummary(req, runInputs)
 	plan, err := reviewplan.Build(reviewplan.Request{
 		PostMode:                      postMode,
+		Preflight:                     req.Preflight,
 		ProviderCaps:                  caps,
 		Diff:                          diff,
 		Findings:                      findings,

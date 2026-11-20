@@ -328,24 +328,53 @@ func TestDryRunWithDiscussionFeedsExistingDiscussion(t *testing.T) {
 // Ordinary dry runs must retain isolated thread failures after the replay mode
 // is added, including the non-approving outcome and the rollup evidence.
 func TestDryRunWithDiscussionRetainsIsolatedThreadFailures(t *testing.T) {
+	t.Run("review", func(t *testing.T) { checkDryRunThreadFailure(t, false) })
+	t.Run("preflight", func(t *testing.T) { checkDryRunThreadFailure(t, true) })
+}
+
+func checkDryRunThreadFailure(t *testing.T, preflight bool) {
+	t.Helper()
 	ctx := context.Background()
 	store := openPipelineStore(t)
 	defer closeStore(t, store)
 	provider, req := dryRunHarness(t)
+	req.Preflight = preflight
 	provider.threads = []gitprovider.InlineThread{markedReviewThread(t, "thread-failed", "main.go", 2, req.PostingIdentity, gitprovider.Identity{Login: "human", ID: "human-id"})}
 	adapter := &llm.FakeAdapter{NameValue: "fake-llm"}
 	adapter.Queue(fakeLLMResult("dossier", discussionSummaryJSON(nil, nil), 1, 1))
 	adapter.Queue(fakeLLMResult("selection", selectionJSON("harness:reviewer", "main.go"), 1, 1))
 	adapter.Queue(llm.FakeResult{SessionID: "failed-thread", WaitErr: errors.New("thread provider failed")})
-	adapter.Queue(fakeLLMResult("reviewer", findingsWithCoverageJSON("harness:reviewer", []string{"main.go"}, nil, nil, nil), 1, 1))
-	adapter.Queue(fakeLLMResult("rollup", rollupJSON("approve", nil), 1, 1))
+	const findingBody = "Keep the recoverable reviewer finding."
+	var findings []findingJSONInput
+	var ordered []string
+	if preflight {
+		findings = []findingJSONInput{{Severity: "minor", File: "main.go", Line: 2, Body: findingBody}}
+		ordered = []string{"finding-1"}
+	}
+	adapter.Queue(fakeLLMResult("reviewer", findingsWithCoverageJSON("harness:reviewer", []string{"main.go"}, nil, nil, findings), 1, 1))
+	adapter.Queue(fakeLLMResult("rollup", rollupJSON("approve", ordered), 1, 1))
 
-	result, err := dryRunForTest(ctx, withoutDiscussionOptions(t, provider, adapter, store, "run-with-thread-failure"), req)
+	opts := withoutDiscussionOptions(t, provider, adapter, store, "run-with-thread-failure")
+	opts.CaptureReportIdentity = true
+	result, err := dryRunForTest(ctx, opts, req)
 	if err != nil {
 		t.Fatalf("DryRun: %v", err)
 	}
 	if result.WithoutDiscussion || result.Plan.Outcome != reviewplan.OutcomeComment {
 		t.Fatalf("mode/outcome = %t/%s, want ordinary non-approving review", result.WithoutDiscussion, result.Plan.Outcome)
+	}
+	if preflight {
+		saved, err := store.GetRun(ctx, result.Run.RunID)
+		if err != nil || saved.Outcome == nil || *saved.Outcome != ledger.OutcomeIncomplete {
+			t.Fatalf("saved preflight = %#v, error %v", saved, err)
+		}
+		if result.Run.Outcome == nil || *result.Run.Outcome != ledger.OutcomeIncomplete || result.ReportIdentity != nil {
+			t.Fatal("partial preflight must be reported as incomplete and skip judge capture")
+		}
+		data, err := os.ReadFile(result.Artifacts.FindingsJSON) // #nosec G304 -- this test owns the run artifact directory.
+		if err != nil || !strings.Contains(string(data), findingBody) || !strings.Contains(result.Plan.RollupMarkdown, findingBody) {
+			t.Fatalf("incomplete preflight lost the reviewer finding in its report or artifacts: %v", err)
+		}
 	}
 	if len(result.ThreadAnalysisFailures) != 1 || result.ThreadAnalysisFailures[0].ThreadID != "thread-failed" {
 		t.Fatalf("thread failures = %#v, want isolated failure", result.ThreadAnalysisFailures)

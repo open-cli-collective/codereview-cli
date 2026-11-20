@@ -624,6 +624,9 @@ func validateOptions(opts Options) error {
 }
 
 func validateRequest(req Request) error {
+	if req.Pipeline.Preflight {
+		return errors.New("reviewrun: preflight requires dry-run review")
+	}
 	if err := req.Pipeline.PRRef.Validate(); err != nil {
 		return err
 	}
