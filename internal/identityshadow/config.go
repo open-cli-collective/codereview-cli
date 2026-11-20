@@ -67,6 +67,16 @@ type Prices struct {
 	OutputPerMillion float64 `json:"output_per_million" yaml:"output_per_million"`
 }
 
+// LoadJudgeConfig reads and validates the standalone judge configuration
+// without resolving credentials or opening a provider client.
+func LoadJudgeConfig(path string) (Config, error) {
+	data, err := readConfigBytes(path)
+	if err != nil {
+		return Config{}, err
+	}
+	return parseIdentityConfig(data, true)
+}
+
 func parseConfig(data []byte) (Config, error) {
 	return parseIdentityConfig(data, false)
 }

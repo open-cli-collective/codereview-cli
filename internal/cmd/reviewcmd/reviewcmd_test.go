@@ -72,6 +72,53 @@ func TestAuthorPreflightUsesDryRunAndOptionalJudge(t *testing.T) {
 	}
 }
 
+func TestAuthorPreflightJudgeFollowsRepositoryRouting(t *testing.T) {
+	t.Chdir(t.TempDir())
+	homeJudge := filepath.Join(t.TempDir(), "missing-home-judge.yml")
+	workJudge := filepath.Join(t.TempDir(), "missing-work-judge.yml")
+	cfg := testConfig()
+	home := cfg.Profiles["home"]
+	home.Preflight.JudgeConfigPath = homeJudge
+	cfg.Profiles["home"] = home
+	work := home
+	work.Preflight.JudgeConfigPath = workJudge
+	cfg.Profiles["work"] = work
+	cfg.RepositoryProfiles = []config.RepositoryProfile{
+		{Profile: "home", Match: config.RepositoryProfileMatch{Host: "github.com", Namespace: "example"}},
+		{Profile: "work", Match: config.RepositoryProfileMatch{Host: "github.com", Namespace: "example", Repos: []string{"work"}}},
+	}
+	const homePR = "https://github.com/example/home/pull/29"
+	const workPR = "https://github.com/example/work/pull/29"
+	for _, tc := range []struct {
+		name, profile, judge string
+		args                 []string
+	}{
+		{"namespace route", "home", homeJudge, []string{"preflight", homePR}},
+		{"repo route", "work", workJudge, []string{"preflight", workPR}},
+		{"explicit profile", "home", homeJudge, []string{"--profile", "home", "preflight", workPR}},
+		{"override", "work", "one-off.yml", []string{"preflight", workPR, "--judge-config", "one-off.yml"}},
+		{"bypass missing saved file", "work", "", []string{"preflight", workPR, "--no-judge"}},
+		{"ordinary dry run", "work", "", []string{"review", workPR, "--dry-run"}},
+		{"ordinary dry run explicit judge", "work", "one-off.yml", []string{"review", workPR, "--dry-run", "--judge-config", "one-off.yml"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeRunner{result: testPipelineResult(false)}
+			cmd, _ := newTestCommand(t, cfg, func(_ context.Context, req app.OpenRequest) (app.Runtime, error) {
+				if req.ProfileName != tc.profile || req.JudgeConfigPath != tc.judge {
+					t.Fatalf("resolved profile %q and judge %q, want %q and %q", req.ProfileName, req.JudgeConfigPath, tc.profile, tc.judge)
+				}
+				return app.Runtime{Runner: runner}, nil
+			})
+			if err := root.Execute(cmd, tc.args); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.requests) != 1 {
+				t.Fatalf("expected one reviewer pass, got %d", len(runner.requests))
+			}
+		})
+	}
+}
+
 func TestAuthorPreflightEmitsIncompleteJSONAndFails(t *testing.T) {
 	result := testPipelineResult(false)
 	result.Plan.Incomplete = true
@@ -96,13 +143,16 @@ func TestAuthorPreflightEmitsIncompleteJSONAndFails(t *testing.T) {
 
 func TestAuthorPreflightRejectsReviewControlFlags(t *testing.T) {
 	const prURL = "https://github.com/open-cli-collective/codereview-cli/pull/29"
-	for _, flag := range []string{"--dry-run=false", "--retry-posts", "--fresh-session", "--allow-self-approve", "--judge-config="} {
-		t.Run(flag, func(t *testing.T) {
+	for _, args := range [][]string{
+		{"--dry-run=false"}, {"--retry-posts"}, {"--fresh-session"}, {"--allow-self-approve"},
+		{"--judge-config="}, {"--judge-config=judge.yml", "--no-judge"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
 				t.Fatal("invalid preflight flags opened a runtime")
 				return app.Runtime{}, nil
 			})
-			if err := root.Execute(cmd, []string{"preflight", prURL, flag}); err == nil {
+			if err := root.Execute(cmd, append([]string{"preflight", prURL}, args...)); exitcode.FromError(err) != exitcode.UsageError {
 				t.Fatal("invalid preflight flags succeeded")
 			}
 		})

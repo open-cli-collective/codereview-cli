@@ -163,6 +163,7 @@ type Profile struct {
 	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 	Hooks            []Hook          `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+	Preflight        PreflightConfig `yaml:"preflight,omitempty" json:"preflight,omitzero"`
 
 	// ReviewerCredentials is the resolved effective reviewer credential block
 	// derived from ReviewerEntities for runtime callers. It is not config schema.
@@ -170,6 +171,11 @@ type Profile struct {
 	// LLM is the resolved effective runtime derived from LLMRuntime for runtime
 	// callers. It is not config schema.
 	LLM LLMConfig `yaml:"-" json:"-"`
+}
+
+// PreflightConfig stores an optional judge for author preflight.
+type PreflightConfig struct {
+	JudgeConfigPath string `yaml:"judge_config,omitempty" json:"judge_config,omitempty"`
 }
 
 type profileYAML struct {
@@ -181,6 +187,7 @@ type profileYAML struct {
 	AgentSources     []string        `yaml:"agent_sources,omitempty" json:"agent_sources,omitempty"`
 	ReviewPolicy     ReviewPolicy    `yaml:"review_policy,omitempty" json:"review_policy"`
 	Hooks            []Hook          `yaml:"hooks,omitempty" json:"hooks,omitempty"`
+	Preflight        PreflightConfig `yaml:"preflight,omitempty" json:"preflight,omitzero"`
 }
 
 // Hook configures one observe-only lifecycle command. Argv is executed
@@ -229,6 +236,7 @@ func (p *Profile) UnmarshalYAML(value *yaml.Node) error {
 		AgentSources:     raw.AgentSources,
 		ReviewPolicy:     raw.ReviewPolicy,
 		Hooks:            raw.Hooks,
+		Preflight:        raw.Preflight,
 	}
 	return nil
 }
@@ -244,6 +252,7 @@ func (p Profile) MarshalYAML() (any, error) {
 		AgentSources:     p.AgentSources,
 		ReviewPolicy:     p.ReviewPolicy,
 		Hooks:            p.Hooks,
+		Preflight:        p.Preflight,
 	}, nil
 }
 
@@ -1467,6 +1476,9 @@ func gitCredentialRef(purpose string, mode GitAuthMode, credential CredentialLoc
 }
 
 func validateProfile(cfg File, name string, profile Profile) error {
+	if path := profile.Preflight.JudgeConfigPath; path != "" && !filepath.IsAbs(path) {
+		return invalid("profiles.%s.preflight.judge_config must be an absolute path", name)
+	}
 	if strings.TrimSpace(profile.RepositoryAccess) == "" {
 		return invalid("profiles.%s.repository_access is required", name)
 	}

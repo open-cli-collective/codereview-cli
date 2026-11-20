@@ -1509,7 +1509,7 @@ and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 ### `cr preflight`
 
 ```sh
-cr preflight <PR> [--judge-config judge.yml] [--json]
+cr preflight <PR> [--judge-config judge.yml | --no-judge] [--json]
 ```
 
 Preflight checks the current GitHub pull request or GitLab merge request,
@@ -1522,14 +1522,31 @@ dry-run result format, where actions describe the local plan. If the reviewers
 could not complete coverage or analyze required context, preflight preserves the
 report, records an incomplete outcome, and exits with status 1.
 
-The optional [judge configuration](#cr-judge-prior-threads) selects one provider
-you have access to, such as Jev, Mammoth, or OpenAI Decisions. Where a current
-finding may overlap with a prior thread eligible under the review's posting
-identity, the judge can send the selected finding and thread text to that provider
-and save a local suggestion. The command prints the judge status and artifact
-path to stderr. A first pass without eligible pairs makes no judge calls. Inspect
-`suggestions.json` alongside the findings before acting. Formal review still
-runs through `cr review`.
+Preflight runs the reviewers alone by default. To enable prior-thread judging
+for a profile, set its [judge YAML](#cr-judge-prior-threads):
+
+```sh
+cr --profile work config preflight judge set path/to/judge.yml
+cr --profile work config show
+cr --profile work config preflight judge unset
+```
+
+Setting a judge stores an absolute path under `profiles.<profile>.preflight.judge_config`.
+Future preflights routed to that profile can send eligible finding and thread
+text to the provider in that file. Use a file you control and a provider
+appropriate for every repository routed to the profile. Older binaries may drop
+the setting when they rewrite the profile.
+
+`--judge-config <path>` selects a different YAML for one preflight, including
+on a profile with no saved judge. `--no-judge` runs the reviewers alone for one
+invocation and bypasses the saved file, even if it is missing. The flags are
+mutually exclusive. The saved setting is specific to `cr preflight`. A formal
+`cr review` takes its own explicit `--judge-config`.
+
+The judge makes zero calls and resolves no judge credentials when there are no
+eligible pairs. Preflight prints the judge status and attempt path to stderr.
+A judge error is advisory, and the reviewer report is still available.
+Inspect `suggestions.json` alongside the findings before acting.
 
 ### `cr judge prior-threads`
 

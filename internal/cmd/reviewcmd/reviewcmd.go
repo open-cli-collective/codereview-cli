@@ -106,6 +106,7 @@ type commandFlags struct {
 	identityShadow           bool
 	identityShadowConfigPath string
 	judgeConfigPath          string
+	noJudge                  bool
 }
 
 // Register attaches the review command to rootCmd.
@@ -153,7 +154,7 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.keepWorkbench, "keep-workbench", false, "Keep the run workbench checkout instead of deleting it after a successful review")
 	cmd.Flags().BoolVar(&flags.identityShadow, "identity-shadow", false, "Run a private report identity diagnostic after review completion (default false)")
 	cmd.Flags().StringVar(&flags.identityShadowConfigPath, "identity-shadow-config", "", "Standalone shadow YAML path; read only with --identity-shadow")
-	addJudgeConfigFlag(cmd, &flags.judgeConfigPath)
+	cmd.Flags().StringVar(&flags.judgeConfigPath, "judge-config", "", "Run advisory prior-thread matching after review with the specified judge YAML")
 	rootCmd.AddCommand(cmd)
 }
 
@@ -169,23 +170,24 @@ func registerPreflightWithFactory(rootCmd *cobra.Command, opts *root.Options, fa
 		Short: "Check a pull request privately before formal review",
 		Long: "Run the configured reviewers on the current pull request, including drafts. " +
 			"Preflight makes no review posts, skips lifecycle hooks, and starts fresh reviewer conversations. " +
-			"An explicit --judge-config lets the selected provider suggest matches to earlier review threads.",
+			"A judge configured on the profile can suggest matches to earlier review threads. " +
+			"Use --judge-config to override it or --no-judge to skip it.",
 		Args: exitcode.ExactArgs(1, "preflight requires one PR URL"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runReview(cmd.Context(), cmd, opts, factory, flags, args[0])
 		},
 	}
 	root.AddJSONFlag(cmd, &flags.jsonOutput)
-	addJudgeConfigFlag(cmd, &flags.judgeConfigPath)
+	cmd.Flags().StringVar(&flags.judgeConfigPath, "judge-config", "", "Use this judge YAML instead of the profile's saved judge")
+	cmd.Flags().BoolVar(&flags.noJudge, "no-judge", false, "Run the preflight without the saved judge")
 	rootCmd.AddCommand(cmd)
-}
-
-func addJudgeConfigFlag(cmd *cobra.Command, path *string) {
-	cmd.Flags().StringVar(path, "judge-config", "", "Run advisory prior-thread matching after review with the specified judge YAML")
 }
 
 func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags commandFlags, prArg string) error {
 	if cmd.Flags().Changed("judge-config") {
+		if flags.noJudge {
+			return exitcode.Usage(fmt.Errorf("--judge-config and --no-judge are mutually exclusive"))
+		}
 		if strings.TrimSpace(flags.judgeConfigPath) == "" || flags.identityShadow || flags.retryPosts {
 			return exitcode.Usage(fmt.Errorf("--judge-config requires a path and cannot be combined with --identity-shadow or --retry-posts"))
 		}
@@ -349,6 +351,9 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		}
 	}
 	_ = profileSpan.End(nil)
+	if flags.preflight && !flags.noJudge && !cmd.Flags().Changed("judge-config") {
+		flags.judgeConfigPath = profile.Preflight.JudgeConfigPath
+	}
 	reviewerFast := profile.Fast
 	if cmd.Flags().Changed("fast") {
 		reviewerFast = flags.fast
