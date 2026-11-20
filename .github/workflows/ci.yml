@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: open-cli-collective/.github/actions/go-lint@b6382514b809d960c6fbdc85745a60c14cde04f1 # shared .github
+      - uses: open-cli-collective/.github/actions/go-lint@b816e09a862eec83f6ff334f94d6b96894f405ad # shared .github
         with:
           go-version-file: go.mod
 
