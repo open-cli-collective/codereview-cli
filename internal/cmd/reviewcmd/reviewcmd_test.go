@@ -42,6 +42,73 @@ import (
 	"github.com/open-cli-collective/codereview-cli/internal/view"
 )
 
+func TestAuthorPreflightUsesDryRunAndOptionalJudge(t *testing.T) {
+	runner := &fakeRunner{result: testPipelineResult(false)}
+	var opened app.OpenRequest
+	cmd, out := newTestCommand(t, testConfig(), func(_ context.Context, opts app.OpenRequest) (app.Runtime, error) {
+		opened = opts
+		return app.Runtime{
+			Runner:          runner,
+			PostingIdentity: gitprovider.Identity{Login: "author"},
+		}, nil
+	})
+	const prURL = "https://github.com/open-cli-collective/codereview-cli/pull/29"
+	if err := root.Execute(cmd, []string{"preflight", prURL, "--judge-config", "judge.yml"}); err != nil {
+		t.Fatal(err)
+	}
+	if opened.Command != "preflight" || !opened.Preflight || opened.JudgeConfigPath != "judge.yml" || opened.RequireOpinionatedReviewAuthority {
+		t.Fatalf("preflight runtime flags = %#v", opened)
+	}
+	if len(runner.requests) != 1 || len(runner.liveRequests) != 0 {
+		t.Fatalf("preflight ran %d dry runs and %d live runs", len(runner.requests), len(runner.liveRequests))
+	}
+	req := runner.requests[0]
+	if !req.Preflight || !req.AllowSelfReview || req.AllowSelfApprove || req.WithoutDiscussion || req.PRRef.Number != 29 {
+		t.Fatalf("preflight pipeline flags = %#v", req)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Preflight (private author check)") || strings.Contains(got, "Planned actions:") {
+		t.Fatalf("unexpected preflight report: %s", got)
+	}
+}
+
+func TestAuthorPreflightEmitsIncompleteJSONAndFails(t *testing.T) {
+	result := testPipelineResult(false)
+	result.Plan.Incomplete = true
+	outcome := ledger.OutcomeIncomplete
+	result.Run.Outcome = &outcome
+	runner := &fakeRunner{result: result}
+	cmd, out := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
+		return app.Runtime{Runner: runner}, nil
+	})
+	err := root.Execute(cmd, []string{"preflight", "https://github.com/open-cli-collective/codereview-cli/pull/29", "--json"})
+	if exitcode.FromError(err) != exitcode.Failure {
+		t.Fatalf("preflight incomplete error = %v", err)
+	}
+	var rendered view.ReviewDryRun
+	if err := json.Unmarshal(out.Bytes(), &rendered); err != nil {
+		t.Fatalf("invalid JSON report: %v", err)
+	}
+	if rendered.Run.Outcome != outcome.String() {
+		t.Fatalf("run outcome = %q, want %q", rendered.Run.Outcome, outcome)
+	}
+}
+
+func TestAuthorPreflightRejectsReviewControlFlags(t *testing.T) {
+	const prURL = "https://github.com/open-cli-collective/codereview-cli/pull/29"
+	for _, flag := range []string{"--dry-run=false", "--retry-posts", "--fresh-session", "--allow-self-approve", "--judge-config="} {
+		t.Run(flag, func(t *testing.T) {
+			cmd, _ := newTestCommand(t, testConfig(), func(context.Context, app.OpenRequest) (app.Runtime, error) {
+				t.Fatal("invalid preflight flags opened a runtime")
+				return app.Runtime{}, nil
+			})
+			if err := root.Execute(cmd, []string{"preflight", prURL, flag}); err == nil {
+				t.Fatal("invalid preflight flags succeeded")
+			}
+		})
+	}
+}
+
 func TestReviewDryRunCallsRunnerAndRendersText(t *testing.T) {
 	runner := &fakeRunner{result: testPipelineResult(false)}
 	var gotRuntime app.OpenRequest
@@ -1913,6 +1980,7 @@ func newTestCommand(t *testing.T, cfg config.File, factory RuntimeFactory) (*cob
 	}
 	cmd, out, _ := cmdtest.New(opts, func(cmd *cobra.Command, opts *root.Options) {
 		RegisterWithFactory(cmd, opts, factory)
+		registerPreflightWithFactory(cmd, opts, factory)
 	})
 	opts.Stderr = out
 	return cmd, out

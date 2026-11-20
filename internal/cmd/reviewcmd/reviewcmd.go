@@ -1,4 +1,4 @@
-// Package reviewcmd wires the `cr review` command surface.
+// Package reviewcmd wires the review and preflight commands.
 package reviewcmd
 
 import (
@@ -76,6 +76,7 @@ unchanged.`
 type RuntimeFactory func(context.Context, app.OpenRequest) (app.Runtime, error)
 
 type commandFlags struct {
+	preflight                bool
 	dryRun                   bool
 	noPost                   bool
 	rerun                    bool
@@ -152,8 +153,35 @@ func RegisterWithFactory(rootCmd *cobra.Command, opts *root.Options, factory Run
 	cmd.Flags().BoolVar(&flags.keepWorkbench, "keep-workbench", false, "Keep the run workbench checkout instead of deleting it after a successful review")
 	cmd.Flags().BoolVar(&flags.identityShadow, "identity-shadow", false, "Run a private report identity diagnostic after review completion (default false)")
 	cmd.Flags().StringVar(&flags.identityShadowConfigPath, "identity-shadow-config", "", "Standalone shadow YAML path; read only with --identity-shadow")
-	cmd.Flags().StringVar(&flags.judgeConfigPath, "judge-config", "", "Run advisory prior-thread matching after review with the specified judge YAML")
+	addJudgeConfigFlag(cmd, &flags.judgeConfigPath)
 	rootCmd.AddCommand(cmd)
+}
+
+// RegisterPreflight attaches the author's private review command.
+func RegisterPreflight(rootCmd *cobra.Command, opts *root.Options) {
+	registerPreflightWithFactory(rootCmd, opts, app.Open)
+}
+
+func registerPreflightWithFactory(rootCmd *cobra.Command, opts *root.Options, factory RuntimeFactory) {
+	flags := commandFlags{preflight: true, dryRun: true, allowSelfReview: true}
+	cmd := &cobra.Command{
+		Use:   "preflight <PR>",
+		Short: "Check a pull request privately before formal review",
+		Long: "Run the configured reviewers on the current pull request, including drafts. " +
+			"Preflight makes no review posts, skips lifecycle hooks, and starts fresh reviewer conversations. " +
+			"An explicit --judge-config lets the selected provider suggest matches to earlier review threads.",
+		Args: exitcode.ExactArgs(1, "preflight requires one PR URL"),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReview(cmd.Context(), cmd, opts, factory, flags, args[0])
+		},
+	}
+	root.AddJSONFlag(cmd, &flags.jsonOutput)
+	addJudgeConfigFlag(cmd, &flags.judgeConfigPath)
+	rootCmd.AddCommand(cmd)
+}
+
+func addJudgeConfigFlag(cmd *cobra.Command, path *string) {
+	cmd.Flags().StringVar(path, "judge-config", "", "Run advisory prior-thread matching after review with the specified judge YAML")
 }
 
 func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, factory RuntimeFactory, flags commandFlags, prArg string) error {
@@ -278,7 +306,8 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 	}
 
 	logger := root.NewProgressLogger(opts)
-	configSpan := logger.Start("review", "load_config", "config")
+	command := commandName(cmd)
+	configSpan := logger.Start(command, "load_config", "config")
 	path, err := cmdruntime.ConfigPath(opts)
 	if err != nil {
 		return exitcode.AuthConfig(configSpan.End(err))
@@ -288,13 +317,13 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return cmderr.Config(configSpan.End(err))
 	}
 	_ = configSpan.End(nil)
-	parseSpan := logger.Start("review", "parse_pr", "pr")
+	parseSpan := logger.Start(command, "parse_pr", "pr")
 	ref, urlProvider, err := prref.ParsePullURL(prArg)
 	if err != nil {
 		return exitcode.Usage(parseSpan.End(err))
 	}
 	_ = parseSpan.End(nil)
-	profileSpan := logger.Start("review", "resolve_profile", "profile")
+	profileSpan := logger.Start(command, "resolve_profile", "profile")
 	profileName, profile, err := config.ResolveProfileForRepository(cfg, opts.Profile, root.ProfileFlagChanged(cmd), config.RepositoryTarget{
 		Host:      ref.Host,
 		Namespace: ref.Owner,
@@ -355,7 +384,8 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		ProfileName:                       profileName,
 		Backend:                           opts.Backend,
 		BackendFlagChanged:                cmderr.BackendFlagChanged(cmd),
-		Command:                           commandName(cmd),
+		Command:                           command,
+		Preflight:                         flags.preflight,
 		Progress:                          logger,
 		Warnings:                          opts.Stderr,
 		MaxAgents:                         flags.maxAgents,
@@ -371,7 +401,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		RetentionManualOnly:               cfg.Data.Retention.Enforcement == config.RetentionManualOnly,
 		KeepWorkbench:                     keepWorkbench,
 	}
-	runtimeSpan := logger.Start("review", "build_runtime", "runtime")
+	runtimeSpan := logger.Start(command, "build_runtime", "runtime")
 	runtime, err := factory(ctx, runtimeReq)
 	if err != nil {
 		mapped := runtimeSpan.End(cmdruntime.MapRunError(err))
@@ -392,6 +422,7 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		PRRef:                       ref,
 		PRURL:                       prArg,
 		ProfileName:                 profileName,
+		Preflight:                   flags.preflight,
 		SessionName:                 sessionName,
 		Profile:                     profile,
 		PostingIdentity:             runtime.PostingIdentity,
@@ -419,24 +450,30 @@ func runReview(ctx context.Context, cmd *cobra.Command, opts *root.Options, fact
 		return runLive(ctx, logger, opts, flags, runtime.Runner, pipelineReq, failOn)
 	}
 
-	execSpan := logger.Start("review", "execute_dry_run", "pr")
+	execSpan := logger.Start(command, "execute_dry_run", "pr")
 	result, err := runtime.Runner.DryRun(ctx, pipelineReq)
 	if err != nil {
 		return execSpan.End(cmdruntime.MapRunError(err))
 	}
 	_ = execSpan.End(nil)
-	renderSpan := logger.Start("review", "render_result", "stdout")
+	renderSpan := logger.Start(command, "render_result", "stdout")
 	rendered, err := view.NewReviewDryRun(result)
 	if err != nil {
 		return renderSpan.End(err)
 	}
 	err = view.Render(opts.Stdout, flags.jsonOutput, rendered, func(w io.Writer) error {
+		if flags.preflight {
+			return view.RenderPreflightText(w, rendered)
+		}
 		return view.RenderReviewDryRunText(w, rendered)
 	})
 	if err != nil {
 		return renderSpan.End(err)
 	}
 	_ = renderSpan.End(nil)
+	if flags.preflight && result.Plan.Incomplete {
+		return exitcode.With(exitcode.Failure, errors.New("preflight incomplete. Inspect the report for coverage and errors"))
+	}
 	if result.FailOnTriggered && failOn != nil {
 		return exitcode.With(exitcode.Failure, fmt.Errorf("findings at or above --fail-on %s", failOn.String()))
 	}

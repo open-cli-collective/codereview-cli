@@ -378,6 +378,18 @@ func newReviewAction(action reviewplan.Action, planned ledger.PlannedAction) (Re
 
 // RenderReviewDryRunText writes a human-readable dry-run summary.
 func RenderReviewDryRunText(w io.Writer, result ReviewDryRun) error {
+	return renderReviewDryRunText(w, result, false)
+}
+
+// RenderPreflightText shows the author the review rollup and its saved findings.
+func RenderPreflightText(w io.Writer, result ReviewDryRun) error {
+	if _, err := fmt.Fprintln(w, "Preflight (private author check)"); err != nil {
+		return err
+	}
+	return renderReviewDryRunText(w, result, true)
+}
+
+func renderReviewDryRunText(w io.Writer, result ReviewDryRun, preflight bool) error {
 	if result.Quota != nil {
 		label := "Quota"
 		if result.Quota.Low {
@@ -390,11 +402,13 @@ func RenderReviewDryRunText(w io.Writer, result ReviewDryRun) error {
 	if err := writeKV(w, "Run", result.Run.RunID); err != nil {
 		return err
 	}
-	if err := writeKV(w, "Post mode", result.Run.PostMode); err != nil {
-		return err
-	}
-	if err := writeKV(w, "Outcome", result.Run.Outcome); err != nil {
-		return err
+	if !preflight {
+		if err := writeKV(w, "Post mode", result.Run.PostMode); err != nil {
+			return err
+		}
+		if err := writeKV(w, "Outcome", result.Run.Outcome); err != nil {
+			return err
+		}
 	}
 	if err := writeOptionalKV(w, "PR", result.Run.PRURL); err != nil {
 		return err
@@ -410,15 +424,33 @@ func RenderReviewDryRunText(w io.Writer, result ReviewDryRun) error {
 			return err
 		}
 	}
+	if !preflight {
+		if err := renderDryRunActions(w, result.Actions); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(w, "Artifacts:"); err != nil {
+		return err
+	}
+	if err := writeKV(w, "  Directory", result.Artifacts.Dir); err != nil {
+		return err
+	}
+	if err := writeKV(w, "  Findings", result.Artifacts.FindingsJSON); err != nil {
+		return err
+	}
+	return writeKV(w, "  Rollup", result.Artifacts.RollupMarkdown)
+}
+
+func renderDryRunActions(w io.Writer, actions []ReviewAction) error {
 	if _, err := fmt.Fprintln(w, "Planned actions:"); err != nil {
 		return err
 	}
-	if len(result.Actions) == 0 {
+	if len(actions) == 0 {
 		if _, err := fmt.Fprintln(w, "  - none"); err != nil {
 			return err
 		}
 	} else {
-		for _, action := range result.Actions {
+		for _, action := range actions {
 			if _, err := fmt.Fprintf(w, "  - %s %s [%s]", action.ID, action.Kind, action.Status); err != nil {
 				return err
 			}
@@ -437,16 +469,7 @@ func RenderReviewDryRunText(w io.Writer, result ReviewDryRun) error {
 			}
 		}
 	}
-	if _, err := fmt.Fprintln(w, "Artifacts:"); err != nil {
-		return err
-	}
-	if err := writeKV(w, "  Directory", result.Artifacts.Dir); err != nil {
-		return err
-	}
-	if err := writeKV(w, "  Findings", result.Artifacts.FindingsJSON); err != nil {
-		return err
-	}
-	return writeKV(w, "  Rollup", result.Artifacts.RollupMarkdown)
+	return nil
 }
 
 // RenderReviewDryRunJSON writes a dry-run summary as indented JSON.

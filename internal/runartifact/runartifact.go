@@ -22,12 +22,15 @@ const (
 
 	// KindReview marks artifacts for a full review run.
 	KindReview = "review"
+	// KindPreflight marks an author check that ordinary reviews cannot resume.
+	KindPreflight = "preflight"
 	// KindThreadResponse marks artifacts for a response-only thread lifecycle run.
 	KindThreadResponse = "thread_response"
 )
 
 var markerFileByKind = map[string]string{
 	KindReview:         "review-run.json",
+	KindPreflight:      "preflight-run.json",
 	KindThreadResponse: "thread-response-run.json",
 }
 

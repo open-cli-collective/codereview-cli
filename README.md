@@ -875,7 +875,17 @@ LLM API credentials. Re-provision API-key LLM refs with `anthropic_api_key` or
 
 ## Common Workflows
 
-Preview a review without posting:
+Check your draft PR before requesting review:
+
+```bash
+cr preflight https://github.com/OWNER/REPO/pull/123
+```
+
+Inspect the local findings and run the relevant tests before requesting formal
+review. Use [an optional judge configuration](#cr-preflight) on follow-ups to
+check for findings that may repeat an earlier thread.
+
+Preview a review action plan without posting:
 
 ```bash
 cr review --dry-run https://github.com/OWNER/REPO/pull/123
@@ -1495,6 +1505,31 @@ markers are reported as omitted because nothing is posted.
 Live text output includes run ID, gate status, decision, outcome, PR, artifacts,
 and post counts. JSON output includes `run`, `status`, `decision`, `message`,
 `outbox`, `artifacts`, and `fail_on_triggered`.
+
+### `cr preflight`
+
+```sh
+cr preflight <PR> [--judge-config judge.yml] [--json]
+```
+
+Preflight checks the current GitHub pull request or GitLab merge request,
+including drafts. It uses repository profile routing, the configured reviewers,
+and current PR discussion. The check can run on your own PR with your own
+reviewer credentials. Each invocation starts fresh conversations, skips lifecycle
+hooks, and records a private dry-run report with the findings, reviewer coverage,
+and artifact paths. It makes no review posts or thread updates. JSON uses the
+dry-run result format, where actions describe the local plan. If the reviewers
+could not complete coverage or analyze required context, preflight preserves the
+report, records an incomplete outcome, and exits with status 1.
+
+The optional [judge configuration](#cr-judge-prior-threads) selects one provider
+you have access to, such as Jev, Mammoth, or OpenAI Decisions. Where a current
+finding may overlap with a prior thread eligible under the review's posting
+identity, the judge can send the selected finding and thread text to that provider
+and save a local suggestion. The command prints the judge status and artifact
+path to stderr. A first pass without eligible pairs makes no judge calls. Inspect
+`suggestions.json` alongside the findings before acting. Formal review still
+runs through `cr review`.
 
 ### `cr judge prior-threads`
 

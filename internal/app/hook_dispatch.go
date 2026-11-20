@@ -34,9 +34,13 @@ type hookDispatcher struct {
 }
 
 func newHookDispatcher(req OpenRequest, store hookRunStore) *hookDispatcher {
+	entries := req.Profile.Hooks
+	if req.Preflight {
+		entries = nil
+	}
 	return &hookDispatcher{
-		dispatcher: hooks.New(req.Profile.Hooks, req.Warnings),
-		enabled:    len(req.Profile.Hooks) > 0,
+		dispatcher: hooks.New(entries, req.Warnings),
+		enabled:    len(entries) > 0,
 		store:      store,
 		command:    commandName(req.Command),
 		prURL:      req.PRURL,

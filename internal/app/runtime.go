@@ -73,6 +73,7 @@ type OpenRequest struct {
 	Warnings                          io.Writer
 	PRRef                             gitprovider.PRRef
 	PRURL                             string
+	Preflight                         bool
 	RequireOpinionatedReviewAuthority bool
 	IdentityShadow                    bool
 	IdentityShadowConfigPath          string

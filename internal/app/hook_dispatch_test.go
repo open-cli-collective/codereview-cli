@@ -160,6 +160,19 @@ func TestHookAuthorKeepsTheFirstIdentityReadFromTheProvider(t *testing.T) {
 	}
 }
 
+func TestPreflightSkipsHooksConfiguredForDryRuns(t *testing.T) {
+	capture := t.TempDir() + "/events.jsonl"
+	t.Setenv("GO_WANT_APP_HOOK_HELPER", "1")
+	t.Setenv("APP_HOOK_CAPTURE", capture)
+	profile := config.Profile{Hooks: hookEntries([]string{"run.started", "run.completed"})}
+	dispatcher := newHookDispatcher(OpenRequest{Command: "preflight", Profile: profile, Preflight: true}, nil)
+	dispatcher.begin(true)
+	dispatcher.drain()
+	if _, err := os.Stat(capture); !os.IsNotExist(err) {
+		t.Fatalf("preflight hook capture = %v, want no hook execution", err)
+	}
+}
+
 func TestHookProviderWrapperIsSkippedWhenNoHooksAreConfigured(t *testing.T) {
 	dispatcher := newHookDispatcher(OpenRequest{ProfileName: "work", Command: "review"}, hookStore{})
 	fake := &gitprovider.Fake{}
